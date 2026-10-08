@@ -154,7 +154,7 @@ impl ToolContext {
 
     /// Create a minimal tool context for use when no abort/progress is needed.
     ///
-    /// Used by `BuiltinToolAdapter` to ensure `execute_with_context` gets
+    /// Used by `ToolDispatcher` to ensure `execute_with_context` gets
     /// consistent metrics/timeout handling even when invoked through the hook system.
     pub fn default_for_tool(tool_name: impl Into<String>) -> Self {
         let (tx, abort_rx) = tokio::sync::watch::channel(false);
@@ -217,7 +217,7 @@ impl ToolContext {
     /// `abort_rx` and therefore makes the trait-default
     /// `ctx.is_aborted()` check a no-op), this constructor lets the
     /// engine thread a real abort signal through to the tool. Used by
-    /// `BuiltinToolAdapter` when the engine has built an abort bridge
+    /// `ToolDispatcher` when the engine has built an abort bridge
     /// from a `CancellationToken` (see
     /// [`bridge_from_cancellation_token`]).
     pub fn for_hook_run_with_abort(
@@ -338,7 +338,7 @@ impl ToolContext {
     /// Replace the abort receiver. Use when the engine built a fresh
     /// context via [`Self::for_hook_run`] (a never-aborted receiver)
     /// and then later needs to attach a real `CancellationToken` bridge
-    /// (e.g. the closure in `BuiltinToolAdapter` which can't move out of
+    /// (e.g. the closure in `ToolDispatcher` which can't move out of
     /// `for_hook_run`'s receiver because the rest of the builder chain
     /// has already run on top of it).
     #[must_use]

@@ -1102,7 +1102,7 @@ impl AgenticLoop {
         .with_force_compact(self.force_compact);
 
         // Propagate the resolved model max into the session so the
-        // `session` tool and IPC layer can surface it (used by the
+        // `Session` tool and IPC layer can surface it (used by the
         // CLI dry-run and external status surfaces). The driver
         // pins this same value at run start.
         // Phase 9b.N.5b.9b: route through `SessionView` so the write
@@ -2346,7 +2346,7 @@ impl AgenticLoop {
         //   recovers (window roll, reset), the next fresh trip
         //   trips again on the next false → true edge. Full quota
         //   state (counters, limits, window) lives on the
-        //   `session` tool's `status` action — see
+        //   `Session` tool's `status` action — see
         //   `QuotaSnapshot` in
         //   `peko_core::tools::builtin::session`.
         // - `soft_cancel_pending`: already wired in Phase 1; the token
@@ -2700,7 +2700,7 @@ mod tests {
     //
     // The agentic_loop's test suite references root-only fixture types
     // (`Agent`, `ToolingRuntime`, `Subject`, `SessionManager`, `Provider`,
-    // `MockAdapter`, `BuiltinToolAdapter`, `LlmResolver`, etc.) that cannot
+    // `MockAdapter`, `ToolingRuntime`, `LlmResolver`, etc.) that cannot
     // lift into `peko-engine` without violating `check_workspace_deps.py`
     // forbidden-edge rules.
     //

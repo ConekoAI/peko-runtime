@@ -1,9 +1,8 @@
 //! `Skill` tool — invoke a SKILL.md body with argument substitution.
 //!
 //! Provides `Skill` so the agent can invoke a SKILL.md body on-demand
-//! with argument substitution. The skill list is gated by the principal's
-//! `capabilities` grants and active extension snapshot, both carried in the
-//! tool execution context. Skill locations are resolved through the
+//! with argument substitution. Workspace presence determines availability;
+//! every principal can invoke its installed skills. Locations resolve through the
 //! injected [`SkillRuntime`] port (production uses the workspace-scanning
 //! `WorkspaceSkillRuntime` from `crate::extensions::skill::reader`).
 //!
@@ -100,7 +99,7 @@ impl Tool for SkillTool {
         r#"Invoke a SKILL.md body with argument substitution.
 
 Parameters:
-- name: required — skill name (must match a discovered SKILL.md directory name AND be in the principal's enabled allowlist).
+- name: required — skill name (must match a discovered SKILL.md directory name).
 - args: optional array of strings — positional arguments.
 
 Argument substitution (Claude-style):
@@ -123,7 +122,7 @@ Dynamic context (Claude-style):
 
 Returns:
 - { name, body } — the skill's body with dynamic context resolved, then arguments substituted.
-- { error, skill } — structured error: skill_not_enabled, skill_unreadable, or unknown_skill."#
+- { error, skill } — structured unknown_skill error. Unreadable or invalid skill files return a tool error."#
             .to_string()
     }
 

@@ -35,6 +35,7 @@ use crate::tools::catalog::ToolCatalog;
 /// `Arc`).
 #[derive(Clone)]
 pub struct ToolDispatcher {
+    run_binding: std::sync::Weak<crate::tools::runtime::ToolingRuntime>,
     catalog: Arc<ToolCatalog>,
     hooks: Arc<WorkspaceHookDispatcher>,
     router: Arc<AsyncExecutionRouter>,
@@ -50,6 +51,18 @@ impl std::fmt::Debug for ToolDispatcher {
 }
 
 impl ToolDispatcher {
+    /// Rebind lookup while retaining the same hooks, router, and audit sink.
+    pub(crate) fn with_catalog(
+        &self,
+        catalog: Arc<ToolCatalog>,
+        run_binding: std::sync::Weak<crate::tools::runtime::ToolingRuntime>,
+    ) -> Self {
+        Self {
+            run_binding,
+            catalog,
+            ..self.clone()
+        }
+    }
     /// Compose the dispatcher over the catalog + hook registry + the
     /// timeout/detach router. `audit` is the observability hub the
     /// `tool.call` event lands on (`None` for tests / standalone
@@ -62,6 +75,7 @@ impl ToolDispatcher {
         audit: Option<Arc<peko_observability::Observability>>,
     ) -> Self {
         Self {
+            run_binding: std::sync::Weak::new(),
             catalog,
             hooks,
             router,
@@ -125,9 +139,27 @@ impl ToolDispatcher {
 
         // 2. F32b — validate LLM-emitted args against the tool's
         //    declared JSON Schema before any preprocessing.
-        if let Err(msg) =
-            AsyncExecutionRouter::validate_tool_args(&metadata.parameters, &call.params, &tool_name)
+        // Workflow depth is injected by the trusted IPC run-token path,
+        // not part of the public schema. Validate only its public args;
+        // retain the injected value for the runner's recursion guard.
+        let builtin = metadata.source == crate::tools::metadata::ToolSource::BuiltIn;
+        let public_params = if builtin
+            && tool_name == crate::tools::builtin::WORKFLOW_TOOL_NAME
+            && call.params.get("_workflow_depth").is_some()
         {
+            let mut params = call.params.clone();
+            if let Some(object) = params.as_object_mut() {
+                object.remove("_workflow_depth");
+            }
+            Some(params)
+        } else {
+            None
+        };
+        if let Err(msg) = AsyncExecutionRouter::validate_tool_args(
+            &metadata.parameters,
+            public_params.as_ref().unwrap_or(&call.params),
+            &tool_name,
+        ) {
             warn!(tool = %tool_name, "Tool arg validation failed; returning as tool failure");
             let text = format!("Error: {msg}");
             return Ok((text.clone(), Value::String(text), false));
@@ -194,12 +226,16 @@ impl ToolDispatcher {
         let mut params = call.params.clone();
         apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());
 
+        // Detached tools (including Workflow subprocesses) retain their
+        // caller's binding until execution ends, without a registry cycle.
+        let run_binding = self.run_binding.upgrade();
         let result = self
             .router
             .route(&tool_name, &mut params, &tool_exec_ctx, move |p| {
                 let tool = tool.clone();
                 let tool_ctx = tool_ctx.clone();
                 async move {
+                    let _run_binding = run_binding;
                     let _interrupt_watch = interrupt_watch;
                     std::panic::AssertUnwindSafe(tool.execute_with_context(p, &tool_ctx))
                         .catch_unwind()
@@ -332,8 +368,8 @@ fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Opt
     if let Some(ws) = workspace {
         match tool_name {
             "Glob" => {
-                if !obj.contains_key("directory") {
-                    obj.insert("directory".to_string(), Value::String(ws.to_string()));
+                if !obj.contains_key("path") {
+                    obj.insert("path".to_string(), Value::String(ws.to_string()));
                 }
             }
             "Grep" => {

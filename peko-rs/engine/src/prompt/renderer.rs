@@ -277,7 +277,7 @@ impl PromptRenderer {
     /// in a `<runtime-context>...</runtime-context>` envelope.
     ///
     /// `{{quota_state}}` was retired 2026-09-09 — the principal's live
-    /// quota snapshot now lives on the `session` tool's `status` action
+    /// quota snapshot now lives on the `Session` tool's `status` action
     /// (`QuotaSnapshot`). `{{quota_tripped}}` stays as a single-shot
     /// rising-edge banner (mirrors `{{soft_cancel}}`) so the agent
     /// still sees an advisory the moment the principal trips.

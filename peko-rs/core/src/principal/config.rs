@@ -47,7 +47,7 @@ pub enum BootState {
 }
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
     pub name: String,
     /// Stable runtime id (`prin_*`). Persisted so daemon restarts keep
@@ -82,17 +82,6 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
 
-    // PR-E #1: the `authority: Option<Authority>` field (Phase 3a
-    // envelope) and the `resolved_authority()` method that bridged
-    // legacy grants onto it are deleted. ADR-047 §2.5 had planned to
-    // route the runtime `_write(Option<&Caps>)` accessors onto
-    // `Authority`, but no producer of `[authority]` field checks
-    // ever landed and the envelope had zero consumers outside the
-    // deserialization path. On-disk `[authority]` blocks written by
-    // pre-PR-E-#1 builds will be silently ignored going forward —
-    // same forward-only behavior as every other pre-launch migration.
-    // ADR-066 P2 then deleted the grant evaluation surface itself —
-    // legacy grant bytes are handled only during deserialization.
     /// Network exposure level for this Principal.
     #[serde(default)]
     pub exposure: Exposure,
@@ -164,83 +153,6 @@ pub struct PrincipalConfig {
     /// `BTreeMap` keeps the serialized form stable (sorted by name).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildDeclaration>,
-}
-
-#[derive(Deserialize)]
-#[serde(remote = "PrincipalConfig")]
-struct PrincipalConfigFields {
-    name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    id: Option<PrincipalId>,
-
-    #[serde(default)]
-    did: Option<PrincipalDID>,
-
-    #[serde(default)]
-    owner: peko_auth::Subject,
-
-    #[serde(default)]
-    identity: PrincipalIdentityConfig,
-
-    #[serde(default)]
-    intent: PrincipalIntentConfig,
-
-    #[serde(default)]
-    governance: PrincipalGovernanceConfig,
-
-    #[serde(default)]
-    memory: PrincipalMemoryConfig,
-
-    #[serde(default)]
-    routing: PrincipalRoutingConfig,
-
-    #[serde(default)]
-    exposure: Exposure,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    status: Option<Status>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    boot_state: Option<BootState>,
-
-    #[serde(default)]
-    permissions: Vec<PermissionGrant>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    preferred_model_id: Option<String>,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    quota: Option<QuotaConfig>,
-
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    children: BTreeMap<String, ChildDeclaration>,
-}
-
-// Legacy grants are consumed only here, never stored or threaded into runtime state.
-impl<'de> Deserialize<'de> for PrincipalConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct OnLoad {
-            #[serde(default)]
-            capabilities: serde_json::Value,
-            #[serde(flatten, deserialize_with = "PrincipalConfigFields::deserialize")]
-            config: PrincipalConfig,
-        }
-        let loaded = OnLoad::deserialize(deserializer)?;
-        if loaded
-            .capabilities
-            .get("grants")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|g| !g.is_empty())
-        {
-            static WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                tracing::warn!("principal.toml `[capabilities].grants` is deprecated and ignored: the capability gate was removed in ADR-066. Delete the section from your principal.toml files.");
-            }
-        }
-        Ok(loaded.config)
-    }
 }
 
 impl PrincipalConfig {
@@ -342,8 +254,6 @@ pub struct PrincipalGovernanceConfig {
     #[serde(default = "default_max_running_agents")]
     pub max_running_agents: std::num::NonZeroUsize,
     #[serde(default)]
-    pub auto_grant_tools: Vec<String>,
-    #[serde(default)]
     pub delegations: Vec<DelegationGrant>,
 }
 
@@ -356,7 +266,6 @@ impl Default for PrincipalGovernanceConfig {
         Self {
             audit: Default::default(),
             max_running_agents: default_max_running_agents(),
-            auto_grant_tools: Vec::new(),
             delegations: Vec::new(),
         }
     }

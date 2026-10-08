@@ -212,19 +212,25 @@ pub enum CancelResult {
 /// The framework-host implements this via `AsyncExecutorRuntime` (which
 /// wraps the per-agent `AsyncExecutor` + `Weak<ToolingRuntime>` +
 /// principal identity). The trait is per-agent:
-/// each `Agent` constructs one runtime and shares it across its
-/// `AsyncSpawn`/`AsyncOutput`/`AsyncStatus`/`AsyncList`/`AsyncStop`
-/// instances.
-///
-/// `lookup` / `list` / `cancel` operate on the runtime's own task set
-/// (per-agent). The cross-cutting "see all agents' tasks" feature that
-/// the legacy helper functions offered is collapsed here — the per-agent
-/// scope is what every current caller actually uses.
+/// production shares one executor per principal across turns. Caller session
+/// and workspace context are supplied through `spawn_with_context`.
+/// Lookup/list/cancel apply principal ownership, including registry fallbacks
+/// for Bash and subagent producers.
 #[async_trait]
 pub trait AsyncRuntime: Send + Sync {
     /// Spawn a new async task by invoking `request.tool_name` with
     /// `request.params`. Returns the new task ID on success.
     async fn spawn(&self, request: SpawnRequest) -> Result<SpawnReceipt>;
+
+    /// Preserve the invocation's caller context when scheduling a tool.
+    /// Adapters without context-dependent dispatch may use the default.
+    async fn spawn_with_context(
+        &self,
+        request: SpawnRequest,
+        _ctx: &peko_tools_core::ToolContext,
+    ) -> Result<SpawnReceipt> {
+        self.spawn(request).await
+    }
 
     /// Look up a task by ID within this runtime's scope.
     async fn lookup(&self, task_id: &str) -> Option<TaskView>;

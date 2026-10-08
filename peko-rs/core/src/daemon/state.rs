@@ -809,63 +809,16 @@ impl AppState {
             Some(Arc::clone(&principal_manager)),
         );
 
-        // ADR-061 phase 2 (D3/D6/D7): register the `ModelCall` and
-        // `Workflow` built-ins on the system scope of the shared core.
-        // Unlike the rest of `GLOBAL_TOOL_NAMES` they cannot be
-        // registered by `ToolRuntime::register_builtins` — they need
-        // the `PrincipalManager` handle (per-principal meter /
-        // workspace / `preferred_model_id` resolution at execute
-        // time), which only exists from here on; `Workflow`
-        // additionally mints `PEKO_RUN_TOKEN`s from the daemon-shared
-        // registry created here (held on AppState so the IPC
-        // `ExecuteTool` handler can authenticate callbacks).
-        // Registered once; both the agentic loop and the `ExecuteTool`
-        // IPC path reach them through the F37 funnel, gated by
-        // `tool:ModelCall` / `tool:Workflow`.
+        // Daemon services are installed after their manager dependencies exist.
         let run_token_registry = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
+        crate::tools::installation::install_daemon(
             tooling.catalog(),
-            Arc::new(crate::tools::builtin::ModelCallTool::new(Arc::downgrade(
-                &principal_manager,
-            ))),
+            Arc::downgrade(&principal_manager),
+            Arc::clone(&inbox_registry),
+            Arc::clone(&run_token_registry),
+            Arc::clone(&observability),
         )
-        .await
-        {
-            tracing::warn!("Failed to register built-in tool 'ModelCall' with ToolingRuntime: {e}");
-        }
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            tooling.catalog(),
-            Arc::new(crate::tools::builtin::WorkflowTool::new(
-                Arc::downgrade(&principal_manager),
-                Arc::clone(&run_token_registry),
-            )),
-        )
-        .await
-        {
-            tracing::warn!("Failed to register built-in tool 'Workflow' with ToolingRuntime: {e}");
-        }
-
-        // ADR-061 caller-awareness: daemon-global `session` builtin
-        // whose caller (store, meter, run permits, current session)
-        // resolves PER CALL from the `ToolContext` — on the
-        // `ExecuteTool` path the token-resolved node id, on the loop
-        // path the live run id. Pre-boot principals (no agent turn
-        // yet) have no per-agent `session` instance, so this system-
-        // scope registration is what makes `ExecuteTool("session")`
-        // resolve at all; for booted principals the per-agent
-        // `CallerAwareSessionTool::for_agent` instance shadows it with
-        // identical per-call semantics.
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            tooling.catalog(),
-            Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
-                Arc::downgrade(&principal_manager),
-                Arc::clone(&inbox_registry),
-            )),
-        )
-        .await
-        {
-            tracing::warn!("Failed to register built-in tool 'session' with ToolingRuntime: {e}");
-        }
+        .await?;
 
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
@@ -2446,7 +2399,7 @@ fn model_summary_from_config(
         spec: entry.spec.map(model_spec_to_wire),
         // Phase 2 of `feature/multi-model-subagents`: forward
         // the user note so the desktop can render it on each
-        // catalog card. Parent agents reading `model_list` see
+        // catalog card. Parent agents reading `ModelList` see
         // the same field.
         note: entry.note.clone(),
     }
@@ -3312,7 +3265,7 @@ mod tests {
         );
         // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
         // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
-        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
+        // and `tools::installation::install_async`. Asserting they
         // are missing here pins the contract.
 
         // ToolingRuntime should list the tools
@@ -3355,14 +3308,17 @@ mod tests {
             .await
             .expect("Failed to create agent");
 
-        // init_builtins_async should find pre-registered tools
-        agent
-            .init_builtins_async()
-            .await
-            .expect("Failed to init builtins");
+        // Run bindings must preserve the inherited daemon defaults.
+        let core = agent.tooling().for_run();
+        crate::tools::installation::install_runtime(
+            core.catalog(),
+            &crate::common::paths::PathResolver::new(),
+            Arc::new(peko_channel::NoopChannelPort),
+        )
+        .await
+        .expect("install defaults");
 
-        // Tools should still be available after agent init
-        let core = agent.tooling();
+        // Tools should still be available after run initialization.
         let tools: Vec<crate::tools::metadata::ToolMetadata> = core
             .catalog()
             .list_tools(peko_subject::PrincipalId::system())

@@ -10,7 +10,7 @@
 //!
 //! ADR-066 P2 deleted the capability evaluation: every detected entry is
 //! `enabled` (presence = visibility = executability). Built from:
-//! 1. Built-in tools (`builtin_tools::all_tool_names()`).
+//! 1. Built-in tools (`installation::all_tool_names()`).
 //! 2. Agent prompts under `<workspace>/agents/` (loaded by
 //!    `agent_prompt::load_agent_prompt`, passed in here).
 //! 3. Workspace scan over `<workspace>/{tools,skills,mcp,hooks,plugins}/`.
@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::principal::runtime::builtin_tools;
 use crate::principal::AgentPrompt;
+use crate::tools::installation;
 
 /// A single row in the principal's catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +59,7 @@ impl PrincipalCatalog {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // 1. Built-in tools.
-        for name in builtin_tools::all_tool_names() {
+        for name in installation::all_tool_names() {
             let id = format!("builtin:tool:{name}");
             if seen.insert(id.clone()) {
                 entries.push(CatalogEntry {

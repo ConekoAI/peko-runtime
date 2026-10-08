@@ -37,9 +37,8 @@ use crate::tunnel::hub_directory::AgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 
 /// Cross-runtime dispatch context for `ChannelSend` (principal branch).
-/// Built once at daemon-state startup and held behind an `Arc` so every
-/// per-agent `ChannelSendTool` instance shares the same directory,
-/// manager, and channel port.
+/// Published by daemon tunnel setup behind an `Arc`. Principal-scoped
+/// ChannelSend adapters read the current service slot per invocation.
 pub struct CrossRuntimeA2aCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,
     /// a `FakeAgentDirectory` in tests). The outbound path calls

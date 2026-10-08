@@ -258,13 +258,18 @@ impl std::fmt::Debug for McpToolProxy {
 
 /// Create tool proxies for all tools from all running MCP servers
 ///
-/// Uses `McpManager::get_all_tools()` to ensure reserved parameter injection
+/// Uses `McpManager::get_tool_bindings()` to ensure reserved parameter injection
 /// is properly configured via `InjectableMcpToolProxy` when reserved params exist.
 pub async fn create_tool_proxies(manager: Arc<RwLock<McpManager>>) -> Vec<Arc<dyn Tool>> {
     let manager_guard = manager.read().await;
-    // Use get_tools() instead of list_all_tools() to get InjectableMcpToolProxy
+    // Bindings include InjectableMcpToolProxy
     // when reserved parameters are configured
-    let tools: Vec<Arc<dyn Tool>> = manager_guard.get_tools().await;
+    let tools: Vec<Arc<dyn Tool>> = manager_guard
+        .get_tool_bindings()
+        .await
+        .into_iter()
+        .map(|(_, tool)| tool)
+        .collect();
     drop(manager_guard);
 
     debug!(

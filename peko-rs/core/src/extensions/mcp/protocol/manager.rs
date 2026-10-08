@@ -896,15 +896,15 @@ impl McpManager {
     /// server has `reserved_parameters` configured) which implement the Tool trait.
     ///
     /// # Returns
-    /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
-    pub async fn get_tools(&self) -> Vec<Arc<dyn peko_tools_core::Tool>> {
+    /// Server/tool pairs from healthy running servers, retaining MCP attribution.
+    pub async fn get_tool_bindings(&self) -> Vec<(String, Arc<dyn peko_tools_core::Tool>)> {
         use crate::extensions::mcp::runtime::{
             injectable_proxy::InjectableMcpToolProxy, tool_proxy::McpToolProxy,
         };
 
         let servers = self.servers.read().await;
         let manager_arc = Arc::new(RwLock::new(self.clone()));
-        let mut tools: Vec<Arc<dyn peko_tools_core::Tool>> = Vec::new();
+        let mut tools = Vec::new();
 
         for (server_name, handle) in servers.iter() {
             if !handle.state.running || !handle.state.healthy {
@@ -942,7 +942,7 @@ impl McpManager {
                         manager_arc.clone(),
                     ))
                 };
-                tools.push(proxy);
+                tools.push((server_name.clone(), proxy));
             }
         }
 
@@ -1318,6 +1318,35 @@ impl Drop for McpManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tool_bindings_retain_server_and_external_name() {
+        let mut config = McpConfig::default();
+        config.add_server(McpServerConfig::stdio("catalog-server", "echo", vec![]));
+        let manager = McpManager::new(config);
+        manager.init().await.unwrap();
+        {
+            let mut servers = manager.servers.write().await;
+            let server = servers.get_mut("catalog-server").unwrap();
+            server.managed = false;
+            server.state.running = true;
+            server.state.healthy = true;
+            server.state.tools = vec![Tool {
+                name: "role_catalog".into(),
+                description: "External catalog".into(),
+                input_schema: serde_json::json!({"type":"object", "properties":{}}),
+            }];
+        }
+        let bindings = manager.get_tool_bindings().await;
+        assert_eq!(bindings.len(), 1);
+        let (server, tool) = &bindings[0];
+        assert_eq!(server, "catalog-server");
+        assert_eq!(tool.name(), "mcp:catalog-server:role_catalog");
+        assert_eq!(
+            tool.description(),
+            "External catalog (via MCP server: catalog-server)"
+        );
+    }
 
     #[tokio::test]
     async fn test_manager_new() {

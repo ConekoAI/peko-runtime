@@ -156,7 +156,7 @@ pub struct ModelConfig {
     pub spec: Option<ModelSpec>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this catalog entry. Surfaces on the
-    /// `model_list` tool and in `peko model show` so a parent
+    /// `ModelList` tool and in `peko model show` so a parent
     /// agent can reason about model choice using both
     /// standardized `ModelSpec` flags and subjective annotations
     /// ("very cheap, use it for cron", "RPG model, use it to

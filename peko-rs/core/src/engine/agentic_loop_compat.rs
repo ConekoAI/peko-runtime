@@ -1603,8 +1603,6 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_parallel_tool_execution_overlaps_in_time() {
-        use crate::extensions::builtin::adapter::BuiltinToolAdapter;
-
         use peko_providers::MockResponse;
         use peko_tools_core::Tool;
         use serde_json::json;
@@ -1652,24 +1650,26 @@ mod tests {
         }
 
         let core = tooling.clone();
-        BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(SlowTool {
-                label: "ParaA",
-                log: log.clone(),
-            }) as Arc<dyn Tool>,
-        )
-        .await
-        .unwrap();
-        BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(SlowTool {
-                label: "ParaB",
-                log: log.clone(),
-            }) as Arc<dyn Tool>,
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(SlowTool {
+                    label: "ParaA",
+                    log: log.clone(),
+                }) as Arc<dyn Tool>,
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
+        core.catalog()
+            .register(
+                Arc::new(SlowTool {
+                    label: "ParaB",
+                    log: log.clone(),
+                }) as Arc<dyn Tool>,
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         // First response: TWO tool calls in one stream. The mock
         // adapter's `stream_with_tools` reads from `stream_responses`,
@@ -3328,7 +3328,7 @@ mod tests {
     // ===================================================================
 
     /// F31x test #1: Pre + PostToolUse wrap ToolExecute in the
-    /// expected order. Uses a real `BuiltinToolAdapter`-free mock
+    /// expected order. Uses a real `ToolDispatcher`-free mock
     /// provider and an "echo" tool that succeeds, then asserts the
     /// shared log records `pre_tool_use` before `post_tool_use`.
     #[tokio::test]

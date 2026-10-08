@@ -4,6 +4,55 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Exact tool contracts and unfiltered availability (2026-10-08)
+
+- Remove old tool-name and argument aliases: Session/ModelList/RoleCatalog,
+  Agent.role, Session.agent_name, and Session.title are the supported spellings.
+- Remove the ModelList visibility toggle; install it as a principal service.
+  Every principal can use every registered tool. Resource ownership, inbound
+  peer permissions, and channel membership remain the access boundaries.
+- Remove unused auto_grant_tools and the grant-only PrincipalConfig deserializer,
+  redundant BuiltinToolAdapter/inventory wrappers, agent_compat re-exports, and
+  the unused ToolFactory/disabled-tool path.
+  Register directly in ToolCatalog and retain the installation manifest.
+- Preserve MCP server attribution in catalog bindings; workspace MCP tools were
+  incorrectly registered as built-ins. Correct stale capability-filter docs.
+- Update scripted subagent, session-resume, and role-prompt integration calls to
+  use Agent.role, including their workspace role and unfiltered-tool docs.
+  Route repeated mock turns by their first persisted user message and select
+  the current CLI peer session and spawned role session explicitly.
+
+### Explicit built-in installation lifetimes (2026-10-08)
+
+- Centralize built-in factories and scope/phase inventory in tools::installation.
+  Fill missing runtime defaults atomically without replacing configured instances.
+- Bind Agent/Session executors in private run overlays;
+  retain shared dispatch, hooks, audit, timeout routing, and principal admission.
+  Route workflow/IPC callbacks by caller session, with caller-aware daemon fallbacks
+  for cold cron and out-of-band calls. Remove shared per-turn Agent registration.
+- Keep async executors/task registries principal-owned so receipts survive turns;
+  preserve per-call session attribution and completion routing. Install Skill and
+  live-reading RoleCatalog once per principal instead of replacing role snapshots.
+- Resolve ChannelSend's current tunnel service per invocation while retaining
+  caller identity and reply locks, including connections after installation.
+- Add concurrency, callback, expired-binding, async receipt, partial-bootstrap,
+  registration stability, late tunnel connection, and role-file refresh regressions
+  (ADR-069).
+
+### Consistent built-in tool contracts (2026-10-08)
+
+- Advertise all 37 built-ins with exact PascalCase wire names, including Session,
+  ModelList, RoleCatalog, and all seven Plan tools; MCP names remain server-defined.
+- Encode Agent, Session, ModelCall, CronCreate, and CronUpdate requirements in
+  their schemas. Advertise CronCreate.one_shot and nullable AsyncSpawn timeouts;
+  explain Session's per-action defaults and title/retention-only moves.
+- Hide Workflow's internal depth field from its public schema while preserving
+  the recursion guard. Inject Glob's workspace through its actual path parameter.
+- Refresh the complete tool catalog and shipped prompts, including Write's
+  overwrite default, Read's encoding surface, role/branch arguments, and
+  creating-session cron delivery. Add inventory, schema-validation, exact-name,
+  workspace-dispatch, and hidden-depth regressions.
+
 ### Bounded output-limit continuation (2026-10-08)
 
 - Preserve partial answers and completed tool results when a response reaches

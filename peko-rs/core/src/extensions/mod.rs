@@ -14,9 +14,6 @@ pub mod framework;
 // Extension Type Submodules
 // ============================================================================
 
-/// Built-in tool adapter — registers native Tool trait implementations with ToolingRuntime.
-pub mod builtin;
-
 // Sprint 9 Commit 3: the gateway extension was retired. The
 // chat-gateway adapter framework (HTTP/WebSocket bridges) never
 // shipped a concrete integration and is no longer wired into the

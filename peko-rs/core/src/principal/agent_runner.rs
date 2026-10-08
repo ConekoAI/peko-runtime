@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
-use crate::principal::context::{install_role_catalog, PrincipalContext};
+use crate::principal::context::PrincipalContext;
 use crate::principal::router::AgentPromptSummary;
 use peko_auth::Subject;
 use peko_engine::AgenticEvent;
@@ -162,7 +162,7 @@ async fn run_root_agent_prompt_with_callback<F>(
     user_text: String,
     pre_user_messages: Vec<LlmMessage>,
     session_id: String,
-    available_agents: Vec<AgentPromptSummary>,
+    _available_agents: Vec<AgentPromptSummary>,
     ctx: &PrincipalContext,
     on_event: F,
     cancel: Option<tokio_util::sync::CancellationToken>,
@@ -178,21 +178,9 @@ where
     let provider_hint = resolve_provider_hint(ctx).await;
     let config = build_agent_config(prompt, provider_hint);
 
-    let core = ctx.tooling().await;
+    ctx.tooling().await;
 
-    // Agent catalog is the only per-call tool — its `available_agents`
-    // snapshot can change when workspace role files change. We re-register it on the
-    // shared core, which is idempotent on tool name.
-    install_role_catalog(&core, available_agents, ctx.principal_id()).await?;
-
-    // Register the principal-scoped `Agent` tool after `Agent::new*` but
-    // before execution so it is available on the principal's shared
-    // core. Sprint 7 + B4: the tool no longer needs a runtime-mutable
-    // session-key provider; the canonical caller session id flows
-    // through `ToolContext::session_id` on the production path.
-    // `DynamicSessionKeyProvider` was deleted in B4 (write-only on
-    // production — `set_session_key` was called once per subagent
-    // but `get_session_key` had no readers).
+    // Bind the root run to its persisted session store.
     let session_manager = SessionManager::new()
         .with_sessions_dir_internal(ctx.sessions_dir.clone())
         .with_agent_name(&prompt.name)
@@ -288,63 +276,26 @@ where
         Arc::clone(&ctx.tooling),
     )
     .await?
-    // Scope the agent's `Agent` tool to this principal's workspace so
-    // subagents resolve from `<workspace>/roles/<name>/ROLE.md`. Without this,
-    // `Agent::init_builtins_async` (run lazily at execution time, inside
-    // `prepare_execution`) re-registers a globally-scoped `Agent` tool that
-    // clobbers the principal-scoped one registered below — making every
-    // `agent` argument resolve against the global `<home>/agents/...` path and
-    // fail with "Subagent type '<name>' not found".
+    // Bind workspace, identity, and principal services for child execution.
     .with_principal_workspace(ctx.workspace_path.clone())
     .with_principal_name(ctx.name().to_string())
-    // Bind the principal's allowlist for the agent's tool filter.
-    // Track B moved the per-agent extension whitelist off
-    // `AgentConfig`; the snapshot lives on the agent and is
-    // consulted by `init_builtins_async` to prune the tool bag.
-    // PR #2 wiring: bind the principal's plan DAG port so the seven
-    // `Plan*` built-in tools are registered by `init_builtins_async`.
-    // `ctx.plan_port()` returns the per-Principal handle from
-    // `PrincipalContext::plan_port` (set by the factory in PR #1).
     .with_principal_plan_port(Arc::clone(ctx.plan_port()))
     // Phase 2 of `feature/multi-model-subagents`: bind the
     // principal's `ModelCatalog` (sourced from the same `LlmResolver`
     // the agent already uses for model resolution) so
-    // `init_builtins_async` can register the `model_list` builtin.
+    // `init_run_builtins` can register the `ModelList` builtin.
     // `ctx.resolver` is `Option` because the CLI one-shot path
     // builds a stateless `Agent` without a resolver; in that case
-    // the `model_list` tool is intentionally omitted (`None` ⇒
-    // `init_builtins_async` skips registration).
+    // the `ModelList` tool is intentionally omitted (`None` ⇒
+    // `init_run_builtins` skips registration).
     .with_model_catalog(ctx.resolver.as_ref().map(|r| Arc::clone(r.catalog())))
     // ADR-045 (self-modification gate): bind caller DID so the
     // `send_peer` tool is registered. `None` ⇒ tool is intentionally
     // omitted (no caller identity to attribute sends to).
     .with_caller_principal_did(ctx.caller_principal_did().cloned())
-    // B4 (correctness, 2026-08-22): propagate the principal's
-    // quota meter onto `self.subagent_executor` so the lazy
-    // `init_builtins_async` re-registration of the `Agent` tool
-    // uses the metered executor instead of clobbering it with
-    // an unmetered default. Pre-B4 wiring (F39) chained the
-    // meter on a *separately-built* executor in the
-    // `subagent_executor = Arc::new(...)` block below and
-    // pre-registered the metered `AgentTool`; that worked for
-    // workspace scoping but the lazy re-register rebuilt an
-    // unmetered `AgentTool` from `self.subagent_executor` and
-    // `register_tool`'s idempotent re-register clobbered the
-    // metered tool. Net effect: every root-agent `Agent`-tool
-    // spawn ran with `QuotaMeter::unlimited()` regardless of
-    // the principal's `cost_per_call_max`. The separately-built
-    // executor + pre-registration below are retained as a
-    // belt-and-suspenders no-op: `register_tool` is idempotent
-    // and the second call now passes the same metered executor
-    // via `self.subagent_executor`.
-    //
-    // Note: peer attribution was removed (B5, 2026-08-22) — the
-    // F20 peer_meter was fundamentally broken for agents serving
-    // many peers simultaneously. Per-agent attribution (B5d adds
-    // `agent_meter`, B5e wires it into the LLM call path) replaces
-    // it. The principal's per-cycle consumption is the sum of
-    // every spawned agent's `agent_meter_usage()` snapshot.
-    .with_quota_meter(ctx.quota_meter().map(Arc::clone));
+    // The run's Agent binding uses this metered executor in its private overlay.
+    .with_quota_meter(ctx.quota_meter().map(Arc::clone))
+    .with_subagent_observability(ctx.observability().cloned());
 
     // Phase 4 of `feature/multi-model-subagents`: bind the audit
     // sink + first-use lookup so the engine loop emits a
@@ -403,77 +354,6 @@ where
     // engine loop fetches the principal's meter directly via
     // `Principal.quota_meter` at run entrypoint and opens
     // `QuotaScope::with` around the run.
-
-    let subagent_executor = Arc::new(
-        crate::agents::subagent_executor::SubagentExecutor::new(
-            Arc::clone(&session_manager),
-            &prompt.name,
-            ctx.principal_id().clone(),
-            Arc::clone(&ctx.tooling),
-        )
-        .with_principal_name(ctx.name().to_string())
-        // PR #2 wiring: same plan_port as the agent, so depth-1+
-        // children inherit the per-Principal handle and register their
-        // own seven `Plan*` tools.
-        .with_principal_plan_port(Arc::clone(ctx.plan_port()))
-        .with_observability(ctx.observability().cloned())
-        // F39: chain the principal's quota meter so subagent LLM
-        // calls charge against the parent principal instead of
-        // falling open to `QuotaMeter::unlimited()`. Pre-F39
-        // wiring left this `None`, so subagent LLM traffic was
-        // unattributed. `ctx.quota_meter()` returns `Option` —
-        // principals with no quota config keep the old behavior.
-        .with_quota_meter(ctx.quota_meter().map(Arc::clone))
-        // Peer-turn delivery (2026-09-07): the root agent's Agent tool
-        // can target peer-bound sessions (`resume /local-user`, and cron
-        // SpawnTool attaches ride the globally-registered Agent tool,
-        // whose executor is THIS one) — flip those runs into
-        // conversation mode and deliver the reply to the peer's DM
-        // channel. No port installed (tests, CLI one-shot) → no surface.
-        .with_peer_turn_surface(core.services().channel_port().map(|port| {
-            Arc::new(crate::principal::child_turns::PeerTurnSurfaceImpl::new(
-                Arc::clone(&session_manager),
-                port,
-                ctx.principal_id().clone(),
-            )) as Arc<dyn crate::agents::subagent_executor::PeerTurnSurface>
-        }))
-        .with_provider(agent.provider_arc().ok_or_else(|| {
-            // The principal workspace is `{config_dir}/principals/{name}` (see
-            // `PathResolver::principal_dir`), so the principal.toml path is
-            // derivable without threading the PathResolver through every
-            // layer.
-            let principal_toml = ctx.workspace_path.join("principal.toml");
-            anyhow::anyhow!(
-                "no model configured for principal '{name}'.\n\
-                 \n\
-                 Pin a configured model in {principal}:\n\
-                   preferred_model_id = \"<configured-model-id>\"\n\
-                 \n\
-                 Add one with: peko model add --template <anthropic|openai|ollama|...> --model <wire-id>\n\
-                 List configured models: peko model list",
-                name = prompt.name,
-                principal = principal_toml.display(),
-            )
-        })?)
-        .with_agent_config(agent.config.clone()),
-    );
-
-    // Sprint 7: the Agent tool no longer takes a workspace or session
-    // provider at construction time. The runtime port
-    // (`SubagentExecutorRuntime`) reads its workspace from the
-    // executor's `principal_workspace` field, and the caller session
-    // id comes from `ToolContext::session_id` on the production
-    // path (with `SubagentRuntime::session_id()` as the fallback
-    // for non-engine callers).
-    let agent_tool = Arc::new(crate::tools::builtin::messaging::new_agent_tool(
-        subagent_executor,
-    ));
-    crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-        core.catalog(),
-        agent_tool,
-        ctx.principal_id(),
-    )
-    .await?;
 
     // Run the agentic loop in LIVE streaming mode so the root agent emits
     // per-token `AssistantDelta` events (not a single buffered

@@ -20,6 +20,9 @@
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
+type RunBindings =
+    std::collections::HashMap<(PrincipalId, String), std::sync::Weak<ToolingRuntime>>;
+
 use peko_engine::{EngineHooks, PromptSectionRequest, PromptSections, ToolCallSpec, ToolFunnel};
 use peko_session::SessionSnapshot;
 use peko_subject::PrincipalId;
@@ -48,18 +51,26 @@ const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
 
 /// The daemon's shared tooling runtime — see the module doc.
 pub struct ToolingRuntime {
-    agent_runs: crate::agents::run_limits::AgentRunLimits,
+    run_bindings: Arc<std::sync::RwLock<RunBindings>>,
+    run_binding: Option<std::sync::Weak<ToolingRuntime>>,
+    async_executors: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<PrincipalId, Arc<crate::async_exec::executor::AsyncExecutor>>,
+        >,
+    >,
+    agent_runs: Arc<crate::agents::run_limits::AgentRunLimits>,
     catalog: Arc<ToolCatalog>,
     dispatcher: Arc<ToolDispatcher>,
     hooks: Arc<WorkspaceHookDispatcher>,
     session_keys: SessionKeys,
     services: Arc<ExtensionServices>,
-    prompt_providers: std::sync::RwLock<Vec<Arc<dyn PromptSectionProvider>>>,
+    prompt_providers: Arc<std::sync::RwLock<Vec<Arc<dyn PromptSectionProvider>>>>,
     /// Set once the shared prompt-section providers are installed.
     /// Principal-owned tools and hooks have a separate per-principal
     /// guard below so a second principal gets its own workspace bag.
     tool_bag_installed: Arc<AtomicBool>,
-    pub(crate) installed_principals: tokio::sync::Mutex<std::collections::HashSet<PrincipalId>>,
+    pub(crate) installed_principals:
+        Arc<tokio::sync::Mutex<std::collections::HashSet<PrincipalId>>>,
 }
 
 impl std::fmt::Debug for ToolingRuntime {
@@ -91,15 +102,20 @@ impl ToolingRuntime {
             audit,
         ));
         Self {
+            run_bindings: Default::default(),
+            run_binding: None,
+            async_executors: Default::default(),
             agent_runs: Default::default(),
             catalog,
             dispatcher,
             hooks,
             session_keys: SessionKeys::new(),
             services,
-            prompt_providers: std::sync::RwLock::new(Vec::new()),
+            prompt_providers: Arc::new(std::sync::RwLock::new(Vec::new())),
             tool_bag_installed: Arc::new(AtomicBool::new(false)),
-            installed_principals: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            installed_principals: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 
@@ -118,6 +134,61 @@ impl ToolingRuntime {
             Arc::new(AsyncExecutionRouter::new()),
             None,
         ))
+    }
+
+    /// Bind run-owned tools without mutating the daemon/principal catalog.
+    /// Shared services, admission, prompts, hooks, and auditing retain their
+    /// runtime lifetime. Only tool bindings and fallback session keys are local.
+    #[must_use]
+    pub fn for_run(self: &Arc<Self>) -> Arc<Self> {
+        let catalog = Arc::new(ToolCatalog::overlay(Arc::clone(&self.catalog)));
+        Arc::new_cyclic(|binding| Self {
+            run_bindings: Arc::clone(&self.run_bindings),
+            run_binding: Some(binding.clone()),
+            async_executors: Arc::clone(&self.async_executors),
+            agent_runs: Arc::clone(&self.agent_runs),
+            dispatcher: Arc::new(
+                self.dispatcher
+                    .with_catalog(Arc::clone(&catalog), binding.clone()),
+            ),
+            catalog,
+            hooks: Arc::clone(&self.hooks),
+            session_keys: SessionKeys::new(),
+            services: Arc::clone(&self.services),
+            prompt_providers: Arc::clone(&self.prompt_providers),
+            tool_bag_installed: Arc::clone(&self.tool_bag_installed),
+            installed_principals: Arc::clone(&self.installed_principals),
+        })
+    }
+
+    /// Principal-owned async tasks survive individual runs. Caller session
+    /// attribution and completion routing are supplied on each invocation.
+    pub(crate) async fn async_executor_for(
+        &self,
+        principal_id: &PrincipalId,
+        inbox: Arc<peko_session::InboxRegistry>,
+    ) -> Arc<crate::async_exec::executor::AsyncExecutor> {
+        Arc::clone(
+            self.async_executors
+                .lock()
+                .await
+                .entry(principal_id.clone())
+                .or_insert_with(|| {
+                    Arc::new(crate::async_exec::executor::AsyncExecutor::new(inbox))
+                }),
+        )
+    }
+
+    pub(crate) fn execution_binding(
+        &self,
+        principal: &PrincipalId,
+        session: &str,
+    ) -> Option<Arc<Self>> {
+        self.run_bindings
+            .read()
+            .expect("run bindings lock poisoned")
+            .get(&(principal.clone(), session.to_string()))
+            .and_then(std::sync::Weak::upgrade)
     }
 
     /// Principal-scoped admission shared by root, peer, cron and child runs.
@@ -315,6 +386,34 @@ impl ToolFunnel for ToolingRuntime {
         &self,
         call: ToolCallSpec,
     ) -> anyhow::Result<(String, serde_json::Value, bool)> {
+        // IPC/workflow and AsyncSpawn callbacks re-enter through the shared
+        // runtime. Resolve their explicit caller session to its live binding,
+        // rather than selecting whichever agent registered last.
+        let key = call
+            .principal_id
+            .as_ref()
+            .zip(call.session_id.as_ref())
+            .map(|(principal, session)| (PrincipalId(principal.clone()), session.clone()));
+        if let Some(key) = key {
+            if let Some(binding) = &self.run_binding {
+                let mut bindings = self
+                    .run_bindings
+                    .write()
+                    .expect("run bindings lock poisoned");
+                bindings.retain(|_, binding| binding.strong_count() > 0);
+                bindings.insert(key, binding.clone());
+            } else {
+                let runtime = self
+                    .run_bindings
+                    .read()
+                    .expect("run bindings lock poisoned")
+                    .get(&key)
+                    .and_then(std::sync::Weak::upgrade);
+                if let Some(runtime) = runtime {
+                    return runtime.dispatcher.execute(call).await;
+                }
+            }
+        }
         self.dispatcher.execute(call).await
     }
 
@@ -350,5 +449,361 @@ impl EngineHooks for ToolingRuntime {
 
     async fn set_session_key(&self, agent_id: &str, key: Option<String>) {
         self.session_keys.set(agent_id, key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::metadata::ToolSource;
+    use peko_tools_core::Tool;
+    use serde_json::{json, Value};
+
+    struct BoundTool(&'static str);
+    #[async_trait::async_trait]
+    impl Tool for BoundTool {
+        fn name(&self) -> &str {
+            "Bound"
+        }
+        fn description(&self) -> String {
+            "Return the selected execution binding".into()
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object"})
+        }
+        async fn execute(&self, _: Value) -> anyhow::Result<Value> {
+            Ok(json!(self.0))
+        }
+    }
+
+    struct WaitingTool(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl Tool for WaitingTool {
+        fn name(&self) -> &str {
+            "Wait"
+        }
+        fn description(&self) -> String {
+            "Wait for test completion".into()
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object"})
+        }
+        async fn execute(&self, _: Value) -> anyhow::Result<Value> {
+            self.0.notified().await;
+            Ok(json!("done"))
+        }
+    }
+
+    struct CallerContextTool;
+    #[async_trait::async_trait]
+    impl Tool for CallerContextTool {
+        fn name(&self) -> &str {
+            "CallerContext"
+        }
+        fn description(&self) -> String {
+            "Report task caller context".into()
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object"})
+        }
+        async fn execute(&self, _: Value) -> anyhow::Result<Value> {
+            anyhow::bail!("requires context")
+        }
+        async fn execute_with_context(
+            &self,
+            _: Value,
+            ctx: &peko_tools_core::ToolContext,
+        ) -> anyhow::Result<Value> {
+            Ok(
+                json!({"session":ctx.session_id, "workspace":ctx.workspace, "principal_name":ctx.principal_name, "agent":ctx.agent_id}),
+            )
+        }
+    }
+
+    fn call(principal: &PrincipalId, session: &str, tool: &str, params: Value) -> ToolCallSpec {
+        let mut call = ToolCallSpec::new(tool, params);
+        call.principal_id = Some(principal.0.clone());
+        call.session_id = Some(session.into());
+        call
+    }
+
+    #[tokio::test]
+    async fn concurrent_runs_and_workflow_callbacks_keep_their_own_binding() {
+        let shared = ToolingRuntime::standalone();
+        let principal = PrincipalId::generate();
+        let first = shared.for_run();
+        let second = shared.for_run();
+        for (runtime, value) in [(&first, "first"), (&second, "second")] {
+            runtime
+                .catalog()
+                .register(Arc::new(BoundTool(value)), ToolSource::BuiltIn, &principal)
+                .await;
+        }
+        // Both live runs have identical tool names and principal scope.
+        let (a, b) = tokio::join!(
+            first.execute(call(&principal, "session-a", "Bound", json!({}))),
+            second.execute(call(&principal, "session-b", "Bound", json!({}))),
+        );
+        assert_eq!(a.unwrap().1, "first");
+        assert_eq!(b.unwrap().1, "second");
+        for (session, expected) in [("session-a", "first"), ("session-b", "second")] {
+            let (_, value, success) = shared
+                .execute(call(&principal, session, "Bound", json!({})))
+                .await
+                .unwrap();
+            assert!(success);
+            assert_eq!(value, expected);
+        }
+        // ModelList is a shared principal service, available to every run.
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let models = peko_providers::catalog::ModelCatalog::load_or_init(
+            catalog_dir.path().join("models.toml"),
+        )
+        .await
+        .unwrap();
+        crate::tools::installation::install_principal_services(
+            &shared,
+            &principal,
+            crate::tools::installation::PrincipalBindings {
+                sessions_dir: None,
+                plan: None,
+                model_catalog: Some(Arc::clone(&models)),
+                caller_did: None,
+            },
+        )
+        .await
+        .unwrap();
+        for runtime in [&first, &second, &shared] {
+            assert!(runtime
+                .catalog()
+                .get("ModelList", &principal)
+                .await
+                .is_some());
+        }
+        assert!(shared.catalog().get("Bound", &principal).await.is_none());
+        let foreign = PrincipalId::generate();
+        assert!(
+            !shared
+                .execute(call(&foreign, "session-a", "Bound", json!({})))
+                .await
+                .unwrap()
+                .2
+        );
+        // Run overlays inherit new workspace tools; they share admission and
+        // the dispatcher services, but do not advertise sibling bindings.
+        shared
+            .catalog()
+            .register_system(Arc::new(BoundTool("fallback")), ToolSource::BuiltIn)
+            .await;
+        assert!(Arc::ptr_eq(first.hooks(), shared.hooks()));
+        assert!(Arc::ptr_eq(
+            first.dispatcher().router(),
+            shared.dispatcher().router()
+        ));
+        assert!(Arc::ptr_eq(
+            &first.agent_runs().for_principal(&principal),
+            &second.agent_runs().for_principal(&principal)
+        ));
+        let third = shared.for_run();
+        assert_eq!(
+            third
+                .catalog()
+                .get("Bound", &principal)
+                .await
+                .unwrap()
+                .0
+                .execute(json!({}))
+                .await
+                .unwrap(),
+            "fallback"
+        );
+        drop(first);
+        assert_eq!(
+            shared
+                .execute(call(&principal, "session-a", "Bound", json!({})))
+                .await
+                .unwrap()
+                .1,
+            "fallback"
+        );
+        assert_eq!(
+            shared
+                .execute(call(&principal, "session-b", "Bound", json!({})))
+                .await
+                .unwrap()
+                .1,
+            "second"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_tools_keep_workflow_callback_bindings_until_completion() {
+        let shared = Arc::new(ToolingRuntime::new(
+            Arc::new(ToolCatalog::new()),
+            Arc::new(WorkspaceHookDispatcher::new()),
+            Arc::new(ExtensionServices::new()),
+            Arc::new(AsyncExecutionRouter::with_default_tool_timeout(1)),
+            None,
+        ));
+        let principal = PrincipalId::generate();
+        let run = shared.for_run();
+        let done = Arc::new(tokio::sync::Notify::new());
+        run.catalog()
+            .register(
+                Arc::new(WaitingTool(Arc::clone(&done))),
+                ToolSource::BuiltIn,
+                &principal,
+            )
+            .await;
+        run.catalog()
+            .register(Arc::new(BoundTool("run")), ToolSource::BuiltIn, &principal)
+            .await;
+        let (_, receipt, success) = run
+            .execute(call(&principal, "caller", "Wait", json!({})))
+            .await
+            .unwrap();
+        assert!(success, "{receipt}");
+        drop(run);
+        // A workflow callback arriving after foreground completion still
+        // selects its original configuration while the detached tool lives.
+        assert_eq!(
+            shared
+                .execute(call(&principal, "caller", "Bound", json!({})))
+                .await
+                .unwrap()
+                .1,
+            "run"
+        );
+        done.notify_one();
+        shared
+            .wait_for_async_tasks(std::time::Duration::from_secs(5))
+            .await;
+        assert!(shared.execution_binding(&principal, "caller").is_none());
+    }
+
+    #[tokio::test]
+    async fn async_receipts_survive_runs_and_preserve_caller_session() {
+        let shared = ToolingRuntime::standalone();
+        let inbox = crate::async_exec::executor::standalone_inbox_registry();
+        let principal = PrincipalId::generate();
+        let task_files = tempfile::tempdir().unwrap();
+        let executor = Arc::new(
+            crate::async_exec::executor::AsyncExecutor::new(Arc::clone(&inbox))
+                .with_task_file_writer(crate::async_exec::executor::TaskFileWriter::new(
+                    task_files.path().to_path_buf(),
+                )),
+        );
+        shared
+            .async_executors
+            .lock()
+            .await
+            .insert(principal.clone(), executor);
+        crate::tools::installation::install_async(&shared, &principal, Arc::clone(&inbox))
+            .await
+            .unwrap();
+        let first = shared.for_run();
+        first
+            .catalog()
+            .register(
+                Arc::new(BoundTool("first")),
+                ToolSource::BuiltIn,
+                &principal,
+            )
+            .await;
+        let (_, receipt, success) = first
+            .execute(call(
+                &principal,
+                "session-a",
+                "AsyncSpawn",
+                json!({"tool":"Bound", "params":{}}),
+            ))
+            .await
+            .unwrap();
+        assert!(success, "{receipt}");
+        let task_id = receipt["task_id"].as_str().unwrap();
+        let (_, output, success) = first
+            .execute(call(
+                &principal,
+                "session-a",
+                "AsyncOutput",
+                json!({"task_id":task_id, "block":true, "timeout":5000}),
+            ))
+            .await
+            .unwrap();
+        assert!(success, "{output}");
+        assert!(output["is_terminal"].as_bool().unwrap(), "{output}");
+        assert!(output["result"].to_string().contains("first"), "{output}");
+        let executor = shared
+            .async_executor_for(&principal, Arc::clone(&inbox))
+            .await;
+        let registry = executor.registry();
+        assert_eq!(
+            registry
+                .read()
+                .await
+                .get(&task_id.to_string())
+                .unwrap()
+                .parent_session_key,
+            "session-a"
+        );
+        first
+            .catalog()
+            .register(Arc::new(CallerContextTool), ToolSource::BuiltIn, &principal)
+            .await;
+        let mut context_call = call(
+            &principal,
+            "session-a",
+            "AsyncSpawn",
+            json!({"tool":"CallerContext", "params":{}}),
+        );
+        context_call.workspace = Some("/caller/workspace".into());
+        context_call.principal_name = Some("caller-principal".into());
+        context_call.agent_id = Some("caller-agent".into());
+        let (_, context_receipt, success) = first.execute(context_call).await.unwrap();
+        assert!(success, "{context_receipt}");
+        let (_, context_output, success) = first
+            .execute(call(
+                &principal,
+                "session-a",
+                "AsyncOutput",
+                json!({"task_id":context_receipt["task_id"], "block":true, "timeout":5000}),
+            ))
+            .await
+            .unwrap();
+        assert!(success, "{context_output}");
+        let context_result = &context_output["result"];
+        assert_eq!(context_result["session"], "session-a");
+        assert_eq!(context_result["workspace"], "/caller/workspace");
+        assert_eq!(context_result["principal_name"], "caller-principal");
+        assert_eq!(context_result["agent"], "caller-agent");
+        drop(first);
+        let second = shared.for_run();
+        crate::tools::installation::install_async(&shared, &principal, inbox)
+            .await
+            .unwrap();
+        let (_, later, success) = second
+            .execute(call(
+                &principal,
+                "session-b",
+                "AsyncOutput",
+                json!({"task_id":task_id}),
+            ))
+            .await
+            .unwrap();
+        assert!(success, "{later}");
+        assert_eq!(later["result"], output["result"]);
+        let foreign = PrincipalId::generate();
+        assert!(
+            !second
+                .execute(call(
+                    &foreign,
+                    "session-b",
+                    "AsyncOutput",
+                    json!({"task_id":task_id})
+                ))
+                .await
+                .unwrap()
+                .2
+        );
     }
 }

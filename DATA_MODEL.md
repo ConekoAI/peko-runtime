@@ -17,6 +17,20 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Built-in tool names and availability
+
+Native tools use exact PascalCase names, including Session, ModelList, and
+RoleCatalog. Old spellings are not dispatch aliases; historical JSONL records
+are unchanged. Persisted cron/workflow calls must use the canonical names.
+Agent uses role; Session uses agent_name and title. IPC operation tags, actions,
+parameter names, and Rust configuration keys retain their own spelling.
+Every principal can use every registered tool; there is no tool allowlist.
+
+CronCreate now advertises the already-supported `one_shot` boolean; it continues
+to set `delete_after_run`, and at/delay schedules remain one-shot automatically.
+Workflow nesting depth remains internal run-token metadata rather than a public
+tool parameter. No persisted schema or snapshot format changes are required.
+
 ## Cron interval audit timing
 
 CronTrigger's returned `run_id` is the persisted `CronRun.id`. Admission writes
@@ -134,8 +148,9 @@ still load.
 ## Runtime contract cleanup (ADR-066 P6)
 
 Principal configuration, summary, agent context, and import IPC no longer carry
-capability grants. Older `principal.toml` files may contain `[capabilities]`;
-deserialization consumes it, warns once for nonempty grants, and saving drops it.
+capability grants. PrincipalConfig uses ordinary derived deserialization; unknown
+fields are ignored rather than interpreted as grants. Governance has no
+auto_grant_tools field and AgentConfig has no enable_model_list field.
 Inbound `permissions` remain the authorization policy for peer access.
 
 `principal_import` carries file path, optional name, force, and optional expected
@@ -263,17 +278,7 @@ preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that pr
 [base]
 image = "pekohub.com/agents/base-researcher:v2"  # Optional. Full image ref or digest
 
-# ── Allowed extensions ─────────────────────────────────────────────────────
-# The principal-level allowlist: what tools, skills, MCPs, and agents the
-# root agent (and its subagents) may use. At runtime this is flattened into
-# the agent's `extensions.enabled` enforcement list. The legacy table name
-# `[capabilities]` is still accepted when reading older files.
-
-[allowed_extensions]
-tools  = ["github", "browser"]           # Optional. Allowed tool IDs
-skills = ["research"]                    # Optional. Allowed skill IDs
-mcps   = ["vector-store-memory"]         # Optional. Allowed MCP IDs
-agents = ["planner", "executor"]         # Optional. Allowed agent IDs
+# Tools are available by presence. There is no extension allowlist.
 
 # ── Hooks ──────────────────────────────────────────────────────────────────
 
@@ -630,7 +635,7 @@ Written as the very first line of every new session file.
 }
 ```
 
-> **Reparenting:** the `session` tool's `move` action rewrites
+> **Reparenting:** the `Session` tool's `move` action rewrites
 > `parent_session_id` in the session index (the source of truth for
 > parentage) and appends a `system` event (`event: "reparent"`, with
 > `old_parent` / `new_parent` in `detail`) to the session's JSONL as an
@@ -1207,7 +1212,7 @@ The `<archived-pages>` footer (ADR-051, 2026-09-05) is appended after
 the `<user-messages>` block whenever the session has at least one
 compaction-archived page. It lists one line per page — page number,
 compaction number, chars/4 token estimate, first-user-message title
-excerpt — plus a pointer to the `session` tool's `read_page` /
+excerpt — plus a pointer to the `Session` tool's `read_page` /
 `search_pages` actions. The footer is **derived, never stored**: it is
 not part of the boundary event's `detail`; both the live path (the
 compaction driver appends it to the installed summary message after the
@@ -1317,7 +1322,7 @@ segment.
   a conflict is a structured error naming the conflicting session id.
 - **LLM-facing addressing grammar (sprint 5)** — every tool
   parameter that takes a session reference (`session_key` on the
-  `session` tool incl. `move`'s `new_parent`; `session_key` on the
+  `Session` tool incl. `move`'s `new_parent`; `session_key` on the
   Agent tool's `resume`/`compact`) accepts one of three forms via
   the canonical `peko_session::path::resolve_reference` entry point:
 
@@ -1433,7 +1438,7 @@ re-attaches to it via the resume guard stack (the call's `prompt`
 drives the turn; `subagent_type` must match the recorded declaration
 when one is recoverable). A `name` colliding with a NON-standing
 session is a structured refusal — rename semantics live in the
-`session` tool. No `name` → unchanged fresh-UUID spawn.
+`Session` tool. No `name` → unchanged fresh-UUID spawn.
 
 ### 5.9 The Principal Trunk Session (2026-08-15, Phase 3; Phase 7 re-route 2026-08-17; sprint 6 re-anchor 2026-08-20)
 
@@ -2334,7 +2339,7 @@ This is not a user-editable file. It is the daemon's working state — sessions 
 | `turn_count` | INTEGER | Number of complete turns |
 | `event_count` | INTEGER | Total events in the JSONL |
 | `total_tokens` | INTEGER | Cumulative token usage |
-| `parent_session_id` | TEXT NULL | Parent session id (set for spawned/branched sessions; rewritten by the `session` tool's `move` action) |
+| `parent_session_id` | TEXT NULL | Parent session id (set for spawned/branched sessions; rewritten by the `Session` tool's `move` action) |
 | `trigger` | TEXT | How the session was started |
 | `ended` | INTEGER | Boolean (0/1) |
 | `title` | TEXT NULL | Auto-generated or user-set |
@@ -2581,7 +2586,7 @@ the workflow caller as that node — spawns parent under it, ownership guards
 see its ancestors. Tokens without a node (and tokenless calls) keep
 threading the session-key string — the dangling, fail-closed behavior. A
 node id whose session has since been deleted degrades to dangling at the
-session layer, which owns that decision. The `session` builtin itself is
+session layer, which owns that decision. The `Session` builtin itself is
 caller-aware on this path (`CallerAwareSessionTool`, registered system-scope
 at daemon start): it builds the per-call `SessionManagerRuntime` from the
 threaded ctx — `status`/`history`/`list` and the ownership guards see the
@@ -2677,7 +2682,7 @@ pricing = { input_per_million = 0.042 }  # judgment APIs bill input only
 Like the other `ModelSpec` fields, `decisions` is **hand-edit-only** — no
 `peko model add` / `peko model edit` flag sets it (`edit` covers `--note`
 only). It surfaces read-only via `peko model show` (`spec.decisions`),
-`--json`, and the `model_list` tool. Old `models.toml` files load unchanged
+`--json`, and the `ModelList` tool. Old `models.toml` files load unchanged
 (`#[serde(default)]` ⇒ `false`).
 
 ### Judgment wire shape
@@ -2845,6 +2850,23 @@ Quick-reference table of all primitive types used across formats.
 | 0.1.0 | 2026-04-26 | Initial draft. ADR-022: Session compaction — added `compaction` and `model_change` system events (§5.3), context cache file format (§5.5), compaction semantics including dual-threshold triggers, turn boundaries, split-turn handling, and structured summary format (§5.6) |
 | 0.1.0 | 2026-05-08 | Packaging restructure (Phases 1–7): `src/image/` merged into `src/portable/`. Clean manifest — `AgentManifest` stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Added `layers` section with content-addressable digests. Added `.agent` build from directory (`AgentBuilder`). Added registry push/pull with mock server. Added team checksum validation and `team.toml` preservation. Added `.ext` export for extensions. `agent.toml` is the single source of truth for agent behaviour. |
 | 0.1.0 | 2026-05-11 | Issue 023: Team registry push/pull now decomposes teams into content-addressable layers (`TeamConfig` + per-agent `Config`/`Identity`/`Skills`/etc.) instead of a single opaque blob. Added `TeamAgentIndex` and `AgentLayerRef` types. Added `TeamLayerBuilder` and `TeamLayerReconstructor`. Cross-team agent deduplication works automatically via existing `RegistryClient::check_existing_layers()`. Pull reconstructs agents directly from layers without temporary `.team` files. Documented in §7.4. |
+
+## Tool binding lifetimes (ADR-069)
+
+Tool catalogs are in-memory maps keyed by `(tool_name, PrincipalId)`. The daemon
+catalog stores runtime defaults and principal services. A run's private overlay
+stores its Agent/Session executor adapters and inherits live parent registrations.
+ModelList is a principal service shared by every run. Lookup searches principal
+entries across the
+layers before system defaults. Wire definitions are sorted and deduplicated;
+tool names are exact.
+
+Workflow/IPC callbacks select live run bindings using server-attributed
+`(PrincipalId, caller_session_id)` keys and weak runtime references. Expired
+bindings fall back to daemon caller-aware adapters. Principal async executors
+retain their task registries across turns; each task still records its caller
+session for completion routing. These are runtime lifetime changes, with no new
+persisted session, task, cron, or workflow fields.
 
 ---
 

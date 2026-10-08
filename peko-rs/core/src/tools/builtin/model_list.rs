@@ -1,4 +1,4 @@
-//! `model_list` builtin — discover what models are configured in the
+//! `ModelList` builtin — discover what models are configured in the
 //! principal's catalog before picking which one to spawn a child
 //! agent against.
 //!
@@ -14,7 +14,7 @@
 //! captures capability flags, but subjective quality ("very
 //! capable, use it for coding") and routing intent ("use it for
 //! cron") live in the new `note` field on `ModelConfig` (also Phase
-//! 2). `model_list` surfaces both.
+//! 2). `ModelList` surfaces both.
 //!
 //! ## Filter args
 //!
@@ -46,9 +46,9 @@ use peko_tools_core::{Tool, ToolError};
 
 /// Synthetic tool name surfaced to the LLM. Single source of truth
 /// so registration sites (root) and tests don't drift.
-pub const MODEL_LIST_TOOL_NAME: &str = "model_list";
+pub const MODEL_LIST_TOOL_NAME: &str = "ModelList";
 
-/// `model_list` builtin — returns the principal's catalog of
+/// `ModelList` builtin — returns the principal's catalog of
 /// configured models, optionally filtered.
 ///
 /// Holds a `Weak<ModelCatalog>` rather than `Arc` so the tool does
@@ -145,7 +145,7 @@ impl Tool for ModelListTool {
 
         // ── 2. Upgrade the Weak ref; bail if the catalog is gone ────────
         let catalog = self.catalog.upgrade().ok_or_else(|| {
-            anyhow::anyhow!("ModelCatalog has been dropped; model_list cannot run")
+            anyhow::anyhow!("ModelCatalog has been dropped; ModelList cannot run")
         })?;
 
         // ── 3. Snapshot the catalog and apply filters ──────────────────

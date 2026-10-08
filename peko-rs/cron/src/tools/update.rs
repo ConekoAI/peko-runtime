@@ -5,7 +5,7 @@
 //! fields an agent legitimately toggles after creation: `enabled`
 //! (pause/resume without delete) and `wake_on_completion` (result
 //! subscription — whether each fire's outcome steers back into the
-//! principal's trunk inbox).
+//! creating session's inbox (trunk fallback)).
 
 use crate::tools::delete::{resolve_id_by_label, verify_id_belongs_to_principal};
 use crate::tools::global_runtime;
@@ -43,7 +43,7 @@ pub struct CronUpdateArgs {
     /// Enable/disable the job
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Subscribe/unsubscribe the principal's trunk inbox to the job's
+    /// Subscribe/unsubscribe the creating session's inbox (trunk fallback) to the job's
     /// result each fire (SpawnTool jobs only)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
@@ -77,9 +77,13 @@ impl Tool for CronUpdateTool {
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "Subscribe (true) or unsubscribe (false) the trunk inbox to the job's result each fire. SpawnTool jobs only; message jobs already run in your session."
+                    "description": "Subscribe (true) or unsubscribe (false) the creating session's inbox (trunk fallback) to the job's result each fire. SpawnTool jobs only; message jobs already run in your session."
                 }
-            }
+            },
+            "allOf": [
+                {"anyOf": [{"required": ["id"]}, {"required": ["label"]}]},
+                {"anyOf": [{"required": ["enabled"]}, {"required": ["wake_on_completion"]}]}
+            ]
         })
     }
 

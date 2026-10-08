@@ -19,14 +19,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::extensions::builtin::BuiltinToolAdapter;
-
 use crate::extensions::role::WorkspaceRolesPromptHandler;
 use crate::extensions::skill::WorkspaceSkillsPromptHandler;
 use crate::principal::memory::PrincipalMemory;
-use crate::principal::router::AgentPromptSummary;
 use crate::principal::seen_models::{seen_models_path, SeenModels};
-use crate::tools::builtin::{AgentCatalogTool, SkillTool};
 use peko_observability::Observability;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
@@ -94,8 +90,8 @@ pub struct PrincipalContext {
     /// Caller identity for outbound `principal_send` envelopes. Both
     /// fields are `None` until set via [`Self::set_caller_identity`]
     /// (usually at `RootRouter::build_context` time). When
-    /// either is `None`, `Agent::init_builtins_async` skips
-    /// registering `send_peer` — the tool needs a stable caller
+    /// either is `None`, the principal installation phase skips
+    /// registering `ChannelSend` — the tool needs a stable caller
     /// identity to attribute outbound requests under
     /// `Subject::Principal(caller_principal_did)`.
     caller_principal_did: OnceLock<String>,
@@ -364,6 +360,32 @@ impl PrincipalContext {
             &self.principal_id,
         )
         .await;
+        if let Err(error) = crate::tools::installation::install_principal_services(
+            &self.tooling,
+            &self.principal_id,
+            crate::tools::installation::PrincipalBindings {
+                sessions_dir: Some(self.sessions_dir.clone()),
+                plan: Some(Arc::clone(&self.plan_port)),
+                model_catalog: self
+                    .resolver
+                    .as_ref()
+                    .map(|resolver| Arc::clone(resolver.catalog())),
+                caller_did: self.caller_principal_did().map(String::as_str),
+            },
+        )
+        .await
+        {
+            tracing::warn!("principal service installation failed: {error}");
+        }
+        if let Err(error) = crate::tools::installation::install_async(
+            &self.tooling,
+            &self.principal_id,
+            Arc::clone(&self.inbox_registry),
+        )
+        .await
+        {
+            tracing::warn!("principal async installation failed: {error}");
+        }
         Arc::clone(&self.tooling)
     }
 
@@ -434,20 +456,8 @@ pub(crate) async fn ensure_principal_tool_bag(
         // `<workspace>/hooks/<id>/hook.toml`. See
         // `extensions::workspace_hooks::load_workspace_hooks`.
         let hooks_dir = workspace_path.join("hooks");
-        // Channel port resolution (2026-08-18 reviewer finding):
-        // principal contexts don't hold their own channel port —
-        // the daemon builds the real file-backed port at startup
-        // and installs it process-wide via
-        // `peko_channel::set_global_channel_port`. We re-resolve
-        // that port here so re-registering `ChannelRead` /
-        // `ChannelSend` against the global core keeps the real
-        // adapter; passing a `NoopChannelPort` would clobber the
-        // daemon-registered tool instances
-        // (`BuiltinToolAdapter::register_tool` unconditionally
-        // overwrites the name-keyed instance side-table) and
-        // leave the tools inert in production. The Noop remains
-        // as the test / standalone fallback when no daemon has
-        // installed a port.
+        // Standalone defaults use the daemon's channel port when available.
+        // Non-replacing installation preserves already configured adapters.
         let channel_port = resolve_channel_port();
         if let Err(e) = install_principal_tool_bag(
             Arc::clone(&core),
@@ -492,9 +502,8 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// The handlers resolve the workspace from the hook context at invoke
 /// time and re-scan `<workspace>/agents/` / `<workspace>/skills/` /
 /// `<workspace>/workflows/` whenever the scanned files' mtimes change,
-/// so one registration on this daemon-global core serves all principals. The `role_catalog` tool
-/// is *not* installed here — it is the only per-call tool and the
-/// runner installs it via [`install_role_catalog`] on each message.
+/// so one registration serves all principals. `RoleCatalog` is installed
+/// once per principal and reads the workspace roles on invocation.
 ///
 /// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
 /// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
@@ -517,58 +526,19 @@ async fn install_principal_tool_bag(
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
 ) -> anyhow::Result<()> {
-    // Standalone contexts install defaults; preserve daemon-configured tools.
-    if core
-        .catalog()
-        .tool_count(peko_subject::PrincipalId::system())
-        .await
-        == 0
-    {
-        let path_resolver = crate::common::paths::PathResolver::new();
-        if let Err(e) = crate::engine::tool_runtime::ToolRuntime::register_builtins(
-            core.catalog(),
-            &path_resolver,
-            channel_port,
-        )
-        .await
-        {
-            tracing::warn!("ToolRuntime::register_builtins failed during core build: {e}");
-        }
-    }
-
-    // Register the singleton `Skill` tool once on the global core.
-    // Per-principal enablement and workspace state are resolved at handle
-    // time from the `ToolContext` carried with each invocation. Scoped to
-    // this principal_id so concurrent principals each see their own Skill.
-    //
-    // Phase 2 PR 1 (ADR-047 §2.4): the runtime reads directly from
-    // the principal's `<workspace>/skills/` directory — no catalog,
-    // no adapter. The principal is responsible for installation; the
-    // runtime's only job is to point the SkillTool at SKILL.md files.
-    if let Err(e) = BuiltinToolAdapter::register_tool(
+    // Install each missing default, preserving configured instances even when
+    // the catalog is partially populated.
+    crate::tools::installation::install_runtime(
         core.catalog(),
-        Arc::new(SkillTool::new(std::sync::Arc::new(
-            crate::extensions::skill::WorkspaceSkillRuntime::new(skills_dir.to_path_buf()),
-        ))),
-        principal_id,
+        &crate::common::paths::PathResolver::new(),
+        channel_port,
     )
-    .await
-    {
-        tracing::warn!("SkillTool registration failed during core build: {e}");
-    }
+    .await?;
+    let workspace = skills_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("skills directory has no workspace"))?;
+    crate::tools::installation::install_workspace(core.catalog(), workspace, principal_id).await?;
 
-    // Part B (dynamic per-turn workspace catalog): register the
-    // workspace-scanning `identity` / `agents` / `skills` / `workflows`
-    // prompt-section providers once on the shared runtime. The
-    // providers resolve the workspace from the render input at invoke
-    // time; the catalog providers re-scan `<workspace>/roles/` /
-    // `<workspace>/skills/` whenever a scanned file's `(mtime, len)`
-    // changes, and the identity provider re-reads
-    // `<workspace>/principal.toml` on the same file-level key, so
-    // edits to any principal's workspace appear in the per-turn
-    // prompt suffix on the next iteration (ADR-052 D2/D4). Presence
-    // in the workspace = visible (ADR-047) — no capability or
-    // active-extension filter.
     if !core.tool_bag_installed() {
         let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 4] = [
             Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
@@ -645,14 +615,16 @@ async fn install_principal_tool_bag(
         // secret params.
         let manager_arc = mcp_manager.clone();
         let mgr = manager_arc.read().await;
-        let proxy_tools = mgr.get_tools().await;
+        let proxy_tools = mgr.get_tool_bindings().await;
         drop(mgr);
-        for tool in proxy_tools {
-            if let Err(e) =
-                BuiltinToolAdapter::register_tool(core.catalog(), tool, principal_id).await
-            {
-                tracing::warn!("MCP tool registration failed during core build: {e}");
-            }
+        for (server, tool) in proxy_tools {
+            core.catalog()
+                .register(
+                    tool,
+                    crate::tools::metadata::ToolSource::Mcp { server },
+                    principal_id,
+                )
+                .await;
         }
     } else if mcp_dir.exists() {
         tracing::warn!(
@@ -700,7 +672,7 @@ async fn install_principal_tool_bag(
         }
     }
 
-    // Cross-peer session introspection is handled by the per-agent `session`
+    // Cross-peer session introspection is handled by the per-agent `Session`
     // tool, which now accepts `peer` and `agent_id` filters (see
     // `SessionRegistry::list_sessions`). Persistent principal memory is
     // delegated to the filesystem — the LLM uses `Read` / `Write` for
@@ -711,27 +683,6 @@ async fn install_principal_tool_bag(
     // the lazy guard in `PrincipalContext::core` does not re-install
     // on every call.
     Ok(())
-}
-
-/// Install the per-call `role_catalog` tool on the principal's core.
-///
-/// The catalog is the *only* per-call tool — its contents are the
-/// currently-available `AgentPromptSummary` list, which can change
-/// when workspace role files change. Everything else on the core is stable. Scoped to the
-/// owning principal_id so the catalog lives under each principal's
-/// row in the registry and re-registration on each call idempotently
-/// replaces the prior entry.
-pub(crate) async fn install_role_catalog(
-    core: &crate::tools::runtime::ToolingRuntime,
-    available_agents: Vec<AgentPromptSummary>,
-    principal_id: &peko_subject::PrincipalId,
-) -> anyhow::Result<()> {
-    BuiltinToolAdapter::register_tool(
-        core.catalog(),
-        Arc::new(AgentCatalogTool::new(available_agents)),
-        principal_id,
-    )
-    .await
 }
 
 #[cfg(test)]

@@ -103,7 +103,7 @@ pub struct TurnPromptContext {
     /// iterations until quota rolls over and trips again. Single-shot so
     /// the banner doesn't spam the prompt every turn while the run
     /// stays tripped. Full quota state (counters, limits, window) is
-    /// available via the `session` tool's `status` action — see
+    /// available via the `Session` tool's `status` action — see
     /// `QuotaSnapshot`.
     pub quota_tripped: bool,
     /// Soft-cancel pending flag (`false` ⇒ `{{soft_cancel}}` not rendered).

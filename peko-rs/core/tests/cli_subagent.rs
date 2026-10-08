@@ -12,26 +12,11 @@
 //! | `subagent_async.ps1`       | (deferred — `_async` path requires a populated `AsyncTaskRegistry`, not directly seedable from a test)    |
 //! | `subagent_status_list.ps1` | (deferred — same reason: `task` tool reads from in-process registry)                                      |
 //!
-//! **Principal model.** After the "Principal as the single actor" migration,
-//! `peko send <name>` targets a *Principal*, whose root agent
-//! (`principals/<name>/agents/root/AGENT.md` or `principals/<name>/agents/root.md`)
-//! is the parent that calls the `Agent` tool. The `Agent` tool's `agent`
-//! argument resolves to a sibling subagent prompt at
-//! `principals/<name>/agents/<type>/AGENT.md` (see
-//! `AgentTool::resolve_subagent_config`). These tests therefore:
-//!   * create the Principal via [`create_mock_principal_with_tools`], granting
-//!     the capability tools (`Agent`, `Write`, `Read`, `Bash`) that the
-//!     dispatcher's owner check requires for both the root agent and any
-//!     subagent it spawns (subagents share the Principal's permission
-//!     boundary); and
-//!   * write a `worker` subagent prompt at
-//!     `principals/<name>/agents/worker/AGENT.md` or
-//!     `principals/<name>/agents/worker.md` (the resolver accepts both the
-//!     directory form and the flat-file form). The default `root.md` is a
-//!     *file* and only serves as the root agent prompt.
-//!     A spawned subagent's tool whitelist comes from `ExtensionConfig::default()`
-//!     (which includes `Agent`, `Write`, `Read`, `Bash`, …), so the `worker`
-//!     prompt needs no tool frontmatter — `AGENT.md` has no `tools` field anyway.
+//! **Principal model.** The principal's root agent calls `Agent` with a
+//! `role` argument that resolves to `roles/<name>/ROLE.md` or
+//! `roles/<name>.md` in its workspace. Every principal and its spawned
+//! sessions see every registered tool. These tests create a mock principal
+//! and write the worker role before starting its daemon.
 //!
 //! Each test:
 //!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
@@ -66,16 +51,14 @@
 //! needles are belt-and-suspenders.
 
 mod common;
-use common::{
-    configure_mock, create_mock_principal_with_tools, run_with_timeout, DaemonGuard, PekoCli,
-};
+use common::{configure_mock, create_mock_principal, run_with_timeout, DaemonGuard, PekoCli};
 use serial_test::serial;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-/// The `agent` template every test spawns. Resolves to
-/// `principals/<name>/agents/worker/AGENT.md`.
+/// The role every test spawns, stored at
+/// `principals/<name>/roles/worker/ROLE.md`.
 const WORKER: &str = "worker";
 
 // ---------------------------------------------------------------------------
@@ -122,30 +105,22 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     );
 }
 
-/// Directory the daemon's built-in tools treat as their workspace root.
-///
-/// `ToolRuntime::register_builtins` (in `src/runtime/tool_runtime.rs:154-170`)
-/// sets the per-tool `workspace_dir` to `path_resolver.agent_workspace(".", None).parent()`,
-/// which resolves to `{data_dir}/workspaces`. The `data_dir` for a test
-/// is `<peko_dir>/data` because `PekoCli` sets `PEKO_HOME=peko_dir` and
-/// `default_data_dir()` (in `src/common/paths.rs:65-69`) appends `/data`
-/// to `PEKO_HOME`. So a child subagent's `write_file("foo.txt", …)` lands
-/// at `<peko_dir>/data/workspaces/foo.txt` — the parent agent name is
-/// NOT in the path (the tool workspace is the shared workspaces root,
-/// not the per-agent personal dir).
+/// Workspace root used by the daemon's filesystem tools in these tests.
+/// `PekoCli` sets `PEKO_HOME`, and relative Write paths resolve under its
+/// `data/workspaces` directory.
 fn workspace_dir(cli: &PekoCli) -> PathBuf {
     cli.peko_dir().join("data").join("workspaces")
 }
 
 /// Write a `worker` subagent prompt for the given Principal using the
-/// flat-file layout (`agents/<worker>.md`).
+/// flat-file layout (`roles/<worker>.md`).
 fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
     let dir = cli
         .peko_dir()
         .join("principals")
         .join(principal)
         .join("roles");
-    std::fs::create_dir_all(&dir).expect("create agents dir");
+    std::fs::create_dir_all(&dir).expect("create roles dir");
     let agent_md = format!(
         "---\n\
          name: {worker}\n\
@@ -157,17 +132,7 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
     std::fs::write(dir.join(format!("{worker}.md")), agent_md).expect("write worker .md");
 }
 
-/// Write a `worker` subagent prompt for the given Principal.
-///
-/// `AgentTool::resolve_subagent_config` resolves an `agent` template
-/// name to `<workspace>/agents/<type>/AGENT.md` (the directory form)
-/// or `<workspace>/agents/<type>.md` (the flat-file form), when a
-/// principal workspace is bound to the `Agent` tool. The root
-/// prompt `agents/root.md` created by `peko create` is a *file*
-/// and is NOT a valid `agent` template, so each test creates an explicit
-/// `worker` subagent here. The subagent's tool whitelist comes from
-/// `ExtensionConfig::default()` (Agent/Write/Read/Bash/…), so the prompt body
-/// and frontmatter carry no tool grants — `AGENT.md` has no `tools` field.
+/// Write the worker role in the directory layout (`roles/<worker>/ROLE.md`).
 fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
     let dir = cli
         .peko_dir()
@@ -187,31 +152,15 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
     std::fs::write(dir.join("ROLE.md"), agent_md).expect("write worker ROLE.md");
 }
 
-/// Create the Principal under test and its `worker` subagent.
-///
-/// Grants the capability tools (`Agent`, `Write`, `Read`, `Bash`) the
-/// dispatcher's owner check requires. Subagents share the Principal's
-/// permission boundary, so these grants cover both the root agent's own
-/// tool calls and any tool calls a spawned `worker` makes. Must be called
-/// BEFORE `DaemonGuard::spawn` (it only writes files).
+/// Create the mock principal and its worker role before starting the daemon.
 fn setup_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    create_mock_principal_with_tools(
-        cli,
-        name,
-        mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", "agent:worker"],
-    );
+    create_mock_principal(cli, name, mock_llm_url);
     write_worker_subagent(cli, name, WORKER);
 }
 
 /// Create the Principal under test and its `worker` subagent as a flat file.
 fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
-    create_mock_principal_with_tools(
-        cli,
-        name,
-        mock_llm_url,
-        &["Agent", "Write", "Read", "Bash", "agent:worker"],
-    );
+    create_mock_principal(cli, name, mock_llm_url);
     write_worker_subagent_flat(cli, name, WORKER);
 }
 
@@ -256,7 +205,7 @@ async fn subagent_blocking_t1_write_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t1-write" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "role": WORKER, "path": "t1-write" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],
@@ -335,7 +284,7 @@ async fn subagent_blocking_t2_isolated() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "agent": WORKER,
+                    "role": WORKER,
                     "path": "t2-iso",
                 }).to_string()
             } },
@@ -415,7 +364,7 @@ async fn subagent_blocking_t4_inline_read() {
             } },
             // Parent turn 2: spawn the child.
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t4-child" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "role": WORKER, "path": "t4-child" }).to_string()
             } },
             // Parent turn 3: report success. The child text was
             // `INLINE_RESULT_OK` and the parent's blocking tool
@@ -501,13 +450,13 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "agent": WORKER, "path": "t1-child-a" }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "role": WORKER, "path": "t1-child-a" }).to_string()
             } },
             "NESTING_SUCCESS",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "agent": WORKER, "path": "t1-grandchild" }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "role": WORKER, "path": "t1-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
@@ -585,19 +534,19 @@ async fn subagent_nesting_t2_recursive_dispatch() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "agent": WORKER, "path": "t2-child-a" }).to_string()
+                serde_json::json!({ "prompt": task_for_child_a, "role": WORKER, "path": "t2-child-a" }).to_string()
             } },
             "PARENT_DONE",
         ],
         child_a_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "agent": WORKER, "path": "t2-grandchild" }).to_string()
+                serde_json::json!({ "prompt": task_for_grandchild, "role": WORKER, "path": "t2-grandchild" }).to_string()
             } },
             "CHILD_A_DONE",
         ],
         grandchild_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": "would-be-depth-3-task", "agent": WORKER, "path": "t2-depth-3" }).to_string()
+                serde_json::json!({ "prompt": "would-be-depth-3-task", "role": WORKER, "path": "t2-depth-3" }).to_string()
             } },
             "GRANDCHILD_DONE",
         ],
@@ -661,7 +610,7 @@ async fn subagent_isolation_t1_shared_workspace() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "agent": WORKER,
+                    "role": WORKER,
                     "path": "t1-shared",
                 }).to_string()
             } },
@@ -730,7 +679,7 @@ async fn subagent_isolation_t2_isolated_writes_file() {
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "prompt": task_for_child,
-                    "agent": WORKER,
+                    "role": WORKER,
                     "path": "t2-iso-file",
                 }).to_string()
             } },
@@ -774,8 +723,8 @@ async fn subagent_isolation_t2_isolated_writes_file() {
 }
 
 /// Flat-file layout variant of `subagent_blocking_t1_write_file`.
-/// Verifies that a subagent prompt at `agents/worker.md` is discovered
-/// and can be spawned using the file stem as the `agent` argument.
+/// Verifies that a subagent prompt at `roles/worker.md` is discovered
+/// and can be spawned using the file stem as the `role` argument.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
 #[serial]
@@ -801,7 +750,7 @@ async fn subagent_blocking_t1_flat_file() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "agent": WORKER, "path": "t1-flat" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "role": WORKER, "path": "t1-flat" }).to_string()
             } },
             "BLOCKING_SUCCESS",
         ],

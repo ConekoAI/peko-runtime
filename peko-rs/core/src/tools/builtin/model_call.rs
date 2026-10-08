@@ -350,7 +350,7 @@ impl Tool for ModelCallTool {
             "properties": {
                 "model": {
                     "type": "string",
-                    "description": "Catalog id of a configured model (see model_list). Defaults to the calling principal's preferred model."
+                    "description": "Catalog id of a configured model (see ModelList). Defaults to the calling principal's preferred model."
                 },
                 "prompt": {
                     "type": "string",
@@ -374,10 +374,24 @@ impl Tool for ModelCallTool {
                 },
                 "questions": {
                     "type": "object",
+                    "minProperties": 1,
                     "description": "Judgment mode: map of question key to question spec (`{\"type\": \"boolean\"|\"choice\"|\"score\", \"instructions\": \"...\"}`, plus `options` for choice or `min`/`max` for score). Passed through to the judgment API verbatim."
                 }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "oneOf": [
+                {
+                    "required": ["prompt"],
+                    "not": {"anyOf": [{"required": ["state"]}, {"required": ["questions"]}]}
+                },
+                {
+                    "required": ["state", "questions"],
+                    "not": {"anyOf": [
+                        {"required": ["prompt"]}, {"required": ["system"]},
+                        {"required": ["max_tokens"]}, {"required": ["temperature"]}
+                    ]}
+                }
+            ]
         })
     }
 
@@ -1264,8 +1278,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn funnel_executes_completion_with_principal_attribution() {
-        use crate::extensions::builtin::BuiltinToolAdapter;
-
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = MockAdapter::new();
         adapter.queue_text("via funnel");
@@ -1288,12 +1300,13 @@ mod tests {
             .clone();
 
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
-        )
-        .await
-        .expect("register");
+        core.catalog()
+            .register(
+                Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let (_text, json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
             &*core,
@@ -1325,8 +1338,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn funnel_executes_without_grants() {
-        use crate::extensions::builtin::BuiltinToolAdapter;
-
         let temp = tempfile::tempdir().expect("tempdir");
         let adapter = MockAdapter::new();
         adapter.queue_text("via funnel");
@@ -1350,12 +1361,13 @@ mod tests {
             .clone();
 
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
-        )
-        .await
-        .expect("register");
+        core.catalog()
+            .register(
+                Arc::new(ModelCallTool::new(Arc::downgrade(&manager))),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let (text, _json, success) = peko_engine::funnel::execute_tool_via_core_with_context(
             &*core,

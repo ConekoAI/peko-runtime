@@ -23,17 +23,14 @@
 //! - `crate::principal::messenger::global_messenger()` for the User
 //!   branch (fire-and-forget note, gated to the originating user).
 //!
-//! ## Per-agent registration
+//! ## Principal-scoped registration
 //!
-//! Unlike the pre-PR global registration, `ChannelSend` is now
-//! registered **per-agent** with `caller_principal_did` bound at
-//! construction (mirrors the pre-PR `send_peer` shape). This is the
-//! only way to know "who is sending?" without bloating `ToolContext`
-//! (which intentionally carries no caller-DID — every tool that
-//! needs one binds it at registration).
+//! The caller DID and reply locks stay bound to the principal. Production
+//! tools resolve the current tunnel context from shared runtime services
+//! per invocation, including tunnel connections made after installation.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -48,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
 
+use crate::extensions::framework::core::ExtensionServices;
 use crate::principal::Principal;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
 use crate::tunnel::hub_directory::{AgentResolution, DirectoryError, ResolvedExposure};
@@ -130,7 +128,7 @@ pub struct ChannelSendResult {
 /// LLM picks the dispatch branch by choosing the channel id's wire
 /// form (see module docs).
 ///
-/// Per-agent construction carries the caller's principal DID — the
+/// Principal-scoped construction carries the caller's principal DID — the
 /// F37 funnel's `ToolContext` does NOT carry the caller DID, so the
 /// tool needs it bound at registration time. This eliminates the
 /// "caller masquerades as a user" audit foot-gun the legacy `a2a_send`
@@ -146,14 +144,15 @@ pub struct ChannelSendTool {
     /// `AppState`). Required for every branch.
     port: Arc<dyn ChannelPort>,
     /// The local principal's stable DID. Bound at construction from
-    /// the `Agent::principal_id` (resolved via `Principal::did()` at
-    /// tool registration).
+    /// principal (resolved via `Principal::did()` at installation).
     caller_principal_did: String,
     /// The local runtime's cross-runtime context. `None` when the
     /// tunnel never started (test harnesses, offline daemons): the
     /// bare / group / user branches still work — only principal
     /// targets need this.
     cross_runtime: Option<Arc<CrossRuntimeA2aCtx>>,
+    /// Production bindings read the current tunnel service per invocation.
+    services: Option<Weak<ExtensionServices>>,
     /// Per-target serialization for the blocking reply await on the
     /// principal branch. Without a wire correlation id, two
     /// overlapping awaits on the same DM channel can't tell replies
@@ -165,9 +164,7 @@ pub struct ChannelSendTool {
 
 impl ChannelSendTool {
     /// Build a `ChannelSendTool` bound to a specific caller principal
-    /// with full principal / cross-runtime support. Used by the
-    /// per-agent registration site when the daemon has the tunnel
-    /// running.
+    /// with full principal / cross-runtime support and an explicit context.
     #[must_use]
     pub fn new_with_peer(
         port: Arc<dyn ChannelPort>,
@@ -178,6 +175,7 @@ impl ChannelSendTool {
             port,
             caller_principal_did,
             cross_runtime: Some(cross_runtime),
+            services: None,
             await_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -185,15 +183,30 @@ impl ChannelSendTool {
     /// Build a `ChannelSendTool` bound to a specific caller principal
     /// WITHOUT the cross-runtime context. The bare / group / user
     /// branches work; principal targets return a structured error.
-    /// Used by the per-agent registration site when the tunnel is
-    /// not running on this daemon.
+    /// Runtime installation adds a live service binding to this adapter.
     #[must_use]
     pub fn new_local_only(port: Arc<dyn ChannelPort>, caller_principal_did: String) -> Self {
         Self {
             port,
             caller_principal_did,
             cross_runtime: None,
+            services: None,
             await_locks: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn with_services(mut self, services: Weak<ExtensionServices>) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    fn cross_runtime_context(&self) -> Option<Arc<CrossRuntimeA2aCtx>> {
+        match &self.services {
+            Some(services) => services
+                .upgrade()?
+                .cross_runtime_a2a_ctx()
+                .and_then(|ctx| Arc::downcast::<CrossRuntimeA2aCtx>(ctx).ok()),
+            None => self.cross_runtime.clone(),
         }
     }
 
@@ -947,7 +960,8 @@ impl ChannelSendTool {
         if target_principal_did.is_empty() {
             return Ok(self.error_value("principal", "ChannelSend: target DID is empty"));
         }
-        let Some(cross_runtime) = self.cross_runtime.as_deref() else {
+        let cross_runtime = self.cross_runtime_context();
+        let Some(cross_runtime) = cross_runtime.as_deref() else {
             return Ok(self.error_value(
                 "principal",
                 "ChannelSend: principal targets require the cross-runtime context \

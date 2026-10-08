@@ -21,7 +21,7 @@ pub struct ExtensionServices {
     ///
     /// Stored as `Arc<dyn Any + Send + Sync>` so the framework does
     /// not depend on the concrete `tunnel::CrossRuntimeA2aCtx` type.
-    /// Consumers downcast to the concrete type when building tools.
+    /// Consumers downcast to the concrete type when dispatching calls.
     cross_runtime_a2a_ctx:
         std::sync::RwLock<Option<Arc<dyn std::any::Any + Send + Sync + 'static>>>,
 
@@ -30,7 +30,7 @@ pub struct ExtensionServices {
     /// completions without holding provider-specific state.
     llm_resolver: std::sync::RwLock<Option<Arc<peko_providers::LlmResolver>>>,
 
-    /// Channel port (sprint 4 — `ChannelSend` per-agent tool needs the
+    /// Channel port (sprint 4 — `ChannelSend` principal tool needs the
     /// file-backed `ChannelPort` so the bare / group / principal branches
     /// can post to channels. Set by AppState once the channel store is
     /// wired; `None` on tests that construct an `ExtensionServices` via
@@ -60,11 +60,8 @@ impl ExtensionServices {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            // Issue #29: cross-runtime a2a ctx starts as None and
-            // is filled in by the daemon-state after the tunnel
-            // client is wired. Until then, every per-agent
-            // PrincipalSendTool is built without a ctx and falls back to
-            // the local-only path (the same behavior as pre-#29).
+            // ChannelSend resolves this slot per invocation, including
+            // tunnel connections made after tool installation.
             cross_runtime_a2a_ctx: std::sync::RwLock::new(None),
             llm_resolver: std::sync::RwLock::new(None),
             channel_port: std::sync::RwLock::new(None),
@@ -116,8 +113,8 @@ impl ExtensionServices {
 
     /// Set the channel port. Called by AppState once the channel store
     /// has been wired (the same handle that `PrincipalManager::channel_port`
-    /// already caches). The per-agent `ChannelSendTool` constructor in
-    /// `agent.rs` reads via `channel_port` so the bare / group / principal
+    /// already caches). The principal-scoped `ChannelSendTool` factory
+    /// reads via `channel_port` so the bare / group / principal
     /// branches can post to channels.
     pub fn set_channel_port(&self, port: Arc<dyn peko_channel::ChannelPort>) {
         if let Ok(mut guard) = self.channel_port.write() {

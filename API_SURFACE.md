@@ -7,6 +7,23 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Built-in tool wire contracts
+
+All 37 compiled built-ins advertise exact PascalCase names. ToolCatalog uses
+exact registered names; no lowercase or snake_case aliases are supported.
+Every principal can use every registered tool. Workspace/service bindings
+select dependencies, while resource ownership, peer permissions, and channel
+membership govern access. Rust module/configuration names and IPC tags keep
+their existing spelling.
+
+Agent, Session, ModelCall, CronCreate, and CronUpdate encode their conditional
+requirements in JSON Schema and retain runtime validation. Agent requires
+prompt/role/path for every action. Session uses agent_name and title.
+Session describes per-action limits rather than one misleading schema default.
+Workflow advertises only path/args/timeout_ms; dispatcher validation excludes
+the server-injected depth field while the runner still enforces its depth guard.
+See [the complete catalog](docs/architecture/builtin-tools.md) for all parameters.
+
 ## Cron interval completion policy
 
 `CronEngine::execute_job_for_id` (used by CronTrigger) returns the ID of the
@@ -72,7 +89,7 @@ the agent loop's tool-validation and retry behavior is unchanged.
 4. [Module: `agent`](#module-agent)
 5. [Module: `providers`](#module-providers)
 6. [Module: `common::services`](#module-commonservices)
-7. [Module: `tools::factory`](#module-toolsfactory)
+7. [Module: `tools::installation`](#module-toolsinstallation)
 8. [Module: `session::context`](#module-sessioncontext)
 9. [Compatibility Notes](#compatibility-notes)
 10. [Local Snapshot Packaging](#module-registrypackaging--adr-066-p5)
@@ -127,11 +144,21 @@ Standalone callers and tests construct isolated runtimes.
 
 | Contract | Module | Behavior |
 |---|---|---|
-| `ToolCatalog::{register, get, tool_definitions}` | `tools::catalog` | Stores executable `Arc<dyn Tool>` plus metadata by `(name, PrincipalId)`; principal entries shadow system entries; definitions sorted by name; every registered tool included |
+| `ToolCatalog::{register, register_default, overlay, get, tool_definitions}` | `tools::catalog` | Stores executable bindings by `(name, PrincipalId)`; overlays inherit live parent registrations; defaults insert atomically without replacement; principal entries shadow system entries across layers; wire definitions remain sorted and unique |
 | `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, emits one `tool.call` audit event |
-| `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools installed per principal and prompt providers installed once |
+| `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools and async services are principal-owned, prompt providers installed once, run limits shared across overlays |
 | `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
-| `SessionKeys::{set, get}` | `tools::session_keys` | Per-agent DID session-key table |
+| `ToolingRuntime::for_run()` | `tools::runtime` | Private catalog overlay with shared hooks/router/audit/admission; ToolFunnel resolves IPC/async callbacks by principal + caller session using weak live-run bindings |
+| `tools::installation::{BUILTIN_INSTALLATIONS, BuiltinScope, InstallationPhase}` | `tools::installation` | Single built-in installation manifest and name inventory; daemon Agent/Session fallbacks also have run overrides |
+| `SessionKeys::{set, get}` | `tools::session_keys` | Per-runtime agent-DID fallback keys; run overlays keep these local; canonical attribution is supplied by ToolContext |
+
+`AsyncRuntime::spawn_with_context(request, &ToolContext)` preserves caller session,
+workspace, agent id, and principal name when scheduling. Its default delegates to
+`spawn`, preserving existing adapter implementations. Production captures a live
+run binding before scheduling and otherwise uses caller-aware daemon defaults.
+Detached dispatcher futures retain their run binding through execution.
+ModelList is a stable principal service; AgentConfig has no tool visibility toggle.
+McpManager::get_tool_bindings returns server/tool pairs for MCP catalog attribution.
 
 `peko_engine::tooling::ToolFunnel` has exactly three methods:
 `execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
@@ -220,7 +247,7 @@ reserved-parameter configuration; MCP injection belongs to its proxy.
 ## Module: `extensions`
 
 Workspace adapters live under `builtin/`, `role/`, `skill/`, and `mcp/`.
-`BuiltinToolAdapter` registers executable tools in `ToolCatalog`; role and
+Installation registers native tools directly in `ToolCatalog`; role and
 skill scanners supply plain prompt providers. MCP owns protocol/runtime,
 reserved injection, tool proxies, and sampling. `workspace_hooks` loads the
 six observer points documented above, using `command_handler` for subprocesses.
@@ -475,28 +502,12 @@ pub struct AgentConfigEntry { ... }
 
 ---
 
-## Module: `tools::factory`
+## Module: `tools::installation`
 
-### Public Types
-
-#### `tools::factory::ToolFactory`
-
-**Status:** Simplified in 0.1.0
-
-```rust
-impl ToolFactory {
-    pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult
-    pub async fn create_tools_async(config: &ToolFactoryConfig) -> Result<ToolCreationResult>
-}
-
-impl ToolFactoryConfig {
-    pub fn minimal(workspace_dir: PathBuf) -> Self
-    pub fn coding(workspace_dir: PathBuf) -> Self
-    pub fn full(workspace_dir: PathBuf) -> Self
-}
-```
-
-**Note:** Convenience methods `create_minimal_tools`, `create_coding_tools`, `create_full_tools` are deprecated. Use `ToolFactoryConfig` constructors instead.
+The installation manifest declares every built-in name, primary scope, and
+phase. Explicit runtime, daemon, workspace, principal-service, and run-binding
+functions compose tools from their dependencies. ToolCatalog owns registration
+and lookup; there is no separate configurable tool factory or disabled-tool list.
 
 ---
 
@@ -563,7 +574,7 @@ sanitizers remain in `peko_session::key`.
 | `ToolingRuntime` | `tools::runtime` | ⚠️ Changed | Explicit daemon tooling composition; no process-global accessor |
 | `WorkspaceHookPoint` (six variants) | `extensions::workspace_dispatcher` | ⚠️ Changed | Principal-owned workspace hook points (ADR-066 P4) |
 | `WorkspaceHookHandler` trait | `extensions::workspace_dispatcher` | ⚠️ Changed | Registration-order observe-only hook handler |
-| `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
+| `tools::installation` | `tools` | ✅ Current | Native tool composition; the redundant BuiltinToolAdapter is retired |
 
 > **PR-E #1–#5 deletions (2026-08-26):** the `ExtensionManager`,
 > `BuiltInAdapters`, `GeneralExtensionAdapter`, `SkillAdapter`,
@@ -588,7 +599,7 @@ sanitizers remain in `peko_session::key`.
 ### Agent-Owned Session Management (2026-08-09; revised 2026-08-13)
 
 The unified session/run framework ("coin model"): `Agent` runs work in
-sessions (actions `new` / `resume` / `compact`), the `session` tool
+sessions (actions `new` / `resume` / `compact`), the `Session` tool
 manages them (9 storage actions). Session ids are stable for life;
 oversized transcripts page in place. New/changed public items:
 
@@ -646,7 +657,7 @@ children of the trunk. New/changed public items:
 
 Breaking (prelaunch): the parallel `send_peer` tool and the bare-post
 `ChannelSend` are folded into one tool — `ChannelSend` (registered
-per-agent with caller DID bound at construction). The LLM picks the
+per principal with caller DID bound at construction; ADR-069). The LLM picks the
 dispatch branch by choosing the wire form of its `channel` parameter:
 
 | `channel` value        | Dispatch                                  |
@@ -663,10 +674,10 @@ tool name. Deleted/changed public items:
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `tunnel::principal_send_tool` (`SendPeerTool`, `SendPeerArgs`, `PrincipalSendResult`, `build_tool`) | `tunnel::principal_send_tool` | ❌ Deleted | Whole module retired (1775 lines); consolidated into `tools::builtin::channel::ChannelSendTool` with typed-prefix dispatch |
-| `ChannelSendTool::new` (single-arg constructor) | `tools::builtin::channel::channel_send` | ❌ Deleted | Replaced by `new_with_peer(port, did, ctx)` (per-agent, full principal / cross-runtime support) and `new_local_only(port, did)` (bare / group / user only). The global `Arc::new(ChannelSendTool::new(port))` registration in `engine/tool_runtime.rs` is removed — the tool is now per-agent only. |
+| `ChannelSendTool::new` (single-arg constructor) | `tools::builtin::channel::channel_send` | ❌ Deleted | Replaced by `new_with_peer(port, did, ctx)` (explicit cross-runtime context) and `new_local_only(port, did)` (local-only direct calls). Production uses `build_channel_send_tool` for a stable principal binding that resolves the current tunnel service per invocation. |
 | `SendPeerArgs` / `PrincipalSendResult` | (renamed) | ⚠️ Renamed | `ChannelSendArgs` / `ChannelSendResult` in `tools::builtin::channel`. JSON wire shape `{ channel, text, parent?, label? }` — no `target` / `message` fields; the wire form of `channel` carries the routing identity. |
-| `ChannelSend` registration | `peko::runtime::builtin_tools` | ⚠️ Moved | Was in `GLOBAL_TOOL_NAMES` (singleton, no caller DID); now in `AGENT_SPECIFIC_TOOL_NAMES` (per-agent, caller DID bound at construction). `send_peer` removed. |
-| `ExtensionServices::channel_port()` / `set_channel_port` | `extensions::framework::core::config` | ✅ New | Lets the per-agent `ChannelSendTool` constructor find the file-backed `ChannelPort`. `daemon/state.rs` installs it on the same path as `set_cross_runtime_a2a_ctx`. |
+| `ChannelSend` registration | `tools::installation` | ⚠️ Moved | Principal-owned default with caller DID and channel services; `send_peer` removed. |
+| `ExtensionServices::channel_port()` / `set_channel_port` | `extensions::framework::core::config` | ✅ New | Lets the principal-scoped `ChannelSendTool` factory find the file-backed `ChannelPort`. `daemon/state.rs` installs it on the same path as `set_cross_runtime_a2a_ctx`. |
 | `ChannelId` constructors | `peko_protocol::channel` | ✅ New | `ChannelId::for_principal(did)`, `for_user(id)`, `for_group(slug)`. `parse()` accepts any of the four wire forms; `kind()` returns the dispatch kind. |
 | `CreateOpts::id` | `peko_channel::port` | ✅ New | Pin the channel id on creation. Used by `peer_dm` for principal peers so the routing `ChannelId` is `principal:<did>` and `peko log` consumers and `ChannelSend`'s principal-branch agree without translation. |
 | `peko_channel::fs` (`channel_dir_name`, `channel_dir_name_inverse`, `id_needs_colon_normalization`) | `peko_channel::fs` | ✅ New | On-disk path normalizer: typed-prefix ids gain colons that are invalid in directory names on Windows / classic Unix filesystems; `.3A.` replaces `:` for the storage path only. Wire form unchanged. |
@@ -918,7 +929,7 @@ Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
 | `ModelCallTool` / `MODEL_CALL_TOOL_NAME` | `tools::builtin::model_call` | ✅ New | The `ModelCall` built-in (`tool:ModelCall` gate); holds `Weak<PrincipalManager>` for server-side meter + default-model resolution |
-| `ModelSpec.decisions` | `peko_providers::spec` | ✅ Extended | Judgment-class opt-in flag (serde-default `false`, hand-edit `models.toml`); mirrored onto IPC `packet::ModelSpec` + the `model_list` projection |
+| `ModelSpec.decisions` | `peko_providers::spec` | ✅ Extended | Judgment-class opt-in flag (serde-default `false`, hand-edit `models.toml`); mirrored onto IPC `packet::ModelSpec` + the `ModelList` projection |
 | `LlmResolver::resolve_api_key` | `peko_providers::resolver` | ✅ Visibility (was private) | Credential resolution for judgment mode — same chain `build_provider` uses |
 | `Provider::chat_response_with_options` | `peko_providers::core` | ✅ New | One-shot chat completion with caller-owned `ChatOptions` and `tools: None` on the wire |
 | `compute_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ Visibility (was private) | Shared PricingHint → USD formula for the tool's post-call charge |
@@ -942,7 +953,7 @@ injected; callbacks authenticate with a per-spawn run token. Wire shapes in
 | `WorkflowTool` / `WORKFLOW_TOOL_NAME` / `MAX_WORKFLOW_DEPTH` | `tools::builtin::workflow` | ✅ New | The `Workflow` built-in (`tool:Workflow` gate); `Weak<PrincipalManager>` + `Arc<RunTokenRegistry>` handles |
 | `WorkspaceWorkflowsPromptHandler` / `WORKFLOW_CATALOG_HOOK_PRIORITY` | `tools::builtin::workflow` | ✅ New | Per-turn `workflows` catalog section (renderer `SectionSlot::Workflows`) |
 | `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep. **2026-09-23 (caller-awareness):** `RunTokenEntry` gains `caller_session_id: Option<String>` — the tree node the `Workflow` ran from; the `ExecuteTool` handler threads it into `ToolContext.session_id` on validated calls so tree-relative tools classify the workflow caller as that node |
-| `CallerAwareSessionTool` (`for_daemon` / `for_agent`) | `tools::builtin::session::caller_aware` | ✅ New (2026-09-23) | `session` builtin with per-call caller resolution: daemon mode resolves store/meter/inbox per call from `ToolContext` + `PrincipalManager`; agent mode overrides the shared cell when `ctx.session_id` is present, delegates unchanged when absent (loop-path behavior identical) |
+| `CallerAwareSessionTool` (`for_daemon` / `for_agent`) | `tools::builtin::session::caller_aware` | ✅ New (2026-09-23) | `Session` builtin with per-call caller resolution: daemon mode resolves store/meter/inbox per call from `ToolContext` + `PrincipalManager`; agent mode overrides the shared cell when `ctx.session_id` is present, delegates unchanged when absent (loop-path behavior identical) |
 | `SessionManagerRuntime::with_current_session` (+ `Clone`) | `session::session_runtime_impl` | ✅ Extended (2026-09-23) | Shallow clone with a fresh per-call caller cell; the `SessionRuntime` port trait is untouched |
 | `SpawnRequest.parent_session_id` | `tools::builtin::async_control` | ✅ Extended (2026-09-24) | Per-call parent-session stamp, filled by `AsyncSpawnTool` from `ToolContext.session_id`; `AsyncExecutorRuntime::spawn` stamps `parent_session_key` from it first (session-key cell is fallback-only for ctx-less dispatches) |
 | `RequestPacket::ExecuteTool.run_token` | `ipc::packet` | ✅ Extended | Optional additive field; validated + session-matched server-side, fail-closed |

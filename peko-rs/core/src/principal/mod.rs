@@ -36,7 +36,6 @@ pub mod peer_children;
 pub(crate) mod peer_dm;
 pub mod router;
 pub mod routers;
-pub mod runtime;
 // Phase 4 of `feature/multi-model-subagents` (plan:
 // `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
@@ -65,7 +64,6 @@ pub use router::{
     AgentPromptSummary, ChannelContext, ChannelKind, ContextInjection, ContextInjectionKind,
     PrincipalRouter, RouteDecision, RouterContext, RouterError,
 };
-pub use runtime::builtin_tools;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

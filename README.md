@@ -217,7 +217,7 @@ peko model test <MODEL_ID>                        # Live-test a model
 
 The `note` field on each catalog entry is the standardized way to
 express subjective quality or routing intent that spec flags cannot
-capture. Parent agents can read it via the `model_list` builtin tool
+capture. Parent agents can read it via the `ModelList` builtin tool
 (`peko send` to a peko will surface these as filterable notes).
 
 #### Cost Controls

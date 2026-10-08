@@ -210,7 +210,7 @@ pub struct AddArgs {
     dry_run: bool,
     /// Phase 2 of `feature/multi-model-subagents`: attach a
     /// free-text note to the entry. Parent agents read this via
-    /// the `model_list` tool before choosing which model to
+    /// the `ModelList` tool before choosing which model to
     /// spawn with — standardized `ModelSpec` flags cannot
     /// capture subjective annotations like "use it for cron".
     /// Empty string is rejected; pass no flag to leave the note
@@ -678,7 +678,7 @@ struct ModelSummaryWire {
     spec: Option<ModelSpecWire>,
     /// Phase 2 of `feature/multi-model-subagents`: free-text
     /// user note attached to this entry. Surfaced to the parent
-    /// agent via the `model_list` tool and to operators via
+    /// agent via the `ModelList` tool and to operators via
     /// `peko model show`. Skipped from JSON when absent so
     /// pre-Phase-2 entries deserialize cleanly into the new
     /// field set.

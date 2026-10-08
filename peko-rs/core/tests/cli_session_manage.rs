@@ -1,22 +1,21 @@
 //! CLI integration tests for agent-owned session management (the
 //! unified session/run framework — Phase 5b of the coin-model plan).
 //!
-//! Covers the `session` tool's stable-id lifecycle (no chapters: the
-//! live `root:*` id never gains a `#` suffix; paging is
+//! Covers the `Session` tool's stable-id lifecycle (no chapters: the
+//! live `/local-user` session never gains a `#` suffix; paging is
 //! storage-internal) and self-delete guard, and the `Agent` tool's
-//! spawn → `session list` → `action:"resume"` → `cleanup:"delete"`
-//! lifecycle:
+//! spawn → `Session` list → `Agent` resume lifecycle:
 //!
 //! | Test | What it pins |
 //! |------|--------------|
-//! | `session_new_refused_live_id_stays_stable` | scripted `session new` returns the demoted-action refusal, writes no `chapters.json`, and the NEXT `peko send` keeps the same live `root:*` id with both turns stitched in one history |
+//! | `session_new_refused_live_id_stays_stable` | scripted `Session` new is refused, writes no `chapters.json`, and the next `peko send` keeps the same `/local-user` session with both turns stitched in one history |
 //! | `session_delete_current_session_refused` | `session delete` on the caller's own live session returns the structured refusal and the session survives |
 //! | `agent_spawn_list_resume_with_history` | spawn registers a `trigger=="spawn"` session; `action:"resume"` + `path` continues it with history. Sprint 7 Commit 4 dropped the `cleanup` field on the Agent tool — auto-delete on resume is gone; the caller uses `session remove` explicitly |
 //!
 //! Each test drives MULTIPLE sequential `peko send` runs against one
 //! daemon, re-scripting the mock LLM between sends
 //! (`POST /_test/configure` resets the per-substring counter). Session
-//! ids the script needs (the live `root:*` id, the spawned session's
+//! ids the script needs (the live `/local-user` id, the spawned session's
 //! uuid) are read from `sessions.json` between sends — the mock cannot
 //! see tool results, so every id the script references must be known
 //! before the send starts.
@@ -38,7 +37,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-/// The `agent` template every Agent call spawns.
+/// The role every Agent call spawns.
 const WORKER: &str = "worker";
 
 // ---------------------------------------------------------------------------
@@ -116,15 +115,14 @@ fn sessions_index(cli: &PekoCli) -> serde_json::Value {
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-/// The live conversational session id: the `root:` key (ids are
-/// stable — no `#` suffix is ever minted).
-fn live_root_id(cli: &PekoCli) -> String {
+/// CLI ingress belongs to the standing `/local-user` child of the trunk.
+fn live_session_id(cli: &PekoCli) -> String {
     let index = sessions_index(cli);
     let obj = index.as_object().expect("sessions.json is an object");
-    obj.keys()
-        .find(|k| k.starts_with("root:") && !k.contains('#'))
-        .cloned()
-        .unwrap_or_else(|| panic!("no live root session in sessions.json: {obj:?}"))
+    obj.iter()
+        .find(|(_, meta)| meta["slug"] == "local-user")
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| panic!("no local-user session in sessions.json: {obj:?}"))
 }
 
 /// Write the `worker` subagent prompt (directory layout).
@@ -152,7 +150,7 @@ fn write_worker_subagent(cli: &PekoCli, principal: &str) {
 
 /// `session new` no longer rotates anything: the action is demoted
 /// (the tool returns a refusal), no `chapters.json` is written, and
-/// the next message keeps the same live `root:*` id — paging is
+/// the next message keeps the same live `/local-user` id — paging is
 /// storage-internal and never changes the session id.
 #[tokio::test]
 #[ignore = "requires MOCK_LLM_URL and peko daemon"]
@@ -169,14 +167,14 @@ async fn session_new_refused_live_id_stays_stable() {
     let second_needle = "sessnew-second-m4qx";
 
     let cli = PekoCli::new();
-    create_mock_principal_with_tools(&cli, principal, &mock_url, &["session"]);
+    create_mock_principal_with_tools(&cli, principal, &mock_url, &["Session"]);
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Send #1: the agent calls `session new` (refused — the action is
     // demoted) and reports.
     let script = serde_json::json!({
         first_needle: [
-            { "tool_call": { "name": "session", "arguments":
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "new", "title": "first chapter" }).to_string()
             } },
             "NEW_REFUSED",
@@ -202,10 +200,11 @@ async fn session_new_refused_live_id_stays_stable() {
         !dir.join("chapters.json").exists(),
         "chapters.json must never be written (chapters are gone)"
     );
-    let live_before = live_root_id(&cli);
+    let live_before = live_session_id(&cli);
 
     // Send #2: an ordinary message on the same live session.
-    let script = serde_json::json!({ second_needle: ["SECOND_TURN_OK"] }).to_string();
+    // The mock routes on the first user message, retained across resumed turns.
+    let script = serde_json::json!({ first_needle: ["SECOND_TURN_OK"] }).to_string();
     configure_mock(&mock_url, &script).await;
 
     let prompt = format!("Say SECOND_TURN_OK. Use the needle '{second_needle}'.");
@@ -273,7 +272,7 @@ async fn session_delete_current_session_refused() {
     let second_needle = "sessdel-second-b7wz";
 
     let cli = PekoCli::new();
-    create_mock_principal_with_tools(&cli, principal, &mock_url, &["session"]);
+    create_mock_principal_with_tools(&cli, principal, &mock_url, &["Session"]);
     let _daemon = DaemonGuard::spawn(&cli);
 
     // Send #1: establish the live session.
@@ -284,7 +283,7 @@ async fn session_delete_current_session_refused() {
     assert_ok(&out, &err, &status);
     assert!(out.contains("FIRST_OK"), "stdout={out} stderr={err}");
 
-    let live_id = live_root_id(&cli);
+    let live_id = live_session_id(&cli);
 
     // Send #2: the agent tries to remove the session it is running in.
     // The tool returns the structured refusal as the tool result; the
@@ -293,8 +292,8 @@ async fn session_delete_current_session_refused() {
     // Sprint 7 Commit G (2026-08-22): `session_key` → `path`
     // (matches the Agent tool's addressing surface).
     let script = serde_json::json!({
-        second_needle: [
-            { "tool_call": { "name": "session", "arguments":
+        first_needle: [
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "remove", "path": live_id }).to_string()
             } },
             "REMOVE_REFUSED",
@@ -345,14 +344,13 @@ async fn agent_spawn_list_resume_with_history() {
     let p1 = "sessagent-p1-c2vd";
     let c1 = "sessagent-c1-c2vd";
     let p2 = "sessagent-p2-c2vd";
-    let c2 = "sessagent-c2-c2vd";
 
     let cli = PekoCli::new();
     create_mock_principal_with_tools(
         &cli,
         principal,
         &mock_url,
-        &["Agent", "Write", "Read", "session", WORKER],
+        &["Agent", "Write", "Read", "Session", WORKER],
     );
     write_worker_subagent(&cli, principal);
     let _daemon = DaemonGuard::spawn(&cli);
@@ -361,9 +359,9 @@ async fn agent_spawn_list_resume_with_history() {
     let script = serde_json::json!({
         p1: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "agent": WORKER }).to_string()
+                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "role": WORKER, "path": "part-one" }).to_string()
             } },
-            { "tool_call": { "name": "session", "arguments":
+            { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "list" }).to_string()
             } },
             "SPAWN_DONE",
@@ -391,7 +389,7 @@ async fn agent_spawn_list_resume_with_history() {
         .as_object()
         .unwrap()
         .iter()
-        .find(|(_, v)| v["trigger"] == "spawn")
+        .find(|(_, v)| v["trigger"] == "spawn" && v["slug"] == "part-one")
         .map(|(k, _)| k.clone())
         .unwrap_or_else(|| panic!("no spawned session in index: {index:?}"));
 
@@ -399,18 +397,20 @@ async fn agent_spawn_list_resume_with_history() {
     // Sprint 7 Commits 1-4 (AgentArgs trim): `session_key` → `path`
     // (Commit 1); `cleanup` removed (Commit 4).
     let script = serde_json::json!({
-        p2: [
+        // The parent retains its first user message. Reuse the child's needle
+        // across tasks so either current-task or history-first rendering routes it.
+        p1: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "action": "resume",
                     "path": spawn_id,
-                    "prompt": format!("Do part two. Needle '{c2}'."),
-                    "agent": WORKER,
+                    "prompt": format!("Do part two. Needle '{c1}'."),
+                    "role": WORKER,
                 }).to_string()
             } },
             "RESUME_DONE",
         ],
-        c2: ["CHILD_TWO_DONE"],
+        c1: ["CHILD_TWO_DONE"],
     })
     .to_string();
     configure_mock(&mock_url, &script).await;
@@ -432,6 +432,6 @@ async fn agent_spawn_list_resume_with_history() {
         .expect("spawned session transcript exists after resume");
     assert!(
         transcript.contains("CHILD_ONE_DONE") && transcript.contains("CHILD_TWO_DONE"),
-        "resumed session must keep its full prior history"
+        "resumed session must keep its full prior history: stdout={out} stderr={err}\n{transcript}"
     );
 }

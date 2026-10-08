@@ -857,15 +857,18 @@ mod tests {
         let fx = fixture("deepwf").await;
         // Register the Workflow runner on the fixture's core (daemon
         // state.rs does this in production).
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.tooling().catalog(),
-            Arc::new(crate::tools::builtin::WorkflowTool::new(
-                Arc::downgrade(&fx.manager),
-                Arc::clone(&fx.run_tokens),
-            )),
-        )
-        .await
-        .expect("register Workflow");
+        fx.tool_runtime
+            .tooling()
+            .catalog()
+            .register(
+                Arc::new(crate::tools::builtin::WorkflowTool::new(
+                    Arc::downgrade(&fx.manager),
+                    Arc::clone(&fx.run_tokens),
+                )),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         // A workflow running at MAX depth calls ExecuteTool("Workflow")
         // — refused by the recursion guard.
@@ -1005,12 +1008,15 @@ mod tests {
     ) -> (Fixture, Arc<ClassifyProbeTool>) {
         let fx = fixture(name).await;
         let probe = Arc::new(ClassifyProbeTool { metas });
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.tooling().catalog(),
-            probe.clone(),
-        )
-        .await
-        .expect("register probe");
+        fx.tool_runtime
+            .tooling()
+            .catalog()
+            .register(
+                probe.clone(),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
         (fx, probe)
     }
 
@@ -1182,7 +1188,7 @@ mod tests {
         );
     }
 
-    // ── Caller-aware `session` tool on the ExecuteTool path ─────────
+    // ── Caller-aware `Session` tool on the ExecuteTool path ─────────
 
     /// Seed the fixture principal's REAL store with trunk + child
     /// (slugs t/c), ids prefixed for cross-principal distinctness.
@@ -1231,22 +1237,25 @@ mod tests {
         (trunk, child)
     }
 
-    /// Register the daemon-side caller-aware `session` tool on the
+    /// Register the daemon-side caller-aware `Session` tool on the
     /// fixture core (daemon/state.rs does this in production).
     async fn register_daemon_session_tool(fx: &Fixture) {
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.tooling().catalog(),
-            Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
-                Arc::downgrade(&fx.manager),
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
-        )
-        .await
-        .expect("register session");
+        fx.tool_runtime
+            .tooling()
+            .catalog()
+            .register(
+                Arc::new(crate::tools::builtin::CallerAwareSessionTool::for_daemon(
+                    Arc::downgrade(&fx.manager),
+                    crate::async_exec::executor::standalone_inbox_registry(),
+                )),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
     }
 
     /// Pre-change evidence: without the daemon-side registration (and
-    /// no booted agent), `ExecuteTool("session")` resolves to nothing.
+    /// no booted agent), `ExecuteTool("Session")` resolves to nothing.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn execute_tool_session_unresolvable_without_daemon_registration() {
@@ -1254,7 +1263,7 @@ mod tests {
         let response = execute_tool(
             &fx.handler,
             30,
-            "session",
+            "Session",
             json!({"action": "list"}),
             "agent:nosess:cli:default",
             &fx.workspace,
@@ -1293,7 +1302,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             31,
-            "session",
+            "Session",
             json!({"action": "status"}),
             "agent:sesshead:workflow:run-1",
             &fx.workspace,
@@ -1361,7 +1370,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             32,
-            "session",
+            "Session",
             json!({"action": "status"}),
             "agent:sesstrunk:workflow:run-1",
             &fx.workspace,
@@ -1399,7 +1408,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             33,
-            "session",
+            "Session",
             json!({"action": "remove", "path": "sess:/t/c"}),
             "agent:sessdang:workflow:direct",
             &fx.workspace,
@@ -1450,7 +1459,7 @@ mod tests {
         let response = execute_tool(
             &fx.handler,
             34,
-            "session",
+            "Session",
             json!({"action": "remove", "path": "sess:/t/c"}),
             "agent:sessplain:workflow:direct",
             &fx.workspace,
@@ -1494,7 +1503,7 @@ mod tests {
         let response = execute_tool_with_token(
             &fx.handler,
             35,
-            "session",
+            "Session",
             json!({"action": "list"}),
             "agent:sessA:workflow:run-1",
             &fx.workspace,
@@ -1544,14 +1553,17 @@ mod tests {
             None, // no agent-DID cell — the request must carry the parent
             peko_subject::PrincipalId(principal_id.clone()),
         ));
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            fx.tool_runtime.tooling().catalog(),
-            Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-                Arc::clone(&runtime).as_shared(),
-            )),
-        )
-        .await
-        .expect("register AsyncSpawn");
+        fx.tool_runtime
+            .tooling()
+            .catalog()
+            .register(
+                Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
+                    Arc::clone(&runtime).as_shared(),
+                )),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let node = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let token = fx.run_tokens.mint(

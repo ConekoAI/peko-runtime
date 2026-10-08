@@ -2,7 +2,6 @@
 
 use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
-use crate::extensions::builtin::BuiltinToolAdapter;
 use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
 use peko_auth::Subject;
@@ -12,7 +11,6 @@ use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
 use peko_session::manager::{ResolvedSession, SessionManager};
 use peko_session::types::ChannelType;
 use peko_session::InboxRegistry;
-use peko_tools_core::Tool;
 use std::sync::Arc;
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -48,7 +46,7 @@ pub struct Agent {
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Current session ID for `session` tool lookups
+    /// Current session ID for `Session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Explicitly shared tooling runtime. Catalog lookups scope workspace
     /// tools by principal while retaining the system built-ins.
@@ -64,13 +62,7 @@ pub struct Agent {
     /// force-compacts on iteration 1 before the run's prompt is
     /// processed. Default false.
     force_compact: bool,
-    /// Optional principal workspace. When set, `init_builtins_async` builds the
-    /// `Agent` tool with `with_workspace(Some(workspace), …)`, so the root
-    /// agent resolves subagents from `<workspace>/roles/<name>/ROLE.md`
-    /// before falling back to the global `<home>/agents/<name>/config.toml`.
-    /// Without this, `init_builtins_async` (run lazily at execution time)
-    /// would clobber any principal-scoped `Agent` tool registered on the
-    /// core beforehand.
+    /// Principal workspace inherited by this run's subagent executor.
     principal_workspace: Option<std::path::PathBuf>,
     /// Caller principal's stable DID. Bound at construction by
     /// `with_caller_principal_did` so `send_peer` can attribute
@@ -92,7 +84,7 @@ pub struct Agent {
     /// `with_principal_plan_port` from
     /// `PrincipalContext::plan_port().clone()` in `agent_runner.rs`
     /// (the `Agent::new_with_session_manager_resolver` chain).
-    /// Used by `init_builtins_async` to build the seven
+    /// Used by `init_run_builtins` to build the seven
     /// `Plan*` tools. `None` means the agent is unbound from
     /// any principal and the plan tools are not registered (test-
     /// only `Agent::new` / `Agent::new_for_test` callers hit this
@@ -100,11 +92,11 @@ pub struct Agent {
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
     /// Phase 2 of `feature/multi-model-subagents`: weak handle to
     /// the principal's `ModelCatalog`. Bound at construction via
-    /// `with_model_catalog` so the `model_list` builtin can
+    /// `with_model_catalog` so the `ModelList` builtin can
     /// snapshot the catalog at execute time. Weak so the agent
     /// never extends the catalog's lifetime past the daemon.
     /// `None` means no catalog is reachable (test path) and the
-    /// `model_list` builtin is not registered.
+    /// `ModelList` builtin is not registered.
     model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
     /// Phase 4 of `feature/multi-model-subagents`: optional audit
     /// sink forwarded to the `AgenticLoop` so it can emit
@@ -169,212 +161,37 @@ impl Clone for Agent {
 }
 
 impl Agent {
-    /// Initialize built-in tools and register them with `ToolingRuntime`.
-    ///
-    /// Registers only agent-specific built-in tools with `ToolingRuntime`.
-    /// Common built-in tools (Bash, Read, Write, etc.) are already
-    /// registered by the daemon's `AppState` startup via `ToolRuntime`;
-    /// MCP tools come from the workspace scanner in
-    /// `principal::context::install_principal_tool_bag`.
-    pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use peko_tools_core::Tool;
-
-        // Defensive check: common built-ins must be pre-registered by the daemon startup path.
-        // `AppState::build` calls `ToolRuntime::register_builtins` on the
-        // shared runtime's catalog before any Agent is created.
-        // Built-ins are under PrincipalId::system(), so the lookup is system-scoped.
-        let has_bash = self
-            .tooling
-            .catalog()
-            .get("Bash", peko_subject::PrincipalId::system())
-            .await
-            .is_some();
-        if !has_bash {
-            tracing::error!(
-                "Built-in tools not pre-registered on ToolingRuntime. \
-                 This indicates a startup ordering bug — AppState should initialize \
-                 ToolRuntime before the StatelessAgentService path (Sprint 9 Commit 4)."
-            );
-        }
-
-        // Agent-specific tools (not part of ToolRuntime::register_builtins)
-        let mut tools: Vec<Arc<dyn Tool>> = vec![];
-
-        // Add session introspection tool backed by the real session manager.
-        // Phase 10d: `SessionTool` lives in peko_tools_builtin and speaks to a
-        // `SessionRuntime` port trait; the production adapter is
-        // `SessionManagerRuntime` (alias for the legacy `SessionIntrospector`).
-        // Phase 4: the adapter enforces the ownership/self/run-permit
-        // guards (plan D3/D4/D5); it classifies the caller from the
-        // agent's current session and needs the inbox registry for
-        // run-permit checks (None ⇒ metadata-only degradation).
-        let session_runtime = crate::session::session_runtime_impl::SessionManagerRuntime::new(
+    /// Install principal defaults and bind execution adapters in the run overlay.
+    async fn init_run_builtins(&self, tooling: &Arc<ToolingRuntime>) -> anyhow::Result<()> {
+        use crate::tools::installation::{
+            install_principal_services, install_run, PrincipalBindings,
+        };
+        install_principal_services(
+            &self.tooling,
+            &self.principal_id,
+            PrincipalBindings {
+                sessions_dir: self.session_manager.read().await.sessions_dir().cloned(),
+                plan: self.principal_plan_port.clone(),
+                model_catalog: self.model_catalog.clone(),
+                caller_did: self.caller_principal_did.as_deref(),
+            },
+        )
+        .await?;
+        let sessions = crate::session::session_runtime_impl::SessionManagerRuntime::new(
             self.session_manager.clone(),
             self.current_session_id.clone(),
             self.config.name.clone(),
             self.inbox_registry.clone(),
-            // The principal's meter is chained onto the subagent
-            // executor by `Agent::with_quota_meter` (agent_runner /
-            // child_turns) before the lazy `init_builtins_async`
-            // call runs, so reading it back here threads the
-            // principal meter through without a new Agent field.
-            // `None` (CLI one-shots, tests with no quota config)
-            // keeps the session tool's `quota` snapshot at `None`.
             self.subagent_executor.quota_meter().cloned(),
         );
-        // ADR-061 caller-awareness: `CallerAwareSessionTool::for_agent`
-        // wraps the same runtime — identical behavior on the loop path
-        // (the ctx-carried session id IS the run id the shared cell
-        // holds), but on the `ExecuteTool` path it classifies against
-        // the per-call token-resolved node instead of the stale cell.
-        tools.push(Arc::new(
-            crate::tools::builtin::CallerAwareSessionTool::for_agent(session_runtime),
-        ));
-
-        // Add Agent tool with executor and session provider. When this agent
-        // Sprint 7: the Agent tool reads its workspace from the runtime
-        // port (`SubagentExecutorRuntime::workspace()`), which reads
-        // it from `SubagentExecutor::principal_workspace`. The
-        // session-key provider is no longer threaded through the
-        // constructor — the canonical caller session id comes from
-        // `ToolContext::session_id`.
-        tools.push(Arc::new(crate::tools::builtin::messaging::new_agent_tool(
-            self.subagent_executor.clone(),
-        )));
-
-        // Add planning todo (Task*) tools backed by the agent's session storage.
-        // Phase 10d: the tools now speak to a `TodoRuntime` port trait; the
-        // adapter is constructed here so the built-in crate stays free of
-        // root-only deps.
-        //
-        // The family is registered unconditionally; without a
-        // session-storage dir we still warn and skip (defensive).
-        if let Some(sessions_dir) = self.session_manager.read().await.sessions_dir().cloned() {
-            let todo_storage = Arc::new(peko_session::todos::TodoStorage::new(sessions_dir));
-            let runtime = std::sync::Arc::new(
-                crate::session::todo_runtime_impl::TodoStorageRuntime::new(todo_storage),
-            );
-            tools.push(Arc::new(crate::tools::builtin::TaskCreateTool::new(
-                runtime.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::builtin::TaskGetTool::new(
-                runtime.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::builtin::TaskListTool::new(
-                runtime.clone(),
-            )));
-            tools.push(Arc::new(crate::tools::builtin::TaskUpdateTool::new(
-                runtime,
-            )));
-        } else {
-            tracing::warn!(
-                "Session storage directory not available for agent '{}'; Task* tools will not be registered",
-                self.config.name
-            );
-        }
-
-        // Note: `AsyncStatus`/`AsyncList`/`AsyncStop` are intentionally NOT registered
-        // here. They are registered per-agent inside `build_agentic_loop`, bound
-        // to the agent's own `AsyncExecutor` registry so each agent only sees its
-        // own async tasks (session isolation).
-
-        // peko_plan DAG tools (PR #2 of four in the wiring sequence).
-        // The 7 `Plan*` tools wrap `peko_plan::PlanPort` and require a
-        // per-Principal port handle bound via
-        // `Agent::with_principal_plan_port`. Without that binding the
-        // tools are intentionally not registered — test-only
-        // `Agent::new` callers hit this path. Mirrors the Task* shape:
-        // runtime-handle-gated, otherwise warn-level skip.
-        if let Some(plan_port) = self.principal_plan_port.clone() {
-            use crate::tools::builtin::{
-                PlanAddStepTool, PlanCloseTool, PlanCreateTool, PlanGetTool, PlanListTool,
-                PlanMarkStepTool, PlanRecordEvidenceTool,
-            };
-            tools.push(Arc::new(PlanCreateTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanListTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanGetTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanMarkStepTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanRecordEvidenceTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanAddStepTool::new(plan_port.clone())));
-            tools.push(Arc::new(PlanCloseTool::new(plan_port)));
-        } else {
-            tracing::warn!(
-                "No principal_plan_port bound for agent '{}' — Plan* tools will not be registered",
-                self.config.name
-            );
-        }
-
-        // Add the consolidated `ChannelSend` tool — sprint 4
-        // unification: this single tool replaces both the bare-post
-        // `ChannelSend` AND the per-agent `send_peer`. The dispatch
-        // branch (`Bare` / `Principal` / `User` / `Group`) is
-        // selected by the wire form of the `channel` parameter the
-        // LLM passes; see `tools/builtin/channel/channel_send.rs` for
-        // the dispatch table.
-        //
-        // Per-agent construction carries the caller's principal DID —
-        // the F37 funnel's `ToolContext` does NOT carry the caller
-        // DID, so the tool needs it bound at registration. When the
-        // cross-runtime ctx is absent (tunnel down, test harnesses)
-        // the tool still registers in local-only mode — the bare /
-        // group / user branches work; principal targets return a
-        // structured error.
-        if let Some(caller_did) = self.caller_principal_did.as_ref() {
-            match crate::tools::builtin::channel::build_channel_send_tool(&self.tooling, caller_did)
-            {
-                Some(tool) => tools.push(tool),
-                None => {
-                    tracing::warn!(
-                        "No ChannelPort on the tooling runtime's services — \
-                         ChannelSend will not be registered for agent {}",
-                        self.config.name
-                    );
-                }
-            }
-        } else {
-            tracing::debug!(
-                "Caller identity not bound on agent {} — \
-                 ChannelSend tool will not be registered",
-                self.config.name
-            );
-        }
-
-        // ADR-066 P2: no capability filter — every registered tool is
-        // visible (presence = visibility = executability).
-
-        // ADR-018/019: Register ONLY agent-specific built-in tools with ToolingRuntime
-        // Common built-in tools are already registered via ToolRuntime::register_builtins
-        // (MCP tools come from the workspace scanner in
-        // `principal::context::install_principal_tool_bag`).
-        // Agent-specific tools are per-agent and per-principal — each Agent instance
-        // owns its own Async* family scoped to its own principal_id.
-        for tool in &tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool(
-                self.tooling.catalog(),
-                tool.clone(),
-                &self.principal_id,
-            )
-            .await
-            {
-                tracing::warn!(
-                    "Failed to register built-in tool '{}' with ToolingRuntime: {}",
-                    tool.name(),
-                    e
-                );
-            } else {
-                tracing::debug!(
-                    "Registered built-in tool '{}' with ToolingRuntime",
-                    tool.name()
-                );
-            }
-        }
-
-        tracing::info!(
-            "Registered {} agent-specific built-in tools with ToolingRuntime",
-            tools.len()
-        );
-
-        Ok(())
+        install_run(
+            tooling,
+            &self.principal_id,
+            Arc::clone(&self.subagent_executor),
+            sessions,
+            Arc::clone(&self.session_manager),
+        )
+        .await
     }
 
     /// Create a new agent with the given configuration
@@ -554,7 +371,7 @@ impl Agent {
             principal_plan_port: None,
             // Phase 2 of `feature/multi-model-subagents`: the
             // standalone / CLI one-shot `Agent::new` path doesn't
-            // bind a `ModelCatalog`. The `model_list` builtin is
+            // bind a `ModelCatalog`. The `ModelList` builtin is
             // intentionally not registered for these agents.
             model_catalog: None,
             // Phase 4: unbound by default; production wiring at
@@ -575,16 +392,7 @@ impl Agent {
         Ok(agent)
     }
 
-    /// Scope this agent's `Agent` tool to a Principal workspace.
-    ///
-    /// When set, `init_builtins_async` builds the `Agent` tool with
-    /// `with_workspace(Some(workspace), …)`, so the root agent resolves
-    /// subagents from `<workspace>/roles/<name>/ROLE.md` before falling
-    /// back to the global `~/.peko/agents/<name>/config.toml` layout. This
-    /// must be set before the agent executes: `init_builtins_async` runs
-    /// lazily inside `prepare_execution`, so a principal-scoped `Agent`
-    /// tool registered on the core beforehand would otherwise be clobbered
-    /// by the global-scoped one.
+    /// Resolve this run's role templates from the principal workspace.
     pub fn with_principal_workspace(mut self, workspace: std::path::PathBuf) -> Self {
         // Also scope the subagent executor so depth-1 children (and, via the
         // executor's own propagation, deeper descendants) resolve their
@@ -663,30 +471,25 @@ impl Agent {
         self
     }
 
-    /// Bind the spawning principal's `QuotaMeter` for this agent's
-    /// `Agent`-tool spawns.
-    ///
-    /// B4 (correctness, 2026-08-22): this builder propagates the
-    /// principal's quota meter onto the subagent executor so that
-    /// `init_builtins_async`'s `AgentTool` re-registration uses the
-    /// metered executor instead of the unmetered default. Pre-B4
-    /// wiring (F39) chained the meter on a *separately-built*
-    /// executor in `principal/agent_runner.rs` and pre-registered a
-    /// metered `AgentTool` ahead of the lazy
-    /// `init_builtins_async` call. The lazy call then rebuilt an
-    /// `AgentTool` from `self.subagent_executor` — which was the
-    /// internal default without meters — and `register_tool`'s
-    /// idempotent re-register clobbered the metered tool. Net
-    /// effect: every root-agent `Agent`-tool spawn ran with
-    /// `QuotaMeter::unlimited()` regardless of the principal's
-    /// `cost_per_call_max`.
-    ///
-    /// `None` keeps the unmetered default (CLI one-shot / test paths
-    /// with no quota config).
+    /// Charge child runs against the spawning principal's quota meter.
+    /// `None` retains the unlimited offline/test default.
     #[must_use]
     pub fn with_quota_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
         let executor = (*self.subagent_executor).clone().with_quota_meter(meter);
         self.subagent_executor = Arc::new(executor);
+        self
+    }
+
+    /// Keep child-run audits on the same principal observability hub.
+    pub(crate) fn with_subagent_observability(
+        mut self,
+        observability: Option<Arc<peko_observability::Observability>>,
+    ) -> Self {
+        self.subagent_executor = Arc::new(
+            (*self.subagent_executor)
+                .clone()
+                .with_observability(observability),
+        );
         self
     }
 
@@ -698,11 +501,11 @@ impl Agent {
     /// `Plan*` built-in tools (`PlanCreate` / `PlanList` /
     /// `PlanGet` / `PlanMarkStep` / `PlanRecordEvidence` /
     /// `PlanAddStep` / `PlanClose`) are registered by
-    /// `init_builtins_async`; when `None` they are skipped (the
+    /// `init_run_builtins`; when `None` they are skipped (the
     /// typical test path).
     ///
     /// The handle is propagated to the subagent executor so depth-1
-    /// children inherit the same per-Principal port and `init_builtins_async`
+    /// children inherit the same per-Principal port and `init_run_builtins`
     /// on the child also wires the seven tools (subagents can manage
     /// plans on behalf of their spawning principal).
     #[must_use]
@@ -716,15 +519,15 @@ impl Agent {
     }
 
     /// Phase 2 of `feature/multi-model-subagents`: bind the
-    /// principal's model catalog so `init_builtins_async` can
-    /// register the `model_list` builtin. The catalog handle is
-    /// stored as an `Arc` so the `model_list` tool can downgrade
+    /// principal's model catalog so `init_run_builtins` can
+    /// register the `ModelList` builtin. The catalog handle is
+    /// stored as an `Arc` so the `ModelList` tool can downgrade
     /// it to a `Weak` at registration time without losing the
     /// principal's catalog reference (the executor passes the same
     /// `Arc` to the tool's `Weak<ModelCatalog>` field).
     ///
     /// `None` ⇒ no catalog reachable (CLI one-shot path that builds
-    /// an `Agent` without a resolver); the `model_list` builtin is
+    /// an `Agent` without a resolver); the `ModelList` builtin is
     /// intentionally not registered.
     #[must_use]
     pub fn with_model_catalog(
@@ -1084,21 +887,15 @@ impl Agent {
             ));
         }
 
-        if let Err(e) = self.prepare_execution().await {
-            self.set_state(AgentState::Idle);
-            return Err(e);
-        }
-
         let agent_arc = Arc::new(self.clone());
-        // Per-call wiring: fresh completion queue + executor + per-agent
-        // AsyncSpawn/AsyncOutput tools. The agent's session key (read from
+        // Attach the caller inbox and private execution bindings. The agent's session key (read from
         // `current_session_id`) is pushed onto the core so AsyncSpawn can
         // stamp `parent_session_key` correctly.
         //
         // Session-key flow across the three `execute_*` paths:
         //
         // - `Agent::execute()` (this method, one-shot CLI mode):
-        //   `current_session_id` is `None` here because `prepare_execution`
+        //   `current_session_id` is `None` here because `build_agentic_loop`
         //   does not create a session — the session is born later, inside
         //   `AgenticLoop::run` → `run_inner`. So `session_key` is `None`
         //   and `set_session_key(&self.identity.did, None)` runs on the
@@ -1194,11 +991,6 @@ impl Agent {
                 "Agent is not idle (current state: {:?})",
                 self.state.current()
             ));
-        }
-
-        if let Err(e) = self.prepare_execution().await {
-            self.set_state(AgentState::Idle);
-            return Err(e);
         }
 
         let agent_arc = Arc::new(self.clone());
@@ -1306,14 +1098,8 @@ impl Agent {
             *current = Some(session_id);
         }
 
-        if let Err(e) = self.prepare_execution().await {
-            self.set_state(AgentState::Idle);
-            return Err(e);
-        }
-
         let agent_arc = Arc::new(self.clone());
-        // Per-call wiring: fresh completion queue + executor + per-agent
-        // AsyncSpawn/AsyncOutput tools. The session ID we just stamped into
+        // Attach the caller inbox and private execution bindings. The session ID we just stamped into
         // current_session_id is the parent_session_key we'll use for any
         // spawn in this loop. See the session-key flow comment in
         // `Agent::execute` for how the three `execute_*` paths cooperate
@@ -1388,8 +1174,6 @@ impl Agent {
             *current = Some(session_id);
         }
 
-        self.prepare_execution().await?;
-
         let agent_arc = Arc::new(self.clone());
         let session_id = self.current_session_id.read().await.clone();
         // F19: same unlimited fallback as the other `execute_*` paths.
@@ -1447,14 +1231,11 @@ impl Agent {
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<peko_quota::QuotaMeter>,
     ) -> Result<peko_engine::agentic_loop::AgenticLoop> {
-        let tooling = self.tooling();
+        let tooling = self.tooling.for_run();
+        self.init_run_builtins(&tooling).await?;
 
-        // 1. Per-call completion queue (shared by executor + loop).
-        //    The executor is wired to a per-call `InboxRegistry` that
-        //    holds the same `SessionInbox` the loop drains; the
-        //    daemon-global `InboxRegistry` will replace this in a
-        //    follow-up once the per-call path is rewired to read from
-        //    `AppState::inbox_registry` directly.
+        // Resolve the principal's canonical inbox registry before attaching the
+        // loop, including offline runtimes which have no daemon registry.
         let async_inbox_registry = if let Some(ref reg) = self.inbox_registry {
             Arc::clone(reg)
         } else {
@@ -1463,136 +1244,27 @@ impl Agent {
             // the executor below and the loop both read from it.
             crate::async_exec::executor::standalone_inbox_registry()
         };
+        let executor = self
+            .tooling
+            .async_executor_for(&self.principal_id, async_inbox_registry)
+            .await;
+        let async_inbox_registry = Arc::clone(executor.inbox_registry());
         let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
-        // 2. Per-call AsyncExecutor wired to the same registry.
-        let async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
-            async_inbox_registry.clone(),
-        ));
-
-        // 3. Per-call AsyncSpawn and AsyncOutput tools bound to executor +
-        //    core. Uses Weak so the tools do not extend the core's lifetime
-        //    past the core itself.
-        let core_weak = Arc::downgrade(&tooling);
-        // Phase 10c: `AsyncExecutorRuntime` is the framework-host
-        // adapter that implements `crate::tools::builtin::async_control::AsyncRuntime`.
-        // It owns the per-agent `Arc<AsyncExecutor>` + `Weak<ToolingRuntime>` +
-        // principal_id, so each Async* tool
-        // can take just an `Arc<dyn AsyncRuntime>` rather than
-        // reaching into the framework itself.
-        let runtime = Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
-            async_executor,
-            core_weak,
-            Some(self.identity.did.clone()),
-            self.principal_id.clone(),
-        ));
-        let runtime_handle = runtime.as_shared();
-        let spawn_tool = Arc::new(crate::tools::builtin::AsyncSpawnTool::new(
-            runtime_handle.clone(),
-        ));
-        let output_tool = Arc::new(crate::tools::builtin::AsyncOutputTool::new(
-            runtime_handle.clone(),
-        ));
-
-        // 4. Re-register the per-agent async tools (overwrites any prior
-        //    instance). register_tool is idempotent — unregisters first.
-        //    Per-agent async tools are scoped to the owning principal.
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_spawn_tool(
-            tooling.catalog(),
-            spawn_tool,
+        // Async services belong to the principal. Task receipts, concurrency
+        // permits, and completion routing remain valid across turns.
+        crate::tools::installation::install_async(
+            &self.tooling,
             &self.principal_id,
+            async_inbox_registry,
         )
-        .await
-        {
-            warn!("Failed to register per-agent AsyncSpawnTool: {}", e);
-        }
-        if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_async_output_tool(
-            tooling.catalog(),
-            output_tool,
-            &self.principal_id,
-        )
-        .await
-        {
-            warn!("Failed to register per-agent AsyncOutputTool: {}", e);
-        }
+        .await?;
 
-        // Register the per-agent introspection trio so this agent only sees
-        // its own async tasks. `register_tool` is idempotent — it unregisters
-        // any prior instance with the same name first.
-        for (tool_name, tool) in [
-            (
-                "AsyncStatus",
-                Arc::new(crate::tools::builtin::AsyncStatusTool::new(
-                    runtime_handle.clone(),
-                )) as Arc<dyn Tool>,
-            ),
-            (
-                "AsyncList",
-                Arc::new(crate::tools::builtin::AsyncListTool::new(
-                    runtime_handle.clone(),
-                )),
-            ),
-            (
-                "AsyncStop",
-                Arc::new(crate::tools::builtin::AsyncStopTool::new(
-                    runtime_handle.clone(),
-                )),
-            ),
-        ] {
-            if let Err(e) = crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                tooling.catalog(),
-                tool,
-                &self.principal_id,
-            )
-            .await
-            {
-                warn!("Failed to register per-agent {tool_name}Tool: {e}");
-            }
-        }
-
-        // Phase 2 of `feature/multi-model-subagents`: register the
-        // `model_list` builtin when both the agent's config opts in
-        // (`enable_model_list`) AND a principal catalog is reachable.
-        // The CLI one-shot path binds neither (no resolver); the
-        // build surfaces silently skip the tool. Same Weak-downgrade
-        // pattern so the tool never extends the
-        // catalog's lifetime past the daemon.
-        if self.config.enable_model_list {
-            if let Some(ref catalog) = self.model_catalog {
-                let model_list_tool = Arc::new(crate::tools::builtin::ModelListTool::new(
-                    Arc::downgrade(catalog),
-                ));
-                if let Err(e) =
-                    crate::extensions::builtin::BuiltinToolAdapter::register_model_list_tool(
-                        tooling.catalog(),
-                        model_list_tool,
-                        &self.principal_id,
-                    )
-                    .await
-                {
-                    warn!("Failed to register per-agent ModelListTool: {e}");
-                }
-            } else {
-                tracing::debug!(
-                    "Model list disabled for agent '{}': no bound ModelCatalog",
-                    self.config.name
-                );
-            }
-        } else {
-            tracing::debug!(
-                "Model list disabled by config for agent '{}'",
-                self.config.name
-            );
-        }
-
-        // 5. Push the session key onto the core so AsyncSpawn can stamp
-        //    parent_session_key on every spawned task. The session key is
-        //    keyed by this agent's DID on the shared core so concurrent
-        //    agents in daemon mode do not clobber each other (issue #68).
+        // Legacy fallback keys stay local; ToolContext carries canonical session attribution.
         peko_engine::EngineHooks::set_session_key(&*tooling, &self.identity.did, session_key).await;
 
-        // 6. Construct AgenticLoop with the queue.
+        // Construct the loop over the private binding and caller inbox.
         //
         // F19: `quota_meter` is bound here from the principal the
         // agent belongs to. The loop opens a `QuotaScope::with` at
@@ -1654,15 +1326,6 @@ impl Agent {
             loop_ = loop_.with_cancel_token(token);
         }
         Ok(loop_)
-    }
-
-    /// Prepare agent for execution by initializing built-in tools.
-    async fn prepare_execution(&self) -> anyhow::Result<()> {
-        if let Err(e) = self.init_builtins_async().await {
-            return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
-        }
-
-        Ok(())
     }
 
     /// Wait for background async tasks to complete

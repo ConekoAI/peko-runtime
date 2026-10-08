@@ -867,78 +867,35 @@ impl CronEngine {
             (principal.id.0.clone(), config.name.clone())
         };
 
-        // Agent-specific built-ins (ChannelSend, Agent, Task*, Async*) are
-        // normally registered by `Agent::init_builtins_async` at run start.
-        // A cron SpawnTool fire can run before any agent turn (e.g. right
-        // after daemon start), leaving the hook point unhandled and the
-        // job failing with "Tool '…' not available". ChannelSend is the
-        // cron ping path, so ensure its registration here. Registration
-        // is idempotent (`register_tool` unregisters first), but skip the
-        // churn when a run already registered it.
-        if tool_name == crate::tools::builtin::channel::CHANNEL_SEND_TOOL_NAME
-            && core
-                .catalog()
-                .get_tool_metadata(tool_name, &principal.id)
-                .await
-                .is_none()
-        {
-            let caller_did = principal.config.read().await.did.clone();
-            match caller_did {
-                Some(did) => {
-                    match crate::tools::builtin::channel::build_channel_send_tool(&core, &did.0) {
-                        Some(tool) => {
-                            if let Err(e) =
-                                crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-                                    core.catalog(),
-                                    tool,
-                                    &principal.id,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "cron SpawnTool: ChannelSend ensure-registration failed: {e}"
-                                );
-                            }
-                        }
-                        None => {
-                            tracing::warn!(
-                                "cron SpawnTool: no ChannelPort on ToolingRuntime — \
-                                 ChannelSend cannot be registered"
-                            );
-                        }
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "cron SpawnTool: principal '{}' has no DID — \
-                         ChannelSend cannot be registered",
-                        job.principal_id.0
-                    );
-                }
-            }
-        }
-
-        // Agent cold start: same registration gap as ChannelSend, but
-        // the Agent tool needs a fully-wired `SubagentExecutor`
-        // (provider, session manager, quota, persona). Build one through
-        // the shared `PeerChildTurns::build` recipe so the wiring cannot
-        // drift from the ingress path, and install the peer-turn surface
-        // so cron-attached turns on peer-bound sessions (e.g.
-        // `/local-user`) deliver their reply to the peer's DM channel.
-        if tool_name == "Agent"
-            && core
-                .catalog()
-                .get_tool_metadata(tool_name, &principal.id)
-                .await
-                .is_none()
-        {
-            if let Err(e) = self
-                .ensure_agent_tool_registered(pm, &principal, &core)
-                .await
-            {
-                tracing::warn!("cron SpawnTool: Agent ensure-registration failed: {e:#}");
-            }
-        }
+        // Principal services are defaults, shared with turn and IPC setup.
+        crate::tools::installation::install_agent_fallback(
+            core.catalog(),
+            Arc::downgrade(pm),
+            Arc::clone(&self.observability),
+        )
+        .await?;
+        crate::principal::context::ensure_principal_tool_bag(
+            Arc::clone(&core),
+            &principal.workspace_path,
+            &principal.id,
+        )
+        .await;
+        let caller_did = principal.did().await.0;
+        crate::tools::installation::install_principal_services(
+            &core,
+            &principal.id,
+            crate::tools::installation::PrincipalBindings {
+                sessions_dir: Some(principal.memory.sessions_dir().clone()),
+                plan: Some(Arc::clone(&principal.plan_port)),
+                model_catalog: pm
+                    .llm_resolver()
+                    .map(|resolver| Arc::clone(resolver.catalog())),
+                caller_did: Some(&caller_did),
+            },
+        )
+        .await?;
+        crate::tools::installation::install_async(&core, &principal.id, pm.shared_inbox_registry())
+            .await?;
 
         let wake = wake_on_completion.unwrap_or(false);
         let timeout = timeout_secs.or(Some(7200));
@@ -1118,61 +1075,6 @@ impl CronEngine {
                 trunk_session_key.to_string()
             }
         }
-    }
-
-    /// Register the `Agent` tool for a principal whose cron SpawnTool
-    /// job fires before any agent run has happened (cold start).
-    ///
-    /// The tool needs a fully-wired `SubagentExecutor` — provider,
-    /// session manager, quota meter, persona, plan port. Build it
-    /// through the shared [`PeerChildTurns::build`] recipe (the same
-    /// construction the peer-ingress and channel-responder paths use)
-    /// so the wiring cannot drift, then install the
-    /// [`PeerTurnSurface`](crate::agents::subagent_executor::PeerTurnSurface)
-    /// so cron-attached turns on peer-bound sessions (e.g. a recurring
-    /// `Agent new path="local-user"` ping job) deliver their reply to
-    /// the peer's DM channel. PeerChildTurns' own executor stays
-    /// surface-free — the ingress/responder drivers post replies
-    /// themselves.
-    async fn ensure_agent_tool_registered(
-        &self,
-        pm: &Arc<PrincipalManager>,
-        principal: &Arc<crate::principal::Principal>,
-        core: &Arc<ToolingRuntime>,
-    ) -> Result<()> {
-        let resolver = pm
-            .llm_resolver()
-            .ok_or_else(|| anyhow::anyhow!("PrincipalManager has no LLM resolver bound"))?;
-        let turns = crate::principal::child_turns::PeerChildTurns::build(
-            principal,
-            &resolver,
-            Arc::clone(&self.observability),
-            Some(pm.shared_inbox_registry()),
-            pm.tooling(),
-        )
-        .await?;
-        let surface = core.services().channel_port().map(|port| {
-            Arc::new(crate::principal::child_turns::PeerTurnSurfaceImpl::new(
-                Arc::clone(turns.session_manager()),
-                port,
-                principal.id.clone(),
-            )) as Arc<dyn crate::agents::subagent_executor::PeerTurnSurface>
-        });
-        let executor = turns.executor().clone().with_peer_turn_surface(surface);
-        let tool = Arc::new(crate::tools::builtin::messaging::new_agent_tool(Arc::new(
-            executor,
-        )));
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-            core.catalog(),
-            tool,
-            &principal.id,
-        )
-        .await?;
-        info!(
-            principal = %principal.id.0,
-            "cron cold start: registered Agent tool for principal"
-        );
-        Ok(())
     }
 }
 
@@ -2848,16 +2750,17 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronGatedStubTool {
-                started: started.clone(),
-                release: release.clone(),
-                calls: calls.clone(),
-            }),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronGatedStubTool {
+                    started: started.clone(),
+                    release: release.clone(),
+                    calls: calls.clone(),
+                }),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
         let obs = Arc::new(Observability::new("daemon"));
         let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
         let engine = CronEngine::new(
@@ -2994,12 +2897,13 @@ mod tests {
         // handler (bare `insert_tool_instance` only fills the
         // side-table; the hook dispatch would return "not available").
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronStubTool),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -3120,12 +3024,13 @@ mod tests {
             crate::async_exec::executor::standalone_inbox_registry(),
         ));
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronFailingStubTool),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronFailingStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let obs = Arc::new(Observability::new("daemon"));
         let resolver = crate::common::paths::PathResolver::with_dirs(

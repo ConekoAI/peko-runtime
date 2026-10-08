@@ -188,10 +188,6 @@ impl Tool for WorkflowTool {
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Run timeout in milliseconds (default 300000, max 3600000). On timeout the process is killed."
-                },
-                "_workflow_depth": {
-                    "type": "integer",
-                    "description": "Server-injected nesting depth (ExecuteTool run-token path). Callers must not set this; the daemon strips/overwrites it."
                 }
             },
             "required": ["path"],
@@ -1124,16 +1120,17 @@ mod tests {
             .await
             .unwrap();
         let tooling = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-            tooling.catalog(),
-            Arc::new(WorkflowTool::new(
-                Arc::downgrade(&fx.manager),
-                fx.run_tokens.clone(),
-            )),
-            &principal.id,
-        )
-        .await
-        .unwrap();
+        tooling
+            .catalog()
+            .register(
+                Arc::new(WorkflowTool::new(
+                    Arc::downgrade(&fx.manager),
+                    fx.run_tokens.clone(),
+                )),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                &principal.id,
+            )
+            .await;
         let sessions = peko_session::manager::SessionManager::new()
             .with_path_resolver(
                 Arc::new(peko_session::DefaultPathResolver::with_data_dir(

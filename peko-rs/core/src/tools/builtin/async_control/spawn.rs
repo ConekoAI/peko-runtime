@@ -46,6 +46,8 @@ Parameters:
 - tool: string (required) — the tool name to invoke
 - params: object (required) — parameters to pass to the tool
 - label: string? — optional label for the task
+- wake_on_completion: boolean? — default true; deliver completion to the spawning session and start a follow-up turn when idle. false queues the completion silently for the next run.
+- timeout_secs: integer? — task lifetime in seconds, default 7200. null/omit selects the default.
 
 Returns: { task_id, status, tool_name }"
             .to_string()
@@ -69,10 +71,10 @@ Returns: { task_id, status, tool_name }"
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "If true (default), the completion is pushed into the spawning session's inbox AND, when the session is idle (no run in flight), a follow-up turn is started so the agent reacts to the result. If false, the completion is pushed silently for the next run to drain (background bookkeeping). Cron schedules steer to the principal's root session instead."
+                    "description": "If true (default), the completion is pushed into the spawning session's inbox AND, when the session is idle (no run in flight), a follow-up turn is started so the agent reacts to the result. If false, the completion is pushed silently for the next run to drain (background bookkeeping). Cron schedules use their creating session, with a trunk fallback."
                 },
                 "timeout_secs": {
-                    "type": "integer",
+                    "type": ["integer", "null"],
                     "minimum": 1,
                     "description": "Maximum lifetime of the spawned task in seconds. Defaults to 7200 (2h). Pass null/omit to use the default. Cron schedules can override per job."
                 }
@@ -96,7 +98,7 @@ Returns: { task_id, status, tool_name }"
         // nodeless) on the `ExecuteTool` path. The runtime still falls
         // back to its legacy session-key cell when this is absent
         // (ctx-less in-process dispatches).
-        self.execute_inner(params, ctx.session_id.clone()).await
+        self.execute_inner(params, Some(ctx)).await
     }
 }
 
@@ -104,7 +106,7 @@ impl AsyncSpawnTool {
     async fn execute_inner(
         &self,
         params: serde_json::Value,
-        parent_session_id: Option<String>,
+        ctx: Option<&peko_tools_core::ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
         let tool_name = params
             .get("tool")
@@ -143,16 +145,17 @@ impl AsyncSpawnTool {
             label,
             wake_on_completion,
             timeout_secs,
-            parent_session_id: parent_session_id.filter(|s| !s.is_empty()),
+            parent_session_id: ctx
+                .and_then(|ctx| ctx.session_id.clone())
+                .filter(|s| !s.is_empty()),
         };
 
-        // The runtime adapter wraps the per-agent ToolingRuntime snap and
-        // overlays the right principal_id. We hand it a
-        // minimal SpawnRequest here so the public tool API doesn't leak
-        // those concepts; the adapter fills them in. (If a caller ever
-        // needs to override per-call, an optional fields API can come
-        // later.)
-        let receipt = self.runtime.spawn(request).await?;
+        // Scheduling retains caller context without adding model-facing fields.
+        let receipt = if let Some(ctx) = ctx {
+            self.runtime.spawn_with_context(request, ctx).await?
+        } else {
+            self.runtime.spawn(request).await?
+        };
 
         Ok(json!({
             "task_id": receipt.task_id,

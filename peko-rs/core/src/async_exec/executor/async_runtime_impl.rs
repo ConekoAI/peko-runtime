@@ -1,22 +1,9 @@
-//! `AsyncExecutorRuntime` — implements the
-//! `crate::tools::builtin::async_control::AsyncRuntime` port by wrapping
-//! the per-agent `AsyncExecutor` + `Weak<ToolingRuntime>` +
-//! `principal_id`.
+//! `AsyncExecutorRuntime` bridges the AsyncRuntime port to a
+//! principal-owned AsyncExecutor and a weak ToolingRuntime handle.
+//! Installation creates stable Async* tools; each call supplies its own
+//! session, workspace, and principal name through ToolContext.
 //!
-//! This is the bridge between peko-tools-builtin (which only sees the
-//! trait) and the framework-host (which owns `AsyncExecutor` +
-//! `ToolingRuntime`). Agents construct one `AsyncExecutorRuntime` per
-//! agent process and pass it to `AsyncSpawnTool::new`,
-//! `AsyncOutputTool::new`, etc. via the factory closure
-//! (`Arc<AsyncExecutorRuntime>` → `Arc<dyn AsyncRuntime>`).
-//!
-//! ## F37 alignment
-//!
-//! The `spawn` method builds the canonical funnel closure:
-//! `execute_tool_via_hook(...)`, with
-//! `ToolDispatchContext::for_principal(principal_id)` stamping the
-//! spawning principal's identity. (ADR-066 P2 deleted the capability
-//! gate this used to feed.)
+//! Spawns enter the attributed ToolFunnel with the caller's live binding.
 //!
 //! ## F38 alignment
 //!
@@ -27,21 +14,14 @@
 //! `dispatch_tool_with_signal` from a peer crate (not used by the
 //! built-in `AsyncSpawnTool`).
 //!
-//! ## Per-agent scope (with global-registry fallback)
+//! ## Principal-owned tasks with caller-scoped dispatch
 //!
-//! `lookup`, `list`, and `cancel` operate on this runtime's own
-//! `AsyncExecutor::registry()` first — the tasks spawned by THIS run.
-//! The production executor registry is per-call (built fresh in
-//! `Agent::build_agentic_loop`), so tasks registered elsewhere in the
-//! process would otherwise be invisible: background `Bash` tasks live
-//! in the process-global registry keyed by the synthetic `"Bash"`
-//! agent, subagent runs live in the per-agent-name global registry,
-//! and `AsyncSpawn` tasks from an earlier run are gone from the fresh
-//! registry. To keep receipts resolvable across turns and producers,
-//! each method falls back to the global per-agent registry cache
-//! (`super::registry::find_task_across_all_registries` & friends) when
-//! the own-registry lookup misses — restoring the intent the
-//! pre-Phase-10c helper encoded as its "cross-registry global" mode.
+//! Production installs a stable executor per principal. Its registry preserves
+//! AsyncSpawn receipts across turns. Invocation context carries the parent
+//! session, workspace, and principal name, and a live caller binding is retained
+//! for background execution. Lookup/list/cancel also search the existing global
+//! registries for Bash and subagent tasks, applying the principal ownership
+//! filter to every entry.
 
 use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
@@ -61,8 +41,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-/// Per-agent runtime adapter that speaks the `AsyncRuntime` port to
-/// peko-tools-builtin.
+/// Principal-owned runtime adapter for the AsyncRuntime tool port.
 pub struct AsyncExecutorRuntime {
     executor: Arc<AsyncExecutor>,
     tooling: Weak<ToolingRuntime>,
@@ -75,7 +54,7 @@ pub struct AsyncExecutorRuntime {
 }
 
 impl AsyncExecutorRuntime {
-    /// Construct with the per-agent wiring the F37 funnel needs.
+    /// Construct with principal-owned executor and attributed dispatch wiring.
     #[must_use]
     pub fn new(
         executor: Arc<AsyncExecutor>,
@@ -95,6 +74,85 @@ impl AsyncExecutorRuntime {
     #[must_use]
     pub fn as_shared(self: Arc<Self>) -> SharedAsyncRuntime {
         self as Arc<dyn AsyncRuntime>
+    }
+
+    async fn spawn_inner(
+        &self,
+        request: SpawnRequest,
+        caller: Option<&peko_tools_core::ToolContext>,
+    ) -> Result<SpawnReceipt> {
+        let core = self
+            .tooling
+            .upgrade()
+            .ok_or_else(|| anyhow!("ToolingRuntime has been dropped; cannot spawn"))?;
+
+        // Parent-session stamping, per call (ADR-061 follow-up): the
+        // request's `parent_session_id` — filled by `AsyncSpawnTool`
+        // from `ToolContext.session_id` — wins. It is the run id on the
+        // agent-loop path and the token-resolved node id (or the
+        // session-key string when nodeless) on the `ExecuteTool` path.
+        // The legacy session-key cell (keyed by this runtime's agent
+        // DID on the shared core, issue #68) is now only the fallback
+        // for ctx-less in-process dispatches — it is stale between
+        // runs and was never correct on the workflow path.
+        let session_key = request
+            .parent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                self.agent_id
+                    .as_deref()
+                    .and_then(|agent_id| core.session_keys().get(agent_id))
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let config = AsyncToolConfig {
+            // `None` (model omitted `timeout_secs`) must fall back to the
+            // documented 7200s default — the struct-update syntax below would
+            // otherwise overwrite `AsyncToolConfig::default().timeout_secs`
+            // with `None`, giving the task no timeout at all.
+            timeout_secs: request
+                .timeout_secs
+                .or_else(|| AsyncToolConfig::default().timeout_secs),
+            label: request.label,
+            wake_on_completion: request.wake_on_completion,
+            // Ownership stamping (P1-4): the task belongs to the spawning
+            // principal so other principals' Async* surfaces can't see it.
+            principal_id: Some(self.principal_id.0.clone()),
+            ..Default::default()
+        };
+
+        // F37: the runtime stamps its snapshot `principal_id` on the
+        // request so the dispatched task is attributed to the spawning
+        // principal.
+        let mut context =
+            ToolDispatchContext::builder(request.tool_name, request.params, session_key.clone())
+                .for_principal(self.principal_id.0.clone())
+                .with_session_id(session_key.clone());
+        if let Some(caller) = caller {
+            context.workspace = caller.workspace.clone();
+            context.agent_id = caller.agent_id.clone();
+            context.principal_name = caller.principal_name.clone();
+        }
+        // Capture the live caller's binding before scheduling, so a task
+        // keeps its executor/config even if the foreground turn ends.
+        let execution = core
+            .execution_binding(&self.principal_id, &session_key)
+            .unwrap_or(core);
+
+        // F38: `dispatch_tool` internally calls
+        // `dispatch_tool_with_signal(core, ctx, config, None)`. No
+        // cancel token for natural agent spawns — the spawned task
+        // reaches terminal status naturally or via `AsyncStop`.
+        let receipt = self
+            .executor
+            .dispatch_tool(&execution, context, config)
+            .await?;
+        Ok(SpawnReceipt {
+            task_id: receipt.task_id,
+        })
     }
 
     /// Project an `AsyncTaskEntry` into the canonical `TaskView` shape
@@ -142,64 +200,15 @@ impl AsyncExecutorRuntime {
 #[async_trait]
 impl AsyncRuntime for AsyncExecutorRuntime {
     async fn spawn(&self, request: SpawnRequest) -> Result<SpawnReceipt> {
-        let core = self
-            .tooling
-            .upgrade()
-            .ok_or_else(|| anyhow!("ToolingRuntime has been dropped; cannot spawn"))?;
+        self.spawn_inner(request, None).await
+    }
 
-        // Parent-session stamping, per call (ADR-061 follow-up): the
-        // request's `parent_session_id` — filled by `AsyncSpawnTool`
-        // from `ToolContext.session_id` — wins. It is the run id on the
-        // agent-loop path and the token-resolved node id (or the
-        // session-key string when nodeless) on the `ExecuteTool` path.
-        // The legacy session-key cell (keyed by this runtime's agent
-        // DID on the shared core, issue #68) is now only the fallback
-        // for ctx-less in-process dispatches — it is stale between
-        // runs and was never correct on the workflow path.
-        let session_key = request
-            .parent_session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .or_else(|| {
-                self.agent_id
-                    .as_deref()
-                    .and_then(|agent_id| core.session_keys().get(agent_id))
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let config = AsyncToolConfig {
-            // `None` (model omitted `timeout_secs`) must fall back to the
-            // documented 7200s default — the struct-update syntax below would
-            // otherwise overwrite `AsyncToolConfig::default().timeout_secs`
-            // with `None`, giving the task no timeout at all.
-            timeout_secs: request
-                .timeout_secs
-                .or_else(|| AsyncToolConfig::default().timeout_secs),
-            label: request.label,
-            wake_on_completion: request.wake_on_completion,
-            // Ownership stamping (P1-4): the task belongs to the spawning
-            // principal so other principals' Async* surfaces can't see it.
-            principal_id: Some(self.principal_id.0.clone()),
-            ..Default::default()
-        };
-
-        // F37: the runtime stamps its snapshot `principal_id` on the
-        // request so the dispatched task is attributed to the spawning
-        // principal.
-        let context =
-            ToolDispatchContext::builder(request.tool_name, request.params, session_key.clone())
-                .for_principal(self.principal_id.0.clone());
-
-        // F38: `dispatch_tool` internally calls
-        // `dispatch_tool_with_signal(core, ctx, config, None)`. No
-        // cancel token for natural agent spawns — the spawned task
-        // reaches terminal status naturally or via `AsyncStop`.
-        let receipt = self.executor.dispatch_tool(&core, context, config).await?;
-        Ok(SpawnReceipt {
-            task_id: receipt.task_id,
-        })
+    async fn spawn_with_context(
+        &self,
+        request: SpawnRequest,
+        ctx: &peko_tools_core::ToolContext,
+    ) -> Result<SpawnReceipt> {
+        self.spawn_inner(request, Some(ctx)).await
     }
 
     async fn lookup(&self, task_id: &str) -> Option<TaskView> {
@@ -227,9 +236,8 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     async fn list(&self, status_filter: Option<&str>, tool_filter: Option<&str>) -> Vec<TaskView> {
         // Own-registry entries first, then any tasks from the global
         // per-agent registries (deduped by task_id, own wins). The
-        // own registry is per-call in production, so without the
-        // global merge `AsyncList` would never show background `Bash`
-        // tasks or previous runs' spawns. Every entry passes the
+        // principal registry owns AsyncSpawn tasks across turns; the global
+        // merge also includes background Bash and subagent tasks. Every entry passes the
         // per-principal ownership filter (P1-4).
         let mut seen = std::collections::HashSet::new();
         let mut tasks: Vec<TaskView> = Vec::new();

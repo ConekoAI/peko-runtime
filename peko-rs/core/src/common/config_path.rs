@@ -271,11 +271,9 @@ mod tests {
 
     #[test]
     fn test_get_bool() {
-        // `enable_model_list` is a per-agent toggle that defaults to
-        // `true`; use it as the round-trip "get bool" target.
         let config = AgentConfig::default();
-        let value = get_config_value(&config, "enable_model_list").unwrap();
-        assert_eq!(value, serde_json::json!(true));
+        let value = get_config_value(&config, "sandbox_enabled").unwrap();
+        assert_eq!(value, serde_json::json!(false));
     }
 
     #[test]
@@ -335,8 +333,8 @@ mod tests {
     #[test]
     fn test_set_bool_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "enable_model_list", "false").unwrap();
-        assert!(!config.enable_model_list);
+        set_config_value(&mut config, "sandbox_enabled", "true").unwrap();
+        assert!(config.sandbox_enabled);
     }
 
     #[test]
@@ -353,7 +351,7 @@ mod tests {
     fn test_set_invalid_type_fails() {
         // Cast a non-bool value into a bool field.
         let mut config = AgentConfig::default();
-        let err = set_config_value(&mut config, "enable_model_list", "not-a-bool").unwrap_err();
+        let err = set_config_value(&mut config, "sandbox_enabled", "not-a-bool").unwrap_err();
         assert!(err.to_string().contains("Invalid value"));
     }
 

@@ -38,7 +38,7 @@ use peko_auth::caller::CallerContext;
 /// The host returns the catalog-summary `ModelSummary` of the
 /// newly-inserted entry so the handler can emit
 /// `ResponsePacket::ModelAdded` without a follow-up
-/// `model_list` call.
+/// `ModelList` call.
 #[async_trait]
 pub(crate) trait ModelAddHost: Send + Sync {
     async fn add_model(&self, args: ModelAddArgs) -> anyhow::Result<ModelSummary>;

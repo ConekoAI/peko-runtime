@@ -62,7 +62,6 @@ use crate::principal::peer_children::ensure_peer_child;
 use crate::principal::peer_dm::{
     ensure_peer_dm_channel, find_peer_dm_channel, post_peer_dm_reply, PeerDmSubscriberHook,
 };
-use crate::principal::router::AgentPromptSummary;
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
@@ -190,34 +189,18 @@ impl PeerChildTurns {
         inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Result<Self> {
-        let (name, owner, agent_config, preferred_model_id, available_agents) = {
+        let (name, owner, agent_config, preferred_model_id) = {
             let config = principal.config.read().await;
             tooling
                 .agent_runs()
                 .for_principal(&principal.id)
                 .set_limit(config.governance.max_running_agents);
-            // Same `available_agents` projection
-            // `PrincipalManager::build_router_context` computes for
-            // the root-agent path — the `role_catalog` tool's
-            // contents.
-            // ADR-066 P2: presence = spawnability.
-            let available_agents: Vec<AgentPromptSummary> = principal
-                .agent_prompts
-                .iter()
-                .map(|(id, p)| AgentPromptSummary {
-                    id: id.clone(),
-                    name: p.name.clone(),
-                    description: p.frontmatter.description.clone(),
-                    enabled: true,
-                })
-                .collect();
             (
                 config.name.clone(),
                 config.owner.clone(),
                 // Persona inheritance — see module docs.
                 peer_child_agent_config(&config, &principal.workspace_path),
                 config.preferred_model_id.clone(),
-                available_agents,
             )
         };
         let agent_name = agent_config.name.clone();
@@ -245,6 +228,9 @@ impl PeerChildTurns {
         //
         // Peer ingress and recursive spawns share principal-wide admission.
         let registry_key = default_root_prompt().name;
+        let async_inbox = inbox_registry
+            .clone()
+            .unwrap_or_else(crate::async_exec::executor::standalone_inbox_registry);
         let executor = SubagentExecutor::new(
             Arc::clone(&session_manager),
             registry_key,
@@ -272,7 +258,7 @@ impl PeerChildTurns {
         // path builds no `PrincipalContext`, so without this the peer
         // turn ran with built-ins only — no `Skill` tool, no workspace
         // MCP tools, no `{{roles}}`/`{{skills}}` prompt
-        // sections, and no `role_catalog` (the tool the root prompt
+        // sections, and no `RoleCatalog` (the tool the root prompt
         // advertises). Both installs are idempotent; the tool-bag
         // install honors the core's once-gate.
         let core = crate::principal::context::ensure_principal_tool_bag(
@@ -281,12 +267,20 @@ impl PeerChildTurns {
             &principal.id,
         )
         .await;
-        if let Err(e) =
-            crate::principal::context::install_role_catalog(&core, available_agents, &principal.id)
-                .await
-        {
-            tracing::warn!("role_catalog install failed for peer-child turns: {e}");
-        }
+
+        let caller_did = principal.did().await.0;
+        crate::tools::installation::install_principal_services(
+            &core,
+            &principal.id,
+            crate::tools::installation::PrincipalBindings {
+                sessions_dir: Some(principal.memory.sessions_dir().clone()),
+                plan: Some(Arc::clone(&principal.plan_port)),
+                model_catalog: Some(Arc::clone(llm_resolver.catalog())),
+                caller_did: Some(&caller_did),
+            },
+        )
+        .await?;
+        crate::tools::installation::install_async(&core, &principal.id, async_inbox).await?;
 
         Ok(Self {
             executor,
