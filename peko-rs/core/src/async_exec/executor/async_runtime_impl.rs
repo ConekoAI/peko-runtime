@@ -12,12 +12,12 @@
 //! config, None)`. The `None` cancellation token is the cron-spawn
 //! path's default; agents that need a cancel token can plumb one via
 //! `dispatch_tool_with_signal` from a peer crate (not used by the
-//! built-in `AsyncSpawnTool`).
+//! built-in `AsyncSpawnAction`).
 //!
 //! ## Principal-owned tasks with caller-scoped dispatch
 //!
 //! Production installs a stable executor per principal. Its registry preserves
-//! AsyncSpawn receipts across turns. Invocation context carries the parent
+//! Async action spawn receipts across turns. Invocation context carries the parent
 //! session, workspace, and principal name, and a live caller binding is retained
 //! for background execution. Lookup/list/cancel also search the existing global
 //! registries for Bash and subagent tasks, applying the principal ownership
@@ -87,7 +87,7 @@ impl AsyncExecutorRuntime {
             .ok_or_else(|| anyhow!("ToolingRuntime has been dropped; cannot spawn"))?;
 
         // Parent-session stamping, per call (ADR-061 follow-up): the
-        // request's `parent_session_id` — filled by `AsyncSpawnTool`
+        // request's `parent_session_id` — filled by `AsyncSpawnAction`
         // from `ToolContext.session_id` — wins. It is the run id on the
         // agent-loop path and the token-resolved node id (or the
         // session-key string when nodeless) on the `ExecuteTool` path.
@@ -145,7 +145,7 @@ impl AsyncExecutorRuntime {
         // F38: `dispatch_tool` internally calls
         // `dispatch_tool_with_signal(core, ctx, config, None)`. No
         // cancel token for natural agent spawns — the spawned task
-        // reaches terminal status naturally or via `AsyncStop`.
+        // reaches terminal status naturally or via `Async action stop`.
         let receipt = self
             .executor
             .dispatch_tool(&execution, context, config)
@@ -188,7 +188,7 @@ impl AsyncExecutorRuntime {
     /// with a DIFFERENT principal is treated as nonexistent — same
     /// `NotFound` the caller would get for a genuinely unknown id, so
     /// the cross-registry fallback no longer leaks other principals'
-    /// tasks into `AsyncList`/`AsyncStatus`/`AsyncStop`.
+    /// tasks into `Async action list`/`Async action status`/`Async action stop`.
     fn is_visible(&self, entry: &super::registry::AsyncTaskEntry) -> bool {
         match entry.config.principal_id.as_deref() {
             None => true,
@@ -236,7 +236,7 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     async fn list(&self, status_filter: Option<&str>, tool_filter: Option<&str>) -> Vec<TaskView> {
         // Own-registry entries first, then any tasks from the global
         // per-agent registries (deduped by task_id, own wins). The
-        // principal registry owns AsyncSpawn tasks across turns; the global
+        // principal registry owns Async action spawn tasks across turns; the global
         // merge also includes background Bash and subagent tasks. Every entry passes the
         // per-principal ownership filter (P1-4).
         let mut seen = std::collections::HashSet::new();
@@ -304,7 +304,7 @@ impl AsyncRuntime for AsyncExecutorRuntime {
     async fn wait_for_completion(&self, task_id: &str, timeout: Duration) -> Result<WaitResult> {
         let task_id_string = task_id.to_string();
         // Ownership pre-check (P1-4): waiting on another principal's
-        // task would leak its result into `AsyncOutput`. Find-then-
+        // task would leak its result into `Async action output`. Find-then-
         // authorize — invisible tasks behave as not-found.
         let own_entry = {
             let reg = self.executor.registry().read().await;
@@ -351,8 +351,8 @@ impl AsyncRuntime for AsyncExecutorRuntime {
 
 // ─── Test helper ──────────────────────────────────────────────────
 //
-// In-tree tests of `AsyncListTool`, `AsyncStatusTool`, `AsyncStopTool`,
-// and `AsyncOutputTool` need to construct an `AsyncRuntime` to plug
+// In-tree tests of `AsyncListAction`, `AsyncStatusAction`, `AsyncStopAction`,
+// and `AsyncOutputAction` need to construct an `AsyncRuntime` to plug
 // into the tool under test. The real `AsyncExecutor` machinery is
 // framework-internal, so for tests we provide a small in-memory
 // runtime here in root that the tests can reach via the shim.
@@ -565,7 +565,7 @@ mod tests {
         );
     }
 
-    /// `AsyncStop` on a still-running background Bash task must find it
+    /// `Async action stop` on a still-running background Bash task must find it
     /// through the fallback and return `Success`, not `NotFound`.
     #[cfg(unix)]
     #[tokio::test]
@@ -627,7 +627,7 @@ mod tests {
         );
     }
 
-    /// P0-3: an `AsyncSpawn` that omits `timeout_secs` must inherit the
+    /// P0-3: an `Async action spawn` that omits `timeout_secs` must inherit the
     /// documented 7200s default — the spawned task must not run
     /// timeout-free.
     #[tokio::test]
@@ -710,14 +710,14 @@ mod tests {
                 .await
                 .iter()
                 .all(|t| t.task_id != "tool:a-task"),
-            "other principal's AsyncList must filter the task out"
+            "other principal's Async action list must filter the task out"
         );
         assert!(
             matches!(
                 runtime_b.cancel("tool:a-task").await,
                 PortCancelResult::NotFound
             ),
-            "other principal's AsyncStop must report NotFound"
+            "other principal's Async action stop must report NotFound"
         );
         assert!(
             runtime_b

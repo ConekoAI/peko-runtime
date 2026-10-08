@@ -8,7 +8,7 @@
 //! the work is detached to a background task automatically.
 //!
 //! The tool itself is a thin shell over [`SubagentRuntime`]. Disk I/O
-//! (`PathResolver`, `principal::agent_prompt`), capability checks,
+//! (`PathResolver`, `principal::agent_prompt`), session ownership,
 //! observability audit, and the actual `SubagentExecutor::execute_and_wait`
 //! call all live behind the port — see
 //! `src/agents/subagent_runtime_impl.rs` for the production adapter.
@@ -27,54 +27,22 @@ use crate::tools::builtin::messaging::subagent_runtime::{
     SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
 };
 
-/// Trait for providing the current session key
-///
-/// This allows the tool to get the current session key at execution time,
-/// even though the session is determined at runtime.
-/// Agent tool arguments.
-///
-/// Trimmed surface (sprint 7, 2026-08-21): the LLM-facing tool takes
-/// only what the spawn actually needs.
-///
-/// Sprint 8 rename: `subagent_type` → `agent`. The field always named
-/// the agent *template* (a single Markdown file under
-/// `<workspace>/agents/<agent>/AGENT.md`); the new name matches the
-/// semantic.
-///
-/// - `action` selects the mode (`new` / `resume` / `compact` / `branch`).
-///   2026-09-05: `compact` no longer flags-and-defers — it compacts
-///   the target now and continues it with `prompt` in one run.
-///   2026-09-13 (ADR-053): `branch` copies a session's live context
-///   into a fresh (or repointed) session and runs `prompt` there.
-/// - `path` is the slug path the target session lives at, or will
-///   live at on `new`. Required non-empty for `new` (a single
-///   slug segment — the new session's address) and `resume` /
-///   `compact` (an absolute slug path `sess:/a/b/c` naming the target).
-///   Raw UUIDs and caller-relative slugs are refused at the runtime
-///   layer via `resolve_reference`.
-/// - `prompt` is the task description.
-/// - `agent` names the agent template to load.
-/// - `model` is an optional override.
-///
-/// Removed in this commit (vs the previous round-7 surface):
-/// `description`, `isolated`, `cleanup`, `parent_session_key`,
-/// `session_key`, `name`. `session_key` and `name` are unified into
-/// `path`. The rest were either unused at the LLM surface
-/// (`description`, `parent_session_key`), ambiguous (`isolated` —
-/// "no parent context" has no clean answer for a subagent), or
-/// overlapping with the session tool's domain (`cleanup`).
+/// Agent calls select new/resume/compact/branch; omitted action means new.
+/// Every action requires prompt, role, and path. New and branch accept a
+/// single caller-relative slug or an absolute session path; resume and compact
+/// address existing sessions. Source/overwrite are branch-only, retention is
+/// new/branch-only, and compact keeps the target session's model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentArgs {
     /// Action to perform: "new" (default), "resume", "compact", or
     /// "branch".
     #[serde(default = "default_action")]
     pub action: String,
-    /// Path under which the target session lives (`resume`) or will
-    /// live (`new`). For `new`: a single slug segment (the new
-    /// session's address — no `/`s, since intermediate segments are
-    /// not materialized). For `resume` and `compact`: an absolute
-    /// slug path (`sess:/a/b/c`). Never a raw UUID or caller-relative
-    /// slug. Required for `new`, `resume`, and `compact`.
+    /// Target address, required for every action. New/branch accept a
+    /// single relative slug or an absolute session path; resume/compact
+    /// require an absolute path. Raw UUIDs and relative multi-segment
+    /// paths are refused. New attaches to an existing eligible session.
     #[serde(default)]
     pub path: String,
     /// Task description / prompt for the subagent (required for all
@@ -89,7 +57,7 @@ pub struct AgentArgs {
     /// Required for all actions.
     #[serde(default)]
     pub role: String,
-    /// Optional model override for the subagent
+    /// Optional model override for new/resume/branch; compact refuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// ADR-053 (`branch` only): the session to snapshot. An absolute
@@ -109,7 +77,8 @@ pub struct AgentArgs {
     /// Retention cap (`new` / `branch` only): the FIFO cap on the
     /// session's closed compaction pages — the oldest page is
     /// PERMANENTLY deleted when the cap is exceeded. Must be 1-10000;
-    /// omitted = unlimited. Surviving page numbers never renumber.
+    /// omitted preserves an existing cap; a new session is unlimited.
+    /// Surviving page numbers never renumber.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<u64>,
 }
@@ -123,7 +92,7 @@ fn default_action() -> String {
 /// The Agent tool's action surface (round-7 + ADR-053).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentAction {
-    /// Spawn a fresh subagent session (default).
+    /// Create or attach a subagent session (default).
     New,
     /// Re-attach a run to an existing spawned session.
     Resume,
@@ -320,12 +289,12 @@ Parameters:
 - prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)
 - role: Name of the role template. Loads the system prompt from `<workspace>/roles/<role>.md` (flat layout) or `<workspace>/roles/<role>/ROLE.md` (directory layout). (required for all actions)
 - path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and relative multi-segment paths are refused. Required for all actions.
-- model: Optional model override for the subagent (matches Claude Code's Agent schema; ignored for compact — the continuation run keeps the session's model)
+- model: Optional model override for new/resume/branch; refused for compact, which keeps the session's model
 - source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
 - overwrite: (branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false (refuse when the target exists).
-- page_limit: (new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. 1-10000; omit for unlimited.
+- page_limit: (new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. 1-10000; omit to retain an existing cap (new sessions are unlimited).
 
-Sessions you spawn have `parent_session_id` set to your session; the `Session` tool's `list` action surfaces this. Use that field to find them. The session tool manages memory; this tool runs work.
+Use `Session` action `list` to find session paths, then `status` to inspect `parent_session`, the spawned session's parent. The session tool manages memory; this tool runs work.
 
 resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be in the principal’s store, and not have an active run. branch refusals: an existing non-spawned target always refuses (never overwrite user-created sessions); overwriting a spawned target additionally refuses while it has an active run, and never targets your own session or an ancestor.
 
@@ -356,13 +325,13 @@ Examples:
     }
 
     pub(crate) fn tool_parameters() -> serde_json::Value {
-        json!({
+        let fields = json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": ["new", "resume", "compact", "branch"],
-                    "description": "What to do: 'new' spawns a fresh subagent session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run, 'branch' copies a session's live context into a fresh session and runs `prompt` there without touching the source",
+                    "description": "What to do: 'new' creates a session or attaches to an existing eligible session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run, 'branch' copies a session's live context into a fresh session and runs `prompt` there without touching the source",
                     "default": "new"
                 },
                 "prompt": {
@@ -382,7 +351,7 @@ Examples:
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for the subagent (ignored for compact)"
+                    "description": "Optional model override for new/resume/branch; compact keeps the session model and refuses this field"
                 },
                 "source": {
                     "type": "string",
@@ -390,27 +359,61 @@ Examples:
                 },
                 "overwrite": {
                     "type": "boolean",
+                    "default": false,
                     "description": "(branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false."
                 },
                 "page_limit": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 10000,
-                    "description": "(new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. Surviving page numbers never renumber. Omit for unlimited."
+                    "description": "(new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. Surviving page numbers never renumber. Omit to retain an existing cap; new sessions are unlimited."
                 }
             },
-            "required": ["prompt", "role", "path"],
-            "allOf": [
-                {
-                    "if": {"properties": {"action": {"const": "branch"}}, "required": ["action"]},
-                    "else": {"not": {"anyOf": [{"required": ["source"]}, {"required": ["overwrite"]}]}}
-                },
-                {
-                    "if": {"properties": {"action": {"enum": ["resume", "compact"]}}, "required": ["action"]},
-                    "then": {"not": {"required": ["page_limit"]}}
-                }
-            ]
+        });
+        let variants = [
+            (
+                "new",
+                &["prompt", "role", "path", "model", "page_limit"][..],
+            ),
+            ("resume", &["prompt", "role", "path", "model"][..]),
+            ("compact", &["prompt", "role", "path"][..]),
+            (
+                "branch",
+                &[
+                    "prompt",
+                    "role",
+                    "path",
+                    "model",
+                    "source",
+                    "overwrite",
+                    "page_limit",
+                ][..],
+            ),
+        ];
+        let branches: Vec<_> = variants.into_iter().map(|(action, allowed)| {
+            let properties: serde_json::Map<String, serde_json::Value> = allowed.iter()
+                .map(|field| ((*field).to_string(), fields["properties"][*field].clone())).collect();
+            (action, json!({"type":"object", "properties": properties, "required":["prompt", "role", "path"]}))
+        }).collect();
+        let mut schema = peko_tools_core::schema::action_schema(&branches);
+        schema["properties"]["action"] = fields["properties"]["action"].clone();
+        // Only the new variant permits omission of action; all others retain
+        // their required discriminator. This preserves the documented default.
+        schema["required"] = json!(["prompt", "role", "path"]);
+        schema["oneOf"][0]["required"] = json!(["prompt", "role", "path"]);
+        schema
+    }
+
+    fn action_schema() -> &'static crate::tools::action_schema::ActionSchema {
+        static SCHEMA: std::sync::OnceLock<crate::tools::action_schema::ActionSchema> =
+            std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            crate::tools::action_schema::ActionSchema::new("Agent", Self::tool_parameters())
         })
+    }
+
+    pub(crate) fn validate_params(params: &serde_json::Value) -> anyhow::Result<()> {
+        Self::action_schema().validate(params)
     }
 
     /// Create a new Agent tool with a runtime port.
@@ -851,7 +854,8 @@ impl Tool for AgentTool {
         Self::tool_parameters()
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, mut params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Self::action_schema().normalize(&mut params)?;
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -909,9 +913,10 @@ impl Tool for AgentTool {
     /// observes the parent's cancel at iteration boundaries.
     async fn execute_with_context(
         &self,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
+        Self::action_schema().normalize(&mut params)?;
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -1628,10 +1633,9 @@ mod tests {
             .expect_err("unknown action must refuse");
         let msg = err.to_string();
         assert!(msg.contains("purge"), "{msg}");
-        assert!(
-            msg.contains("\"new\", \"resume\", \"compact\", \"branch\""),
-            "{msg}"
-        );
+        for action in ["new", "resume", "compact", "branch"] {
+            assert!(msg.contains(action), "{msg}");
+        }
     }
 
     #[tokio::test]
@@ -1736,7 +1740,9 @@ mod tests {
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
         let err = tool
-            .execute(serde_json::json!({ "action": "compact" }))
+            .execute(serde_json::json!({
+                "action": "compact", "prompt": "continue", "role": "writer"
+            }))
             .await
             .expect_err("compact without path must refuse");
         assert!(err.to_string().contains("path"), "{err}");
@@ -1800,7 +1806,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("only valid with actions"), "{err}");
+        assert!(err.to_string().contains("page_limit"), "{err}");
 
         // 0 is meaningless at creation (unlimited = omit) — refused.
         let err = tool
@@ -1813,7 +1819,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("between 1 and 10000"), "{err}");
+        assert!(err.to_string().contains("minimum of 1"), "{err}");
 
         // Above the hard cap — refused.
         let err = tool
@@ -1826,11 +1832,27 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("between 1 and 10000"), "{err}");
+        assert!(err.to_string().contains("maximum of 10000"), "{err}");
     }
 
     /// notice into the task prompt (the child must learn it is a branch
     /// and where it lives — D2's tail-notice design).
+    #[tokio::test]
+    async fn test_branch_accepts_integral_json_page_limit() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "branch", "path": "briefing", "prompt": "work",
+                "role": "writer", "page_limit": 1.0
+            }))
+            .await
+            .expect("schema-valid integral JSON numbers must execute");
+        assert_eq!(result["status"], "completed");
+        assert_eq!(runtime.branch_requests().len(), 1);
+    }
+
     #[tokio::test]
     async fn test_branch_routes_to_branch_and_execute() {
         let runtime = Arc::new(TestSubagentRuntime::new());

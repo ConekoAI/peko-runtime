@@ -318,7 +318,7 @@ impl CronEngine {
     /// existing in-flight `run_id` and does NOT spawn a second
     /// execution).
     ///
-    /// Called by the `CronTrigger` tool (via the daemon's
+    /// Called by the `Cron action trigger` tool (via the daemon's
     /// `DaemonCronAdapter`). A manual trigger ignores the job's
     /// `enabled` flag — firing a paused job is the debugging path
     /// ("verify the wiring before re-enabling").
@@ -757,7 +757,7 @@ impl CronEngine {
     /// cron engine's `AsyncExecutor`. The executor:
     /// 1. resolves the tool instance via the daemon's `ToolingRuntime`,
     /// 2. records an `AsyncTask` entry attributed to the principal's
-    ///    trunk session (so `AsyncOutput`/`AsyncStatus`/`AsyncStop`
+    ///    trunk session (so `Async action output`/`Async action status`/`Async action stop`
     ///    remain scoped to that root), and
     /// 3. on completion, posts a `SteeringMessage` into the principal's
     ///    trunk inbox (`root:self`) when `wake_on_completion=true`
@@ -1134,7 +1134,7 @@ fn finalize_missing_task(scheduler: &CronScheduler, run: &CronRun, task_id: &str
 /// `Completed` is collapsed to `"success"` so existing users (the CLI
 /// renderer, history grep) keep matching what the `Send` path emitted.
 /// Failures / timeouts / cancellations keep the executor's names so an
-/// operator can correlate cron history with `AsyncOutput`. The caller
+/// operator can correlate cron history with `Async action output`. The caller
 /// gates on [`AsyncTaskStatus::is_terminal`] so non-terminal variants
 /// (Pending, Running) never reach this match; the catch-all arm is a
 /// defensive `unreachable!` for that contract.

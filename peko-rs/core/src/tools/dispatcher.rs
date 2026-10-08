@@ -298,12 +298,36 @@ impl ToolDispatcher {
     }
 
     /// Emit the `tool.call` audit event (Info severity). Tool name,
-    /// principal, session, caller, a digest of the params (never the
+    /// declared action, principal, session, caller, a digest of the params (never the
     /// params themselves), success, and duration.
     async fn emit_audit(&self, call: &ToolCallSpec, success: bool, elapsed: std::time::Duration) {
         let Some(audit) = self.audit.as_ref() else {
             return;
         };
+        // Only disclose a declared discriminator value. An unknown action can
+        // contain arbitrary argument text and must stay inside the digest.
+        let principal = call
+            .principal_id
+            .as_deref()
+            .map(|id| peko_subject::PrincipalId(id.to_owned()))
+            .unwrap_or_else(|| peko_subject::PrincipalId::system().clone());
+        let action = self
+            .catalog
+            .get(&call.tool_name, &principal)
+            .await
+            .and_then(|(_, metadata)| {
+                let discriminator = &metadata.parameters["properties"]["action"];
+                let action = call
+                    .params
+                    .get("action")
+                    .unwrap_or(&discriminator["default"])
+                    .as_str()?;
+                discriminator["enum"]
+                    .as_array()?
+                    .iter()
+                    .any(|value| value.as_str() == Some(action))
+                    .then(|| action.to_owned())
+            });
         let params_digest = {
             use sha2::{Digest, Sha256};
             let canonical = call.params.to_string();
@@ -321,6 +345,7 @@ impl ToolDispatcher {
                 call.agent_id.as_deref(),
                 serde_json::json!({
                     "tool_name": call.tool_name,
+                    "action": action,
                     "agent_id": call.agent_id,
                     "principal_id": call.principal_id,
                     "principal_name": call.principal_name,
@@ -349,21 +374,11 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
-/// Inject the workspace into filesystem-tool params and give `Agent`
-/// the longer default timeout — the live behavior of the P2
-/// `BuiltinExecuteHandler` preprocessor.
+/// Inject the caller's workspace into filesystem-tool params.
 fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Option<&str>) {
     let Some(obj) = params.as_object_mut() else {
         return;
     };
-    // Subagent spawn inherently takes longer than simple tools because
-    // the subagent runs a full agentic loop with its own LLM calls.
-    // Inject a longer default timeout for blocking Agent if none
-    // is provided by the caller.
-    if tool_name == "Agent" && !obj.contains_key("_timeout") {
-        obj.insert("_timeout".to_string(), Value::Number(300.into()));
-    }
-
     // Inject agent workspace into tool parameters for filesystem tools.
     if let Some(ws) = workspace {
         match tool_name {
@@ -415,7 +430,7 @@ mod tests {
             "dispatcher probe".into()
         }
         fn parameters(&self) -> Value {
-            serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"panic":{"type":"boolean"}},"required":["file_path"]})
+            serde_json::json!({"type":"object","properties":{"file_path":{"type":"string"},"panic":{"type":"boolean"},"action":{"type":"string","enum":["read"],"default":"read"}},"required":["file_path"]})
         }
         async fn execute(&self, _: Value) -> Result<Value> {
             unreachable!("context required")
@@ -476,6 +491,11 @@ mod tests {
         assert_eq!(events.len(), 4);
         for event in &events {
             assert_eq!(event.event_type, "tool.call");
+            if event.details["tool_name"] == "Read" {
+                assert_eq!(event.details["action"], "read", "declared default action");
+            } else {
+                assert!(event.details["action"].is_null());
+            }
             assert_eq!(event.agent_did.as_deref(), Some("did:agent"));
             assert_eq!(event.details["principal_id"], "principal");
             assert_eq!(event.details["session_id"], "session");

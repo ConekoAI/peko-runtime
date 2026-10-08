@@ -60,7 +60,7 @@ pub struct ToolExecutor {
 /// single run. After [`MAX_IDENTICAL_FAILURES`] identical failures the
 /// executor refuses to dispatch the same call again — retrying an
 /// unchanged call never produces a different result, and each retry
-/// costs a full history replay (a failing `CronCreate` loop burned
+/// costs a full history replay (a failing `Cron` loop burned
 /// 68k input tokens in one turn during the field test).
 const MAX_IDENTICAL_FAILURES: u8 = 2;
 
@@ -324,12 +324,12 @@ mod tests {
     fn breaker_allows_first_two_failures_then_refuses() {
         let b = IdenticalFailureBreaker::default();
         let args = serde_json::json!({"at": "2020-01-01T00:00:00Z"});
-        assert!(b.refusal("CronCreate", &args).is_none());
-        b.record("CronCreate", &args, false);
-        assert!(b.refusal("CronCreate", &args).is_none());
-        b.record("CronCreate", &args, false);
-        let refusal = b.refusal("CronCreate", &args).expect("third call refused");
-        assert!(refusal.contains("CronCreate"));
+        assert!(b.refusal("Cron", &args).is_none());
+        b.record("Cron", &args, false);
+        assert!(b.refusal("Cron", &args).is_none());
+        b.record("Cron", &args, false);
+        let refusal = b.refusal("Cron", &args).expect("third call refused");
+        assert!(refusal.contains("Cron"));
         assert!(refusal.contains("already failed 2 times"));
     }
 
@@ -358,8 +358,8 @@ mod tests {
     fn different_tools_are_independent() {
         let b = IdenticalFailureBreaker::default();
         let args = serde_json::json!({});
-        b.record("CronCreate", &args, false);
-        b.record("CronCreate", &args, false);
-        assert!(b.refusal("CronList", &args).is_none());
+        b.record("Cron", &args, false);
+        b.record("Cron", &args, false);
+        assert!(b.refusal("Task", &args).is_none());
     }
 }

@@ -1,4 +1,4 @@
-//! AsyncStatus tool — query the status of a background task.
+//! Async action status tool — query the status of a background task.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -10,11 +10,11 @@ use crate::tools::builtin::async_control::{
 };
 
 /// Query the status of an async task.
-pub struct AsyncStatusTool {
+pub struct AsyncStatusAction {
     helper: AsyncTaskHelper,
 }
 
-impl AsyncStatusTool {
+impl AsyncStatusAction {
     /// Create a tool bound to a specific runtime.
     #[must_use]
     pub fn new(runtime: SharedAsyncRuntime) -> Self {
@@ -25,9 +25,9 @@ impl AsyncStatusTool {
 }
 
 #[async_trait]
-impl Tool for AsyncStatusTool {
+impl Tool for AsyncStatusAction {
     fn name(&self) -> &'static str {
-        "AsyncStatus"
+        "Async"
     }
 
     fn description(&self) -> String {
@@ -59,7 +59,7 @@ Returns: { task_id, tool_name, status, is_terminal, parent_session_key, metadata
         let task_id = params
             .get("task_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("AsyncStatus requires 'task_id'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Async action status requires 'task_id'"))?;
 
         match self.helper.lookup_task(task_id).await {
             Some(task) => Ok(build_status_response(&task)),

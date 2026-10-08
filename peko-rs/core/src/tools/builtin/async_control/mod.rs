@@ -1,47 +1,21 @@
-//! `peko_tools_builtin::async_control` — Async control tool surface +
-//! `AsyncRuntime` port.
-//!
-//! Phase 10c extracts the six async tools (`AsyncSpawn`, `AsyncOutput`,
-//! `AsyncList`, `AsyncStatus`, `AsyncStop`, plus `async_common` helpers)
-//! out of root. Per the Phase 10 plan rule ("Built-ins must not import
-//! daemon state"), the tools here do NOT call `crate::async_exec`
-//! types directly. They speak to a runtime port trait ([`AsyncRuntime`])
-//! that the agent side implements.
-//!
-//! ## DTOs
-//!
-//! [`SpawnRequest`], [`SpawnReceipt`], [`WaitResult`], [`TaskView`],
-//! and [`CancelResult`] are serialization-friendly types shared between
-//! the tool side and the framework-host side. peko-tools-builtin is the
-//! canonical home; the framework re-exports them for backward
-//! compatibility. (The `AsyncToolConfig` / `AsyncResultDeliveryMode` /
-//! `DeliveryTarget` / `SessionMessageType` mirrors were deleted
-//! 2026-09-27 — the canonical `AsyncToolConfig` lives in the framework
-//! executor's `types` module and the delivery stack is gone.)
-//!
-//! ## Port
-//!
-//! [`AsyncRuntime`] is the five-method surface the async tools need:
-//! spawn / lookup / list / cancel / wait_for_completion. The
-//! framework-host side implements it (see
-//! `src/async_exec/executor/async_runtime_impl.rs`).
+//! Async domain actions and runtime contracts.
 
 pub mod common;
-pub mod list;
-pub mod output;
-pub mod spawn;
-pub mod status;
-pub mod stop;
+mod list;
+mod output;
+mod spawn;
+mod status;
+mod stop;
 
 pub use common::{
     apply_tail_lines, build_cancel_response, build_list_response, build_output_response,
     build_status_response, AsyncTaskHelper,
 };
-pub use list::AsyncListTool;
-pub use output::AsyncOutputTool;
-pub use spawn::AsyncSpawnTool;
-pub use status::AsyncStatusTool;
-pub use stop::AsyncStopTool;
+pub(crate) use list::AsyncListAction;
+pub(crate) use output::AsyncOutputAction;
+pub(crate) use spawn::AsyncSpawnAction;
+pub(crate) use status::AsyncStatusAction;
+pub(crate) use stop::AsyncStopAction;
 
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
@@ -81,7 +55,7 @@ pub struct SpawnRequest {
     /// Per-call parent session identity (ADR-061 follow-up): the
     /// session the spawn is attributed to — stamped as the task
     /// record's `parent_session_key` and used as the completion-event
-    /// delivery inbox key. Filled by `AsyncSpawnTool` from
+    /// delivery inbox key. Filled by `AsyncSpawnAction` from
     /// `ToolContext.session_id` (the run id on the agent-loop path;
     /// the token-resolved node id — or session-key string — on the
     /// `ExecuteTool` path). `None` delegates stamping to the runtime's
@@ -253,3 +227,6 @@ pub type SharedAsyncRuntime = Arc<dyn AsyncRuntime>;
 
 #[cfg(test)]
 mod integration_tests;
+
+mod tool;
+pub use tool::AsyncTool;

@@ -42,7 +42,7 @@ use peko_tools_core::{Tool, ToolContext, ToolError};
 
 use crate::principal::Principal;
 use crate::session::session_runtime_impl::SessionManagerRuntime;
-use crate::tools::builtin::session::{SessionCache, SessionTool, SharedSessionRuntime};
+use crate::tools::builtin::session::{SessionTool, SharedSessionRuntime};
 
 /// How the caller's session store + identity are resolved per call.
 enum SessionCallerMode {
@@ -60,10 +60,6 @@ enum SessionCallerMode {
 /// `Session` builtin with per-call caller resolution. See module docs.
 pub struct CallerAwareSessionTool {
     mode: SessionCallerMode,
-    /// Static-surface delegate: the tool's name/description/schema are
-    /// identical to the stock `SessionTool`'s; this instance exists
-    /// only to serve them (never executes).
-    metadata_tool: SessionTool,
 }
 
 impl CallerAwareSessionTool {
@@ -80,7 +76,6 @@ impl CallerAwareSessionTool {
                 principals,
                 inbox_registry,
             },
-            metadata_tool: metadata_tool(),
         }
     }
 
@@ -91,10 +86,8 @@ impl CallerAwareSessionTool {
     /// to the shared runtime unchanged.
     #[must_use]
     pub fn for_agent(runtime: SessionManagerRuntime) -> Self {
-        let metadata_tool = SessionTool::new(Arc::new(runtime.clone()) as SharedSessionRuntime);
         Self {
             mode: SessionCallerMode::Agent { runtime },
-            metadata_tool,
         }
     }
 
@@ -165,11 +158,11 @@ impl Tool for CallerAwareSessionTool {
     }
 
     fn description(&self) -> String {
-        self.metadata_tool.description()
+        SessionTool::tool_description()
     }
 
     fn parameters(&self) -> Value {
-        self.metadata_tool.parameters()
+        SessionTool::tool_parameters()
     }
 
     fn parallelizable(&self) -> bool {
@@ -192,6 +185,7 @@ impl Tool for CallerAwareSessionTool {
         params: Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<Value> {
+        SessionTool::validate_params(&params)?;
         if ctx.is_aborted() {
             return Err(ToolError::Aborted.into());
         }
@@ -221,19 +215,17 @@ impl Tool for CallerAwareSessionTool {
                         tool.execute(params).await
                     }
                     // In-process dispatches without session ctx
-                    // (AsyncSpawn-internal, some cron paths): the
+                    // (Async action spawn-internal, some cron paths): the
                     // stock tool's shared-cell behavior, unchanged.
-                    None => self.metadata_tool.execute(params).await,
+                    None => {
+                        SessionTool::new(Arc::new(runtime.clone()) as SharedSessionRuntime)
+                            .execute(params)
+                            .await
+                    }
                 }
             }
         }
     }
-}
-
-/// Stock-tool static surface for the daemon mode (a `SessionCache`
-/// runtime is never executed — description/schema only).
-fn metadata_tool() -> SessionTool {
-    SessionTool::new(Arc::new(SessionCache::new("Session")) as SharedSessionRuntime)
 }
 
 #[cfg(test)]

@@ -25,6 +25,6 @@ fn core_tools_harness_compiles() {
 // - Write -> Write schema parity
 // - Edit -> Edit schema parity
 // - shell -> Bash schema parity
-// - cron -> CronCreate/CronDelete/CronList split
+// - cron -> Cron action create/Cron action delete/Cron action list split
 // - Agent -> Agent schema parity
 // - task -> Async*/Task* family split

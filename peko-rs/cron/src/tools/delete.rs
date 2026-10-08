@@ -1,4 +1,4 @@
-//! `CronDelete` tool — cancel scheduled jobs
+//! `Cron action delete` tool — cancel scheduled jobs
 //!
 //! Cancels a `CronJob` through the [`CronRuntime`] port set by the
 //! daemon at startup. The tool does not speak to the daemon directly;
@@ -15,23 +15,23 @@ use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// `CronDelete` tool — cancel scheduled jobs
-pub struct CronDeleteTool;
+/// `Cron action delete` tool — cancel scheduled jobs
+pub struct CronDeleteAction;
 
-impl CronDeleteTool {
-    /// Create a new `CronDelete` tool
+impl CronDeleteAction {
+    /// Create a new `Cron action delete` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronDeleteTool {
+impl Default for CronDeleteAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// `CronDelete` tool arguments
+/// `Cron action delete` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronDeleteArgs {
     /// Job ID to cancel
@@ -43,9 +43,9 @@ pub struct CronDeleteArgs {
 }
 
 #[async_trait]
-impl Tool for CronDeleteTool {
+impl Tool for CronDeleteAction {
     fn name(&self) -> &'static str {
-        "CronDelete"
+        "Cron"
     }
 
     fn description(&self) -> String {
@@ -79,7 +79,7 @@ impl Tool for CronDeleteTool {
     }
 
     /// F33: cron DB write — opt out of parallel dispatch. See
-    /// `CronCreate::parallelizable` for the rationale (single-row
+    /// `Cron action create::parallelizable` for the rationale (single-row
     /// delete is atomic but interleaving with a concurrent create or
     /// delete by the same id can race).
     fn parallelizable(&self) -> bool {
@@ -88,7 +88,7 @@ impl Tool for CronDeleteTool {
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronDelete requires a Principal context; use execute_with_context"
+            "Cron action delete requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -102,15 +102,17 @@ impl Tool for CronDeleteTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronDelete requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action delete requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronDelete requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!(
+                "Cron action delete requires the daemon's cron runtime; not initialized"
+            )
         })?;
 
         let args: CronDeleteArgs = serde_json::from_value(params.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid CronDelete arguments: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid Cron action delete arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
             verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
@@ -119,7 +121,7 @@ impl Tool for CronDeleteTool {
             resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {
             return Err(anyhow::anyhow!(
-                "Either id or label is required for CronDelete"
+                "Either id or label is required for Cron action delete"
             ));
         };
 
@@ -169,20 +171,20 @@ mod tests {
 
     #[test]
     fn test_cron_delete_tool_name() {
-        let tool = CronDeleteTool::new();
-        assert_eq!(tool.name(), "CronDelete");
+        let tool = CronDeleteAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_delete_tool_parameters() {
-        let tool = CronDeleteTool::new();
+        let tool = CronDeleteAction::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
         // The schema uses `oneOf` so that callers who supply both `id`
         // and `label` get a validation error instead of silent acceptance.
         let branches = params
             .get("oneOf")
-            .expect("CronDelete schema must use oneOf for id-or-label");
+            .expect("Cron action delete schema must use oneOf for id-or-label");
         assert!(branches.is_array());
         assert_eq!(branches.as_array().unwrap().len(), 2);
     }

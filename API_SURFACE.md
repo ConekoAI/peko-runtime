@@ -9,14 +9,14 @@ This document defines the public API surface for Peko, including the new Unified
 
 ## Built-in tool wire contracts
 
-All 37 compiled built-ins advertise exact PascalCase names. ToolCatalog uses
+All 19 compiled built-ins advertise exact PascalCase names. ToolCatalog uses
 exact registered names; no lowercase or snake_case aliases are supported.
 Every principal can use every registered tool. Workspace/service bindings
 select dependencies, while resource ownership, peer permissions, and channel
 membership govern access. Rust module/configuration names and IPC tags keep
 their existing spelling.
 
-Agent, Session, ModelCall, CronCreate, and CronUpdate encode their conditional
+Agent, Session, ModelCall, Task, Plan, Cron, and Async encode their conditional
 requirements in JSON Schema and retain runtime validation. Agent requires
 prompt/role/path for every action. Session uses agent_name and title.
 Session describes per-action limits rather than one misleading schema default.
@@ -24,9 +24,28 @@ Workflow advertises only path/args/timeout_ms; dispatcher validation excludes
 the server-injected depth field while the runner still enforces its depth guard.
 See [the complete catalog](docs/architecture/builtin-tools.md) for all parameters.
 
+TaskTool, PlanTool, and AsyncTool are exported from tools::builtin; CronTool is
+exported by peko_cron. Their per-action implementations are private handlers.
+Task/Plan/Cron use the existing exclusive parallel gate for all actions; Async
+retains parallel execution. Domain dispatch preserves the caller ToolContext and
+emits one outer tool.call audit event with tool_name and action (including a declared default; otherwise null when absent or undeclared).
+The pure tools-core schema::action_schema helper composes schemas only; routing
+and runtime bindings remain explicit in each domain. Providers that strip schema
+combinators retain the top-level property inventory; the dispatcher always
+validates the complete strict schema before execution.
+
+Agent and Session use strict action variants for both metadata and direct calls.
+Caller-aware adapters share the stock tool's static contract and validate before
+resolving runtime bindings. Agent defaults to new; compact refuses model.
+Session requires action, declares per-action limit defaults (50/100/200), and
+rejects negative, null, or unrepresentable numeric values before storage writes.
+Session move applies title/retention at its new address after target changes and
+returns that address as path. The old per-call Agent _timeout injection is removed;
+the router's existing constant timeout governs execution.
+
 ## Cron interval completion policy
 
-`CronEngine::execute_job_for_id` (used by CronTrigger) returns the ID of the
+`CronEngine::execute_job_for_id` (used by Cron action trigger) returns the ID of the
 persisted run, reserving it before asynchronous execution. A coalesced trigger
 returns the existing open run ID. Timer/manual admission is shared across engine
 clones and does not hold its short lock while running tools. Public signatures
@@ -913,11 +932,11 @@ Wire shape documented in `DATA_MODEL.md` §13½. New/changed public items:
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `RequestPacket::ExecuteTool` (`execute_tool`) | `ipc::packet` | ✅ New | `{request_id, tool_name, params, session_key, workspace}` — mirrors `AsyncSpawn` |
+| `RequestPacket::ExecuteTool` (`execute_tool`) | `ipc::packet` | ✅ New | `{request_id, tool_name, params, session_key, workspace}` — mirrors `Async action spawn` |
 | `ResponsePacket::ToolExecuted` (`tool_executed`) | `ipc::packet` | ✅ New | `{request_id, content, result, success, truncated}` — the funnel's `(display, json, success)` triplet + datagram-budget truncation flag |
 | `DaemonClient::execute_tool` | `ipc::client` | ✅ New | Single request/response call mirroring `spawn_async_task`'s structure |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ New | Triplet-returning execution variant; `execute_tool_with_workspace` now delegates to it |
-| `ToolHandler::resolve_execution_attribution` | `ipc::handlers::tool` (crate-internal) | ✅ New | The `AsyncSpawn`/`ExecuteTool` shared attribution path |
+| `ToolHandler::resolve_execution_attribution` | `ipc::handlers::tool` (crate-internal) | ✅ New | The Async spawn/`ExecuteTool` shared attribution path |
 | `peko_workflow` Python SDK (`tools.call`) | `sdks/python/peko_workflow` | ✅ New | Stdlib-only unix-socket client for workflow processes |
 
 ### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
@@ -955,7 +974,7 @@ injected; callbacks authenticate with a per-spawn run token. Wire shapes in
 | `RunTokenRegistry` / `RunTokenEntry` | `ipc::run_tokens` | ✅ New | In-memory `PEKO_RUN_TOKEN` mint/verify with TTL + lazy expiry sweep. **2026-09-23 (caller-awareness):** `RunTokenEntry` gains `caller_session_id: Option<String>` — the tree node the `Workflow` ran from; the `ExecuteTool` handler threads it into `ToolContext.session_id` on validated calls so tree-relative tools classify the workflow caller as that node |
 | `CallerAwareSessionTool` (`for_daemon` / `for_agent`) | `tools::builtin::session::caller_aware` | ✅ New (2026-09-23) | `Session` builtin with per-call caller resolution: daemon mode resolves store/meter/inbox per call from `ToolContext` + `PrincipalManager`; agent mode overrides the shared cell when `ctx.session_id` is present, delegates unchanged when absent (loop-path behavior identical) |
 | `SessionManagerRuntime::with_current_session` (+ `Clone`) | `session::session_runtime_impl` | ✅ Extended (2026-09-23) | Shallow clone with a fresh per-call caller cell; the `SessionRuntime` port trait is untouched |
-| `SpawnRequest.parent_session_id` | `tools::builtin::async_control` | ✅ Extended (2026-09-24) | Per-call parent-session stamp, filled by `AsyncSpawnTool` from `ToolContext.session_id`; `AsyncExecutorRuntime::spawn` stamps `parent_session_key` from it first (session-key cell is fallback-only for ctx-less dispatches) |
+| `SpawnRequest.parent_session_id` | `tools::builtin::async_control` | ✅ Extended (2026-09-24) | Per-call parent-session stamp, filled by `AsyncTool` from `ToolContext.session_id`; `AsyncExecutorRuntime::spawn` stamps `parent_session_key` from it first (session-key cell is fallback-only for ctx-less dispatches) |
 | `RequestPacket::ExecuteTool.run_token` | `ipc::packet` | ✅ Extended | Optional additive field; validated + session-matched server-side, fail-closed |
 | `DaemonClient::execute_tool_with_token` | `ipc::client` | ✅ New | `execute_tool` + `run_token`; the old method delegates with `None` |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `session_id` (the handler threads the packet's `session_key` into `ToolContext`) |

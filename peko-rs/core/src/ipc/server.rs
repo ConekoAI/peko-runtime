@@ -1120,7 +1120,7 @@ impl IpcServer {
         crate::ipc::handlers::RequestDispatcher::dispatch(state, request, &caller, sink, peer).await
     }
 
-    // (The `AsyncSpawn` / `AsyncCancel` IPC variants are deleted
+    // (The `Async action spawn` / `AsyncCancel` IPC variants are deleted
     // (2026-09-27, ADR-063 (dead IPC path)): the CLI never executes
     // tools, so the path had no producer. Async task control lives in
     // the per-principal `Async*` tool family.)

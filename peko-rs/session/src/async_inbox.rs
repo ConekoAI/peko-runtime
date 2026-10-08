@@ -14,7 +14,7 @@ use peko_tools_core::AsyncTaskStatus;
 /// `Steering`.
 #[derive(Debug, Clone)]
 pub enum AsyncInboxItem {
-    /// A completed async task (returned by `AsyncSpawnTool`).
+    /// A completed async task (returned by `AsyncSpawnAction`).
     Completion(CompletionEnvelope),
     /// A steering message pushed by an extension or runtime.
     Steering(SteeringEnvelope),

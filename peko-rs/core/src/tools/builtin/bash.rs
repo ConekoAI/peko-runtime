@@ -7,8 +7,8 @@
 //!
 //! Supports both blocking execution and `run_in_background` for parity with
 //! Claude Code's `Bash` tool. Background tasks are tracked by the async executor
-//! framework; poll them with the Async* family (AsyncOutput, AsyncStatus,
-//! AsyncStop, AsyncList) — there is no implicit auto-detach in this tool;
+//! framework; poll them with the Async* family (Async action output, Async action status,
+//! Async action stop, Async action list) — there is no implicit auto-detach in this tool;
 //! blocking calls are bounded only by `timeout`.
 
 use anyhow::{Context, Result};
@@ -77,7 +77,7 @@ pub struct BashArgs {
     /// hit, the truncated stream is suffixed with `...(truncated)` and
     /// `stdout_truncated` / `stderr_truncated` are set to `true` in the
     /// response. Defaults to [`DEFAULT_MAX_OUTPUT_BYTES`]. Ignored for
-    /// `run_in_background: true` (use `AsyncOutput` with `tail_lines`
+    /// `run_in_background: true` (use `Async action output` with `tail_lines`
     /// to read slices of large outputs).
     #[serde(default)]
     pub max_output_bytes: Option<usize>,
@@ -223,7 +223,7 @@ impl BashTool {
         // §4.1: live progress buffer, shared three ways — into the task's
         // config (so the registry entry carries it), into the streaming
         // reader below (which appends child output as it is produced),
-        // and read back by `AsyncOutput` on a still-running task and by
+        // and read back by `Async action output` on a still-running task and by
         // the executor's delivery pass when the task is cancelled or
         // times out (where no real result ever materializes).
         let progress: Arc<std::sync::Mutex<String>> = Arc::default();
@@ -232,7 +232,7 @@ impl BashTool {
             // the executor will fall back to `timeout_secs` otherwise.
             timeout_millis: timeout_ms,
             // Per-principal isolation: stamp the calling principal so other
-            // principals' `AsyncList`/`AsyncStop` can't see or cancel this
+            // principals' `Async action list`/`Async action stop` can't see or cancel this
             // task (P1-4).
             principal_id: ctx.and_then(|c| c.principal_id.clone()),
             progress: Some(Arc::clone(&progress)),
@@ -248,9 +248,9 @@ impl BashTool {
                 config,
                 move |abort_rx| async move {
                     // Background tasks stream their output through
-                    // `AsyncOutput` (fed by the progress buffer) and the
+                    // `Async action output` (fed by the progress buffer) and the
                     // per-call cap is not applied here. The abort receiver
-                    // is the executor's cancel channel: `AsyncStop` →
+                    // is the executor's cancel channel: `Async action stop` →
                     // `AsyncExecutor::cancel` flips it, the `select!` in
                     // the streaming path bails, and dropping the child
                     // (`kill_on_drop(true)`) kills the process, so a
@@ -281,7 +281,7 @@ impl BashTool {
     /// child's stdout/stderr incrementally and mirrors what it reads into
     /// the task's shared progress buffer. On cancel/timeout the executor
     /// therefore has something to deliver besides an opaque error, and
-    /// `AsyncOutput` on a still-running task shows live output.
+    /// `Async action output` on a still-running task shows live output.
     ///
     /// The returned JSON has the same shape as
     /// [`Self::format_output`] so callers cannot tell the paths apart.
@@ -523,7 +523,7 @@ Stdout and stderr are each capped at `max_output_bytes` (default 100000).
 When a stream is truncated, it ends with `...(truncated)` and the response
 sets `stdout_truncated: true` and/or `stderr_truncated: true`. If you
 expect large output, prefer `run_in_background: true` and read it with
-`AsyncOutput` + `tail_lines` instead of raising the cap.
+`Async action output` + `tail_lines` instead of raising the cap.
 
 ## Examples
 
@@ -556,17 +556,17 @@ Background execution:
 
 When `run_in_background: true`, this tool returns a
 `{{task_id, status: "running", tool: "Bash"}}` receipt immediately.
-To monitor or cancel the backgrounded command, use the Async* family:
+To monitor or cancel the backgrounded command, use Async:
 
-- `AsyncStatus({{task_id}})` — one-shot status (pending / running /
+- `Async({{action: "status", task_id}})` — one-shot status (pending / running /
   completed / failed / cancelled / timed_out)
-- `AsyncOutput({{task_id, block?, timeout?, tail_lines?}})` — read
+- `Async({{action: "output", task_id, block?, timeout?, tail_lines?}})` — read
   the result; with `block: true` the call waits until the task
   reaches a terminal state
-- `AsyncStop({{task_id}})` — cancel a still-running task; returns
+- `Async({{action: "stop", task_id}})` — cancel a still-running task; returns
   `success: true, already_terminal: true` if the task is already done
-- `AsyncList({{status_filter?, tool_filter?}})` — enumerate all
-  background tasks visible to the current agent
+- `Async({{action: "list", status_filter?, tool_filter?}})` — enumerate all
+  background tasks owned by the current principal
 
 The blocking form of this tool (default) is bounded only by the
 `timeout` parameter; there is no implicit auto-detach to background.

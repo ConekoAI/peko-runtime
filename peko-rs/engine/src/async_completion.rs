@@ -85,17 +85,17 @@ impl AsyncCompletionLike for peko_session::CompletionEnvelope {
 
 /// Maximum size of a tool result to include verbatim in the synthetic
 /// completion message. Results larger than this are truncated and the
-/// model is told to call `AsyncOutput` for the full content. Keeps the
+/// model is told to call `Async action output` for the full content. Keeps the
 /// LLM context window bounded when a long-running tool produces a large
 /// payload.
 const MAX_RESULT_PREVIEW_BYTES: usize = 2048;
 
 /// Suffix appended to truncated previews.
-const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `AsyncOutput` for full result)";
+const TRUNCATION_SUFFIX: &str = "\n\n... (truncated; use `Async action output` for full result)";
 
 /// Truncate a result string to `MAX_RESULT_PREVIEW_BYTES`, respecting
 /// UTF-8 char boundaries, and append a suffix pointing the model at
-/// `AsyncOutput` for the full content.
+/// `Async action output` for the full content.
 ///
 /// Public for use from `agentic_loop::run_inner`'s inbox-drain
 /// persistence branch (WS3 — implicit session management).

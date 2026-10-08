@@ -1,4 +1,4 @@
-//! `CronTrigger` tool — fire a scheduled job immediately
+//! `Cron action trigger` tool — fire a scheduled job immediately
 //!
 //! Fires a `CronJob` out of schedule through the [`CronRuntime`] port.
 //! The daemon routes the fire through `CronEngine::execute_job_for_id`,
@@ -14,23 +14,23 @@ use peko_tools_core::traits::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-/// `CronTrigger` tool — fire a scheduled job now
-pub struct CronTriggerTool;
+/// `Cron action trigger` tool — fire a scheduled job now
+pub struct CronTriggerAction;
 
-impl CronTriggerTool {
-    /// Create a new `CronTrigger` tool
+impl CronTriggerAction {
+    /// Create a new `Cron action trigger` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronTriggerTool {
+impl Default for CronTriggerAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// `CronTrigger` tool arguments
+/// `Cron action trigger` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronTriggerArgs {
     /// Job ID to fire
@@ -42,13 +42,13 @@ pub struct CronTriggerArgs {
 }
 
 #[async_trait]
-impl Tool for CronTriggerTool {
+impl Tool for CronTriggerAction {
     fn name(&self) -> &'static str {
-        "CronTrigger"
+        "Cron"
     }
 
     fn description(&self) -> String {
-        "Fire a scheduled job immediately, out of schedule, by ID (or label). Works even when the job is disabled — use it to verify a freshly-created job's wiring before its first scheduled fire. The run executes in the background; if the job is already running, the fire coalesces into the in-flight run. Check the outcome with CronHistory.".to_string()
+        "Fire a scheduled job immediately, out of schedule, by ID (or label). Works even when the job is disabled — use it to verify a freshly-created job's wiring before its first scheduled fire. The run executes in the background; if the job is already running, the fire coalesces into the in-flight run. Check the outcome with Cron action history.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -72,14 +72,14 @@ impl Tool for CronTriggerTool {
     }
 
     /// F33: cron DB write — opt out of parallel dispatch. See
-    /// `CronCreate::parallelizable` for the rationale.
+    /// `Cron action create::parallelizable` for the rationale.
     fn parallelizable(&self) -> bool {
         false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronTrigger requires a Principal context; use execute_with_context"
+            "Cron action trigger requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -91,15 +91,17 @@ impl Tool for CronTriggerTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronTrigger requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action trigger requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronTrigger requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!(
+                "Cron action trigger requires the daemon's cron runtime; not initialized"
+            )
         })?;
 
         let args: CronTriggerArgs = serde_json::from_value(params.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid CronTrigger arguments: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid Cron action trigger arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
             verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
@@ -108,7 +110,7 @@ impl Tool for CronTriggerTool {
             resolve_id_by_label(&*runtime, &label, &principal_id).await?
         } else {
             return Err(anyhow::anyhow!(
-                "Either id or label is required for CronTrigger"
+                "Either id or label is required for Cron action trigger"
             ));
         };
 
@@ -117,7 +119,7 @@ impl Tool for CronTriggerTool {
             "triggered": true,
             "job_id": job_id,
             "run_id": run_id,
-            "note": "the job is running in the background; check the outcome with CronHistory",
+            "note": "the job is running in the background; check the outcome with Cron action history",
         }))
     }
 }
@@ -128,17 +130,17 @@ mod tests {
 
     #[test]
     fn test_cron_trigger_tool_name() {
-        let tool = CronTriggerTool::new();
-        assert_eq!(tool.name(), "CronTrigger");
+        let tool = CronTriggerAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_trigger_tool_parameters() {
-        let tool = CronTriggerTool::new();
+        let tool = CronTriggerAction::new();
         let params = tool.parameters();
         let branches = params
             .get("oneOf")
-            .expect("CronTrigger schema must use oneOf for id-or-label");
+            .expect("Cron action trigger schema must use oneOf for id-or-label");
         assert_eq!(branches.as_array().unwrap().len(), 2);
     }
 }

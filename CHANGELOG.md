@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Agent and Session schema cohesion (2026-10-08)
+
+- Use strict action variants and cached direct-call validation for Agent/Session;
+  caller-aware adapters share their static contracts and validate before binding.
+  Reject unknown fields, removed Session.kinds, explicit nulls, and compact.model.
+- Bound Session numeric arguments to their handler conversions, including the
+  active-minute multiplication; declare action-specific result-limit defaults.
+  Preserve Agent's new default and existing creation/editing retention semantics.
+- Fix combined Session move/rename/retention calls to follow the new address and
+  return it; reject invalid retention before any move/title mutation.
+- Remove the dummy Session metadata runtime and unused Agent _timeout injection.
+  Correct Agent guidance to inspect Session.status.parent_session.
+
+### Domain tool actions (2026-10-08)
+
+- Consolidate Task, Plan, Cron, and Async into four tools with explicit actions;
+  the native catalog now has 19 names. Remove the former per-action wire names
+  and public action-tool structs without compatibility aliases.
+- Reject missing actions, unknown fields, and fields belonging to another action;
+  tighten Session's ten action schemas while preserving defaults and ownership.
+- Preserve domain runtime ownership, Async receipts and completion routing, and
+  caller context. Task/Plan/Cron retain exclusive dispatch for their mutations
+  and conservatively serialize read actions through the same gate.
+- Include action in the single outer tool.call audit event; update prompts,
+  tool guidance, mock calls, and the full parameter catalog (ADR-071).
+- Align the mock sequence assertion with Cron's create payload, removing its
+  obsolete agent_id expectation.
+
 ### Exact tool contracts and unfiltered availability (2026-10-08)
 
 - Remove old tool-name and argument aliases: Session/ModelList/RoleCatalog,

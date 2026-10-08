@@ -113,6 +113,20 @@ impl SessionCache {
         }
     }
 
+    /// Follow an updated address without changing the cache's stable keys.
+    fn mutation_key(&self, reference: &str) -> anyhow::Result<String> {
+        let sessions = self.sessions.lock().expect("sessions mutex poisoned");
+        if sessions.contains_key(reference) {
+            return Ok(reference.to_string());
+        }
+        let wanted = Self::normalize_path(reference);
+        sessions
+            .iter()
+            .find(|(_, info)| !info.path.is_empty() && Self::normalize_path(&info.path) == wanted)
+            .map(|(key, _)| key.clone())
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {reference}"))
+    }
+
     /// Resolve a subtree scope reference (`sess:/a/b`) against the
     /// cached `SessionInfo`s.
     ///
@@ -431,6 +445,8 @@ impl SessionRuntime for SessionCache {
         title: Option<String>,
         slug: Option<String>,
     ) -> anyhow::Result<()> {
+        let session_key = self.mutation_key(session_key)?;
+        let session_key = session_key.as_str();
         let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
         let info = sessions
             .get_mut(session_key)
@@ -476,13 +492,18 @@ impl SessionRuntime for SessionCache {
             let status = statuses
                 .get_mut(session_key)
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
-            status.parent_session = Some(new_parent);
+            status.parent_session = Some(new_parent.clone());
         }
         if let Some(slug) = new_slug {
             let mut sessions = self.sessions.lock().expect("sessions mutex poisoned");
             let info = sessions
                 .get_mut(session_key)
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))?;
+            info.path = format!(
+                "{}/{}",
+                Self::normalize_path(&new_parent).trim_end_matches('/'),
+                slug
+            );
             info.slug = Some(slug);
         }
         Ok(())

@@ -267,7 +267,7 @@ fn job_base(
 ) -> CronJob {
     // Cron jobs are keyed the way the cron tools key them: the
     // principal's stable runtime id (`ctx.principal_id` — this is what
-    // `CronList` filters on and what `CronCreate` stamps). The DID is
+    // `Cron action list` filters on and what `Cron action create` stamps). The DID is
     // the fallback for configs that predate id generation; the engine's
     // `resolve_principal` tries both on dispatch.
     let principal_id = config
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!(job.id, GENESIS_JOB_ID);
         assert!(job.delete_after_run, "genesis turn is one-shot");
         assert!(job.enabled);
-        // Jobs key on the runtime PrincipalId (what CronList filters
+        // Jobs key on the runtime PrincipalId (what Cron action list filters
         // on), not the DID.
         assert_eq!(job.principal_id.0, "prin_seedling");
         match &job.action {

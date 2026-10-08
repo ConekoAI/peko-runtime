@@ -2275,7 +2275,7 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
     /// subscriber exists for the (invitee, channel) pair — channels
     /// joined after daemon boot otherwise get none until the next
     /// restart. This is a *subscriber* spawn (meter +, for bound
-    /// channels, the passive responder), still NOT an `AsyncSpawn` of
+    /// channels, the passive responder), still NOT an `Async action spawn` of
     /// `ChannelRead`: waking a session on join remains the passive
     /// binding's job, driven by inbound events rather than the join
     /// itself.
@@ -3263,7 +3263,7 @@ mod tests {
             tool_runtime.has_tool("Edit").await,
             "Edit tool not registered"
         );
-        // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
+        // `Async action spawn` and `Async action output` are registered per-agent (not
         // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
         // and `tools::installation::install_async`. Asserting they
         // are missing here pins the contract.

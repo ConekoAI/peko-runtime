@@ -1,25 +1,7 @@
-//! End-to-end integration tests for the Async* tool family.
+//! Async domain-tool integration tests against the real executor and funnel.
 //!
-//! Wires `AsyncSpawnTool` / `AsyncOutputTool` / `AsyncStatusTool` /
-//! `AsyncListTool` / `AsyncStopTool` against a real
-//! `AsyncExecutorRuntime` wrapping `AsyncExecutor` + `Arc<ToolingRuntime>`.
-//!
-//! These tests pin two contracts that layered unit tests cannot:
-//!
-//! 1. **F37 canonical funnel** — `AsyncSpawnTool.execute` →
-//!    `AsyncExecutorRuntime::spawn` → `executor.dispatch_tool` →
-//!    `ToolFunnel::execute(...)`. An installed tool reaches Completed.
-//! 2. **Abort-signal bridge** — `AsyncStopTool.execute` →
-//!    `AsyncExecutor::cancel` → registry flips to `Cancelled`
-//!    synchronously, plus the abort watch channel fires for tool bodies
-//!    that poll `is_aborted()`.
-//!
-//! Layered unit-test coverage lives in
-//! `async_exec::executor::dispatch_tool_tests`
-//! (gate) and
-//! `async_exec::executor::async_runtime_impl::TestAsyncRuntime`
-//! (adapter). This file is the only place all five `Async*Tool` objects
-//! run through their own `.execute()` chains.
+//! Calls all five actions through AsyncTool. Pin completion/result propagation,
+//! cancellation, and per-call spawning-session attribution across sequential runs.
 
 #[cfg(test)]
 mod tests {
@@ -27,9 +9,7 @@ mod tests {
         standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime,
     };
 
-    use crate::tools::builtin::{
-        AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
-    };
+    use crate::tools::builtin::AsyncTool;
     use crate::tools::runtime::ToolingRuntime;
     use async_trait::async_trait;
     use peko_subject::PrincipalId;
@@ -50,7 +30,7 @@ mod tests {
             "stub_tool"
         }
         fn description(&self) -> String {
-            "stub for AsyncSpawn happy-path round-trip".to_string()
+            "stub for Async action spawn happy-path round-trip".to_string()
         }
         async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
@@ -59,7 +39,7 @@ mod tests {
 
     /// Tool stub that sleeps ~200ms before completing.
     ///
-    /// Used to exercise the cancel path: `AsyncStopTool` flips the
+    /// Used to exercise the cancel path: `AsyncStopAction` flips the
     /// registry to `Cancelled`; this stub doesn't poll `is_aborted()`
     /// so it runs to natural completion — that's the F38 two-layer
     /// contract being pinned here.
@@ -80,33 +60,19 @@ mod tests {
     }
 
     /// Bundle the constructed runtime + tools + core so a test can call
-    /// each Async* tool's `.execute()` against the same backing state.
+    /// each Async action against the same backing state.
     struct AsyncToolRig {
         #[allow(dead_code)] // retained for diagnostic future tests
         core: Arc<ToolingRuntime>,
-        spawn: AsyncSpawnTool,
-        output: AsyncOutputTool,
-        status: AsyncStatusTool,
-        list: AsyncListTool,
-        stop: AsyncStopTool,
+        tool: AsyncTool,
     }
 
     /// Construct a runtime with `StubTool` (and optionally
     /// `AbortableStubTool`) registered. Returns an `AsyncToolRig`
-    /// ready to drive every Async* tool from the same backing runtime.
+    /// ready to drive every Async action from the same backing runtime.
     async fn setup_with_stop(register_abortable: bool) -> AsyncToolRig {
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        // Register via `ToolDispatcher::register_tool_system` rather
-        // than `core.insert_tool_instance`. The latter only fills the
-        // `Arc<dyn Tool>` side-table that direct callers (e.g.
-        // AsyncSpawnTool) read from. The F37 funnel — `dispatch_tool` →
-        // `execute_tool_via_hook` → `hook_registry.invoke_hook` — also
-        // needs a `BuiltinExecuteHandler` registered for the tool's
-        // `ToolExecute` hook point. Without it, the hook registry
-        // returns `HookResult::PassThrough`, and `tool_result_from_hook`
-        // converts that to `("Tool 'stub_tool' not available",
-        // success=false)`, which is why every spawned task landed in
-        // `Failed` with no `result` field before this fix.
+        // Spawned calls resolve this registration through the canonical dispatcher.
         core.catalog()
             .register(
                 Arc::new(StubTool),
@@ -137,30 +103,26 @@ mod tests {
 
         AsyncToolRig {
             core,
-            spawn: AsyncSpawnTool::new(handle.clone()),
-            output: AsyncOutputTool::new(handle.clone()),
-            status: AsyncStatusTool::new(handle.clone()),
-            list: AsyncListTool::new(handle.clone()),
-            stop: AsyncStopTool::new(handle),
+            tool: AsyncTool::new(handle),
         }
     }
 
     /// Pin: a spawn of an installed tool reaches
-    /// `Completed`, lands a terminal result in `AsyncOutput` output,
-    /// and `AsyncStatus` reports `is_terminal=true`.
+    /// `Completed`, lands a terminal result in `Async action output` output,
+    /// and `Async action status` reports `is_terminal=true`.
     #[tokio::test]
     async fn test_async_spawn_then_output_blocks_for_terminal_result() {
         let rig = setup_with_stop(false).await;
 
         let receipt = rig
-            .spawn
-            .execute(serde_json::json!({
+            .tool
+            .execute(serde_json::json!({"action":"spawn",
                 "tool": "stub_tool",
                 "params": {},
                 "label": "happy-path",
             }))
             .await
-            .expect("AsyncSpawn returns receipt");
+            .expect("Async action spawn returns receipt");
         assert_eq!(
             receipt["status"], "running",
             "receipt status runs while dispatched"
@@ -172,20 +134,20 @@ mod tests {
             "task_id shape is tool_name:uuid, got: {task_id}",
         );
 
-        // Wait for the spawned task to reach terminal via AsyncStatus,
-        // then read the result via AsyncOutput. This avoids the
+        // Wait for the spawned task to reach terminal via Async action status,
+        // then read the result via Async action output. This avoids the
         // block:true path's known lock-held-during-sleep interaction
         // (see test_async_output_block_false_does_not_wait for the
         // targeted shape assertion on block:false).
         let status = poll_terminal(&rig, task_id, "completed").await;
         assert_eq!(status["is_terminal"], serde_json::json!(true));
 
-        // AsyncOutput now reads a terminal entry.
+        // Async action output now reads a terminal entry.
         let output = rig
-            .output
-            .execute(serde_json::json!({"task_id": task_id}))
+            .tool
+            .execute(serde_json::json!({"action":"output","task_id": task_id}))
             .await
-            .expect("AsyncOutput reads terminal entry");
+            .expect("Async action output reads terminal entry");
         assert_eq!(output["is_terminal"], serde_json::json!(true));
         assert_eq!(output["status"], "completed");
         assert_eq!(
@@ -194,12 +156,12 @@ mod tests {
             "tool return value flows through the funnel intact",
         );
 
-        // AsyncStatus sees the same terminal entry.
+        // Async action status sees the same terminal entry.
         let status = rig
-            .status
-            .execute(serde_json::json!({"task_id": task_id}))
+            .tool
+            .execute(serde_json::json!({"action":"status","task_id": task_id}))
             .await
-            .expect("AsyncStatus returns entry");
+            .expect("Async action status returns entry");
         assert_eq!(status["is_terminal"], serde_json::json!(true));
         assert_eq!(status["status"], "completed");
         assert_eq!(
@@ -216,10 +178,10 @@ mod tests {
         let rig = setup_with_stop(false).await;
         // The cell holds the legacy stamp; the ctx-carried id must win.
         let receipt = rig
-            .spawn
+            .tool
             .execute_with_context(
-                serde_json::json!({"tool": "stub_tool", "params": {}}),
-                &peko_tools_core::ToolContext::default_for_tool("AsyncSpawn")
+                serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
+                &peko_tools_core::ToolContext::default_for_tool("Async")
                     .with_session_id("ctx-session-A"),
             )
             .await
@@ -241,11 +203,10 @@ mod tests {
         let mut task_ids = Vec::new();
         for id in ["ctx-run-1", "ctx-run-2"] {
             let receipt = rig
-                .spawn
+                .tool
                 .execute_with_context(
-                    serde_json::json!({"tool": "stub_tool", "params": {}}),
-                    &peko_tools_core::ToolContext::default_for_tool("AsyncSpawn")
-                        .with_session_id(id),
+                    serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
+                    &peko_tools_core::ToolContext::default_for_tool("Async").with_session_id(id),
                 )
                 .await
                 .expect("spawn with ctx");
@@ -266,7 +227,7 @@ mod tests {
 
     /// Pin: `block:false` returns immediately. `block:true` with a
     /// holding-read-lock-during-sleep interaction with the spawned
-    /// task's write-lock update is exercised via the AsyncStatus
+    /// task's write-lock update is exercised via the Async action status
     /// polling pattern instead (see test_async_spawn_then_output_...).
     #[tokio::test]
     async fn test_async_output_block_false_does_not_wait() {
@@ -275,13 +236,13 @@ mod tests {
         let rig = setup_with_stop(true).await;
 
         let receipt = rig
-            .spawn
-            .execute(serde_json::json!({
+            .tool
+            .execute(serde_json::json!({"action":"spawn",
                 "tool": "abortable_stub",
                 "params": {},
             }))
             .await
-            .expect("AsyncSpawn returns receipt");
+            .expect("Async action spawn returns receipt");
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
 
         // Race-tolerant: assert that block:false did NOT block for
@@ -290,8 +251,8 @@ mod tests {
         // returned within the timeout window.
         let start = std::time::Instant::now();
         let output = rig
-            .output
-            .execute(serde_json::json!({
+            .tool
+            .execute(serde_json::json!({"action":"output",
                 "task_id": task_id,
                 "block": false,
             }))
@@ -307,7 +268,7 @@ mod tests {
         assert!(output.get("status").is_some());
     }
 
-    /// Pin: `AsyncStop` against an already-terminal task returns
+    /// Pin: `Async action stop` against an already-terminal task returns
     /// `success:true, already_terminal:true` per the Claude-Code
     /// `TaskStop` shape — never `success:false` for "task already
     /// done". See `common::build_cancel_response`.
@@ -316,20 +277,20 @@ mod tests {
         let rig = setup_with_stop(false).await;
 
         let receipt = rig
-            .spawn
-            .execute(serde_json::json!({"tool": "stub_tool", "params": {}}))
+            .tool
+            .execute(serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}))
             .await
             .unwrap();
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
 
-        // Drain to completion via AsyncStatus polling.
+        // Drain to completion via Async action status polling.
         let _ = poll_terminal(&rig, &task_id, "completed").await;
 
         let result = rig
-            .stop
-            .execute(serde_json::json!({"task_id": task_id}))
+            .tool
+            .execute(serde_json::json!({"action":"stop","task_id": task_id}))
             .await
-            .expect("AsyncStop returns response");
+            .expect("Async action stop returns response");
         assert_eq!(result["success"], serde_json::json!(true));
         assert_eq!(result["already_terminal"], serde_json::json!(true));
         assert_eq!(result["previous_status"], "completed");
@@ -337,7 +298,7 @@ mod tests {
 
     /// Pin the abort-signal bridge: cancelling a long-running task
     /// flips the registry to `Cancelled` synchronously and
-    /// `AsyncStatus` reports `cancelled` (the task itself continues
+    /// `Async action status` reports `cancelled` (the task itself continues
     /// to run because `AbortableStubTool` doesn't poll `is_aborted()`
     /// — the F38 two-layer contract).
     #[tokio::test]
@@ -345,8 +306,8 @@ mod tests {
         let rig = setup_with_stop(true).await;
 
         let receipt = rig
-            .spawn
-            .execute(serde_json::json!({"tool": "abortable_stub", "params": {}}))
+            .tool
+            .execute(serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}))
             .await
             .unwrap();
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
@@ -355,8 +316,8 @@ mod tests {
         // previous_status can be "pending" or "running" depending on
         // scheduler timing; we accept either so the test isn't flaky.
         let result = rig
-            .stop
-            .execute(serde_json::json!({"task_id": task_id}))
+            .tool
+            .execute(serde_json::json!({"action":"stop","task_id": task_id}))
             .await
             .unwrap();
         assert_eq!(result["success"], serde_json::json!(true));
@@ -371,8 +332,8 @@ mod tests {
         // little for any scheduler delay, then assert.
         for _ in 0..40 {
             let status = rig
-                .status
-                .execute(serde_json::json!({"task_id": task_id}))
+                .tool
+                .execute(serde_json::json!({"action":"status","task_id": task_id}))
                 .await
                 .unwrap();
             if status["status"] == "cancelled" {
@@ -381,25 +342,25 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("status never reported `cancelled` after AsyncStop succeeded");
+        panic!("status never reported `cancelled` after Async action stop succeeded");
     }
 
-    /// Pin: `AsyncStatus` against an unknown task_id returns
+    /// Pin: `Async action status` against an unknown task_id returns
     /// `{error, task_id}` rather than Err — the tool body explicitly
     /// produces this JSON shape (see `status.rs:65-69`).
     #[tokio::test]
     async fn test_async_status_returns_not_found_for_unknown_task() {
         let rig = setup_with_stop(false).await;
         let result = rig
-            .status
-            .execute(serde_json::json!({"task_id": "ghost:task-id"}))
+            .tool
+            .execute(serde_json::json!({"action":"status","task_id": "ghost:task-id"}))
             .await
-            .expect("AsyncStatus returns JSON, not Err, on missing tasks");
+            .expect("Async action status returns JSON, not Err, on missing tasks");
         assert_eq!(result["error"], "Task not found");
         assert_eq!(result["task_id"], "ghost:task-id");
     }
 
-    /// Pin: `AsyncList` filters by tool_name; only matching entries
+    /// Pin: `Async action list` filters by tool_name; only matching entries
     /// appear under `tasks[]`, and `total` reflects the filtered
     /// count.
     #[tokio::test]
@@ -408,25 +369,29 @@ mod tests {
 
         // One of each.
         let r1 = rig
-            .spawn
-            .execute(serde_json::json!({"tool": "stub_tool", "params": {}}))
+            .tool
+            .execute(serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}))
             .await
             .unwrap();
         let r2 = rig
-            .spawn
-            .execute(serde_json::json!({"tool": "abortable_stub", "params": {}}))
+            .tool
+            .execute(serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}))
             .await
             .unwrap();
 
         // Drain both to terminal so the list returns terminal entries
         // (otherwise the stub_tool one could still be running and the
-        // AsyncStop call against it just flips the registry to
+        // Async action stop call against it just flips the registry to
         // Cancelled).
         let _ = poll_terminal(&rig, r1["task_id"].as_str().unwrap(), "completed").await;
         let _ = poll_terminal(&rig, r2["task_id"].as_str().unwrap(), "completed").await;
 
-        let list_all = rig.list.execute(serde_json::json!({})).await.unwrap();
-        // `AsyncList` merges the process-global per-agent registries
+        let list_all = rig
+            .tool
+            .execute(serde_json::json!({"action":"list",}))
+            .await
+            .unwrap();
+        // `Async action list` merges the process-global per-agent registries
         // (background `Bash` tasks, subagent runs from other tests in
         // this binary), so the total is a lower bound — pin that both
         // spawned tasks are present instead of an exact count.
@@ -445,8 +410,8 @@ mod tests {
         );
 
         let list_stub = rig
-            .list
-            .execute(serde_json::json!({"tool_filter": "stub_tool"}))
+            .tool
+            .execute(serde_json::json!({"action":"list","tool_filter": "stub_tool"}))
             .await
             .unwrap();
         assert_eq!(list_stub["total"], serde_json::json!(1));
@@ -457,8 +422,8 @@ mod tests {
 
         // Other filter returns the other one.
         let list_aborter = rig
-            .list
-            .execute(serde_json::json!({"tool_filter": "abortable_stub"}))
+            .tool
+            .execute(serde_json::json!({"action":"list","tool_filter": "abortable_stub"}))
             .await
             .unwrap();
         assert_eq!(list_aborter["total"], serde_json::json!(1));
@@ -467,7 +432,7 @@ mod tests {
 
     /// F37 success-path test: the test the doc comment on
     /// `executor.rs:1188` claimed existed "outside the framework
-    /// boundary." It exercises the full chain — `AsyncSpawnTool`
+    /// boundary." It exercises the full chain — `AsyncSpawnAction`
     /// through `AsyncExecutorRuntime::spawn` → `dispatch_tool` →
     /// `core.execute_tool_via_hook` — and asserts the spawn reaches
     /// `completed` (not `failed`). ADR-066 P2: no capability gate.
@@ -476,32 +441,32 @@ mod tests {
         let rig = setup_with_stop(false).await;
 
         let receipt = rig
-            .spawn
-            .execute(serde_json::json!({
+            .tool
+            .execute(serde_json::json!({"action":"spawn",
                 "tool": "stub_tool",
                 "params": {},
                 "label": "f37-allow",
             }))
             .await
-            .expect("AsyncSpawn returns receipt");
+            .expect("Async action spawn returns receipt");
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
 
-        // Poll for terminal via AsyncStatus. A funnel-level rejection
+        // Poll for terminal via Async action status. A funnel-level rejection
         // would surface as "failed" rather than "completed".
         let status = poll_terminal(&rig, &task_id, "completed").await;
         assert_eq!(status["status"], "completed");
         assert_eq!(status["result"], serde_json::json!({"ok": true}));
     }
 
-    /// Poll `AsyncStatus` until the task's status matches `expected`,
+    /// Poll `Async action status` until the task's status matches `expected`,
     /// or panic after ~2s. Returns the terminal `TaskView` JSON.
     async fn poll_terminal(rig: &AsyncToolRig, task_id: &str, expected: &str) -> serde_json::Value {
         for _ in 0..100 {
             let status = rig
-                .status
-                .execute(serde_json::json!({"task_id": task_id}))
+                .tool
+                .execute(serde_json::json!({"action":"status","task_id": task_id}))
                 .await
-                .expect("AsyncStatus returns JSON");
+                .expect("Async action status returns JSON");
             if status["status"] == expected {
                 return status;
             }

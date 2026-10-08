@@ -1,4 +1,4 @@
-//! `CronCreate` tool — create scheduled jobs
+//! `Cron action create` tool — create scheduled jobs
 //!
 //! Schedules a `CronJob` through the [`CronRuntime`] port set by the
 //! daemon at startup. The tool does not speak to the daemon directly;
@@ -24,23 +24,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-/// `CronCreate` tool — create scheduled jobs
-pub struct CronCreateTool;
+/// `Cron action create` tool — create scheduled jobs
+pub struct CronCreateAction;
 
-impl CronCreateTool {
-    /// Create a new `CronCreate` tool
+impl CronCreateAction {
+    /// Create a new `Cron action create` tool
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CronCreateTool {
+impl Default for CronCreateAction {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// `CronCreate` tool arguments
+/// `Cron action create` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronCreateArgs {
     /// Tool name to invoke at fire time. Mutually exclusive with `message`.
@@ -137,9 +137,9 @@ fn resolve_schedule(
 }
 
 #[async_trait]
-impl Tool for CronCreateTool {
+impl Tool for CronCreateAction {
     fn name(&self) -> &'static str {
-        "CronCreate"
+        "Cron"
     }
 
     fn description(&self) -> String {
@@ -225,8 +225,8 @@ impl Tool for CronCreateTool {
     }
 
     /// F33: cron DB write — opt out of parallel dispatch. Concurrent
-    /// `CronCreate` with the same job name races on the uniqueness
-    /// check; interleaving with `CronDelete` by id can land in a
+    /// `Cron action create` with the same job name races on the uniqueness
+    /// check; interleaving with `Cron action delete` by id can land in a
     /// half-applied state.
     fn parallelizable(&self) -> bool {
         false
@@ -234,7 +234,7 @@ impl Tool for CronCreateTool {
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(anyhow::anyhow!(
-            "CronCreate requires a Principal context; use execute_with_context"
+            "Cron action create requires a Principal context; use execute_with_context"
         ))
     }
 
@@ -249,25 +249,27 @@ impl Tool for CronCreateTool {
         let principal_id = ctx
             .principal_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CronCreate requires a Principal context"))?
+            .ok_or_else(|| anyhow::anyhow!("Cron action create requires a Principal context"))?
             .clone();
 
         let runtime = global_runtime().ok_or_else(|| {
-            anyhow::anyhow!("CronCreate requires the daemon's cron runtime; not initialized")
+            anyhow::anyhow!(
+                "Cron action create requires the daemon's cron runtime; not initialized"
+            )
         })?;
 
         // Parse known fields first for better error messages, then fall back
         // to the flexible parameter resolution used by the legacy cron tool.
         let args: CronCreateArgs = serde_json::from_value(params.clone())
-            .map_err(|e| anyhow::anyhow!("Invalid CronCreate arguments: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Invalid Cron action create arguments: {e}"))?;
 
         let action = match (args.tool.clone(), args.message.clone()) {
             (Some(_), Some(_)) => {
-                anyhow::bail!("CronCreate: `tool` and `message` are mutually exclusive");
+                anyhow::bail!("Cron action create: `tool` and `message` are mutually exclusive");
             }
             (Some(tool_name), None) => {
                 if tool_name.trim().is_empty() {
-                    anyhow::bail!("CronCreate `tool` must be a non-empty tool name");
+                    anyhow::bail!("Cron action create `tool` must be a non-empty tool name");
                 }
                 CronJobAction::SpawnTool {
                     tool_name,
@@ -278,7 +280,7 @@ impl Tool for CronCreateTool {
             }
             (None, Some(message)) => {
                 if message.trim().is_empty() {
-                    anyhow::bail!("CronCreate `message` must be non-empty");
+                    anyhow::bail!("Cron action create `message` must be non-empty");
                 }
                 // `target: None` is the trunk route (Phase 7: the only
                 // destination); the fire lands as a user message in the
@@ -290,7 +292,7 @@ impl Tool for CronCreateTool {
             }
             (None, None) => {
                 anyhow::bail!(
-                    "CronCreate requires either `tool` (+ optional `params`) for a fixed tool call, \
+                    "Cron action create requires either `tool` (+ optional `params`) for a fixed tool call, \
                      or `message` for an LLM-driven agent turn at fire time"
                 );
             }
@@ -342,13 +344,13 @@ mod tests {
 
     #[test]
     fn test_cron_create_tool_name() {
-        let tool = CronCreateTool::new();
-        assert_eq!(tool.name(), "CronCreate");
+        let tool = CronCreateAction::new();
+        assert_eq!(tool.name(), "Cron");
     }
 
     #[test]
     fn test_cron_create_tool_parameters() {
-        let tool = CronCreateTool::new();
+        let tool = CronCreateAction::new();
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
         // Two mutually exclusive shapes: `tool`+`params` → SpawnTool,

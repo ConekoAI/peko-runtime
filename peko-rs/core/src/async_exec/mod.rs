@@ -1,7 +1,7 @@
 //! Async execution infrastructure
 //!
 //! Background-task runtime used across the runtime: Bash background,
-//! `AsyncSpawn`/`AsyncOutput`, cron firing, and messaging. Owns the
+//! `Async action spawn`/`Async action output`, cron firing, and messaging. Owns the
 //! canonical `AsyncExecutor`, `CompletionQueue`, and the spawned-task
 //! bookkeeping that engine flows events into, plus the cross-boundary
 //! async-task inbox (`inbox`). Type-port helpers (`CompletionEvent`,

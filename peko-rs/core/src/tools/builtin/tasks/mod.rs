@@ -1,48 +1,16 @@
-//! `peko_tools_builtin::tasks` — Planning todo tool surface + `TodoRuntime` port.
-//!
-//! Phase 10d extracts the four Task\* tools (`TaskCreate`, `TaskGet`,
-//! `TaskList`, `TaskUpdate`) plus the `Todo` / `TodoStatus` DTOs out of
-//! root. Per the Phase 10 plan rule ("Built-ins must not import
-//! daemon state"), the tools here do NOT call
-//! `crate::session::TodoStorage` directly. They speak to a runtime port
-//! trait ([`TodoRuntime`]) that the daemon/agent side implements.
-//!
-//! ## DTOs
-//!
-//! [`Todo`] and [`TodoStatus`] are serialization-friendly types shared
-//! between the tool side (peko-tools-builtin) and the daemon/agent side
-//! (root's `src/session/todos.rs`). peko-tools-builtin is the canonical
-//! home; the root re-exports these from peko-tools-builtin via
-//! `pub use crate::tools::builtin::tasks::{Todo, TodoStatus};` — single
-//! source of truth going forward. A compile-time JSON-roundtrip test
-//! pins the two sides' shapes together.
-//!
-//! ## Port
-//!
-//! [`TodoRuntime`] is the four-method surface the Task\* tools need:
-//! create / get / list / update. Production wiring uses the
-//! `TodoStorageRuntime` adapter in
-//! `src/session/todo_runtime_impl.rs`; tests construct a `TestTodoRuntime`
-//! fixture (in this module under `#[cfg(test)]`).
-//!
-//! ## What stays in root
-//!
-//! `TodoStorage` (the file-backed persistence layer) depends on
-//! `crate::session::lock::FileLock` and
-//! `crate::session::safe_filename_component`, which are root-internal.
-//! `TodoStorage` and its adapter `TodoStorageRuntime` stay in root.
+//! Task domain actions and runtime contracts.
 
 pub mod common;
-pub mod create;
-pub mod get;
-pub mod list;
-pub mod update;
+mod create;
+mod get;
+mod list;
+mod update;
 
 pub use common::{missing_session_error, parse_status_param, require_session_id};
-pub use create::TaskCreateTool;
-pub use get::TaskGetTool;
-pub use list::TaskListTool;
-pub use update::TaskUpdateTool;
+pub(crate) use create::TaskCreateAction;
+pub(crate) use get::TaskGetAction;
+pub(crate) use list::TaskListAction;
+pub(crate) use update::TaskUpdateAction;
 
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
@@ -133,8 +101,7 @@ pub struct Todo {
 /// semantics with an in-memory map.
 ///
 /// The trait is per-process: each agent/daemon constructs one runtime
-/// backed by its session directory and shares it across its four
-/// `TaskCreate`/`TaskGet`/`TaskList`/`TaskUpdate` instances.
+/// backed by its session directory and shares it across the Task actions.
 #[async_trait]
 pub trait TodoRuntime: Send + Sync {
     /// Create a new todo in `session_key`. Returns the created record
@@ -363,3 +330,6 @@ mod tests {
         assert!(!obj.contains_key("owner"));
     }
 }
+
+mod tool;
+pub use tool::TaskTool;

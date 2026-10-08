@@ -2,8 +2,8 @@
 //!
 //! Routes tool execution with a constant 5-minute timeout. Tools that exceed
 //! the timeout are auto-detached to background tasks; the agent retrieves
-//! the result with `AsyncSpawn` / `AsyncOutput` / `AsyncStatus` /
-//! `AsyncList` and stops a task with `AsyncStop` (the legacy `task`
+//! the result with `Async action spawn` / `Async action output` / `Async action status` /
+//! `Async action list` and stops a task with `Async action stop` (the legacy `task`
 //! tool was removed; these tools replaced it).
 //!
 //! # Usage
@@ -43,7 +43,7 @@ fn strip_legacy_reserved_params(params: Value) -> Value {
 /// Routes tool execution with a constant 5-minute timeout
 /// ([`DEFAULT_TOOL_TIMEOUT_SECS`]). Tools exceeding the timeout are
 /// auto-detached to background tasks; the agent retrieves the result
-/// via the `Async*` tool family (`AsyncOutput`/`AsyncStatus`).
+/// via the `Async*` tool family (`Async action output`/`Async action status`).
 ///
 /// This is the unified router for ALL tool types in ADR-018a.
 ///
@@ -286,7 +286,7 @@ impl AsyncExecutionRouter {
         // so the eventual completion MUST reach its inbox: flip
         // `deliver_completion` on. A task that raced past terminal before
         // the flip landed reports `false` — its result stays available
-        // via `AsyncOutput` polling.
+        // via `Async action output` polling.
         if let Err(e) = self.transport.deliver_on_completion(&task_id).await {
             warn!(
                 tool_name = tool_name,
@@ -412,7 +412,7 @@ pub struct ToolExecutionContext {
     /// Workspace path
     pub workspace: String,
     /// Owning principal (string form), stamped onto spawned tasks so
-    /// per-principal `AsyncList`/`AsyncStatus`/`AsyncStop` isolation
+    /// per-principal `Async action list`/`Async action status`/`Async action stop` isolation
     /// holds for router-detached work too.
     pub principal_id: Option<String>,
 }

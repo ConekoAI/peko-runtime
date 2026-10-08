@@ -537,7 +537,7 @@ peko channel peek chan_a1b2c3d4 --json
 The `peko_channel_read` built-in tool lets any peko's agentic loop
 read its own channel events on demand. To pull events on an interval
 without the peko being online, schedule the tool via the
-peko's own `CronCreate` agentic-loop tool (e.g. send a message
+peko's own `Cron` create agentic-loop tool (e.g. send a message
 to `bob` asking it to schedule itself):
 
 ```text
@@ -552,14 +552,14 @@ peko's capability snapshot at dispatch time — same boundary model
 as any other async tool run. Add `--wake-on-completion` to surface a
 steer message into `bob`'s root inbox when a non-empty read completes.
 
-Use the `CronList` tool from the peko itself to confirm the job
-landed and `CronDelete` to remove it.
+Use the `Cron` list tool from the peko itself to confirm the job
+landed and `Cron` delete to remove it.
 
 #### Tools backing `Peko channel`
 
 | Tool name | Who invokes it | What it does |
 |-----------|----------------|-------------|
-| `ChannelRead` | peko's agentic loop (on demand), or `CronCreate`'s `SpawnTool` (scheduled). | Reads the channel's event log, scoped to the calling peko's membership. Tail-anchored by default (newest `limit` events, each with a line-number `id`); `since` pages forward for catch-up, `before` pages backward via `next_cursor` (`ChannelPort::peek_tail` / `peek_with_ids`). |
+| `ChannelRead` | peko's agentic loop (on demand), or `Cron` create's `SpawnTool` (scheduled). | Reads the channel's event log, scoped to the calling peko's membership. Tail-anchored by default (newest `limit` events, each with a line-number `id`); `since` pages forward for catch-up, `before` pages backward via `next_cursor` (`ChannelPort::peek_tail` / `peek_with_ids`). |
 
 PR-3c observes every channel event (post, invite, leave, pin) in the
 audit ring buffer regardless of whether the tool fires — so the

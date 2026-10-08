@@ -93,7 +93,7 @@ use tokio::sync::RwLock;
 /// instance. Additional spawns stay `Pending` (queued on the
 /// semaphore) until a running task reaches a terminal state. This is
 /// the backpressure the bare `tokio::spawn` used to lack — a model
-/// looping `AsyncSpawn` can no longer spawn unbounded concurrent work.
+/// looping `Async action spawn` can no longer spawn unbounded concurrent work.
 ///
 /// **The bound is per `AsyncExecutor`, not process-global.** Each
 /// executor instance carries its own semaphore, and a process has
@@ -144,7 +144,7 @@ pub struct AsyncExecutor {
 
 impl AsyncExecutor {
     /// Clone the underlying task registry so per-agent introspection
-    /// tools (`AsyncStatus`, `AsyncList`, `AsyncStop`) can be bound to
+    /// tools (`Async action status`, `Async action list`, `Async action stop`) can be bound to
     /// the agent's own executor and stay scoped to its tasks.
     #[must_use]
     pub fn clone_registry(&self) -> SharedAsyncTaskRegistry {
@@ -241,7 +241,7 @@ impl AsyncExecutor {
     /// task's own delivery pass then ran with `deliver_completion` still
     /// `false`, the outcome would never be pushed and — with the wake
     /// path in place — an idle agent would never learn the task finished
-    /// ("poll `AsyncOutput`" is precisely what an idle agent does not
+    /// ("poll `Async action output`" is precisely what an idle agent does not
     /// do). So when this flip lands on an *already-terminal* entry that
     /// has not been delivered yet, this method claims and delivers the
     /// outcome itself. The `delivered` claim on the entry makes the two
@@ -486,7 +486,7 @@ impl AsyncExecutor {
         tokio::spawn(async move {
             // Concurrency bound: wait for a running slot before doing
             // any work. The task stays `Pending` while queued here, so
-            // `AsyncList`/`AsyncStatus` honestly report it as not yet
+            // `Async action list`/`Async action status` honestly report it as not yet
             // running, and `cancel` still flips it to `Cancelled`
             // (checked again after acquisition below).
             let Ok(_permit) = permits.acquire_owned().await else {
@@ -678,7 +678,7 @@ impl AsyncExecutor {
     /// [`Self::cancel`] flips it, and the receiver is handed to the
     /// execution closure so cooperative bodies (e.g. background `Bash`)
     /// can short-circuit instead of running to natural completion after
-    /// an `AsyncStop`. Returns the receipt plus the receiver.
+    /// an `Async action stop`. Returns the receipt plus the receiver.
     pub async fn execute_cancellable<F, Fut>(
         &self,
         task_id: AsyncTaskId,
@@ -782,7 +782,7 @@ impl AsyncExecutor {
     /// pre-F37 bypass existed in the first place).
     ///
     /// Use this for any "dispatch a registered tool in the background"
-    /// pattern. The two post-F37 callers (`AsyncSpawnTool`,
+    /// pattern. The two post-F37 callers (`AsyncSpawnAction`,
     /// `cron_engine::run_spawn_tool_job`) were refactored to use
     /// this method.
     ///
@@ -1114,7 +1114,7 @@ mod consolidation_tests {
         );
     }
 
-    /// §4.1: `AsyncOutput` on a still-running task surfaces the tail of
+    /// §4.1: `Async action output` on a still-running task surfaces the tail of
     /// the live progress buffer.
     #[tokio::test]
     async fn taskview_carries_partial_output_while_running() {
@@ -1718,7 +1718,7 @@ mod completion_queue_fan_out_tests {
                 match &root_items[0] {
                     peko_session::AsyncInboxItem::Steering(s) => {
                         assert!(s.content.contains("daily-summary"));
-                        assert!(s.content.contains("AsyncOutput"));
+                        assert!(s.content.contains("Async"));
                         assert!(s.content.contains(&task_id));
                     }
                     other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
@@ -1785,7 +1785,7 @@ mod completion_queue_fan_out_tests {
 /// F38: `dispatch_tool` + `dispatch_tool_with_signal` API tests.
 ///
 /// These tests directly exercise `AsyncExecutor::dispatch_tool*` rather
-/// than going through `AsyncSpawnTool` (which F37 tests already cover
+/// than going through `AsyncSpawnAction` (which F37 tests already cover
 /// via its 5 async_spawn test cases). The goals here are:
 ///
 /// 1. Pin the canonical funnel — `dispatch_tool` calls
@@ -1917,8 +1917,8 @@ mod dispatch_tool_tests {
     /// The full success-path outcome is exercised by the
     /// in-tree integration test
     /// `tools::builtin::async_control::integration_tests::tests::test_async_spawn_through_capability_gate_allow`,
-    /// which wires `AsyncSpawnTool` against a real
-    /// `AsyncExecutorRuntime` (full chain: `AsyncSpawn` →
+    /// which wires `AsyncSpawnAction` against a real
+    /// `AsyncExecutorRuntime` (full chain: `Async action spawn` →
     /// `AsyncExecutorRuntime::spawn` → `dispatch_tool` →
     /// `core.execute_tool_via_hook`). This test only pins the API
     /// contract of `dispatch_tool` itself: a valid context + core

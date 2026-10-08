@@ -4,7 +4,7 @@
 //!
 //! A workflow is *procedural memory*: loops, conditionals, and polling
 //! the principal wrote once and can re-run (manually, or via
-//! `CronCreate` → `SpawnTool` → `Workflow`) instead of re-deriving the
+//! `Cron action create` → `SpawnTool` → `Workflow`) instead of re-deriving the
 //! procedure in-context every turn. Everything the workflow does that
 //! matters re-enters the daemon as an attributed `ExecuteTool` call —
 //! the runner itself performs no privileged effects.

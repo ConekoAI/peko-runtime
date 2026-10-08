@@ -1,7 +1,7 @@
 //! `SessionKeys` — per-agent session-key side table (ADR-066 D2).
 //!
 //! The agent sets its key before each run so tools that need a
-//! `parent_session_key` (e.g. `AsyncSpawn`) read the *correct* agent's
+//! `parent_session_key` (e.g. `Async action spawn`) read the *correct* agent's
 //! key. Keyed by agent DID: a single shared table serves every agent in
 //! the daemon; per-agent keys prevent concurrent agents from
 //! overwriting each other's session key (the bug addressed in

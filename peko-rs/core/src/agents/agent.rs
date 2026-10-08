@@ -498,9 +498,9 @@ impl Agent {
     ///
     /// `plan_port` is the per-Principal handle to the plan DAG store
     /// (`PrincipalContext::plan_port()`). When `Some`, the seven
-    /// `Plan*` built-in tools (`PlanCreate` / `PlanList` /
-    /// `PlanGet` / `PlanMarkStep` / `PlanRecordEvidence` /
-    /// `PlanAddStep` / `PlanClose`) are registered by
+    /// `Plan*` built-in tools (`Plan action create` / `Plan action list` /
+    /// `Plan action get` / `Plan action mark_step` / `Plan action record_evidence` /
+    /// `Plan action add_step` / `Plan action close`) are registered by
     /// `init_run_builtins`; when `None` they are skipped (the
     /// typical test path).
     ///
@@ -889,7 +889,7 @@ impl Agent {
 
         let agent_arc = Arc::new(self.clone());
         // Attach the caller inbox and private execution bindings. The agent's session key (read from
-        // `current_session_id`) is pushed onto the core so AsyncSpawn can
+        // `current_session_id`) is pushed onto the core so Async action spawn can
         // stamp `parent_session_key` correctly.
         //
         // Session-key flow across the three `execute_*` paths:
@@ -902,9 +902,9 @@ impl Agent {
         //   core. The loop's `run_inner` rebinds the core's session key
         //   for *this* agent's DID to the real session id it just
         //   created (see `src/engine/agentic_loop.rs`), so any
-        //   `AsyncSpawn` issued *mid-iteration* still gets a real
+        //   `Async action spawn` issued *mid-iteration* still gets a real
         //   `parent_session_key`. The brief window before the loop
-        //   starts (no iterations yet, no `AsyncSpawn` possible) does
+        //   starts (no iterations yet, no `Async action spawn` possible) does
         //   not matter.
         //
         // - `Agent::execute_with_session(...)` (tunnel / pekohub):
@@ -1103,7 +1103,7 @@ impl Agent {
         // current_session_id is the parent_session_key we'll use for any
         // spawn in this loop. See the session-key flow comment in
         // `Agent::execute` for how the three `execute_*` paths cooperate
-        // to ensure mid-iteration `AsyncSpawn` calls see a real session key.
+        // to ensure mid-iteration `Async action spawn` calls see a real session key.
         let session_id = self.current_session_id.read().await.clone();
         // F19: tunnel/pekohub streaming path. Caller supplies the
         // principal's quota meter; default to unlimited when omitted.
@@ -1203,13 +1203,13 @@ impl Agent {
     /// This is the central fix for the tool async refactor (commit 3
     /// follow-up): each call to `Agent::execute_*` constructs a fresh
     /// `SessionInbox`, an `AsyncExecutor` that fans out to
-    /// that queue, and `AsyncSpawn`/`AsyncOutput` tools bound to both.
+    /// that queue, and `Async action spawn`/`Async action output` tools bound to both.
     /// The tools are re-registered on the `ToolingRuntime` (overwriting any
     /// prior instances), and the same queue is given to `AgenticLoop` so the
     /// loop drains it at iteration start.
     ///
     /// Returns the constructed `AgenticLoop` ready to run. The session
-    /// key is pushed onto the core so `AsyncSpawn` can stamp
+    /// key is pushed onto the core so `Async action spawn` can stamp
     /// `parent_session_key` correctly.
     ///
     /// F19: `quota_meter` is the principal's quota meter. The loop
