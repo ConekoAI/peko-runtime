@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Exact tool contracts and unfiltered availability (2026-10-08)
+
+- Remove old tool-name and argument aliases: Session/ModelList/RoleCatalog,
+  Agent.role, Session.agent_name, and Session.title are the supported spellings.
+- Remove the ModelList visibility toggle; install it as a principal service.
+  Every principal can use every registered tool. Resource ownership, inbound
+  peer permissions, and channel membership remain the access boundaries.
+- Remove unused auto_grant_tools and the grant-only PrincipalConfig deserializer,
+  redundant BuiltinToolAdapter/inventory wrappers, agent_compat re-exports, and
+  the unused ToolFactory/disabled-tool path.
+  Register directly in ToolCatalog and retain the installation manifest.
+- Preserve MCP server attribution in catalog bindings; workspace MCP tools were
+  incorrectly registered as built-ins. Correct stale capability-filter docs.
+
+
 ### Explicit built-in installation lifetimes (2026-10-08)
 
 - Centralize built-in factories and scope/phase inventory in tools::installation.

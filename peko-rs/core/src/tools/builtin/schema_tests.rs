@@ -66,10 +66,15 @@ fn tools() -> Vec<Arc<dyn Tool>> {
 fn inventory_matches_implementations_and_schemas_compile() {
     let implementations = tools();
     let actual: HashSet<_> = implementations.iter().map(|tool| tool.name()).collect();
-    let declared: HashSet<_> = crate::principal::runtime::builtin_tools::all_tool_names()
+    let declared: HashSet<_> = crate::tools::installation::all_tool_names()
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
+    assert_eq!(
+        declared.len(),
+        crate::tools::installation::BUILTIN_INSTALLATIONS.len(),
+        "duplicate manifest names"
+    );
     assert_eq!(actual.len(), implementations.len(), "duplicate wire names");
     let catalog = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -255,7 +260,7 @@ async fn workflow_dispatch_preserves_hidden_depth_for_the_recursion_guard() {
 }
 
 #[tokio::test]
-async fn agent_dispatch_accepts_the_legacy_role_argument() {
+async fn agent_dispatch_requires_the_role_argument() {
     use crate::tools::metadata::ToolSource;
 
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
@@ -276,14 +281,9 @@ async fn agent_dispatch_accepts_the_legacy_role_argument() {
         ))
         .await
         .unwrap();
-    // Reaching role resolution proves validation accepted the alias;
-    // the empty fixture intentionally has no worker role to run.
     assert!(!success);
-    assert!(
-        display.contains("Agent template 'worker' not registered"),
-        "{display}"
-    );
-    assert!(!display.contains("Invalid arguments"), "{display}");
+    assert!(display.contains("role"), "{display}");
+    assert!(display.contains("required"), "{display}");
 }
 
 #[tokio::test]

@@ -1,9 +1,8 @@
 //! `Skill` tool — invoke a SKILL.md body with argument substitution.
 //!
 //! Provides `Skill` so the agent can invoke a SKILL.md body on-demand
-//! with argument substitution. The skill list is gated by the principal's
-//! `capabilities` grants and active extension snapshot, both carried in the
-//! tool execution context. Skill locations are resolved through the
+//! with argument substitution. Workspace presence determines availability;
+//! every principal can invoke its installed skills. Locations resolve through the
 //! injected [`SkillRuntime`] port (production uses the workspace-scanning
 //! `WorkspaceSkillRuntime` from `crate::extensions::skill::reader`).
 //!

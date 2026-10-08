@@ -27,7 +27,6 @@ use std::sync::{Arc, Weak};
 pub enum BuiltinScope {
     Runtime,
     Principal,
-    Run,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +36,6 @@ pub enum InstallationPhase {
     Workspace,
     PrincipalServices,
     Async,
-    Run,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,59 +65,15 @@ builtin_manifest! {
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
         "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "PlanCreate", "PlanList", "PlanGet",
-        "PlanAddStep", "PlanMarkStep", "PlanRecordEvidence", "PlanClose", "ChannelSend"
+        "PlanAddStep", "PlanMarkStep", "PlanRecordEvidence", "PlanClose", "ChannelSend", "ModelList"
     ];
     ASYNC_TOOL_NAMES: Principal, Async, false => ["AsyncSpawn", "AsyncOutput", "AsyncStatus", "AsyncList", "AsyncStop"];
-    RUN_TOOL_NAMES: Run, Run, true => ["ModelList"];
 }
 
-// Preserve the public inventory constants while deriving them from the
-// installation manifest. A daemon fallback may also have a private run binding.
-const fn count_names(run_bindings: bool) -> usize {
-    let mut count = 0;
-    let mut i = 0;
-    while i < BUILTIN_INSTALLATIONS.len() {
-        let entry = &BUILTIN_INSTALLATIONS[i];
-        if if run_bindings {
-            entry.run_binding
-        } else {
-            matches!(entry.scope, BuiltinScope::Runtime)
-        } {
-            count += 1;
-        }
-        i += 1;
-    }
-    count
-}
-
-const fn collect_names<const N: usize>(run_bindings: bool) -> [&'static str; N] {
-    let mut names = [""; N];
-    let mut i = 0;
-    let mut count = 0;
-    while i < BUILTIN_INSTALLATIONS.len() {
-        let entry = &BUILTIN_INSTALLATIONS[i];
-        if if run_bindings {
-            entry.run_binding
-        } else {
-            matches!(entry.scope, BuiltinScope::Runtime)
-        } {
-            names[count] = entry.name;
-            count += 1;
-        }
-        i += 1;
-    }
-    names
-}
-
-/// Runtime defaults, including caller-aware daemon fallbacks.
-pub const GLOBAL_TOOL_NAMES: &[&str] = &collect_names::<{ count_names(false) }>(false);
-/// Tools with private run bindings, including Session and Agent overrides.
-pub const AGENT_SPECIFIC_TOOL_NAMES: &[&str] = &collect_names::<{ count_names(true) }>(true);
-
-pub fn names_for_scope(scope: BuiltinScope) -> Vec<&'static str> {
+/// Every compiled built-in wire name, in manifest order.
+pub fn all_tool_names() -> Vec<&'static str> {
     BUILTIN_INSTALLATIONS
         .iter()
-        .filter(|entry| entry.scope == scope)
         .map(|entry| entry.name)
         .collect()
 }
@@ -268,6 +222,7 @@ pub(crate) async fn install_workspace(
 pub(crate) struct PrincipalBindings<'a> {
     pub sessions_dir: Option<PathBuf>,
     pub plan: Option<Arc<dyn peko_plan::PlanPort>>,
+    pub model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
     pub caller_did: Option<&'a str>,
 }
 
@@ -298,6 +253,9 @@ pub(crate) async fn install_principal_services(
             Arc::new(PlanRecordEvidenceTool::new(port.clone())),
             Arc::new(PlanCloseTool::new(port)),
         ]);
+    }
+    if let Some(catalog) = bindings.model_catalog {
+        tools.push(Arc::new(ModelListTool::new(Arc::downgrade(&catalog))));
     }
     if let Some(did) = bindings.caller_did {
         if let Some(tool) = channel::build_channel_send_tool(tooling, did) {
@@ -347,7 +305,6 @@ pub(crate) async fn install_run(
     executor: Arc<crate::agents::subagent_executor::SubagentExecutor>,
     sessions: crate::session::session_runtime_impl::SessionManagerRuntime,
     session_manager: Arc<tokio::sync::RwLock<peko_session::SessionManager>>,
-    model_catalog: Option<Arc<peko_providers::catalog::ModelCatalog>>,
 ) -> Result<()> {
     let surface = tooling.services().channel_port().map(|port| {
         Arc::new(crate::principal::child_turns::PeerTurnSurfaceImpl::new(
@@ -360,16 +317,13 @@ pub(crate) async fn install_run(
     tooling
         .catalog()
         .register(
-            Arc::new(messaging::new_agent_tool(executor)),
+            Arc::new(messaging::AgentTool::new(Arc::new(
+                crate::agents::subagent_runtime_impl::SubagentExecutorRuntime::new(executor),
+            ))),
             ToolSource::BuiltIn,
             principal,
         )
         .await;
-    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-    if let Some(catalog) = model_catalog {
-        tools.push(Arc::new(ModelListTool::new(Arc::downgrade(&catalog))));
-    }
-    install_defaults(tooling.catalog(), principal, InstallationPhase::Run, tools).await?;
     // The offline adapter overrides the daemon's caller-aware Session default
     // only inside this run. Both resolve the caller from ToolContext.
     tooling

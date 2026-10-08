@@ -554,27 +554,32 @@ mod tests {
             assert!(success);
             assert_eq!(value, expected);
         }
-        first
-            .catalog()
-            .register(
-                Arc::new(crate::tools::builtin::ModelListTool::new(
-                    std::sync::Weak::new(),
-                )),
-                ToolSource::BuiltIn,
-                &principal,
-            )
-            .await;
-        assert!(first.catalog().get("ModelList", &principal).await.is_some());
-        assert!(second
-            .catalog()
-            .get("ModelList", &principal)
-            .await
-            .is_none());
-        assert!(shared
-            .catalog()
-            .get("ModelList", &principal)
-            .await
-            .is_none());
+        // ModelList is a shared principal service, available to every run.
+        let catalog_dir = tempfile::tempdir().unwrap();
+        let models = peko_providers::catalog::ModelCatalog::load_or_init(
+            catalog_dir.path().join("models.toml"),
+        )
+        .await
+        .unwrap();
+        crate::tools::installation::install_principal_services(
+            &shared,
+            &principal,
+            crate::tools::installation::PrincipalBindings {
+                sessions_dir: None,
+                plan: None,
+                model_catalog: Some(Arc::clone(&models)),
+                caller_did: None,
+            },
+        )
+        .await
+        .unwrap();
+        for runtime in [&first, &second, &shared] {
+            assert!(runtime
+                .catalog()
+                .get("ModelList", &principal)
+                .await
+                .is_some());
+        }
         assert!(shared.catalog().get("Bound", &principal).await.is_none());
         let foreign = PrincipalId::generate();
         assert!(

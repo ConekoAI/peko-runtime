@@ -40,21 +40,6 @@ pub struct AgentConfig {
     ///   runner loads the markdown and the body ends up here.
     pub prompt: Option<String>,
 
-    /// Phase 2 of `feature/multi-model-subagents`: whether the
-    /// `ModelList` builtin is registered for this agent. Defaults
-    /// to `true` because discoverability matters for the parent
-    /// agent's model-picking decisions — without `ModelList` the
-    /// parent must shell out to `peko model list` between turns,
-    /// breaking the agentic flow. Off when the agent is run in a
-    /// constrained mode that already knows the catalog statically
-    /// (test fixtures, the CLI one-shot path with no resolver).
-    ///
-    /// No effect when the agent has no bound `ModelCatalog` — the
-    /// registration site checks both this flag and the catalog
-    /// handle before instantiating the tool.
-    #[serde(default = "default_true")]
-    pub enable_model_list: bool,
-
     /// Channel that triggered this agent's LLM calls (CLI, Discord, etc.).
     ///
     /// Surfaces in the rendered system prompt at `{{channel}}` and in the
@@ -101,10 +86,6 @@ pub struct AgentConfig {
     pub conversation_peer: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 impl AgentConfig {
     /// Wire-side identifier for this agent (issue #28).
     ///
@@ -135,7 +116,6 @@ impl Default for AgentConfig {
             // so a fresh runtime doesn't pay the prompt-token cost.
             // Phase 2 — `ModelList` on by default; parent agents
             // need discovery to pick child models.
-            enable_model_list: true,
             // Phase 2 inert fields. The renderer reads these from
             // `AgentConfig` via `Agent` accessors; `None`/`false`/`[]`
             // here falls through to the runtime defaults
@@ -164,7 +144,6 @@ mod tests {
         // F35 — opt-in deferred-tool discovery stub defaults off.
         // Phase 2 — `ModelList` defaults on so the parent agent can
         // discover the catalog before picking a child model.
-        assert!(config.enable_model_list);
     }
 
     /// Sprint 9 Commit 1: `wire_agent_id` is now a single-arg shim over

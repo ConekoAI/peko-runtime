@@ -222,7 +222,7 @@ Per-action semantics (the action you choose determines which other params apply)
 - list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes)
 - history: messages of a session (path optional, defaults to current; include_tools)
 - find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
-- copy: duplicate a session to a destination path (path + target required; optional label). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
+- copy: duplicate a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
 - move: reparent, rename, or update retention (path required, plus at least one of target/title/page_limit). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` changes only the display label. `page_limit` is the FIFO retention cap on closed compaction pages (0 = unlimited; pruning is immediate and irreversible).
 - remove: delete a session (path required; recursive:true also deletes its descendants, children first)
 - list_pages: compaction-page catalog of a session (path optional, defaults to current; page numbers are stable across page_limit rotation — first_available_page names the oldest surviving page). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
@@ -282,7 +282,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 },
                 "title": {
                     "type": "string",
-                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy — legacy `label` still accepted) and for `move` (new display title)."
+                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy) and for `move` (new display title)."
                 },
                 "page_limit": {
                     "type": "integer",
@@ -301,7 +301,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 },
                 "agent_name": {
                     "type": "string",
-                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries). The legacy `agent_id` spelling is still accepted."
+                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries)."
                 },
                 "limit": {
                     "type": "integer",
@@ -397,13 +397,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                     ),
                     None => None,
                 };
-                // `agent_name` is the canonical filter (the value is
-                // the agent template's NAME); the legacy `agent_id`
-                // spelling is tolerated.
-                let agent_id = params
-                    .get("agent_name")
-                    .or_else(|| params.get("agent_id"))
-                    .and_then(|v| v.as_str());
+                let agent_id = params.get("agent_name").and_then(|v| v.as_str());
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
                 let subtree = Self::optional_subtree(&params)?;
@@ -471,11 +465,8 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 } else {
                     parent_str.to_string()
                 };
-                // `title` is the canonical name for the copy's display
-                // title; the legacy `label` spelling is tolerated.
                 let title = params
                     .get("title")
-                    .or_else(|| params.get("label"))
                     .and_then(|v| v.as_str())
                     .map(String::from);
 
@@ -1230,10 +1221,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_list_agent_id_filter() {
+    async fn test_session_list_agent_name_filter() {
         let tool = SessionTool::new(cross_peer_cache().as_shared());
         let result = tool
-            .execute(json!({"action": "list", "agent_id": "test-agent"}))
+            .execute(json!({"action": "list", "agent_name": "test-agent"}))
             .await
             .unwrap();
 
@@ -1422,15 +1413,14 @@ mod tests {
                 "action": "copy",
                 "path": "test-session",
                 "target": "test-session/fork",
-                "label": "fork",
+                "title": "fork",
             }))
             .await
             .unwrap();
         let new_id = result["new_session_id"].as_str().unwrap();
         assert_eq!(result["parent_session_id"], "test-session");
         assert_ne!(new_id, "test-session");
-        // The outcome echoes the copy's addressable path (the `label`
-        // input above is the tolerated legacy spelling of `title`).
+        // The outcome echoes the copy's addressable path.
         assert_eq!(result["new_path"], "sess:/test-session-branch-1");
 
         // The copy is stored (listed) but NOT running, and carries the

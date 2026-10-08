@@ -1834,7 +1834,7 @@ mod dispatch_tool_tests {
     /// `ToolContext` directly, so this stub captures `is_aborted()`
     /// only indirectly via a global flag set by the closure we hand
     /// to `dispatch_tool_with_signal`. (The deeper abort path through
-    /// `BuiltinToolAdapter::handle` is exercised by the engine's
+    /// `ToolDispatcher::handle` is exercised by the engine's
     /// `execute_tool_via_core_with_context` tests; this stub verifies
     /// the wiring at the `AsyncExecutor` layer.)
     struct AbortableStubTool {
@@ -1856,7 +1856,7 @@ mod dispatch_tool_tests {
             // We can't see `is_aborted()` from inside `Tool::execute`
             // directly — the signal is plumbed via
             // `ToolContext::for_hook_run_with_abort` which is set by
-            // `BuiltinToolAdapter::handle`. Here we just return ok;
+            // `ToolDispatcher::handle`. Here we just return ok;
             // the wired abort signal at the AsyncExecutor layer is
             // verified by `test_dispatch_tool_with_signal_cancel_*.`
             Ok(serde_json::json!({"ok": true}))
@@ -1873,12 +1873,13 @@ mod dispatch_tool_tests {
         // hook-registry lookup resolves (a bare `insert_tool_instance`
         // only fills the `Arc<dyn Tool>` side-table and the dispatch
         // would land on "not available").
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(StubTool),
-        )
-        .await
-        .expect("register stub_tool");
+        core.catalog()
+            .register(
+                Arc::new(StubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")

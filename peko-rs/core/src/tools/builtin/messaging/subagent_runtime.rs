@@ -2,7 +2,7 @@
 //! spawn a subagent.
 //!
 //! Per the Phase 10 plan rule ("Built-ins must not import daemon
-//! state"), this trait is the only way `peko_tools_builtin::messaging`
+//! state"), this trait is the way the Agent tool
 //! reaches into the runtime. The root-side adapter
 //! (`src/agents/subagent_runtime_impl.rs::SubagentExecutorRuntime`)
 //! wraps `crate::agents::subagent_executor::SubagentExecutor` and
@@ -19,12 +19,6 @@
 //!   Adapter owns the `PathResolver` and `principal::agent_prompt`
 //!   calls — built-ins never touch root internals.
 //!
-//! Sprint 8: parameter names that took a `subagent_type: &str` are
-//! renamed to `agent: &str` to match the LLM-facing `AgentArgs::agent`
-//! field. The method name `resolve_agent_config` and the trait name
-//! (`SubagentRuntime`)
-//! keep their historical "subagent" framing — a subagent is what gets
-//! spawned, the `agent` value is its template name.
 //! - [`audit_spawn`](SubagentRuntime::audit_spawn) — observability hub
 //!   write. Adapter no-ops when no hub is attached.
 //! - [`execute_and_wait`](SubagentRuntime::execute_and_wait) — the actual

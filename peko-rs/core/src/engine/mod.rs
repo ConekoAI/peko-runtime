@@ -40,7 +40,7 @@
 //!   because they need root-only fixture types (`Agent`, `ToolingRuntime`,
 //!   `Subject`, `SessionManager`, etc.) that `peko-engine` cannot depend
 //!   on. Mirrors the `tool_executor_compat` precedent.
-//! - [`tool_runtime`] — `BuiltinToolAdapter` + concrete `tools::builtin::*`
+//! - [`tool_runtime`] — `ToolDispatcher` + concrete `tools::builtin::*`
 //!   imports. Plan: move concrete tool impls and adapter into
 //!   `peko-tools-core`, keep the synthetic stubs in `peko-engine`.
 

@@ -152,7 +152,7 @@ impl BashTool {
     ///
     /// `ctx` is observed for soft-interrupt: when the engine has plumbed
     /// a `CancellationToken` (PR #128) into the tool layer via
-    /// `BuiltinToolAdapter`'s `for_hook_run_with_abort` path, a cancel
+    /// `ToolDispatcher`'s `for_hook_run_with_abort` path, a cancel
     /// during a long-running subprocess aborts the wait, drops the
     /// `Command` future (which Tokio then uses to kill the child), and
     /// returns `Err`. Without a context, the call is uninterruptible —

@@ -172,6 +172,7 @@ impl Agent {
             PrincipalBindings {
                 sessions_dir: self.session_manager.read().await.sessions_dir().cloned(),
                 plan: self.principal_plan_port.clone(),
+                model_catalog: self.model_catalog.clone(),
                 caller_did: self.caller_principal_did.as_deref(),
             },
         )
@@ -189,9 +190,6 @@ impl Agent {
             Arc::clone(&self.subagent_executor),
             sessions,
             Arc::clone(&self.session_manager),
-            self.model_catalog
-                .clone()
-                .filter(|_| self.config.enable_model_list),
         )
         .await
     }

@@ -86,9 +86,8 @@ pub struct AgentArgs {
     /// `<workspace>/roles/<role>.md` (flat layout) or
     /// `<workspace>/roles/<role>/ROLE.md` (directory layout). The role
     /// template supplies the spawned subagent's system prompt.
-    /// (Required for all actions.) `agent` accepted as a legacy alias
-    /// (ADR-064 renamed the parameter to `role`).
-    #[serde(default, alias = "agent")]
+    /// Required for all actions.
+    #[serde(default)]
     pub role: String,
     /// Optional model override for the subagent
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -873,7 +872,7 @@ impl Tool for AgentTool {
 
         // Resolve the agent template to a concrete agent config and apply
         // model override. This pre-validates the spawn's agent-side
-        // shape (capability grant, on-disk config presence) so the
+        // shape (role presence and model requirements) so the
         // runtime can't be reached with a bad config.
         let _subagent_config = self
             .resolve_subagent_config(&args.role, args.model.as_deref())

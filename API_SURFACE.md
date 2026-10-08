@@ -9,17 +9,16 @@ This document defines the public API surface for Peko, including the new Unified
 
 ## Built-in tool wire contracts
 
-All 37 compiled built-ins advertise PascalCase names. `Session`, `ModelList`,
-and `RoleCatalog` replace `session`, `model_list`, and `role_catalog` in tool
-definitions, prompts, and the static inventory. `ToolCatalog::get` accepts the
-old spellings as fallback aliases only for built-in entries in the same visible
-scope; exact workspace/MCP registrations take precedence. Aliases are not
-additional catalog entries. Rust module/configuration names and IPC operation
-tags retain snake_case.
+All 37 compiled built-ins advertise exact PascalCase names. ToolCatalog uses
+exact registered names; no lowercase or snake_case aliases are supported.
+Every principal can use every registered tool. Workspace/service bindings
+select dependencies, while resource ownership, peer permissions, and channel
+membership govern access. Rust module/configuration names and IPC tags keep
+their existing spelling.
 
 Agent, Session, ModelCall, CronCreate, and CronUpdate encode their conditional
 requirements in JSON Schema and retain runtime validation. Agent requires
-prompt/role/path for every action; its legacy agent argument remains accepted.
+prompt/role/path for every action. Session uses agent_name and title.
 Session describes per-action limits rather than one misleading schema default.
 Workflow advertises only path/args/timeout_ms; dispatcher validation excludes
 the server-injected depth field while the runner still enforces its depth guard.
@@ -90,7 +89,7 @@ the agent loop's tool-validation and retry behavior is unchanged.
 4. [Module: `agent`](#module-agent)
 5. [Module: `providers`](#module-providers)
 6. [Module: `common::services`](#module-commonservices)
-7. [Module: `tools::factory`](#module-toolsfactory)
+7. [Module: `tools::installation`](#module-toolsinstallation)
 8. [Module: `session::context`](#module-sessioncontext)
 9. [Compatibility Notes](#compatibility-notes)
 10. [Local Snapshot Packaging](#module-registrypackaging--adr-066-p5)
@@ -150,7 +149,7 @@ Standalone callers and tests construct isolated runtimes.
 | `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools and async services are principal-owned, prompt providers installed once, run limits shared across overlays |
 | `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
 | `ToolingRuntime::for_run()` | `tools::runtime` | Private catalog overlay with shared hooks/router/audit/admission; ToolFunnel resolves IPC/async callbacks by principal + caller session using weak live-run bindings |
-| `tools::installation::{BUILTIN_INSTALLATIONS, BuiltinScope, InstallationPhase}` | `tools::installation` | Single built-in installation manifest; legacy name constants are derived from it; daemon Agent/Session fallbacks also have run overrides |
+| `tools::installation::{BUILTIN_INSTALLATIONS, BuiltinScope, InstallationPhase}` | `tools::installation` | Single built-in installation manifest and name inventory; daemon Agent/Session fallbacks also have run overrides |
 | `SessionKeys::{set, get}` | `tools::session_keys` | Per-runtime agent-DID fallback keys; run overlays keep these local; canonical attribution is supplied by ToolContext |
 
 `AsyncRuntime::spawn_with_context(request, &ToolContext)` preserves caller session,
@@ -158,6 +157,8 @@ workspace, agent id, and principal name when scheduling. Its default delegates t
 `spawn`, preserving existing adapter implementations. Production captures a live
 run binding before scheduling and otherwise uses caller-aware daemon defaults.
 Detached dispatcher futures retain their run binding through execution.
+ModelList is a stable principal service; AgentConfig has no tool visibility toggle.
+McpManager::get_tool_bindings returns server/tool pairs for MCP catalog attribution.
 
 `peko_engine::tooling::ToolFunnel` has exactly three methods:
 `execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
@@ -246,7 +247,7 @@ reserved-parameter configuration; MCP injection belongs to its proxy.
 ## Module: `extensions`
 
 Workspace adapters live under `builtin/`, `role/`, `skill/`, and `mcp/`.
-`BuiltinToolAdapter` registers executable tools in `ToolCatalog`; role and
+Installation registers native tools directly in `ToolCatalog`; role and
 skill scanners supply plain prompt providers. MCP owns protocol/runtime,
 reserved injection, tool proxies, and sampling. `workspace_hooks` loads the
 six observer points documented above, using `command_handler` for subprocesses.
@@ -501,28 +502,12 @@ pub struct AgentConfigEntry { ... }
 
 ---
 
-## Module: `tools::factory`
+## Module: `tools::installation`
 
-### Public Types
-
-#### `tools::factory::ToolFactory`
-
-**Status:** Simplified in 0.1.0
-
-```rust
-impl ToolFactory {
-    pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult
-    pub async fn create_tools_async(config: &ToolFactoryConfig) -> Result<ToolCreationResult>
-}
-
-impl ToolFactoryConfig {
-    pub fn minimal(workspace_dir: PathBuf) -> Self
-    pub fn coding(workspace_dir: PathBuf) -> Self
-    pub fn full(workspace_dir: PathBuf) -> Self
-}
-```
-
-**Note:** Convenience methods `create_minimal_tools`, `create_coding_tools`, `create_full_tools` are deprecated. Use `ToolFactoryConfig` constructors instead.
+The installation manifest declares every built-in name, primary scope, and
+phase. Explicit runtime, daemon, workspace, principal-service, and run-binding
+functions compose tools from their dependencies. ToolCatalog owns registration
+and lookup; there is no separate configurable tool factory or disabled-tool list.
 
 ---
 
@@ -589,7 +574,7 @@ sanitizers remain in `peko_session::key`.
 | `ToolingRuntime` | `tools::runtime` | ⚠️ Changed | Explicit daemon tooling composition; no process-global accessor |
 | `WorkspaceHookPoint` (six variants) | `extensions::workspace_dispatcher` | ⚠️ Changed | Principal-owned workspace hook points (ADR-066 P4) |
 | `WorkspaceHookHandler` trait | `extensions::workspace_dispatcher` | ⚠️ Changed | Registration-order observe-only hook handler |
-| `BuiltinToolAdapter` | `extensions::builtin::adapter` | ✅ New | Core built-in tools |
+| `tools::installation` | `tools` | ✅ Current | Native tool composition; the redundant BuiltinToolAdapter is retired |
 
 > **PR-E #1–#5 deletions (2026-08-26):** the `ExtensionManager`,
 > `BuiltInAdapters`, `GeneralExtensionAdapter`, `SkillAdapter`,

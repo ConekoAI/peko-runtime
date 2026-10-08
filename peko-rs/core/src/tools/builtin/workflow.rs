@@ -1120,16 +1120,17 @@ mod tests {
             .await
             .unwrap();
         let tooling = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::BuiltinToolAdapter::register_tool(
-            tooling.catalog(),
-            Arc::new(WorkflowTool::new(
-                Arc::downgrade(&fx.manager),
-                fx.run_tokens.clone(),
-            )),
-            &principal.id,
-        )
-        .await
-        .unwrap();
+        tooling
+            .catalog()
+            .register(
+                Arc::new(WorkflowTool::new(
+                    Arc::downgrade(&fx.manager),
+                    fx.run_tokens.clone(),
+                )),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                &principal.id,
+            )
+            .await;
         let sessions = peko_session::manager::SessionManager::new()
             .with_path_resolver(
                 Arc::new(peko_session::DefaultPathResolver::with_data_dir(

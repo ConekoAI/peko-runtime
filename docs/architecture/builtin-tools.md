@@ -7,36 +7,30 @@ have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066). ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments and emits one
-attributed audit event. Presence = visibility = executability; legacy principal
-capability grants do not filter tools.
+attributed audit event. Every principal can use every registered tool. There is
+no tool allowlist or capability filter. Principal bindings select workspace and
+service dependencies; ownership, peer permissions, and channel membership
+control access to resources.
 
-## Naming and compatibility
+## Naming
 
-| Previous wire name | Canonical wire name |
-|---|---|
-| session | Session |
-| model_list | ModelList |
-| role_catalog | RoleCatalog |
-
-Legacy spellings resolve to the corresponding built-in when no exact tool name
-matches. They are lookup aliases, not additional wire catalog entries. Exact
-workspace/MCP names retain precedence; aliases do not cross principal scopes.
-Rust module names, configuration keys such as enable_model_list, IPC operation
-tags, action values, and parameter names retain their existing spelling.
+Built-in wire names are exact PascalCase names: `Session`, `ModelList`,
+`RoleCatalog`, etc. Old spellings are not aliases. MCP and workspace tool names
+remain exactly as registered. Rust module names, IPC operation tags, action
+values, and parameter names retain their existing spelling.
 
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 37-name inventory. Metadata-only inventories and
-scope checks derive from its manifest.
+installation phases, and the 37-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
 | Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron*, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
-| Principal services | Task*, Plan*, ChannelSend, Async* | When their session storage, plan, caller identity/channel, or inbox bindings become available |
-| Run bindings | Agent, Session, ModelList | Private catalog overlay; ModelList requires its flag and catalog |
+| Principal services | Task*, Plan*, ChannelSend, ModelList, Async* | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Run bindings | Agent, Session | Private catalog overlay for caller execution dependencies |
 
 Each run inherits live runtime/principal registrations through its overlay.
 Installing a run executor never replaces another run's binding. Workflow/IPC
@@ -235,7 +229,7 @@ Inspect and manage persisted sessions and compaction pages.
 | `include_tools` | boolean | no | default true |
 | `timezone` | string | no | — |
 
-action is required. See the action table below for conditional requirements and actual defaults. Absolute addresses use sess:/a/b; sess:/ identifies the trunk for reads. Omitted read paths select the calling session. Legacy agent_id remains an alias for the list agent_name filter; legacy label remains an alias for copy title. Mutation ownership/run guards remain in the session runtime.
+action is required. See the action table below for conditional requirements and actual defaults. Absolute addresses use sess:/a/b; sess:/ identifies the trunk for reads. Omitted read paths select the calling session. Mutation ownership/run guards remain in the session runtime.
 
 | Action | Purpose | Required fields besides action | Optional fields / runtime defaults |
 |---|---|---|---|
@@ -301,7 +295,7 @@ List configured models, optionally filtered by capability and text.
 | `filter` | vision \| tools \| thinking \| priced \| json_mode | no | — |
 | `contains` | string | no | — |
 
-filter and contains are AND-combined; contains matches id, display_name, and note case-insensitively. Requires enable_model_list and a bound model catalog. Rust configuration names remain snake_case.
+filter and contains are AND-combined; contains matches id, display_name, and note case-insensitively. Requires a bound model catalog; every run inherits the principal service.
 
 ### ModelCall
 

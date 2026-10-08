@@ -19,8 +19,6 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::extensions::builtin::BuiltinToolAdapter;
-
 use crate::extensions::role::WorkspaceRolesPromptHandler;
 use crate::extensions::skill::WorkspaceSkillsPromptHandler;
 use crate::principal::memory::PrincipalMemory;
@@ -368,6 +366,10 @@ impl PrincipalContext {
             crate::tools::installation::PrincipalBindings {
                 sessions_dir: Some(self.sessions_dir.clone()),
                 plan: Some(Arc::clone(&self.plan_port)),
+                model_catalog: self
+                    .resolver
+                    .as_ref()
+                    .map(|resolver| Arc::clone(resolver.catalog())),
                 caller_did: self.caller_principal_did().map(String::as_str),
             },
         )
@@ -613,14 +615,16 @@ async fn install_principal_tool_bag(
         // secret params.
         let manager_arc = mcp_manager.clone();
         let mgr = manager_arc.read().await;
-        let proxy_tools = mgr.get_tools().await;
+        let proxy_tools = mgr.get_tool_bindings().await;
         drop(mgr);
-        for tool in proxy_tools {
-            if let Err(e) =
-                BuiltinToolAdapter::register_tool(core.catalog(), tool, principal_id).await
-            {
-                tracing::warn!("MCP tool registration failed during core build: {e}");
-            }
+        for (server, tool) in proxy_tools {
+            core.catalog()
+                .register(
+                    tool,
+                    crate::tools::metadata::ToolSource::Mcp { server },
+                    principal_id,
+                )
+                .await;
         }
     } else if mcp_dir.exists() {
         tracing::warn!(

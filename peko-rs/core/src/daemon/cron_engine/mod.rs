@@ -887,6 +887,9 @@ impl CronEngine {
             crate::tools::installation::PrincipalBindings {
                 sessions_dir: Some(principal.memory.sessions_dir().clone()),
                 plan: Some(Arc::clone(&principal.plan_port)),
+                model_catalog: pm
+                    .llm_resolver()
+                    .map(|resolver| Arc::clone(resolver.catalog())),
                 caller_did: Some(&caller_did),
             },
         )
@@ -2747,16 +2750,17 @@ mod tests {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronGatedStubTool {
-                started: started.clone(),
-                release: release.clone(),
-                calls: calls.clone(),
-            }),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronGatedStubTool {
+                    started: started.clone(),
+                    release: release.clone(),
+                    calls: calls.clone(),
+                }),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
         let obs = Arc::new(Observability::new("daemon"));
         let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
         let engine = CronEngine::new(
@@ -2893,12 +2897,13 @@ mod tests {
         // handler (bare `insert_tool_instance` only fills the
         // side-table; the hook dispatch would return "not available").
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronStubTool),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -3019,12 +3024,13 @@ mod tests {
             crate::async_exec::executor::standalone_inbox_registry(),
         ));
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        crate::extensions::builtin::adapter::BuiltinToolAdapter::register_tool_system(
-            core.catalog(),
-            Arc::new(CronFailingStubTool),
-        )
-        .await
-        .unwrap();
+        core.catalog()
+            .register(
+                Arc::new(CronFailingStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
 
         let obs = Arc::new(Observability::new("daemon"));
         let resolver = crate::common::paths::PathResolver::with_dirs(

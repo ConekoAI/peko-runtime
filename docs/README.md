@@ -26,7 +26,7 @@ Complete documentation for the Peko multi-agent runtime.
 - **[Prompt Model](architecture/PROMPT_MODEL.md)** — How every prompt is assembled: tiers, frozen prefix, `<runtime-context>` tail sections, placeholder contract (ADR-050/052/055/064)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-069
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-070
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -60,7 +60,7 @@ docs/
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-069
+│   └── adr/                         # ADR-001 through ADR-070
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
@@ -115,6 +115,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-063](architecture/adr/ADR-063-async-task-delivery-consolidation.md) | Async task delivery consolidation |
 | [ADR-064](architecture/adr/ADR-064-agents-to-roles-terminology.md) | `agents/` → `roles/` terminology unification: agent = live session actor, role = the initiating template; `role_catalog`, `role` param, `role:*` capabilities, packaging layer rename |
 | [ADR-069](architecture/adr/ADR-069-builtin-tool-installation-lifetimes.md) | Explicit built-in installation phases, private run bindings, and principal-owned async services |
+| [ADR-070](architecture/adr/ADR-070-exact-unfiltered-tool-contracts.md) | Exact tool names, unfiltered availability, and retired compatibility wrappers |
 | [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
 

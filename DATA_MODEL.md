@@ -17,15 +17,14 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
-## Built-in tool naming compatibility
+## Built-in tool names and availability
 
-Native tool definitions and newly authored calls use PascalCase names:
-`Session`, `ModelList`, and `RoleCatalog`. Existing JSONL tool-call records and
-persisted cron `tool_name` values are not rewritten. Catalog lookup accepts
-their legacy `session`, `model_list`, and `role_catalog` spellings as built-in
-fallback aliases, preserving the principal scope and exact MCP-name precedence.
-IPC operation tags (including `model_list`), action values, parameter names,
-and Rust configuration keys retain their existing spelling.
+Native tools use exact PascalCase names, including Session, ModelList, and
+RoleCatalog. Old spellings are not dispatch aliases; historical JSONL records
+are unchanged. Persisted cron/workflow calls must use the canonical names.
+Agent uses role; Session uses agent_name and title. IPC operation tags, actions,
+parameter names, and Rust configuration keys retain their own spelling.
+Every principal can use every registered tool; there is no tool allowlist.
 
 CronCreate now advertises the already-supported `one_shot` boolean; it continues
 to set `delete_after_run`, and at/delay schedules remain one-shot automatically.
@@ -149,8 +148,9 @@ still load.
 ## Runtime contract cleanup (ADR-066 P6)
 
 Principal configuration, summary, agent context, and import IPC no longer carry
-capability grants. Older `principal.toml` files may contain `[capabilities]`;
-deserialization consumes it, warns once for nonempty grants, and saving drops it.
+capability grants. PrincipalConfig uses ordinary derived deserialization; unknown
+fields are ignored rather than interpreted as grants. Governance has no
+auto_grant_tools field and AgentConfig has no enable_model_list field.
 Inbound `permissions` remain the authorization policy for peer access.
 
 `principal_import` carries file path, optional name, force, and optional expected
@@ -278,17 +278,7 @@ preferred_model_id    = "claude-sonnet-4-5"  # Optional. Model id within that pr
 [base]
 image = "pekohub.com/agents/base-researcher:v2"  # Optional. Full image ref or digest
 
-# ── Allowed extensions ─────────────────────────────────────────────────────
-# The principal-level allowlist: what tools, skills, MCPs, and agents the
-# root agent (and its subagents) may use. At runtime this is flattened into
-# the agent's `extensions.enabled` enforcement list. The legacy table name
-# `[capabilities]` is still accepted when reading older files.
-
-[allowed_extensions]
-tools  = ["github", "browser"]           # Optional. Allowed tool IDs
-skills = ["research"]                    # Optional. Allowed skill IDs
-mcps   = ["vector-store-memory"]         # Optional. Allowed MCP IDs
-agents = ["planner", "executor"]         # Optional. Allowed agent IDs
+# Tools are available by presence. There is no extension allowlist.
 
 # ── Hooks ──────────────────────────────────────────────────────────────────
 
@@ -2865,10 +2855,11 @@ Quick-reference table of all primitive types used across formats.
 
 Tool catalogs are in-memory maps keyed by `(tool_name, PrincipalId)`. The daemon
 catalog stores runtime defaults and principal services. A run's private overlay
-stores its Agent/Session executor adapters and optional ModelList binding, and
-inherits live parent registrations. Lookup searches principal entries across the
+stores its Agent/Session executor adapters and inherits live parent registrations.
+ModelList is a principal service shared by every run. Lookup searches principal
+entries across the
 layers before system defaults. Wire definitions are sorted and deduplicated;
-legacy lowercase aliases remain lookup-only.
+tool names are exact.
 
 Workflow/IPC callbacks select live run bindings using server-attributed
 `(PrincipalId, caller_session_id)` keys and weak runtime references. Expired

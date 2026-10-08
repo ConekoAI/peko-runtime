@@ -20,7 +20,7 @@ Keep implementations in their domains and centralize composition in
 `tools::installation`: runtime defaults, daemon adapters, principal workspace,
 principal services/async, and run bindings. The installation manifest declares
 all built-in names and their primary scope, phase, and optional run override.
-Derived inventories and registration checks use that manifest. Default insertion
+The complete inventory and registration checks use that manifest. Default insertion
 is atomic and preserves existing configured bindings; explicit replacement remains
 available for workspace refresh and private run bindings.
 
@@ -29,7 +29,7 @@ entries take precedence over system entries across all layers. The overlay uses
 the same dispatcher implementation, hook dispatcher, timeout router, audit sink,
 prompt providers, and principal run-admission pools. Fallback session keys are
 local to the run. Agent/Session adapters capture their own execution dependencies;
-ModelList visibility follows that run's configuration.
+ModelList is a stable principal service shared by every run (ADR-070).
 
 Workflow/IPC and asynchronous callbacks enter through the shared ToolFunnel.
 Server-attributed principal and caller-session keys select a weak live-run

@@ -152,20 +152,6 @@ impl ToolDispatcher {
                 object.remove("_workflow_depth");
             }
             Some(params)
-        } else if builtin
-            && tool_name == "Agent"
-            && call.params.get("role").is_none()
-            && call.params.get("agent").is_some()
-        {
-            // ADR-064's legacy argument alias remains accepted without
-            // advertising it as a second role parameter.
-            let mut params = call.params.clone();
-            if let Some(object) = params.as_object_mut() {
-                if let Some(role) = object.remove("agent") {
-                    object.insert("role".into(), role);
-                }
-            }
-            Some(params)
         } else {
             None
         };

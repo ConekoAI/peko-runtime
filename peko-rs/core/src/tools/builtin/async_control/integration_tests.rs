@@ -8,8 +8,7 @@
 //!
 //! 1. **F37 canonical funnel** — `AsyncSpawnTool.execute` →
 //!    `AsyncExecutorRuntime::spawn` → `executor.dispatch_tool` →
-//!    `core.execute_tool_via_hook(...)`. A spawn with the right
-//!    capability grant lands in `Completed`, not `Failed`.
+//!    `ToolFunnel::execute(...)`. An installed tool reaches Completed.
 //! 2. **Abort-signal bridge** — `AsyncStopTool.execute` →
 //!    `AsyncExecutor::cancel` → registry flips to `Cancelled`
 //!    synchronously, plus the abort watch channel fires for tool bodies
@@ -27,7 +26,7 @@ mod tests {
     use crate::async_exec::executor::{
         standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime,
     };
-    use crate::extensions::builtin::BuiltinToolAdapter;
+
     use crate::tools::builtin::{
         AsyncListTool, AsyncOutputTool, AsyncSpawnTool, AsyncStatusTool, AsyncStopTool,
     };
@@ -97,7 +96,7 @@ mod tests {
     /// ready to drive every Async* tool from the same backing runtime.
     async fn setup_with_stop(register_abortable: bool) -> AsyncToolRig {
         let core = crate::tools::runtime::ToolingRuntime::standalone();
-        // Register via `BuiltinToolAdapter::register_tool_system` rather
+        // Register via `ToolDispatcher::register_tool_system` rather
         // than `core.insert_tool_instance`. The latter only fills the
         // `Arc<dyn Tool>` side-table that direct callers (e.g.
         // AsyncSpawnTool) read from. The F37 funnel — `dispatch_tool` →
@@ -108,13 +107,21 @@ mod tests {
         // converts that to `("Tool 'stub_tool' not available",
         // success=false)`, which is why every spawned task landed in
         // `Failed` with no `result` field before this fix.
-        BuiltinToolAdapter::register_tool_system(core.catalog(), Arc::new(StubTool))
-            .await
-            .expect("register stub_tool");
+        core.catalog()
+            .register(
+                Arc::new(StubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
         if register_abortable {
-            BuiltinToolAdapter::register_tool_system(core.catalog(), Arc::new(AbortableStubTool))
-                .await
-                .expect("register abortable_stub");
+            core.catalog()
+                .register(
+                    Arc::new(AbortableStubTool),
+                    crate::tools::metadata::ToolSource::BuiltIn,
+                    peko_subject::PrincipalId::system(),
+                )
+                .await;
         }
         core.session_keys()
             .set("test_agent", Some("session_under_test".to_string()));
@@ -138,7 +145,7 @@ mod tests {
         }
     }
 
-    /// Pin: a spawn with the right capability grant reaches
+    /// Pin: a spawn of an installed tool reaches
     /// `Completed`, lands a terminal result in `AsyncOutput` output,
     /// and `AsyncStatus` reports `is_terminal=true`.
     #[tokio::test]

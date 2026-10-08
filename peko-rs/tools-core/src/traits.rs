@@ -78,7 +78,7 @@ pub trait Tool: Send + Sync {
     ///
     /// Direct calls to this method are appropriate for:
     /// - Unit tests of individual tools
-    /// - The `BuiltinToolAdapter` wrapper (which bridges into ToolingRuntime)
+    /// - The `ToolDispatcher` wrapper (which bridges into ToolingRuntime)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
     /// Hook called by the framework when a tool call is cancelled.

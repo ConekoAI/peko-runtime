@@ -131,14 +131,7 @@ impl ToolCatalog {
         tool_name: &str,
         principal_id: &PrincipalId,
     ) -> Option<(Arc<dyn Tool>, ToolMetadata)> {
-        if let Some(entry) = self.get_exact(tool_name, principal_id).await {
-            return Some(entry);
-        }
-        // Saved cron/workflow calls may use pre-PascalCase names. Keep
-        // exact workspace/MCP names authoritative and alias only built-ins.
-        let canonical = crate::principal::runtime::builtin_tools::legacy_builtin_name(tool_name)?;
-        let (tool, metadata) = self.get_exact(canonical, principal_id).await?;
-        (metadata.source == ToolSource::BuiltIn).then_some((tool, metadata))
+        self.get_exact(tool_name, principal_id).await
     }
 
     async fn get_exact(
@@ -295,10 +288,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_names_resolve_without_adding_wire_aliases() {
+    async fn tool_names_are_exact_and_external_names_are_preserved() {
         let catalog = ToolCatalog::new();
         let owner = PrincipalId::generate();
-        for (legacy, canonical) in [
+        for (old, canonical) in [
             ("session", "Session"),
             ("model_list", "ModelList"),
             ("role_catalog", "RoleCatalog"),
@@ -306,15 +299,9 @@ mod tests {
             catalog
                 .register(stub(canonical), ToolSource::BuiltIn, &owner)
                 .await;
-            let (_, metadata) = catalog.get(legacy, &owner).await.expect("legacy lookup");
-            assert_eq!(metadata.name, canonical);
-            assert!(catalog.get(legacy, PrincipalId::system()).await.is_none());
+            assert!(catalog.get(old, &owner).await.is_none());
+            assert!(catalog.get(canonical, &owner).await.is_some());
         }
-        assert_eq!(
-            catalog.list_tool_names(&owner).await,
-            ["ModelList", "RoleCatalog", "Session"]
-        );
-
         catalog
             .register(
                 stub("model_list"),
@@ -324,29 +311,14 @@ mod tests {
                 &owner,
             )
             .await;
-        let (_, metadata) = catalog.get("model_list", &owner).await.unwrap();
-        assert_eq!(metadata.name, "model_list");
-        assert!(matches!(metadata.source, ToolSource::Mcp { .. }));
-
-        catalog
-            .register_system(stub("Session"), ToolSource::BuiltIn)
-            .await;
-        let other = PrincipalId::generate();
         assert_eq!(
-            catalog.get("session", &other).await.unwrap().1.name,
-            "Session"
+            catalog.get("model_list", &owner).await.unwrap().1.name,
+            "model_list"
         );
-        assert!(catalog.get("role_catalog", &other).await.is_none());
-        catalog
-            .register(
-                stub("RoleCatalog"),
-                ToolSource::Mcp {
-                    server: "test".into(),
-                },
-                &other,
-            )
-            .await;
-        assert!(catalog.get("role_catalog", &other).await.is_none());
+        assert!(catalog
+            .get("model_list", PrincipalId::system())
+            .await
+            .is_none());
     }
 
     #[tokio::test]

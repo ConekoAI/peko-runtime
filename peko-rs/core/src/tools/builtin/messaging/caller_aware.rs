@@ -78,8 +78,10 @@ impl Tool for CallerAwareAgentTool {
             )) as Arc<dyn crate::agents::subagent_executor::PeerTurnSurface>
         });
         let executor = turns.executor().clone().with_peer_turn_surface(surface);
-        super::new_agent_tool(Arc::new(executor))
-            .execute_with_context(params, ctx)
-            .await
+        AgentTool::new(Arc::new(
+            crate::agents::subagent_runtime_impl::SubagentExecutorRuntime::new(Arc::new(executor)),
+        ))
+        .execute_with_context(params, ctx)
+        .await
     }
 }

@@ -275,6 +275,7 @@ impl PeerChildTurns {
             crate::tools::installation::PrincipalBindings {
                 sessions_dir: Some(principal.memory.sessions_dir().clone()),
                 plan: Some(Arc::clone(&principal.plan_port)),
+                model_catalog: Some(Arc::clone(llm_resolver.catalog())),
                 caller_did: Some(&caller_did),
             },
         )

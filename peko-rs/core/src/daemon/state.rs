@@ -3265,7 +3265,7 @@ mod tests {
         );
         // `AsyncSpawn` and `AsyncOutput` are registered per-agent (not
         // globally on the daemon's ToolRuntime) — see `Agent::build_agentic_loop`
-        // and `BuiltinToolAdapter::register_async_spawn_tool`. Asserting they
+        // and `tools::installation::install_async`. Asserting they
         // are missing here pins the contract.
 
         // ToolingRuntime should list the tools
