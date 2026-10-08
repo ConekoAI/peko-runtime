@@ -374,21 +374,11 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
-/// Inject the workspace into filesystem-tool params and give `Agent`
-/// the longer default timeout — the live behavior of the P2
-/// `BuiltinExecuteHandler` preprocessor.
+/// Inject the caller's workspace into filesystem-tool params.
 fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Option<&str>) {
     let Some(obj) = params.as_object_mut() else {
         return;
     };
-    // Subagent spawn inherently takes longer than simple tools because
-    // the subagent runs a full agentic loop with its own LLM calls.
-    // Inject a longer default timeout for blocking Agent if none
-    // is provided by the caller.
-    if tool_name == "Agent" && !obj.contains_key("_timeout") {
-        obj.insert("_timeout".to_string(), Value::Number(300.into()));
-    }
-
     // Inject agent workspace into tool parameters for filesystem tools.
     if let Some(ws) = workspace {
         match tool_name {

@@ -40,6 +40,13 @@ to set `delete_after_run`, and at/delay schedules remain one-shot automatically.
 Workflow nesting depth remains internal run-token metadata rather than a public
 tool parameter. No persisted schema or snapshot format changes are required.
 
+Agent/Session calls reject unknown, irrelevant, null, and out-of-range arguments
+before resolving runtime dependencies or mutating storage. Agent still defaults
+to new; compact retains its session model and refuses a supplied model field.
+Session move returns its effective destination path when target is supplied,
+including when combined with title or page_limit. Historical JSONL is unchanged;
+no storage migration is required.
+
 ## Cron interval audit timing
 
 Cron action trigger's returned `run_id` is the persisted `CronRun.id`. Admission writes

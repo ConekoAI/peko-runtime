@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Agent and Session schema cohesion (2026-10-08)
+
+- Use strict action variants and cached direct-call validation for Agent/Session;
+  caller-aware adapters share their static contracts and validate before binding.
+  Reject unknown fields, removed Session.kinds, explicit nulls, and compact.model.
+- Bound Session numeric arguments to their handler conversions, including the
+  active-minute multiplication; declare action-specific result-limit defaults.
+  Preserve Agent's new default and existing creation/editing retention semantics.
+- Fix combined Session move/rename/retention calls to follow the new address and
+  return it; reject invalid retention before any move/title mutation.
+- Remove the dummy Session metadata runtime and unused Agent _timeout injection.
+  Correct Agent guidance to inspect Session.status.parent_session.
+
 ### Domain tool actions (2026-10-08)
 
 - Consolidate Task, Plan, Cron, and Async into four tools with explicit actions;

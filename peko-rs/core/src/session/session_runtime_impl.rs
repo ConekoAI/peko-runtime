@@ -1198,6 +1198,7 @@ fn llm_message_to_history(msg: &LlmMessage, include_tools: bool) -> Option<Histo
 mod tests {
     use super::*;
     use peko_session::SessionCreateOptions;
+    use peko_tools_core::Tool;
     use tempfile::TempDir;
 
     /// Sprint 6: convert a test-fixture literal (e.g. "spawn1") to
@@ -1360,6 +1361,74 @@ mod tests {
         h.set_slug("spawn2", "c").await;
         h.set_current(current).await;
         h
+    }
+
+    #[tokio::test]
+    async fn session_tool_applies_integral_json_limits_instead_of_defaulting() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = crate::tools::builtin::SessionTool::new(h.runtime.clone());
+        for (limit, expected) in [(1.0, 1), (0.0, 0)] {
+            let result = tool
+                .execute(serde_json::json!({"action":"list", "limit":limit}))
+                .await
+                .unwrap();
+            assert_eq!(result["total"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn session_tool_move_combines_target_title_and_retention_at_the_new_address() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = crate::tools::builtin::SessionTool::new(h.runtime.clone());
+        let result = tool
+            .execute(serde_json::json!({
+                "action":"move", "path":"sess:/c", "target":"sess:/a/moved",
+                "title":"Renamed", "page_limit":7
+            }))
+            .await
+            .unwrap();
+        assert_eq!(result["path"], "sess:/a/moved");
+        assert_eq!(result["page_limit"], 7);
+        let status = h.runtime.get_status("sess:/a/moved").await.unwrap();
+        assert_eq!(status.session_id, sid("spawn2"));
+        assert_eq!(status.title.as_deref(), Some("Renamed"));
+        assert_eq!(
+            h.runtime
+                .list_pages("sess:/a/moved")
+                .await
+                .unwrap()
+                .page_limit,
+            Some(7)
+        );
+        assert!(h.runtime.get_status("sess:/c").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn session_tool_rejects_invalid_retention_before_any_move_or_title_change() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = crate::tools::builtin::SessionTool::new(h.runtime.clone());
+        let before = h.runtime.get_status("sess:/c").await.unwrap();
+        for limit in [
+            serde_json::json!(-1),
+            serde_json::json!(10001),
+            serde_json::Value::Null,
+        ] {
+            tool.execute(serde_json::json!({
+                "action":"move", "path":"sess:/c", "target":"sess:/a/moved",
+                "title":"Must not change", "page_limit":limit
+            }))
+            .await
+            .unwrap_err();
+            let after = h.runtime.get_status("sess:/c").await.unwrap();
+            assert_eq!(after.session_id, before.session_id);
+            assert_eq!(after.title, before.title);
+            assert_eq!(after.path, before.path);
+            assert_eq!(
+                h.runtime.list_pages("sess:/c").await.unwrap().page_limit,
+                None
+            );
+            assert!(h.runtime.get_status("sess:/a/moved").await.is_err());
+        }
     }
 
     // ─── Principal-level caller ─────────────────────────────────────

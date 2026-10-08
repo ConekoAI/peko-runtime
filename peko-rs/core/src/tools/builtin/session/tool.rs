@@ -58,6 +58,196 @@ pub struct SessionTool {
 }
 
 impl SessionTool {
+    pub(crate) fn tool_description() -> String {
+        r"Single tool with **10 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
+
+  status | list | history | find | copy | move | remove | list_pages | read_page | search_pages
+
+Per-action semantics (the action you choose determines which other params apply):
+- status: one session's metadata + token usage (path optional, defaults to current)
+- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes)
+- history: messages of a session (path optional, defaults to current; include_tools)
+- find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
+- copy: duplicate a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
+- move: reparent, rename, or update retention (path required, plus at least one of target/title/page_limit). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` changes only the display label. `page_limit` is the FIFO retention cap on closed compaction pages (0 = unlimited; pruning is immediate and irreversible).
+- remove: delete a session (path required; recursive:true also deletes its descendants, children first)
+- list_pages: compaction-page catalog of a session (path optional, defaults to current; page numbers are stable across page_limit rotation — first_available_page names the oldest surviving page). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
+- read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
+- search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
+
+Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
+
+The trunk's listed address is `sess:/`. Use it for history/status/page reads or as a list/find scope anchored at your tree root. Mutation paths still require a nonempty slug segment.
+
+The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
+
+The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required for `copy`; optional for a `move` that only changes title or retention.
+
+Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` — there is no archive: if you want a session out of the way but not gone, `move` it into `sess:/trash` and purge later.
+
+To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
+            .to_string()
+    }
+
+    pub(crate) fn tool_parameters() -> serde_json::Value {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
+                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact/branch)."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Addresses here are always ABSOLUTE; only the Agent tool's `new` / `branch` additionally accept a caller-relative slug segment (they mint a session under yours)."
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Destination slug path `<parent>/<new_slug>`. Required for `copy`; optional for `move` when only title or page_limit changes. `<parent>` is an absolute slug path ('sess:/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `move`, set target to `<current_parent>/<new_slug>` to rename in place. Mirrors bash cp/mv. Raw session ids and caller-relative slugs are refused."
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Required for 'find' and 'search_pages': case-insensitive substring to find in transcripts"
+                },
+                "page": {
+                    "type": "integer",
+                    "maximum": usize::MAX,
+                    "minimum": 1,
+                    "description": "Required for 'read_page': the 1-based page number from 'list_pages'"
+                },
+                "offset": {
+                    "type": "integer",
+                    "maximum": usize::MAX,
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Optional for 'read_page': rendered-line offset to start from (use the offset named by a truncation marker to continue)"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": usize::MAX,
+                    "default": 20,
+                    "description": "Optional for 'search_pages': cap on returned hits"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy) and for `move` (new display title)."
+                },
+                "page_limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "description": "Optional for 'move': retention cap on the session's closed compaction pages (FIFO — the oldest page is PERMANENTLY deleted when the cap is exceeded; pruning is immediate). 0 = unlimited. Surviving page numbers never renumber (first_available_page in list_pages tracks the rotation)."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Optional for 'remove': also delete the session's descendants (children first)"
+                },
+                "peer": {
+                    "type": "string",
+                    "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
+                },
+                "agent_name": {
+                    "type": "string",
+                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": usize::MAX,
+                    "description": "Max results: defaults to 50 for list/find, 100 for history, and 200 rendered lines for read_page."
+                },
+                "active_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": u64::MAX / 60_000,
+                    "description": "Optional for 'list': only sessions active in last N minutes"
+                },
+                "include_tools": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Optional for 'history': include tool calls and results"
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "Optional for 'status': timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')"
+                }
+            },
+        });
+        let variants = [
+            ("status", &["path", "timezone"][..], &[][..]),
+            (
+                "list",
+                &["path", "peer", "agent_name", "active_minutes", "limit"][..],
+                &[][..],
+            ),
+            ("history", &["path", "limit", "include_tools"][..], &[][..]),
+            (
+                "find",
+                &["query", "path", "peer", "limit"][..],
+                &["query"][..],
+            ),
+            (
+                "copy",
+                &["path", "target", "title"][..],
+                &["path", "target"][..],
+            ),
+            (
+                "move",
+                &["path", "target", "title", "page_limit"][..],
+                &["path"][..],
+            ),
+            ("remove", &["path", "recursive"][..], &["path"][..]),
+            ("list_pages", &["path"][..], &[][..]),
+            (
+                "read_page",
+                &["page", "path", "offset", "limit"][..],
+                &["page"][..],
+            ),
+            (
+                "search_pages",
+                &["query", "path", "max_results"][..],
+                &["query"][..],
+            ),
+        ];
+        let branches: Vec<_> = variants.into_iter().map(|(action, allowed, required)| {
+            let properties: serde_json::Map<String, serde_json::Value> = allowed.iter()
+                .map(|field| ((*field).to_string(), schema["properties"][*field].clone())).collect();
+            let mut branch = json!({"type": "object", "properties": properties, "required": required});
+            let limit_default = match action {
+                "list" | "find" => Some(50),
+                "history" => Some(100),
+                "read_page" => Some(200),
+                _ => None,
+            };
+            if let Some(default) = limit_default {
+                branch["properties"]["limit"]["default"] = json!(default);
+            }
+            if action == "move" {
+                branch["anyOf"] = json!([{"required": ["target"]}, {"required": ["title"]}, {"required": ["page_limit"]}]);
+            }
+            (action, branch)
+        }).collect();
+        let mut result = peko_tools_core::schema::action_schema(&branches);
+        // No global limit default: defaults belong to the selected action.
+        result["properties"]["limit"] = schema["properties"]["limit"].clone();
+        result
+    }
+
+    fn action_schema() -> &'static crate::tools::action_schema::ActionSchema {
+        static SCHEMA: std::sync::OnceLock<crate::tools::action_schema::ActionSchema> =
+            std::sync::OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            crate::tools::action_schema::ActionSchema::new("Session", Self::tool_parameters())
+        })
+    }
+
+    pub(crate) fn validate_params(params: &serde_json::Value) -> anyhow::Result<()> {
+        Self::action_schema().validate(params)
+    }
+
     /// Build a tool bound to the given session runtime.
     #[must_use]
     pub fn new(runtime: SharedSessionRuntime) -> Self {
@@ -213,164 +403,15 @@ impl Tool for SessionTool {
     }
 
     fn description(&self) -> String {
-        r"Single tool with **10 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
-
-  status | list | history | find | copy | move | remove | list_pages | read_page | search_pages
-
-Per-action semantics (the action you choose determines which other params apply):
-- status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes)
-- history: messages of a session (path optional, defaults to current; include_tools)
-- find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
-- copy: duplicate a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
-- move: reparent, rename, or update retention (path required, plus at least one of target/title/page_limit). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` changes only the display label. `page_limit` is the FIFO retention cap on closed compaction pages (0 = unlimited; pruning is immediate and irreversible).
-- remove: delete a session (path required; recursive:true also deletes its descendants, children first)
-- list_pages: compaction-page catalog of a session (path optional, defaults to current; page numbers are stable across page_limit rotation — first_available_page names the oldest surviving page). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
-- read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
-- search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
-
-Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
-
-The trunk's listed address is `sess:/`. Use it for history/status/page reads or as a list/find scope anchored at your tree root. Mutation paths still require a nonempty slug segment.
-
-The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
-
-The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required for `copy`; optional for a `move` that only changes title or retention.
-
-Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` — there is no archive: if you want a session out of the way but not gone, `move` it into `sess:/trash` and purge later.
-
-To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
-            .to_string()
+        Self::tool_description()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact/branch)."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Addresses here are always ABSOLUTE; only the Agent tool's `new` / `branch` additionally accept a caller-relative slug segment (they mint a session under yours)."
-                },
-                "target": {
-                    "type": "string",
-                    "description": "Destination slug path `<parent>/<new_slug>`. Required for `copy`; optional for `move` when only title or page_limit changes. `<parent>` is an absolute slug path ('sess:/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `move`, set target to `<current_parent>/<new_slug>` to rename in place. Mirrors bash cp/mv. Raw session ids and caller-relative slugs are refused."
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Required for 'find' and 'search_pages': case-insensitive substring to find in transcripts"
-                },
-                "page": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Required for 'read_page': the 1-based page number from 'list_pages'"
-                },
-                "offset": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "default": 0,
-                    "description": "Optional for 'read_page': rendered-line offset to start from (use the offset named by a truncation marker to continue)"
-                },
-                "max_results": {
-                    "type": "integer",
-                    "default": 20,
-                    "description": "Optional for 'search_pages': cap on returned hits"
-                },
-                "title": {
-                    "type": "string",
-                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy) and for `move` (new display title)."
-                },
-                "page_limit": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 10000,
-                    "description": "Optional for 'move': retention cap on the session's closed compaction pages (FIFO — the oldest page is PERMANENTLY deleted when the cap is exceeded; pruning is immediate). 0 = unlimited. Surviving page numbers never renumber (first_available_page in list_pages tracks the rotation)."
-                },
-                "recursive": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Optional for 'remove': also delete the session's descendants (children first)"
-                },
-                "peer": {
-                    "type": "string",
-                    "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
-                },
-                "agent_name": {
-                    "type": "string",
-                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries)."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max results: defaults to 50 for list/find, 100 for history, and 200 rendered lines for read_page."
-                },
-                "active_minutes": {
-                    "type": "integer",
-                    "description": "Optional for 'list': only sessions active in last N minutes"
-                },
-                "include_tools": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Optional for 'history': include tool calls and results"
-                },
-                "timezone": {
-                    "type": "string",
-                    "description": "Optional for 'status': timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')"
-                }
-            },
-        });
-        let variants = [
-            ("status", &["path", "timezone"][..], &[][..]),
-            (
-                "list",
-                &["path", "peer", "agent_name", "active_minutes", "limit"][..],
-                &[][..],
-            ),
-            ("history", &["path", "limit", "include_tools"][..], &[][..]),
-            (
-                "find",
-                &["query", "path", "peer", "limit"][..],
-                &["query"][..],
-            ),
-            (
-                "copy",
-                &["path", "target", "title"][..],
-                &["path", "target"][..],
-            ),
-            (
-                "move",
-                &["path", "target", "title", "page_limit"][..],
-                &["path"][..],
-            ),
-            ("remove", &["path", "recursive"][..], &["path"][..]),
-            ("list_pages", &["path"][..], &[][..]),
-            (
-                "read_page",
-                &["page", "path", "offset", "limit"][..],
-                &["page"][..],
-            ),
-            (
-                "search_pages",
-                &["query", "path", "max_results"][..],
-                &["query"][..],
-            ),
-        ];
-        let branches: Vec<_> = variants.into_iter().map(|(action, allowed, required)| {
-            let properties: serde_json::Map<String, serde_json::Value> = allowed.iter()
-                .map(|field| ((*field).to_string(), schema["properties"][*field].clone())).collect();
-            let mut branch = json!({"type": "object", "properties": properties, "required": required});
-            if action == "move" {
-                branch["anyOf"] = json!([{"required": ["target"]}, {"required": ["title"]}, {"required": ["page_limit"]}]);
-            }
-            (action, branch)
-        }).collect();
-        peko_tools_core::schema::action_schema(&branches)
+        Self::tool_parameters()
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, mut params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Self::action_schema().normalize(&mut params)?;
         let action: SessionAction = serde_json::from_value(
             params
                 .get("action")
@@ -507,7 +548,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 // to `<current_parent>/<new_slug>`. `title` (optional)
                 // is a separate display-label change and is the only
                 // way to change the label without re-targeting.
-                let session_key = Self::require_path(&params, "move")?;
+                let mut session_key = Self::require_path(&params, "move")?.to_string();
                 let title = params
                     .get("title")
                     .and_then(|v| v.as_str())
@@ -529,12 +570,16 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                         parent_str.to_string()
                     };
                     self.runtime
-                        .move_session(session_key, new_parent, Some(slug.to_string()))
+                        .move_session(&session_key, new_parent, Some(slug.to_string()))
                         .await?;
+                    session_key = params["target"]
+                        .as_str()
+                        .expect("validated target")
+                        .to_string();
                 }
                 if let Some(t) = title {
                     self.runtime
-                        .rename_session(session_key, Some(t), None)
+                        .rename_session(&session_key, Some(t), None)
                         .await?;
                 }
 
@@ -557,7 +602,7 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                         })?;
                     let pruned = self
                         .runtime
-                        .set_page_limit(session_key, if limit == 0 { None } else { Some(limit) })
+                        .set_page_limit(&session_key, if limit == 0 { None } else { Some(limit) })
                         .await?;
                     response["page_limit"] = if limit == 0 {
                         serde_json::json!(null)
@@ -1078,7 +1123,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("between 0 and 10000"), "{err}");
+        assert!(err.to_string().contains("10000"), "{err}");
     }
 
     #[tokio::test]
@@ -1264,32 +1309,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_list_drops_kinds_param_silently() {
-        // The kinds filter was removed from the session tool (round-6 F1).
-        // The model still has the underlying data on each result: it
-        // derives "spawned" by `parent_session_id is not None` (visible
-        // on status results).
-        // An old payload that includes `kinds` must surface no error
-        // and just be ignored — the unfiltered list is returned.
+    async fn test_session_list_rejects_removed_kinds_param() {
         let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let result = tool
-            .execute(json!({
-                "action": "list",
-                "peer": "user:alice",
-                "kinds": ["spawned"],
-            }))
+        let error = tool
+            .execute(json!({"action":"list", "peer":"user:alice", "kinds":["spawned"]}))
             .await
-            .unwrap();
-
-        let ids: Vec<&str> = result["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["session_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(result["total"], 2);
-        assert!(ids.contains(&"alice-1"));
-        assert!(ids.contains(&"alice-2"));
+            .unwrap_err();
+        assert!(error.to_string().contains("kinds"), "{error}");
     }
 
     #[tokio::test]
@@ -1506,7 +1532,7 @@ mod tests {
     }
 
     /// A single schema default would misrepresent the per-action
-    /// handler defaults. Advertise them in the description instead.
+    /// handler defaults. Advertise them in the variants and description.
     #[test]
     fn limit_schema_describes_per_action_defaults() {
         let cache = SessionCache::new("test");
@@ -1518,6 +1544,20 @@ mod tests {
             .unwrap();
         for default in ["50", "100", "200"] {
             assert!(description.contains(default));
+        }
+        for (action, expected) in [
+            ("list", 50),
+            ("find", 50),
+            ("history", 100),
+            ("read_page", 200),
+        ] {
+            let variant = schema["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|branch| branch["properties"]["action"]["const"] == action)
+                .unwrap();
+            assert_eq!(variant["properties"]["limit"]["default"], expected);
         }
     }
 
@@ -1651,6 +1691,7 @@ mod tests {
         let err = tool
             .execute(json!({
                 "action": "copy",
+                "target": "sess:/destination",
                 "path": "root:user:alice",
             }))
             .await
@@ -1660,7 +1701,7 @@ mod tests {
 
         // Empty path.
         let err = tool
-            .execute(json!({"action": "copy", "path": ""}))
+            .execute(json!({"action": "copy", "target": "sess:/destination", "path": ""}))
             .await
             .expect_err("empty path must error");
         assert!(err.to_string().contains("path"), "{err}");
@@ -1668,21 +1709,21 @@ mod tests {
         // Bare `/` (no segments) is refused (validate_path says supply
         // at least one segment).
         let err = tool
-            .execute(json!({"action": "copy", "path": "/"}))
+            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/"}))
             .await
             .expect_err("bare '/' path must error");
         assert!(err.to_string().contains("path"), "{err}");
 
         // Empty segment (`/a//b`).
         let err = tool
-            .execute(json!({"action": "copy", "path": "/a//b"}))
+            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/a//b"}))
             .await
             .expect_err("empty segment path must error");
         assert!(err.to_string().contains("segment"), "{err}");
 
         // Leading/trailing whitespace in a segment.
         let err = tool
-            .execute(json!({"action": "copy", "path": "/ a/b"}))
+            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/ a/b"}))
             .await
             .expect_err("whitespace in segment must error");
         assert!(err.to_string().contains("whitespace"), "{err}");

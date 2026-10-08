@@ -175,7 +175,7 @@ Run work in a new, resumed, compacted, or branched session.
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 1, ≤ 10000 |
 
-All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omitted for unlimited; exceeding it permanently deletes the oldest closed pages. model is ignored for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 ### RoleCatalog
 
@@ -218,18 +218,18 @@ Inspect and manage persisted sessions and compaction pages.
 | `query` | string | no | — |
 | `page` | integer | no | ≥ 1 |
 | `offset` | integer | no | default 0, ≥ 0 |
-| `max_results` | integer | no | default 20 |
+| `max_results` | integer | no | default 20, ≥ 0 |
 | `title` | string | no | — |
 | `page_limit` | integer | no | ≥ 0, ≤ 10000 |
 | `recursive` | boolean | no | default false |
 | `peer` | string | no | — |
 | `agent_name` | string | no | — |
-| `limit` | integer | no | — |
-| `active_minutes` | integer | no | — |
+| `limit` | integer | no | ≥ 0; per-action defaults |
+| `active_minutes` | integer | no | ≥ 0; ≤ floor(u64::MAX / 60000) |
 | `include_tools` | boolean | no | default true |
 | `timezone` | string | no | — |
 
-action is required. See the action table below for conditional requirements and actual defaults. Absolute addresses use sess:/a/b; sess:/ identifies the trunk for reads. Omitted read paths select the calling session. Mutation ownership/run guards remain in the session runtime.
+action is required. Both Agent and Session reject unknown fields, explicit nulls, and fields outside the chosen action on dispatcher and direct calls. Session result limits, offsets, and page numbers must fit usize; active_minutes is bounded so conversion to milliseconds cannot overflow. See the action table below for conditional requirements and actual defaults. Absolute addresses use sess:/a/b; sess:/ identifies the trunk for reads. Omitted read paths select the calling session. Mutation ownership/run guards remain in the session runtime.
 
 | Action | Purpose | Required fields besides action | Optional fields / runtime defaults |
 |---|---|---|---|
@@ -243,6 +243,8 @@ action is required. See the action table below for conditional requirements and 
 | list_pages | Compaction page catalog | — | path |
 | read_page | Render one page | page (1-based) | path, offset=0, limit=200 |
 | search_pages | Search all pages | query | path, max_results=20 |
+
+A move with target plus title/page_limit applies subsequent updates at the destination and returns that effective path. Invalid arguments reject before any storage mutation.
 
 Session manages storage; Agent runs work. A move/remove refuses the trunk,
 the current session, and actively running targets. Destructive operations remain

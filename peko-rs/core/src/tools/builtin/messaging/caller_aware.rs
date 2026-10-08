@@ -45,6 +45,7 @@ impl Tool for CallerAwareAgentTool {
         params: Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<Value> {
+        AgentTool::validate_params(&params)?;
         let manager = self
             .manager
             .upgrade()

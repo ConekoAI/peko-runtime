@@ -51,3 +51,20 @@ adds no capability filter or privilege boundary.
 Fewer tool names do not by themselves guarantee better model behavior or lower
 token use. The action schemas still describe the full operation surface. Future
 changes to granularity should be evaluated using actual agent calls and errors.
+
+## Agent and Session contract follow-up
+
+Agent also uses strict per-action variants, preserving its documented default
+new action. Compact refuses model because it retains the target session model.
+Session requires action and has action-specific limit defaults. Both tools
+validate direct calls with cached variants before dependency binding or writes;
+caller-aware metadata delegates to the same static schema/description. The
+validation helper performs no execution routing. Unknown/retired fields, explicit
+nulls, irrelevant fields, negative result limits, and overflowing counters fail.
+
+Agent retention remains 1–10000; omission retains an existing cap, while new
+sessions are unlimited. Session editing
+uses 0 to clear a cap and omission to retain it. A move combining target and
+title/retention follows the destination for subsequent updates and returns that
+path. This does not add a transaction across storage operations; later I/O failures
+can still interrupt an otherwise valid combined operation.

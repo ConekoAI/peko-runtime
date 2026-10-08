@@ -374,6 +374,151 @@ fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
     }
 }
 
+#[test]
+fn agent_and_session_runtime_validation_matches_the_advertised_action_schemas() {
+    let agent_schema = AgentTool::tool_parameters();
+    let session_schema = SessionTool::tool_parameters();
+    let agent = jsonschema::validator_for(&agent_schema).unwrap();
+    let session = jsonschema::validator_for(&session_schema).unwrap();
+    for action in [
+        None,
+        Some("new"),
+        Some("resume"),
+        Some("compact"),
+        Some("branch"),
+    ] {
+        let mut base = json!({"prompt":"work", "role":"worker", "path":"sess:/worker"});
+        if let Some(action) = action {
+            base["action"] = json!(action);
+        }
+        assert!(agent.is_valid(&base));
+        for (field, value) in [
+            ("source", json!("sess:/source")),
+            ("overwrite", json!(false)),
+            ("model", json!("model")),
+            ("page_limit", json!(1)),
+            ("page_limit", json!(1.0)),
+            ("page_limit", json!(0)),
+            ("page_limit", json!(10001)),
+            ("source", Value::Null),
+            ("overwrite", Value::Null),
+            ("model", Value::Null),
+            ("page_limit", Value::Null),
+            ("agent", json!("old-role")),
+            ("title", json!("unused")),
+        ] {
+            let mut call = base.clone();
+            call[field] = value;
+            let expected = match field {
+                "source" | "overwrite" => action == Some("branch") && !call[field].is_null(),
+                "model" => action != Some("compact") && !call[field].is_null(),
+                "page_limit" => {
+                    matches!(action, None | Some("new" | "branch"))
+                        && call[field].as_f64() == Some(1.0)
+                }
+                _ => false,
+            };
+            assert_eq!(agent.is_valid(&call), expected, "Agent: {call}");
+            assert_eq!(
+                AgentTool::validate_params(&call).is_ok(),
+                expected,
+                "Agent direct: {call}"
+            );
+        }
+    }
+    for (action, field) in [
+        ("list", "limit"),
+        ("find", "limit"),
+        ("history", "limit"),
+        ("read_page", "limit"),
+        ("read_page", "offset"),
+        ("search_pages", "max_results"),
+        ("list", "active_minutes"),
+    ] {
+        for value in [
+            json!(-1),
+            json!(0),
+            json!(1),
+            json!(1.0),
+            json!(0.0),
+            Value::Null,
+            json!("10"),
+            json!(1.5),
+            json!(1e30),
+        ] {
+            let mut call = json!({"action":action});
+            if matches!(action, "find" | "search_pages") {
+                call["query"] = json!("word");
+            }
+            if action == "read_page" {
+                call["page"] = json!(1);
+            }
+            call[field] = value;
+            let expected = matches!(call[field].as_f64(), Some(0.0 | 1.0));
+            assert_eq!(session.is_valid(&call), expected, "Session: {call}");
+            assert_eq!(
+                SessionTool::validate_params(&call).is_ok(),
+                expected,
+                "Session direct: {call}"
+            );
+        }
+    }
+    assert!(!session.is_valid(&json!({})), "Session requires action");
+    assert!(
+        agent.is_valid(&json!({"prompt":"work", "role":"worker", "path":"child"})),
+        "Agent defaults to new"
+    );
+    assert!(!agent
+        .is_valid(&json!({"action":"purge", "prompt":"work", "role":"worker", "path":"child"})));
+    assert!(
+        !SessionTool::validate_params(&json!({"action":"status", "agent_id":"old-filter"})).is_ok()
+    );
+}
+
+#[tokio::test]
+async fn caller_aware_agent_and_session_share_the_stock_contract_and_validate_before_binding() {
+    let directory = tempfile::tempdir().unwrap();
+    let audit = Arc::new(
+        peko_observability::Observability::with_audit_dir("test", directory.path().to_path_buf())
+            .unwrap(),
+    );
+    let agent = messaging::caller_aware::CallerAwareAgentTool::new(Weak::new(), audit);
+    let session = CallerAwareSessionTool::for_daemon(
+        Weak::new(),
+        crate::async_exec::executor::standalone_inbox_registry(),
+    );
+    assert_eq!(agent.parameters(), AgentTool::tool_parameters());
+    assert_eq!(agent.description(), AgentTool::tool_description());
+    assert_eq!(session.parameters(), SessionTool::tool_parameters());
+    assert_eq!(session.description(), SessionTool::tool_description());
+    for (tool, params, field) in [
+        (
+            &agent as &dyn Tool,
+            json!({"action":"compact", "prompt":"work", "role":"worker", "path":"sess:/child", "model":"unused"}),
+            "model",
+        ),
+        (
+            &session as &dyn Tool,
+            json!({"action":"list", "limit":-1}),
+            "-1",
+        ),
+    ] {
+        let error = tool
+            .execute_with_context(
+                params,
+                &peko_tools_core::ToolContext::default_for_tool(tool.name()),
+            )
+            .await
+            .unwrap_err();
+        let error = error.to_string();
+        assert!(error.contains(field), "{error}");
+        assert!(
+            !error.contains("PrincipalManager"),
+            "arguments must reject before dependency resolution: {error}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn task_domain_dispatch_preserves_session_ownership_and_audits_actions_once() {
     use crate::tools::metadata::ToolSource;

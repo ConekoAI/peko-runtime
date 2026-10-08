@@ -10,4 +10,5 @@ pub mod prompt_sections;
 pub mod runtime;
 pub mod session_keys;
 
+mod action_schema;
 pub mod metadata;

@@ -34,6 +34,15 @@ and runtime bindings remain explicit in each domain. Providers that strip schema
 combinators retain the top-level property inventory; the dispatcher always
 validates the complete strict schema before execution.
 
+Agent and Session use strict action variants for both metadata and direct calls.
+Caller-aware adapters share the stock tool's static contract and validate before
+resolving runtime bindings. Agent defaults to new; compact refuses model.
+Session requires action, declares per-action limit defaults (50/100/200), and
+rejects negative, null, or unrepresentable numeric values before storage writes.
+Session move applies title/retention at its new address after target changes and
+returns that address as path. The old per-call Agent _timeout injection is removed;
+the router's existing constant timeout governs execution.
+
 ## Cron interval completion policy
 
 `CronEngine::execute_job_for_id` (used by Cron action trigger) returns the ID of the
