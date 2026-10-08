@@ -995,6 +995,16 @@ impl AgenticLoop {
         // Get session_id once at start
         let session_id = session.id().await;
 
+        // Billing-only empty assistant entries stay in JSONL, but are not
+        // valid content for the next provider request (including resumed turns).
+        messages.retain(|message| {
+            message.role != MessageRole::Assistant
+                || message
+                    .content
+                    .iter()
+                    .any(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()))
+        });
+
         // Push the resolved session id onto the core so `AsyncSpawn`
         // can stamp `parent_session_key` on any task issued from this
         // loop. This is the only place that *always* knows the real id
@@ -1040,6 +1050,7 @@ impl AgenticLoop {
 
         let mut iteration = 0;
         let mut total_usage = TokenUsage::default();
+        let mut output_limit_recoveries = 0;
 
         // Per-run change-detection state for the tail runtime-context
         // message (see the injection site inside the loop). A section
@@ -2078,7 +2089,38 @@ impl AgenticLoop {
                     }
                 }
 
+                if stop_reason == StopReason::Length {
+                    self.recover_output_limit(
+                        &mut output_limit_recoveries,
+                        &mut messages,
+                        session,
+                        &run_id,
+                        &on_event,
+                    )
+                    .await?;
+                }
                 // Continue to next iteration
+                continue;
+            }
+
+            if stop_reason == StopReason::Length {
+                // Preserve the partial answer and billed usage, but do not
+                // announce it as a successful final answer.
+                session
+                    .add_assistant(accumulated_text.clone(), None, Some(iteration_usage))
+                    .await?;
+                if !accumulated_text.is_empty() {
+                    messages
+                        .push(LlmMessage::assistant(accumulated_text).with_usage(iteration_usage));
+                }
+                self.recover_output_limit(
+                    &mut output_limit_recoveries,
+                    &mut messages,
+                    session,
+                    &run_id,
+                    &on_event,
+                )
+                .await?;
                 continue;
             }
 
@@ -2174,6 +2216,45 @@ impl AgenticLoop {
                 interrupted: false,
             });
         }
+    }
+
+    /// Continue from persisted partial output/results, never replay a response.
+    /// Normal quota, cancellation and iteration limits still govern the next call.
+    async fn recover_output_limit(
+        &self,
+        recoveries: &mut usize,
+        messages: &mut Vec<LlmMessage>,
+        session: &dyn SessionView,
+        run_id: &str,
+        on_event: &(dyn Fn(AgenticEvent) + Send + Sync),
+    ) -> Result<()> {
+        const MAX_RECOVERIES: usize = 2;
+        if *recoveries >= MAX_RECOVERIES {
+            let error = crate::AgenticError::OutputLimit {
+                recoveries: *recoveries,
+                max_recoveries: MAX_RECOVERIES,
+            };
+            on_event(AgenticEvent::Lifecycle {
+                run_id: run_id.to_string(),
+                phase: LifecyclePhase::Error,
+                error: Some(error.to_string()),
+            });
+            return Err(error.into());
+        }
+        *recoveries += 1;
+        let notice = format!(
+            "<output-limit-recovery attempt=\"{recoveries}/{MAX_RECOVERIES}\">\n\
+             The provider hit its response output limit. Output or tool arguments may be incomplete. \
+             Completed tool results above remain authoritative; do not replay successful calls. \
+             Check failed calls and saved files. Continue only the remaining work using smaller \
+             responses or smaller Write/Edit chunks. The output limit and quota are unchanged.\n\
+             </output-limit-recovery>"
+        );
+        session
+            .add_user_with_source(notice.clone(), peko_session::events::MessageSource::Hook)
+            .await?;
+        messages.push(LlmMessage::user(notice));
+        Ok(())
     }
 
     /// Build tool definitions dynamically from `ToolingRuntime` (ADR-019 Phase 2)

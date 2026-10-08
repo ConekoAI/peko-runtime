@@ -32,6 +32,158 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::RwLock;
 
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn output_limit_recovers_partial_answer_and_stops_after_two_recoveries() {
+        peko_identity::init_test_env();
+        for (exhausted, partial) in [(false, "partial"), (false, ""), (true, "partial")] {
+            let temp = TempDir::new().unwrap();
+            let tooling = test_tooling().await;
+            let (provider, mock) = mock_provider();
+            for _ in 0..if exhausted { 3 } else { 1 } {
+                mock.queue_stream_response(peko_providers::mock::MockResponse::Stream(vec![
+                    peko_providers::StreamEvent::TextDelta {
+                        content_index: 0,
+                        delta: partial.into(),
+                    },
+                    peko_providers::StreamEvent::Usage {
+                        input: 10,
+                        output: 64,
+                        total: 74,
+                        cache_creation_input_tokens: 0,
+                        cache_read_input_tokens: 0,
+                        reasoning_output_tokens: 0,
+                    },
+                    peko_providers::StreamEvent::Done {
+                        stop_reason: StopReason::Length,
+                    },
+                ]));
+            }
+            mock.queue_text("complete");
+            let agent = Arc::new(
+                Agent::new_for_test(
+                    test_agent_config("output-limit-agent"),
+                    temp.path(),
+                    tooling.clone(),
+                )
+                .await
+                .unwrap(),
+            );
+            let loop_=AgenticLoop::new(agent,provider.clone(),tooling,
+                Arc::new(crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(provider.clone())),
+                peko_engine::CompactionConfig::default()).await;
+            let session = test_session("output-limit-agent", temp.path()).await;
+            let result = loop_
+                .run_with_resume(
+                    "Finish a bounded response",
+                    Vec::new(),
+                    |_| {},
+                    &session,
+                    None,
+                )
+                .await;
+            if exhausted {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error.downcast_ref::<peko_engine::AgenticError>(),
+                    Some(peko_engine::AgenticError::OutputLimit {
+                        recoveries: 2,
+                        max_recoveries: 2
+                    })
+                ));
+                assert_eq!(mock.recorded_requests().len(), 3);
+            } else {
+                let result = result.unwrap();
+                assert_eq!(result.final_answer, "complete");
+                assert_eq!(result.iterations, 2);
+                assert!(format!("{:?}", mock.recorded_requests()[1].messages)
+                    .contains("output-limit-recovery"));
+                assert!(mock.recorded_requests()[1]
+                    .messages
+                    .iter()
+                    .filter(|m| m.role == MessageRole::Assistant)
+                    .all(|m| m
+                        .content
+                        .iter()
+                        .any(|b| !matches!(b,ContentBlock::Text {text} if text.is_empty()))));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial(core)]
+    async fn output_limit_keeps_completed_write_and_recovers_empty_write() {
+        peko_identity::init_test_env();
+        let temp = TempDir::new().unwrap();
+        let tooling = test_tooling().await;
+        let (provider, mock) = mock_provider();
+        let first = temp.path().join("first.txt");
+        let second = temp.path().join("second.txt");
+        mock.queue_stream_response(peko_providers::mock::MockResponse::Stream(vec![
+            peko_providers::StreamEvent::ToolCallEnd {
+                content_index: 0,
+                tool_call: ContentBlock::ToolCall {
+                    id: "completed-write".into(),
+                    name: "Write".into(),
+                    arguments: serde_json::json!({"file_path":first,"content":"first"}),
+                },
+            },
+            peko_providers::StreamEvent::ToolCallEnd {
+                content_index: 1,
+                tool_call: ContentBlock::ToolCall {
+                    id: "empty-write".into(),
+                    name: "Write".into(),
+                    arguments: serde_json::json!({}),
+                },
+            },
+            peko_providers::StreamEvent::Done {
+                stop_reason: StopReason::Length,
+            },
+        ]));
+        mock.queue_tool_call(
+            "corrected-write",
+            "Write",
+            serde_json::json!({"file_path":second,"content":"second"}),
+        );
+        mock.queue_text("complete");
+        let agent = Arc::new(
+            Agent::new_for_test(
+                test_agent_config("output-tools-agent"),
+                temp.path(),
+                tooling.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        let loop_=AgenticLoop::new(agent,provider.clone(),tooling,
+            Arc::new(crate::engine::background_compactor_factory_compat::BackgroundCompactorFactoryAdapter::new(provider.clone())),
+            peko_engine::CompactionConfig::default()).await;
+        let session = test_session("output-tools-agent", temp.path()).await;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let result = loop_
+            .run_with_resume(
+                "Write two files",
+                Vec::new(),
+                move |event| sink.lock().unwrap().push(event),
+                &session,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "second");
+        let events = events.lock().unwrap();
+        assert_eq!(events.iter().filter(|e|matches!(e,AgenticEvent::ToolEnd {tool_id,success:true,..} if tool_id=="completed-write")).count(),1);
+        assert!(events.iter().any(|e|matches!(e,AgenticEvent::ToolEnd {tool_id,success:false,..} if tool_id=="empty-write")));
+        let requests = mock.recorded_requests();
+        assert_eq!(requests.len(), 3);
+        let recovery = format!("{:?}", requests[1].messages);
+        assert!(recovery.contains("output-limit-recovery"));
+        assert!(recovery.contains("completed-write") && recovery.contains("empty-write"));
+    }
+
     /// Build a mock provider with a fresh MockAdapter.
     ///
     /// Returns the trait-object form (`Arc<dyn ProviderView>`) so call

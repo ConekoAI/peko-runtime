@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Bounded output-limit continuation (2026-10-08)
+
+- Preserve partial answers and completed tool results when a response reaches
+  its output limit. Offer at most two continuation prompts per run requesting
+  smaller responses/writes and warning against replaying successful calls.
+  A third capped response returns typed OutputLimit failure. Normal quota,
+  cancellation and iteration limits remain in force; output limits are unchanged.
+  Added actual-loop regressions for partial-answer continuation, bounded
+  exhaustion, and a completed Write alongside an empty Write recovered later.
+
 ### Preserve Anthropic streaming termination (2026-10-07)
 
 - Retain nested message-delta stop reasons alongside usage and emit them at

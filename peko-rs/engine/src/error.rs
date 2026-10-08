@@ -28,6 +28,14 @@ use peko_quota::error::QuotaError;
 /// reach the loop boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum AgenticError {
+    /// The provider repeatedly exhausted its response output limit in one run.
+    #[error("output limit recovery budget exhausted ({recoveries}/{max_recoveries}); split the remaining work into smaller responses")]
+    OutputLimit {
+        /// Recovery continuations already offered in this run.
+        recoveries: usize,
+        /// Maximum continuations for this failure mode.
+        max_recoveries: usize,
+    },
     /// Quota exceeded (input tokens, output tokens, or request count).
     /// The inner `QuotaError` carries `used` / `limit` / `window_end`
     /// so the CLI's quota-exceeded message can render "X / Y (resets

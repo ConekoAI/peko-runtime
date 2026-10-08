@@ -37,6 +37,17 @@ not abandon running turns. No public signatures or wire types changed. See
 
 ## Provider stream parser lifetimes
 
+`AgenticLoop` treats `StopReason::Length` as incomplete output. It persists
+partial assistant output and completed tool results, then offers at most two
+recovery continuations per run with explicit smaller-response guidance. It
+does not replay the provider response or raise output/quota/iteration limits.
+The third output-limited response returns `AgenticError::OutputLimit` after
+preserving its output/results. Existing tool validation still governs dispatch;
+the runtime does not infer missing arguments or recreate failed writes.
+Recovery notes are persisted as Hook-origin user messages.
+Empty assistant entries retained only for billing stay in JSONL but are omitted
+from provider request history; partial text and tool calls remain in context.
+
 Cloning `ToolCallAccumulator` or a concrete API adapter starts an empty parser
 lifetime, retaining adapter configuration (URL/headers) but not partial tool
 calls. Anthropic adapter clones also start without pending usage or termination
