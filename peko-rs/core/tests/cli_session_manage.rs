@@ -344,7 +344,6 @@ async fn agent_spawn_list_resume_with_history() {
     let p1 = "sessagent-p1-c2vd";
     let c1 = "sessagent-c1-c2vd";
     let p2 = "sessagent-p2-c2vd";
-    let c2 = "sessagent-c2-c2vd";
 
     let cli = PekoCli::new();
     create_mock_principal_with_tools(
@@ -398,13 +397,14 @@ async fn agent_spawn_list_resume_with_history() {
     // Sprint 7 Commits 1-4 (AgentArgs trim): `session_key` → `path`
     // (Commit 1); `cleanup` removed (Commit 4).
     let script = serde_json::json!({
-        // The mock routes on the first persisted user message in each session.
+        // The parent retains its first user message. Reuse the child's needle
+        // across tasks so either current-task or history-first rendering routes it.
         p1: [
             { "tool_call": { "name": "Agent", "arguments":
                 serde_json::json!({
                     "action": "resume",
                     "path": spawn_id,
-                    "prompt": format!("Do part two. Needle '{c2}'."),
+                    "prompt": format!("Do part two. Needle '{c1}'."),
                     "role": WORKER,
                 }).to_string()
             } },
@@ -432,6 +432,6 @@ async fn agent_spawn_list_resume_with_history() {
         .expect("spawned session transcript exists after resume");
     assert!(
         transcript.contains("CHILD_ONE_DONE") && transcript.contains("CHILD_TWO_DONE"),
-        "resumed session must keep its full prior history"
+        "resumed session must keep its full prior history: stdout={out} stderr={err}\n{transcript}"
     );
 }
