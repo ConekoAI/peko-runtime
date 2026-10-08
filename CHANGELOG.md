@@ -19,6 +19,8 @@ All notable changes to Peko.
   incorrectly registered as built-ins. Correct stale capability-filter docs.
 - Update scripted subagent, session-resume, and role-prompt integration calls to
   use Agent.role, including their workspace role and unfiltered-tool docs.
+  Route repeated mock turns by their first persisted user message and select
+  the current CLI peer session and spawned role session explicitly.
 
 ### Explicit built-in installation lifetimes (2026-10-08)
 
