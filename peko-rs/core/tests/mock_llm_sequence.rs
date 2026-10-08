@@ -214,7 +214,14 @@ async fn mock_llm_script_list_supports_mixed_text_and_tool_call() {
     // serializes the SSE chunk. Assert on values inside the args
     // (a key, a value, and the timestamp) so the check is robust to
     // JSON escaping.
-    for needle in ["at", "2099-01-01T00:00:00Z", "agent_id"] {
+    for needle in [
+        "action",
+        "create",
+        "message",
+        "remind me",
+        "at",
+        "2099-01-01T00:00:00Z",
+    ] {
         assert!(
             body1.contains(needle),
             "call 1 stream missing expected args substring {needle:?}\n{body1}",

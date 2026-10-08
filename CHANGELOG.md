@@ -29,6 +29,8 @@ All notable changes to Peko.
   and conservatively serialize read actions through the same gate.
 - Include action in the single outer tool.call audit event; update prompts,
   tool guidance, mock calls, and the full parameter catalog (ADR-071).
+- Align the mock sequence assertion with Cron's create payload, removing its
+  obsolete agent_id expectation.
 
 ### Exact tool contracts and unfiltered availability (2026-10-08)
 
