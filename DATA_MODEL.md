@@ -5,6 +5,14 @@
 **Status:** Current
 **Companion docs:** [`AGENTS.md`](AGENTS.md) (build & module rules), [`API_SURFACE.md`](API_SURFACE.md) (public Rust API), [`docs/architecture/adr/`](docs/architecture/adr/) (decisions)
 
+Output-limit recovery preserves partial assistant output with its usage and
+existing tool-call/result entries. Continuation guidance is a Hook-origin user
+message tagged `<output-limit-recovery attempt="N/2">`, never a human instruction.
+The counter is run-local and allows two continuations; quota remains persisted
+by the existing meter. This adds no wire or on-disk schema fields.
+Empty billing-only assistant entries remain in JSONL for usage reconciliation,
+but are omitted when building provider request history.
+
 This document defines every on-disk and in-memory data format used by the Peko runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Peko data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
 
 ---
