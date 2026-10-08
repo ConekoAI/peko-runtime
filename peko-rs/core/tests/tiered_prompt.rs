@@ -404,7 +404,7 @@ impl Drop for MockUrlOverride {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// ADR-052 D3: an Agent-tool spawn with `agent: "researcher"` runs the
+/// ADR-052 D3: an Agent-tool spawn with `role: "researcher"` runs the
 /// researcher role body as its system prompt (T1), not the root persona.
 ///
 /// The frozen system prompt isn't persisted to the session JSONL, so
@@ -438,7 +438,7 @@ async fn d3_role_prompt_reaches_spawned_child() {
     let script = serde_json::json!({
         parent_needle: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "agent": "researcher", "path": "d3-research" }).to_string()
+                serde_json::json!({ "prompt": task_for_child, "role": "researcher", "path": "d3-research" }).to_string()
             } },
             "D3_PARENT_DONE",
         ],

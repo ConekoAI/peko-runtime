@@ -361,7 +361,7 @@ async fn agent_spawn_list_resume_with_history() {
     let script = serde_json::json!({
         p1: [
             { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "agent": WORKER }).to_string()
+                serde_json::json!({ "prompt": format!("Do part one. Needle '{c1}'."), "role": WORKER, "path": "part-one" }).to_string()
             } },
             { "tool_call": { "name": "Session", "arguments":
                 serde_json::json!({ "action": "list" }).to_string()
@@ -405,7 +405,7 @@ async fn agent_spawn_list_resume_with_history() {
                     "action": "resume",
                     "path": spawn_id,
                     "prompt": format!("Do part two. Needle '{c2}'."),
-                    "agent": WORKER,
+                    "role": WORKER,
                 }).to_string()
             } },
             "RESUME_DONE",

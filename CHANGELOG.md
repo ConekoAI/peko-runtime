@@ -17,13 +17,14 @@ All notable changes to Peko.
   Register directly in ToolCatalog and retain the installation manifest.
 - Preserve MCP server attribution in catalog bindings; workspace MCP tools were
   incorrectly registered as built-ins. Correct stale capability-filter docs.
-
+- Update scripted subagent, session-resume, and role-prompt integration calls to
+  use Agent.role, including their workspace role and unfiltered-tool docs.
 
 ### Explicit built-in installation lifetimes (2026-10-08)
 
 - Centralize built-in factories and scope/phase inventory in tools::installation.
   Fill missing runtime defaults atomically without replacing configured instances.
-- Bind Agent/Session executors and optional ModelList in private run overlays;
+- Bind Agent/Session executors in private run overlays;
   retain shared dispatch, hooks, audit, timeout routing, and principal admission.
   Route workflow/IPC callbacks by caller session, with caller-aware daemon fallbacks
   for cold cron and out-of-band calls. Remove shared per-turn Agent registration.
@@ -38,9 +39,8 @@ All notable changes to Peko.
 
 ### Consistent built-in tool contracts (2026-10-08)
 
-- Advertise all 37 built-ins with PascalCase wire names, including Session,
-  ModelList, RoleCatalog, and all seven Plan tools. Legacy spellings remain
-  lookup aliases for saved cron/workflow calls; exact MCP names retain precedence.
+- Advertise all 37 built-ins with exact PascalCase wire names, including Session,
+  ModelList, RoleCatalog, and all seven Plan tools; MCP names remain server-defined.
 - Encode Agent, Session, ModelCall, CronCreate, and CronUpdate requirements in
   their schemas. Advertise CronCreate.one_shot and nullable AsyncSpawn timeouts;
   explain Session's per-action defaults and title/retention-only moves.
@@ -48,7 +48,7 @@ All notable changes to Peko.
   the recursion guard. Inject Glob's workspace through its actual path parameter.
 - Refresh the complete tool catalog and shipped prompts, including Write's
   overwrite default, Read's encoding surface, role/branch arguments, and
-  creating-session cron delivery. Add inventory, schema-validation, alias,
+  creating-session cron delivery. Add inventory, schema-validation, exact-name,
   workspace-dispatch, and hidden-depth regressions.
 
 ### Bounded output-limit continuation (2026-10-08)
