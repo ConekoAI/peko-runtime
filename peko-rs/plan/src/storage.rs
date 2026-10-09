@@ -129,7 +129,7 @@ impl PlanStorage {
     /// not a valid [`PlanRecord`].
     pub async fn get(&self, plan_id: &str) -> Result<Option<PlanRecord>> {
         let path = self.file_path(plan_id);
-        let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+        let _lock = self.lock(&path).await?;
         read_locked(&path, plan_id).await
     }
 
@@ -141,7 +141,7 @@ impl PlanStorage {
         principal_id: &PrincipalId,
     ) -> Result<PlanRecord> {
         let path = self.file_path(plan_id);
-        let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+        let _lock = self.lock(&path).await?;
         let record = read_locked(&path, plan_id)
             .await?
             .ok_or(PlanError::NotFound)?;
@@ -168,7 +168,7 @@ impl PlanStorage {
         F: FnOnce(&PlanRecord) -> Result<PlanRecord>,
     {
         let path = self.file_path(plan_id);
-        let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+        let _lock = self.lock(&path).await?;
         let record = read_locked(&path, plan_id)
             .await?
             .ok_or(PlanError::NotFound)?;
@@ -191,7 +191,7 @@ impl PlanStorage {
         reason: String,
     ) -> Result<()> {
         let path = self.file_path(plan_id);
-        let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+        let _lock = self.lock(&path).await?;
         let mut record = read_locked(&path, plan_id)
             .await?
             .ok_or(PlanError::NotFound)?;
@@ -229,7 +229,7 @@ impl PlanStorage {
             // Per-file lock for each read so we don't hold a global
             // directory lock. Resilient to concurrent unlink (returns
             // None).
-            let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+            let _lock = self.lock(&path).await?;
             if let Some(r) = read_locked(&path, &plan_id).await? {
                 out.push(r);
             }
@@ -270,10 +270,20 @@ impl PlanStorage {
             .collect())
     }
 
+    /// Take the per-plan file lock. The lock file sits beside the plan,
+    /// so the directory must exist first: it is otherwise created only on
+    /// the first write, and locking inside a missing directory retries
+    /// until the lock timeout — making every lookup on a principal with
+    /// no plans yet stall for ten seconds before failing.
+    async fn lock(&self, path: &Path) -> Result<FileLock> {
+        fs::create_dir_all(&self.plans_dir).await?;
+        Ok(FileLock::acquire(path, PLAN_LOCK_TIMEOUT_MS).await?)
+    }
+
     /// Atomic write under the file lock (acquired here).
     async fn write_atomic(&self, record: &PlanRecord) -> Result<()> {
         let path = self.file_path(&record.plan_id);
-        let _lock = FileLock::acquire(&path, PLAN_LOCK_TIMEOUT_MS).await?;
+        let _lock = self.lock(&path).await?;
         write_locked(&path, record).await
     }
 }
@@ -357,6 +367,37 @@ mod tests {
     fn storage_in(dir: &TempDir) -> PlanStorage {
         let plans_dir = dir.path().join("plans");
         PlanStorage::new(plans_dir)
+    }
+
+    /// Regression: the plans directory is created on the first write, and
+    /// lookups used to take the per-plan lock inside the missing directory,
+    /// retrying for the full lock timeout before failing. A principal with
+    /// no plans must get an immediate not-found.
+    #[tokio::test]
+    async fn lookups_before_any_plan_exists_report_not_found_promptly() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_in(&tmp);
+        let p = principal();
+        let started = std::time::Instant::now();
+        assert!(storage.get("plan_missing0").await.unwrap().is_none());
+        assert!(matches!(
+            storage.get_for_principal("plan_missing0", &p).await,
+            Err(PlanError::NotFound)
+        ));
+        assert!(matches!(
+            storage.close("plan_missing0", &p, "done".into()).await,
+            Err(PlanError::NotFound)
+        ));
+        assert!(matches!(
+            storage.update("plan_missing0", &p, |r| Ok(r.clone())).await,
+            Err(PlanError::NotFound)
+        ));
+        assert!(storage.list().await.unwrap().is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "lookups stalled for {:?}",
+            started.elapsed()
+        );
     }
 
     fn node(label: &str) -> PlanNode {
