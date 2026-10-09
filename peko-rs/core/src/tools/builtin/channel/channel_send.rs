@@ -164,23 +164,6 @@ pub struct ChannelSendTool {
 
 impl ChannelSendTool {
     /// Build a `ChannelSendTool` bound to a specific caller principal
-    /// with full principal / cross-runtime support and an explicit context.
-    #[must_use]
-    pub fn new_with_peer(
-        port: Arc<dyn ChannelPort>,
-        caller_principal_did: String,
-        cross_runtime: Arc<CrossRuntimeA2aCtx>,
-    ) -> Self {
-        Self {
-            port,
-            caller_principal_did,
-            cross_runtime: Some(cross_runtime),
-            services: None,
-            await_locks: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Build a `ChannelSendTool` bound to a specific caller principal
     /// WITHOUT the cross-runtime context. The bare / group / user
     /// branches work; principal targets return a structured error.
     /// Runtime installation adds a live service binding to this adapter.
@@ -674,7 +657,7 @@ async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String>
         .list_all_sessions(false)
         .await
         .ok()?;
-    // A session missing from the store would render as `/<raw id>` —
+    // A session missing from the store would render as `sess:/<raw id>` —
     // not a slug path — so treat absence as unattributed.
     metas
         .iter()
@@ -957,9 +940,6 @@ impl ChannelSendTool {
         let target_principal_did = raw.strip_prefix("principal:").ok_or_else(|| {
             anyhow::anyhow!("internal: principal branch requires 'principal:' prefix")
         })?;
-        if target_principal_did.is_empty() {
-            return Ok(self.error_value("principal", "ChannelSend: target DID is empty"));
-        }
         let cross_runtime = self.cross_runtime_context();
         let Some(cross_runtime) = cross_runtime.as_deref() else {
             return Ok(self.error_value(
@@ -1067,138 +1047,70 @@ impl ChannelSendTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_channel::{ChannelError, ChannelEvent, ChannelId, Checkpoint, CreateOpts};
+    use peko_channel::{
+        ChannelConfig, ChannelEvent, ChannelId, ChannelStore, Checkpoint, CreateOpts,
+    };
     use peko_subject::{PrincipalId, Subject};
     use peko_tools_core::ToolContext;
     use serde_json::json;
-    use std::collections::HashMap;
     use std::sync::Mutex;
-    use tokio::sync::Mutex as AsyncMutex;
 
-    /// In-memory `ChannelPort` for unit tests. Local to this tool's
-    /// tests so the tool can be tested without depending on a real
-    /// `ChannelStore` (file-backed) — that integration path is covered
-    /// by `peko-channel`'s own `tests/integration.rs`.
-    #[derive(Default)]
-    struct TestChannelPort {
-        events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,
-        members: AsyncMutex<HashMap<ChannelId, Vec<Subject>>>,
-        next_line: AsyncMutex<HashMap<ChannelId, u64>>,
+    /// A real file-backed channel store and one caller bound to the tool.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        port: Arc<ChannelStore>,
+        alice: PrincipalId,
+        tool: ChannelSendTool,
     }
 
-    impl TestChannelPort {
-        fn is_member(&self, channel: &ChannelId, subject: &Subject) -> bool {
-            // Sync lookup against the snapshot taken under the async
-            // lock — fine for tests, since TestChannelPort is only
-            // exercised from a single-threaded tokio runtime here.
-            if let Ok(g) = self.members.try_lock() {
-                g.get(channel)
-                    .map(|m| m.iter().any(|p| p == subject))
-                    .unwrap_or(false)
-            } else {
-                false
+    impl Fixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let port = Arc::new(ChannelStore::new(ChannelConfig {
+                runtime_dir: dir.path().to_path_buf(),
+                shared_dir: None,
+            }));
+            let alice = PrincipalId::generate();
+            let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
+            Self {
+                _dir: dir,
+                port,
+                alice,
+                tool,
             }
         }
-    }
 
-    #[async_trait]
-    impl ChannelPort for TestChannelPort {
-        async fn create(
-            &self,
-            _creator: &PrincipalId,
-            _opts: CreateOpts,
-        ) -> peko_channel::Result<ChannelId> {
-            Err(ChannelError::Adapter(
-                "create not implemented in test".into(),
-            ))
+        /// A channel created by `creator` (its only member).
+        async fn channel_of(&self, creator: &PrincipalId, id: Option<ChannelId>) -> ChannelId {
+            self.port
+                .create(
+                    creator,
+                    CreateOpts {
+                        id,
+                        ..CreateOpts::default()
+                    },
+                )
+                .await
+                .unwrap()
         }
 
-        async fn invite(
-            &self,
-            _channel: &ChannelId,
-            _inviter: &PrincipalId,
-            _invitee: &Subject,
-        ) -> peko_channel::Result<()> {
-            Ok(())
+        async fn send(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            self.tool
+                .execute_with_context(params, &ctx_with(&self.alice))
+                .await
         }
 
-        async fn post(
-            &self,
-            channel: &ChannelId,
-            sender: &Subject,
-            msg: PostMsg,
-        ) -> peko_channel::Result<String> {
-            if !self.is_member(channel, sender) {
-                return Err(ChannelError::NotMember);
-            }
-            let mut lines = self.next_line.lock().await;
-            let line = lines.get(channel).copied().unwrap_or(0);
-            lines.insert(channel.clone(), line + 1);
-            drop(lines);
-            let ev = ChannelEvent::Posted {
-                channel: channel.clone(),
-                author: peko_channel::subject_wire_form(sender),
-                parent: msg.parent,
-                text: msg.text,
-                at: "2026-08-06T12:00:00Z".into(),
-                via: msg.via,
-            };
-            let mut events = self.events.lock().unwrap();
-            events.entry(channel.clone()).or_default().push(ev);
-            Ok(line.to_string())
-        }
-
-        async fn peek(
-            &self,
-            channel: &ChannelId,
-            _since: &Checkpoint,
-        ) -> peko_channel::Result<Vec<ChannelEvent>> {
-            let events = self.events.lock().unwrap();
-            Ok(events.get(channel).cloned().unwrap_or_default())
-        }
-
-        async fn peek_with_ids(
-            &self,
-            channel: &ChannelId,
-            since: &Checkpoint,
-        ) -> peko_channel::Result<Vec<(String, ChannelEvent)>> {
-            let events = self.peek(channel, since).await?;
-            // Test fixture: assign line numbers by event index; the
-            // subscription loop only needs strictly-increasing ids.
-            Ok(events
+        async fn posts(&self, channel: &ChannelId) -> Vec<(Option<String>, String)> {
+            self.port
+                .peek(channel, &Checkpoint::zero())
+                .await
+                .unwrap()
                 .into_iter()
-                .enumerate()
-                .map(|(i, ev)| ((i + 1).to_string(), ev))
-                .collect())
-        }
-
-        async fn leave(
-            &self,
-            _channel: &ChannelId,
-            _principal: &PrincipalId,
-        ) -> peko_channel::Result<()> {
-            Ok(())
-        }
-
-        async fn list_members(&self, channel: &ChannelId) -> peko_channel::Result<Vec<Subject>> {
-            let g = self.members.lock().await;
-            Ok(g.get(channel).cloned().unwrap_or_default())
-        }
-
-        async fn list_for_principal(
-            &self,
-            _principal: &PrincipalId,
-        ) -> peko_channel::Result<Vec<ChannelId>> {
-            Ok(Vec::new())
-        }
-
-        async fn pin_to_shared(
-            &self,
-            _channel: &ChannelId,
-        ) -> peko_channel::Result<std::path::PathBuf> {
-            Err(ChannelError::Adapter(
-                "pin_to_shared not implemented in test".into(),
-            ))
+                .filter_map(|ev| match ev {
+                    ChannelEvent::Posted { parent, text, .. } => Some((parent, text)),
+                    _ => None,
+                })
+                .collect()
         }
     }
 
@@ -1207,231 +1119,148 @@ mod tests {
             .with_principal_id(principal.0.clone())
     }
 
-    fn chan_id() -> ChannelId {
-        ChannelId::generate()
-    }
-
     #[tokio::test]
-    async fn send_returns_task_id_for_root_post() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
+    async fn bare_posts_return_increasing_task_ids_and_land_in_the_log() {
+        let fx = Fixture::new();
+        let channel = fx.channel_of(&fx.alice, None).await;
 
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "hello world" }),
-                &ctx_with(&alice),
-            )
+        let first = fx
+            .send(json!({ "channel": channel.as_str(), "text": "first" }))
             .await
             .unwrap();
-        assert_eq!(got["channel"], channel.as_str());
-        assert_eq!(got["kind"], "bare");
-        assert_eq!(got["task_id"], "0", "first post in a channel is line 0");
-    }
-
-    #[tokio::test]
-    async fn send_advances_task_id_per_post() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-        let first = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "first" }),
-                &ctx_with(&alice),
-            )
+        let second = fx
+            .send(json!({ "channel": channel.as_str(), "text": "second" }))
             .await
             .unwrap();
-        let second = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "second" }),
-                &ctx_with(&alice),
-            )
-            .await
-            .unwrap();
-        assert_eq!(first["task_id"], "0");
-        assert_eq!(second["task_id"], "1");
-    }
-
-    #[tokio::test]
-    async fn send_accepts_parent_for_reply() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-        let root = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "root" }),
-                &ctx_with(&alice),
-            )
-            .await
-            .unwrap();
-        let reply = tool
-            .execute_with_context(
-                json!({
-                    "channel": channel.as_str(),
-                    "text": "reply",
-                    "parent": root["task_id"].as_str().unwrap(),
-                }),
-                &ctx_with(&alice),
-            )
-            .await
-            .unwrap();
-        assert_eq!(reply["task_id"], "1");
-        // Confirm the reply actually wired the parent into the event
-        // log.
-        let events = port.events.lock().unwrap();
-        let reply_event = events
-            .get(&channel)
-            .and_then(|v| v.last())
-            .expect("reply event");
-        match reply_event {
-            ChannelEvent::Posted { parent, text, .. } => {
-                assert_eq!(parent.as_deref(), Some("0"));
-                assert_eq!(text, "reply");
-            }
-            other => panic!("expected Posted event, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn send_soft_errors_on_non_member() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        let bob = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&bob)]);
-        }
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "hi" }),
-                &ctx_with(&alice),
-            )
-            .await
-            .unwrap();
-        assert_eq!(got["error"], "caller is not a member of this channel");
-        assert_eq!(got["channel"], channel.as_str());
-    }
-
-    #[tokio::test]
-    async fn send_rejects_empty_text() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let res = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "text": "" }),
-                &ctx_with(&alice),
-            )
-            .await;
-        assert!(res.is_err(), "empty text must be rejected as Err");
-    }
-
-    #[tokio::test]
-    async fn send_rejects_invalid_channel_id() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let res = tool
-            .execute_with_context(
-                json!({ "channel": "not-a-chan-id", "text": "hi" }),
-                &ctx_with(&alice),
-            )
-            .await;
-        assert!(res.is_err(), "invalid channel id must propagate as Err");
-    }
-
-    #[tokio::test]
-    async fn send_requires_principal_context() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelSendTool::new_local_only(port, alice.0);
-        // Bare `execute` — no principal context.
-        let res = tool
-            .execute(json!({ "channel": "chan_a1b2c3d4", "text": "hi" }))
-            .await;
-        assert!(
-            res.is_err(),
-            "bare execute must surface principal-missing error"
+        assert_eq!(first["success"], true, "{first}");
+        assert_eq!(first["kind"], "bare");
+        assert_eq!(first["channel"], channel.as_str());
+        let (a, b) = (
+            first["task_id"].as_str().unwrap().parse::<u64>().unwrap(),
+            second["task_id"].as_str().unwrap().parse::<u64>().unwrap(),
+        );
+        assert!(b > a, "task ids must advance: {a} then {b}");
+        assert_eq!(
+            fx.posts(&channel).await,
+            vec![(None, "first".to_string()), (None, "second".to_string())]
         );
     }
 
-    // -----------------------------------------------------------------
-    // Sprint 4 dispatch tests — four ChannelKind branches
-    // -----------------------------------------------------------------
-
-    /// Group-prefix channel ids share the bare-post path: the LLM has
-    /// bound a `group:<slug>` channel and the tool just posts a JSONL
-    /// line. No await, no mirror, no messenger.
     #[tokio::test]
-    async fn group_dispatch_routes_through_bare_post() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = ChannelId::for_group("eng-standup");
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": "group:eng-standup", "text": "standup starts in 5" }),
-                &ctx_with(&alice),
-            )
+    async fn parent_makes_the_post_a_reply() {
+        let fx = Fixture::new();
+        let channel = fx.channel_of(&fx.alice, None).await;
+        let root = fx
+            .send(json!({ "channel": channel.as_str(), "text": "root" }))
             .await
             .unwrap();
-        assert_eq!(got["success"], true);
-        assert_eq!(got["kind"], "group");
-        assert_eq!(got["channel"], "group:eng-standup");
-        assert_eq!(got["task_id"], "0");
+        let root_id = root["task_id"].as_str().unwrap().to_string();
+        fx.send(json!({ "channel": channel.as_str(), "text": "reply", "parent": root_id }))
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.posts(&channel).await.last().unwrap(),
+            &(Some(root_id), "reply".to_string())
+        );
     }
 
-    /// The principal branch requires the cross-runtime context. Without
-    /// it, the tool must produce a structured `error` (not panic) —
-    /// this is the offline-tunnel shape tested by
-    /// `principal_send_offline`.
     #[tokio::test]
-    async fn principal_branch_offline_returns_structured_error() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        // new_local_only → cross_runtime is None.
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
+    async fn non_member_and_missing_channel_are_soft_errors() {
+        let fx = Fixture::new();
+        let bobs = fx.channel_of(&PrincipalId::generate(), None).await;
 
-        let got = tool
+        let got = fx
+            .send(json!({ "channel": bobs.as_str(), "text": "hi" }))
+            .await
+            .unwrap();
+        assert_eq!(got["success"], false);
+        assert_eq!(got["error"], "caller is not a member of this channel");
+        assert!(fx.posts(&bobs).await.is_empty(), "nothing was posted");
+
+        let got = fx
+            .send(json!({ "channel": "chan_zzzzzzzz", "text": "hi" }))
+            .await
+            .unwrap();
+        assert_eq!(got["success"], false);
+        assert_eq!(got["error"], "channel not found");
+        assert_eq!(got["channel"], "chan_zzzzzzzz");
+    }
+
+    #[tokio::test]
+    async fn group_ids_share_the_bare_post_path() {
+        let fx = Fixture::new();
+        let channel = fx
+            .channel_of(&fx.alice, Some(ChannelId::for_group("eng-standup")))
+            .await;
+        let got = fx
+            .send(json!({ "channel": "group:eng-standup", "text": "standup in 5" }))
+            .await
+            .unwrap();
+        assert_eq!(got["success"], true, "{got}");
+        assert_eq!(got["kind"], "group");
+        assert_eq!(got["channel"], "group:eng-standup");
+        assert_eq!(
+            fx.posts(&channel).await,
+            vec![(None, "standup in 5".to_string())]
+        );
+    }
+
+    /// Argument-validation failures are `Err`, not a tool result with
+    /// `success: false`.
+    #[tokio::test]
+    async fn malformed_calls_are_rejected() {
+        let fx = Fixture::new();
+        for (params, expected) in [
+            (json!({ "text": "hi" }), "requires 'channel'"),
+            (json!({ "channel": 7, "text": "hi" }), "requires 'channel'"),
+            (json!({ "channel": "chan_a1b2c3d4" }), "requires 'text'"),
+            (
+                json!({ "channel": "chan_a1b2c3d4", "text": "" }),
+                "non-empty 'text'",
+            ),
+            (
+                json!({ "channel": "not-a-chan-id", "text": "hi" }),
+                "not a valid channel id",
+            ),
+            (
+                json!({ "channel": "stream:abc", "text": "hi" }),
+                "not a valid channel id",
+            ),
+            (
+                json!({ "channel": "principal:", "text": "hi" }),
+                "not a valid channel id",
+            ),
+        ] {
+            let error = fx.send(params.clone()).await.unwrap_err().to_string();
+            assert!(error.contains(expected), "{params}: {error}");
+        }
+
+        let no_principal = ToolContext::for_hook_run("run", "tc", CHANNEL_SEND_TOOL_NAME);
+        let error = fx
+            .tool
             .execute_with_context(
-                json!({
-                    "channel": "principal:did:key:zBob",
-                    "text": "hi bob",
-                }),
-                &ctx_with(&alice),
+                json!({ "channel": "chan_a1b2c3d4", "text": "hi" }),
+                &no_principal,
             )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("principal context"), "{error}");
+
+        let error = fx
+            .tool
+            .execute(json!({ "channel": "chan_a1b2c3d4", "text": "hi" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ToolContext"), "{error}");
+    }
+
+    /// Without the cross-runtime context (no tunnel on this daemon), the
+    /// principal branch returns a structured error instead of panicking.
+    #[tokio::test]
+    async fn principal_branch_without_cross_runtime_context_is_a_structured_error() {
+        let fx = Fixture::new();
+        let got = fx
+            .send(json!({ "channel": "principal:did:key:zBob", "text": "hi bob" }))
             .await
             .unwrap();
         assert_eq!(got["success"], false);
@@ -1439,88 +1268,30 @@ mod tests {
         assert!(
             got["error"]
                 .as_str()
-                .unwrap_or("")
+                .unwrap()
                 .contains("cross-runtime context"),
-            "principal branch must explain the missing cross-runtime ctx: {:?}",
-            got["error"]
+            "{got}"
         );
     }
 
-    /// The principal branch with cross_runtime bound but no caller
-    /// principal loaded returns a structured error.
-    #[tokio::test]
-    async fn principal_branch_missing_caller_returns_error() {
-        // No principal manager state — we just exercise the dispatch
-        // shape; the missing caller path is the easiest one to reach
-        // deterministically without a full harness.
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let got = tool
-            .execute_with_context(
-                json!({
-                    "channel": "principal:did:key:zBob",
-                    "text": "hi",
-                }),
-                &ctx_with(&alice),
-            )
-            .await
-            .unwrap();
-        assert_eq!(got["success"], false);
-        assert_eq!(got["kind"], "principal");
-        assert!(got["error"].is_string(), "expected an error message");
-    }
-
     /// The user branch requires the global peer messenger. Without it
-    /// (test harness), the tool must produce a structured `error` —
-    /// not a panic.
+    /// the tool returns a structured error, not a panic.
     #[tokio::test]
     async fn user_branch_without_messenger_returns_structured_error() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelSendTool::new_local_only(port.clone(), alice.0.clone());
-
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": "user:alice", "text": "hi" }),
-                &ctx_with(&alice),
-            )
+        let fx = Fixture::new();
+        let got = fx
+            .send(json!({ "channel": "user:alice", "text": "hi" }))
             .await
             .unwrap();
         assert_eq!(got["success"], false);
         assert_eq!(got["kind"], "user");
         assert!(
-            got["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("peer messenger"),
-            "user branch must explain the missing messenger: {:?}",
-            got["error"]
+            got["error"].as_str().unwrap().contains("peer messenger"),
+            "{got}"
         );
     }
 
-    /// Invalid channel id forms (unrecognized prefixes) propagate as
-    /// `Err` rather than the structured `ChannelSendResult` — that's
-    /// an argument-validation failure, not a tool-success-with-error.
-    #[tokio::test]
-    async fn unknown_prefix_propagates_as_err() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelSendTool::new_local_only(port, alice.0.clone());
-
-        let res = tool
-            .execute_with_context(
-                json!({ "channel": "stream:abc", "text": "hi" }),
-                &ctx_with(&alice),
-            )
-            .await;
-        assert!(res.is_err(), "unknown prefix must propagate as Err");
-    }
-
-    /// `kind()` dispatch matches the wire form. This is the
-    /// single-source-of-truth for the dispatch table; every test
-    /// above leans on it.
+    /// `kind()` dispatch matches the wire form.
     #[test]
     fn channel_kind_dispatch_table() {
         let bare = ProtoChannelId::parse("chan_a1b2c3d4").unwrap();
@@ -1541,6 +1312,17 @@ mod tests {
     struct StubMessenger {
         origin: Option<Subject>,
         notes: Mutex<Vec<(String, String)>>,
+        /// `Some(false)`: the target has no session; `None`: delivery errors.
+        delivered: Option<bool>,
+    }
+
+    impl StubMessenger {
+        fn delivering() -> Self {
+            Self {
+                delivered: Some(true),
+                ..Default::default()
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -1557,7 +1339,8 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((target.to_string(), note.to_string()));
-            Ok(true)
+            self.delivered
+                .ok_or_else(|| anyhow::anyhow!("messenger offline"))
         }
 
         async fn originating_peer(
@@ -1575,7 +1358,7 @@ mod tests {
     async fn cross_user_send_is_attributed_to_originating_conversation() {
         let messenger = StubMessenger {
             origin: Some(Subject::User("alice".to_string())),
-            ..Default::default()
+            ..StubMessenger::delivering()
         };
         let target = Subject::User("bob".to_string());
         let out = ChannelSendTool::execute_user_target(
@@ -1604,7 +1387,7 @@ mod tests {
     async fn self_user_send_keeps_agent_label() {
         let messenger = StubMessenger {
             origin: Some(Subject::User("bob".to_string())),
-            ..Default::default()
+            ..StubMessenger::delivering()
         };
         let target = Subject::User("bob".to_string());
         let out = ChannelSendTool::execute_user_target(
@@ -1614,5 +1397,29 @@ mod tests {
         assert_eq!(out["success"], true, "{out}");
         let notes = messenger.notes.lock().unwrap();
         assert!(notes[0].1.contains("[agent]"), "note: {}", notes[0].1);
+    }
+
+    /// A note that cannot be delivered is a structured failure naming
+    /// the reason; nothing claims success.
+    #[tokio::test]
+    async fn undelivered_notes_are_structured_failures() {
+        let target = Subject::User("bob".to_string());
+        for (delivered, expected) in [
+            (Some(false), "no conversational session yet"),
+            (None, "note delivery failed: messenger offline"),
+        ] {
+            let messenger = StubMessenger {
+                delivered,
+                ..Default::default()
+            };
+            let out = ChannelSendTool::execute_user_target(
+                &messenger, "prin_x", "sess-1", None, None, &target, "hi",
+            )
+            .await;
+            assert_eq!(out["success"], false, "{out}");
+            assert_eq!(out["kind"], "user");
+            assert_eq!(out["channel"], "user:bob");
+            assert!(out["error"].as_str().unwrap().contains(expected), "{out}");
+        }
     }
 }

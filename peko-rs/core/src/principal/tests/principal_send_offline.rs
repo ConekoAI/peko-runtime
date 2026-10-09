@@ -122,6 +122,30 @@ async fn dm_posted_rows(
         .collect()
 }
 
+/// The `(text, via)` of every `Posted` event on `principal`'s DM channel
+/// with `peer`.
+async fn posted_via(
+    port: &Arc<dyn ChannelPort>,
+    principal: &Arc<crate::principal::Principal>,
+    peer: &Subject,
+) -> Vec<(String, Option<String>)> {
+    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let channel =
+        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
+            .await
+            .expect("dm lookup")
+            .expect("DM channel exists after ChannelSend");
+    port.peek(&channel, &Checkpoint::default())
+        .await
+        .expect("peek")
+        .into_iter()
+        .filter_map(|ev| match ev {
+            ChannelEvent::Posted { text, via, .. } => Some((text, via)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Two same-runtime principals, a caller-bound `ChannelSend`, and the
 /// shared channel port, wired like the daemon.
 struct Fixture {
@@ -426,6 +450,88 @@ async fn same_runtime_reply_is_returned_and_mirrored_to_the_callers_log() {
         "reply is parented on the outbound root"
     );
     assert_eq!(rows[1].2, "pong: ping");
+}
+
+/// Every root post a call makes carries the calling session's slug path
+/// (`via`); calls from outside a known session, and the reply mirror,
+/// stay unattributed.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn root_posts_carry_the_calling_sessions_slug_path() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_secs(10));
+    let responder = fx.spawn_responder(Duration::ZERO).await;
+
+    // The first exchange provisions the caller's peer child; the second
+    // is made from inside it, as the child's own agent would.
+    let first = fx.send_to(&fx.target_did, "one").await;
+    assert!(first.success, "{:?}", first.error);
+    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id(fx.caller.id.0.clone())
+        .with_session_id(first.session_id.clone())
+        .with_workspace(fx.caller.workspace_path.to_string_lossy());
+    let second: ChannelSendResult = serde_json::from_value(
+        fx.tool
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "two"}),
+                &ctx,
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    responder.abort();
+    assert!(second.success, "{:?}", second.error);
+
+    let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
+    let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
+    let via = Some(format!("{}/{slug}", peko_session::path::SCHEME_PREFIX));
+    let caller_side = posted_via(&fx.channel_port, &fx.caller, &target_peer).await;
+    assert_eq!(
+        caller_side,
+        vec![
+            ("one".to_string(), None),
+            ("pong: one".to_string(), None),
+            ("two".to_string(), via.clone()),
+            ("pong: two".to_string(), None),
+        ]
+    );
+    let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
+    let target_side = posted_via(&fx.channel_port, &fx.target, &caller_peer).await;
+    assert_eq!(target_side[0], ("one".to_string(), None));
+    assert_eq!(target_side[2], ("two".to_string(), via));
+}
+
+/// A `ChannelSend` bound to a principal this runtime has not loaded
+/// refuses before touching any channel.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn caller_not_loaded_on_this_runtime_is_a_structured_error() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_millis(200));
+    let ghost = build_channel_send_tool(&fx.tooling, "did:key:zGhostCaller").unwrap();
+    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id("ghost");
+    let result: ChannelSendResult = serde_json::from_value(
+        ghost
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
+                &ctx,
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!result.success);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("caller principal is not loaded"),
+        "{:?}",
+        result.error
+    );
 }
 
 /// Replies carry no correlation id, so the per-target await lock is what
