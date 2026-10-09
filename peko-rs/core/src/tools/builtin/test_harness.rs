@@ -244,6 +244,15 @@ impl ToolHarness {
         path
     }
 
+    /// Register an extra tool (e.g. a test stub for Async to spawn)
+    /// alongside the built-ins.
+    pub(crate) async fn register(&self, tool: Arc<dyn Tool>) {
+        self.tooling
+            .catalog()
+            .register_system(tool, ToolSource::BuiltIn)
+            .await;
+    }
+
     /// Dispatch `tool` as the default caller.
     pub(crate) async fn call(&self, tool: &str, params: Value) -> Outcome {
         self.call_as(&Caller::default(), tool, params).await

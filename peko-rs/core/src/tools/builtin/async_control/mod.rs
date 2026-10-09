@@ -227,6 +227,8 @@ pub type SharedAsyncRuntime = Arc<dyn AsyncRuntime>;
 
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod tool_tests;
 
 mod tool;
 pub use tool::AsyncTool;
