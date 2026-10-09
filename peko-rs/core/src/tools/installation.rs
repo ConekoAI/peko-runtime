@@ -255,17 +255,18 @@ pub(crate) async fn install_async(
 ) -> Result<()> {
     let executor = tooling.async_executor_for(principal, inbox).await;
     let runtime = Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
-        executor,
+        Arc::clone(&executor),
         Arc::downgrade(tooling),
         None,
         principal.clone(),
     ))
     .as_shared();
     // Tools that start themselves in the background (Bash
-    // `run_in_background`) spawn through this same runtime.
+    // `run_in_background`) spawn through this same runtime, and the
+    // principal's calls route through its executor.
     tooling
         .dispatcher()
-        .bind_async_runtime(principal.clone(), Arc::clone(&runtime));
+        .bind_async_runtime(principal.clone(), Arc::clone(&runtime), executor);
     install_defaults(
         tooling.catalog(),
         principal,

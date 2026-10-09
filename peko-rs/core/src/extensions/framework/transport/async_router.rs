@@ -237,9 +237,17 @@ impl AsyncExecutionRouter {
         let execution_fn: crate::extensions::framework::transport::async_transport::BoxedExecutionFn =
             Box::new(move || Box::pin(sync_executor(params)));
 
-        // Spawn the real work as a background task via the transport.
-        let receipt = self
-            .transport
+        // Spawn the real work as a background task via the transport —
+        // the calling principal's executor when the dispatcher bound one.
+        let transport: std::sync::Arc<dyn AsyncTaskTransport> = match &tool_context.executor {
+            Some(executor) => std::sync::Arc::new(
+                crate::extensions::framework::transport::async_transport::LocalAsyncTransport::new(
+                    std::sync::Arc::clone(executor),
+                ),
+            ),
+            None => std::sync::Arc::clone(&self.transport),
+        };
+        let receipt = transport
             .spawn_task_boxed(
                 task_id.clone(),
                 tool_name.to_string(),
@@ -255,7 +263,7 @@ impl AsyncExecutionRouter {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut backoff = Duration::from_millis(50);
         loop {
-            match self.transport.get_status(&task_id).await? {
+            match transport.get_status(&task_id).await? {
                 Some(AsyncTaskStatus::Completed { result }) => {
                     if result.success {
                         return Ok(result.data.unwrap_or(Value::Null));
@@ -298,7 +306,7 @@ impl AsyncExecutionRouter {
         // `deliver_completion` on. A task that raced past terminal before
         // the flip landed reports `false` — its result stays available
         // via `Async action output` polling.
-        if let Err(e) = self.transport.deliver_on_completion(&task_id).await {
+        if let Err(e) = transport.deliver_on_completion(&task_id).await {
             warn!(
                 tool_name = tool_name,
                 task_id = task_id,
@@ -426,6 +434,10 @@ pub struct ToolExecutionContext {
     /// per-principal `Async action list`/`Async action status`/`Async action stop` isolation
     /// holds for router-detached work too.
     pub principal_id: Option<String>,
+    /// The calling principal's executor. When set, the call's routing task
+    /// — and so any detached work — registers in that principal's task
+    /// registry; otherwise the router's own transport is used.
+    pub executor: Option<std::sync::Arc<crate::async_exec::executor::AsyncExecutor>>,
 }
 
 impl ToolExecutionContext {
@@ -441,6 +453,7 @@ impl ToolExecutionContext {
             run_id: run_id.into(),
             workspace: ".".to_string(),
             principal_id: None,
+            executor: None,
         }
     }
 
@@ -455,6 +468,16 @@ impl ToolExecutionContext {
     #[must_use]
     pub fn with_principal_id(mut self, principal_id: Option<String>) -> Self {
         self.principal_id = principal_id;
+        self
+    }
+
+    /// Route through the calling principal's executor.
+    #[must_use]
+    pub fn with_executor(
+        mut self,
+        executor: Option<std::sync::Arc<crate::async_exec::executor::AsyncExecutor>>,
+    ) -> Self {
+        self.executor = executor;
         self
     }
 }

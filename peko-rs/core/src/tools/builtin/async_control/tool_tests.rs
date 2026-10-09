@@ -391,7 +391,7 @@ async fn background_bash_timeout_bounds_the_task() {
 async fn background_bash_is_owned_by_the_calling_principal() {
     use crate::tools::builtin::test_harness::Caller;
     let harness = harness().await;
-    harness.bind_principal("did:peko:other");
+    harness.bind_principal("did:peko:other").await;
     let mine = harness
         .call(
             "Bash",
@@ -499,4 +499,35 @@ async fn only_detached_foreground_calls_appear_as_tasks() {
     );
     let stopped = async_call(&harness, "stop", id, json!({})).await;
     assert_eq!(stopped["success"], true, "{stopped}");
+}
+
+/// A foreground call that detaches on timeout becomes a task in the
+/// calling principal's own registry — not in a process-wide one.
+#[tokio::test]
+async fn detached_foreground_calls_register_in_the_principals_registry() {
+    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
+    use crate::tools::builtin::test_harness::PRINCIPAL;
+    let harness = ToolHarness::with_router_timeout(1).await;
+    harness.register(Arc::new(Sleep)).await;
+
+    let receipt = harness.call("Sleep", json!({"ms":30000})).await.ok();
+    let id = receipt["task_id"].as_str().unwrap().to_string();
+    let registry = harness
+        .tooling
+        .task_registry_for(&peko_subject::PrincipalId(PRINCIPAL.into()));
+    let entry = registry
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .expect("detached call registered in the principal's registry");
+    assert_eq!(entry.config.principal_id.0, PRINCIPAL);
+    assert!(
+        !list_all_tasks_across_all_registries()
+            .await
+            .iter()
+            .any(|e| e.task_id == id),
+        "not in a process-wide registry"
+    );
+    async_call(&harness, "stop", &id, json!({})).await;
 }

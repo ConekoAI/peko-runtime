@@ -40,18 +40,22 @@ pub struct ToolDispatcher {
     hooks: Arc<WorkspaceHookDispatcher>,
     router: Arc<AsyncExecutionRouter>,
     audit: Option<Arc<peko_observability::Observability>>,
-    /// Each principal's Async runtime, bound at installation. Calls from a
-    /// bound principal get a background spawner on their context, so every
-    /// background task — Async spawn or a tool starting itself — registers
-    /// in that principal's executor. Shared with run overlays.
-    async_runtimes: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<
-                peko_subject::PrincipalId,
-                crate::tools::builtin::SharedAsyncRuntime,
-            >,
-        >,
+    /// Each principal's Async runtime and executor, bound at installation.
+    /// Calls from a bound principal get a background spawner on their
+    /// context and route through that principal's executor, so all of the
+    /// principal's background work — Async spawn, a tool starting itself,
+    /// a call detached on timeout — registers in its one task registry.
+    /// Shared with run overlays.
+    principal_async: Arc<
+        std::sync::RwLock<std::collections::HashMap<peko_subject::PrincipalId, PrincipalAsync>>,
     >,
+}
+
+/// A principal's Async runtime and the executor behind it.
+#[derive(Clone)]
+struct PrincipalAsync {
+    runtime: crate::tools::builtin::SharedAsyncRuntime,
+    executor: Arc<crate::async_exec::executor::AsyncExecutor>,
 }
 
 impl std::fmt::Debug for ToolDispatcher {
@@ -92,36 +96,30 @@ impl ToolDispatcher {
             hooks,
             router,
             audit,
-            async_runtimes: Arc::default(),
+            principal_async: Arc::default(),
         }
     }
 
-    /// Bind `principal`'s Async runtime as the background spawner for its
-    /// calls.
+    /// Bind `principal`'s Async runtime (its background spawner) and the
+    /// executor behind it (where its calls route).
     pub(crate) fn bind_async_runtime(
         &self,
         principal: peko_subject::PrincipalId,
         runtime: crate::tools::builtin::SharedAsyncRuntime,
+        executor: Arc<crate::async_exec::executor::AsyncExecutor>,
     ) {
-        self.async_runtimes
+        self.principal_async
             .write()
-            .expect("async runtimes lock poisoned")
-            .insert(principal, runtime);
+            .expect("principal async lock poisoned")
+            .insert(principal, PrincipalAsync { runtime, executor });
     }
 
-    fn background_spawner(
-        &self,
-        principal: &peko_subject::PrincipalId,
-    ) -> Option<Arc<dyn peko_tools_core::BackgroundSpawner>> {
-        let runtime = self
-            .async_runtimes
+    fn principal_async(&self, principal: &peko_subject::PrincipalId) -> Option<PrincipalAsync> {
+        self.principal_async
             .read()
-            .expect("async runtimes lock poisoned")
+            .expect("principal async lock poisoned")
             .get(principal)
-            .cloned()?;
-        Some(Arc::new(
-            crate::tools::builtin::async_control::RuntimeSpawner(runtime),
-        ))
+            .cloned()
     }
 
     /// The catalog this dispatcher executes against.
@@ -222,9 +220,14 @@ impl ToolDispatcher {
                 base_ctx = base_ctx.with_principal_name(name);
             }
         }
+        let principal_async = caller_principal.and_then(|_| self.principal_async(&principal_id));
         base_ctx.background = peko_tools_core::BackgroundContext {
             progress: call.background_progress.clone(),
-            spawner: caller_principal.and_then(|_| self.background_spawner(&principal_id)),
+            spawner: principal_async.as_ref().map(|bound| {
+                Arc::new(crate::tools::builtin::async_control::RuntimeSpawner(
+                    Arc::clone(&bound.runtime),
+                )) as Arc<dyn peko_tools_core::BackgroundSpawner>
+            }),
         };
         let tool_ctx = match call.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
@@ -273,7 +276,8 @@ impl ToolDispatcher {
             "hook_run".to_string(),
         )
         .with_workspace(call.workspace.clone().unwrap_or_else(|| ".".to_string()))
-        .with_principal_id(caller_principal.map(str::to_string));
+        .with_principal_id(caller_principal.map(str::to_string))
+        .with_executor(principal_async.map(|bound| bound.executor));
 
         let mut params = call.params.clone();
         apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());
