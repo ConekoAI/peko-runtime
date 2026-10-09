@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool coverage, round 2 (2026-10-09)
+
+- Fix same-runtime `ChannelSend` to another principal double-posting every
+  request after the first: principal peer slugs took the DID's first 16
+  alphanumerics (spent on the shared `did:peko:<tier>:` prefix), so the
+  caller's DM lookup matched the target's channel. Slugs now use a SHA-256
+  fingerprint of the DID; existing children keep their stored slugs.
+- Fix Plan lookups stalling 10s and failing on principals with no plans yet:
+  PlanStorage now creates its directory before taking the per-plan lock.
+- ChannelSend principal-branch tests run in `cargo test --lib` (they were
+  gated behind `test-utils`) and cover the reply path and per-target
+  request serialization. Plan tool tests use the production PlanStorage
+  instead of a hand-written fake. New coverage for Async action
+  parameters and Glob/Grep `include_dirs`/`include_hidden`/`include_content`.
+
 ### Vendor-neutral model setup docs (2026-10-09)
 
 - Rewrite user-facing model setup (README, GETTING_STARTED, tutorial,
