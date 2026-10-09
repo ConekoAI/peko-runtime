@@ -74,7 +74,7 @@ that grows from a seed is never a copy of its source (ADR-060).
 peko create scout -s scout.seed.toml
 
 # A seed without an inline model must be paired with --model
-peko create scout -s scout.seed.toml --model anthropic-sonnet-4-5
+peko create scout -s scout.seed.toml --model my-model
 
 # Fire-and-forget (scripts/CI)
 peko create scout -s scout.seed.toml --detach
@@ -172,7 +172,7 @@ echo "Hello!" | peko send my-principal --stdin
 peko send my-principal "also check the calendar" --wait
 
 # Override the model for a single message
-peko send my-principal "Hello!" --model anthropic-claude-sonnet-4-5
+peko send my-principal "Hello!" --model my-model
 ```
 
 ---
@@ -319,23 +319,23 @@ current consumers use `round_robin`.
 peko credential set mcp:analytics default \
   --kind api_key --material "$ANALYTICS_API_KEY"
 
-# Store a model API key (catalog + vault wiring)
-peko credential set llm openai-gpt-4o \
-  --kind api_key --material "$OPENAI_API_KEY"
-# (or pass --key on `peko model add` to do both in one step)
+# Replace the API key of a model added with `--key` (reuses the model's
+# `llm/<model-id>` vault slot, so the catalog stays wired)
+peko credential set llm my-model --kind api_key   # hidden prompt for the key
+# (to add a model and store its key in one step, pass --key on `peko model add`)
 
 # Inspect + verify
 peko credential list --namespace llm
-peko model test openai-gpt-4o
+peko model test my-model
 
 # Rotation binding
-ID=$(peko credential list --namespace llm | awk '/openai-gpt-4o/ {print $1}')
-peko credential binding set llm:openai-gpt-4o \
+ID=$(peko credential list --namespace llm | awk '/my-model/ {print $1}')
+peko credential binding set llm:my-model \
   --strategy round_robin --order "$ID"
 
 # Remove
 peko credential delete <id>
-peko model remove openai-gpt-4o
+peko model remove my-model
 ```
 
 ---
@@ -381,8 +381,11 @@ headers, limits, capability metadata, and compatibility hints.
 
 ```bash
 # Configure a model with explicit endpoint settings
-peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
-               --key "$ANTHROPIC_API_KEY"
+peko model add --id my-model \
+               --api-format anthropic_messages \
+               --base-url https://llm.example.com \
+               --model <wire-model-id> \
+               --key "<your-api-key>"
 
 # Self-hosted OpenAI-compatible endpoint
 peko model add --no-key \
@@ -393,10 +396,10 @@ peko model add --no-key \
 
 # Inspect / compare / search
 peko model list --detailed
-peko model show openai-gpt-4o
-peko model compare openai-gpt-4o claude-sonnet-4-5
+peko model show my-model
+peko model compare my-model my-local
 peko model search --vision --tools --thinking
-peko model show openai-gpt-4o --copy-as-cli   # share a config across machines
+peko model show my-model --copy-as-cli   # share a config across machines
 
 # Remove (use --dry-run first to preview)
 peko model remove my-local --dry-run
@@ -814,14 +817,15 @@ Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | Provider runtime | OpenAI API key for LLM provider |
-| `ANTHROPIC_API_KEY` | Provider runtime | Anthropic API key |
-| `KIMI_API_KEY` | Provider runtime | Kimi API key |
 | `RUST_LOG` | All | Logging level (debug, info, warn, error) |
 | `PEKO_CONFIG_DIR` | All | Configuration directory override |
 | `PEKO_DATA_DIR` | All | Data directory override |
 | `PEKO_CACHE_DIR` | All | Cache directory override |
 | `PEKO_DEBUG` | All | Show debug information |
+
+Model API keys are **not** read from environment variables. They live in the
+encrypted vault (OS keychain); store them with `peko model add --key` or
+`peko credential set llm <model-id> --kind api_key`.
 
 ---
 
@@ -864,10 +868,12 @@ peko search researcher
 peko search info acme/researcher
 
 # Provider setup
-peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
-               --key "$ANTHROPIC_API_KEY"
-peko credential set llm anthropic-claude-sonnet-4-5 \
-  --kind api_key --material "$ANTHROPIC_API_KEY"
+peko model add --id my-model \
+               --api-format anthropic_messages \
+               --base-url https://llm.example.com \
+               --model <wire-model-id> \
+               --key "<your-api-key>"
+peko model test my-model
 
 # Extensions are workspace files (ADR-050) — list them on disk
 ls ~/.peko/principals/my-principal/{tools,skills,mcp,hooks}/

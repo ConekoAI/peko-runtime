@@ -71,7 +71,7 @@ Please fill in before you start:
 | OS + version | (e.g. macOS 15.5, Windows 11 23H2, Ubuntu 24.04) |
 | `peko --version` | (run `peko --version` in terminal) |
 | peko-desktop version | (see Settings → About in the app) |
-| LLM provider(s) tested | (e.g. OpenAI gpt-4o-mini, Anthropic claude-sonnet-4-6) |
+| LLM provider(s) tested | (api format + wire model id, e.g. `openai_completions` / `<wire-model-id>`) |
 | Daemon bind address | (default `127.0.0.1:11435` — only note if changed) |
 | Anything else relevant | (recent changes, workarounds used, etc.) |
 
@@ -96,9 +96,9 @@ Run these once before starting the tests below.
 |---|---|---|---|---|---|
 | T-001 | From `peko-runtime/`: `cargo build --release` | Build succeeds, binary at `./target/release/peko` | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-002 | Move `peko` onto your PATH (or export it) | `which peko` prints a path | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | CLI only — used by T-003..T-005 for model/credential setup |
-| T-003 | `peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"` (or anthropic/kimi/etc.) | Model added, no error | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-004 | `peko credential set llm openai-gpt-4o --kind api_key --material "$OPENAI_API_KEY"` | No error; key stored | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
-| T-005 | `peko model test openai-gpt-4o` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-003 | `peko model add --id my-model --api-format <anthropic_messages\|openai_completions\|openai_responses> --base-url <endpoint-url> --model <wire-model-id> --key "<api-key>"` | Model added, no error; key stored in the vault | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-004 | `peko credential set llm my-model --kind api_key` (enter the key at the hidden prompt) | No error; key replaced in the same vault slot (`peko credential list --namespace llm` still shows one `my-model` entry) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
+| T-005 | `peko model test my-model` | Prints success (✓ / ok) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-006 | From `peko-desktop/`: `pnpm install` | Install completes | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-007 | From `peko-desktop/`: `pnpm run sidecar:build-and-fetch` | Rebuilds the runtime in release mode (incremental — fast on a warm cache) and copies the binary to `src-tauri/binaries/peko-<host-triple>`. The script ends by running `peko version` against the copy to confirm the version line lands on stderr. **No separate `peko daemon start` is needed** — the desktop's sidecar supervisor will own the engine (or adopt one that's already on the IPC socket) when you launch the app in T-008. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | The host triple is detected from `rustc -vV`; on Apple Silicon Macs it's `aarch64-apple-darwin`, on Intel Macs `x86_64-apple-darwin`. The release process handles this in CI; this manual step exists so a local checkout doesn't ship the stub script (`PEKO_VERSION=0.0.0-stub`) into the sidecar slot — that would fail T-103 with a "version mismatch" banner. |
 | T-008 | `pnpm tauri dev` (first run is slow — 5–10 min) | App window opens, shows Dashboard | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
@@ -171,8 +171,8 @@ A **Peko** is a long-lived AI assistant — it owns its memory, identity, and se
 | # | Step | Expected | Result | Severity | Notes |
 |---|---|---|---|---|---|
 | T-201 | From the Dashboard, click **New peko** (or open the sidebar empty-state CTA "Create your first peko" if the list is empty). Fill **Name** = `alice`, optionally a description, optionally pick a **provider** pill, optionally pick a **model** from the dropdown that appears, and click **Create**. | Modal closes. The new `alice` peko appears in the sidebar without a manual refresh. The wire path is `principalCreate()` (api.ts) → `principal_create` IPC (peko-runtime PR #185) → `PrincipalManager::create`. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | **Replaces the old CLI invocation** — desktop users should not need the CLI for peko creation. The model dropdown only appears after a provider is selected and only lists models exposed by that provider's catalog entry. |
-| T-201a | **CLI regression** — open a terminal and run `peko new bob --provider openai --model gpt-4o-mini --description "CLI regression"` | Bob is created; appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the CLI path that the desktop modal replaced; keep it green for automation users. |
-| T-201b | **CLI per-message override regression** — with `bob` selected, run `peko send bob "Say the model name" --model gpt-4o-mini` | Command succeeds and the response reflects the requested model. The peko's stored defaults are unchanged. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Validates per-message `--model` wiring (the `--provider` / `--no-stream` flags no longer exist on `send` — ADR-048). |
+| T-201a | **CLI regression** — open a terminal and run `peko create bob --model my-model` | Bob is created; appears in the sidebar after a refresh | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | This is the CLI path that the desktop modal replaced; keep it green for automation users. |
+| T-201b | **CLI per-message override regression** — with `bob` selected, add a second model (`peko model add --id my-model-2 ...`), then run `peko send bob "Say the model name" --model my-model-2` | Command succeeds and the response reflects the requested model. The peko's stored defaults are unchanged. | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | Validates per-message `--model` wiring (the `--provider` / `--no-stream` flags no longer exist on `send` — ADR-048). |
 | T-202 | In the desktop, refresh the sidebar (or switch pages and back) | Sidebar lists **alice** with a bot icon and a green dot (local, connected) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-203 | Click **alice** in the sidebar | Main panel navigates to **Chat** for alice (URL becomes `/chat/alice`) | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |
 | T-204 | Type `ali` in the **Search principals…** box | Only alice remains in the list | ☐ Pass ☐ Fail | ☐B ☐M ☐m ☐C | |

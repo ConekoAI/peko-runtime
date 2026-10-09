@@ -19,7 +19,9 @@ In this tutorial, you'll build your first peko using the CLI. By the end, you'll
 Before starting, ensure you have:
 
 - Rust 1.70+ installed (`rustc --version`)
-- An API key for an LLM provider (OpenAI, Anthropic, Kimi, or Ollama)
+- An LLM endpoint that speaks `anthropic_messages`, `openai_completions`, or
+  `openai_responses` — its base URL, wire model id, and API key (or a local
+  endpoint that needs no key)
 - Peko built from source (see [Getting Started](GETTING_STARTED.md))
 
 ---
@@ -29,16 +31,20 @@ Before starting, ensure you have:
 The easiest way to create a peko is with the `peko create` command:
 
 ```bash
-# Set your API key
-export OPENAI_API_KEY="sk-..."
+# Add a model entry to the runtime catalog and store its key in the vault
+peko model add --id my-model \
+    --api-format openai_completions \
+    --base-url https://llm.example.com/v1 \
+    --model <wire-model-id> \
+    --key "<your-api-key>"
 
-# Add a model entry to the runtime catalog and store the key in one command
-peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o \
-    --key "$OPENAI_API_KEY"
-
-# Create a peko
-peko create my-first-principal
+# Create a peko pinned to that model
+peko create my-first-principal --model my-model
 ```
+
+The key goes into the encrypted vault (OS keychain); `~/.peko/models.toml`
+holds only a reference to it. Peko does not read provider keys from
+environment variables.
 
 This creates a peko workspace in Peko's data directory with the following structure:
 
@@ -196,19 +202,22 @@ tooling layout.
 
 ### 2. Configure Authentication
 
-Manage provider API keys centrally. As of v3, the runtime owns a
-`~/.peko/providers.toml` catalog and keys live in the encrypted vault:
+Manage model API keys centrally. The runtime owns a `~/.peko/models.toml`
+catalog and keys live in the encrypted vault (OS keychain):
 
 ```bash
 # Add a model entry, store the key in one command
-peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o \
-    --key "$OPENAI_API_KEY"
+peko model add --id my-model \
+    --api-format openai_completions \
+    --base-url https://llm.example.com/v1 \
+    --model <wire-model-id> \
+    --key "<your-api-key>"
 
 # List which models have a stored key
 peko credential list --namespace llm
 
 # Live-test a stored key by pinging the endpoint
-peko model test openai-gpt-4o
+peko model test my-model
 ```
 
 ### 3. Export and Share Pekos

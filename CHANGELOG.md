@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Vendor-neutral model setup docs (2026-10-09)
+
+- Rewrite user-facing model setup (README, GETTING_STARTED, tutorial,
+  USERS_GUIDE, CLI_REFERENCE, MANUAL_TEST_PLAN, DATA_MODEL, install scripts,
+  release-notes template) to the generic `peko model add --api-format
+  --base-url --model --key` flow. Drop vendor provider lists and vendor
+  `*_API_KEY` env-var tables: keys live in the vault; the `<MODEL_ID>_API_KEY`
+  lookup applies only under the test-only `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
+- Fix copy-paste-broken commands: the install scripts suggested the retired
+  `--template` flag, and quick starts ran `peko create` without the required
+  `--model`. MANUAL_TEST_PLAN T-201a used the nonexistent `peko new --provider`.
+- Replace the `[compaction.model_limits]` examples in `config.example.toml` and
+  `peko config init --template full` with a pointer to
+  `peko model add --context-window`; that block is parsed but ignored.
+- Correct the resolver module docs, which described a nonexistent
+  `--bootstrap-env-keys` flag for CI/headless deployments.
+
 ### Vendor-neutral real-LLM tier and nightly CI cleanup (2026-10-09)
 
 - Remove the real-LLM job from CI; the nightly run is unit (Linux/Windows) plus
