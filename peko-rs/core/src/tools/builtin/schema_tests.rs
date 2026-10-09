@@ -66,10 +66,12 @@ fn inventory_matches_implementations_and_schemas_compile() {
         "duplicate manifest names"
     );
     assert_eq!(actual.len(), implementations.len(), "duplicate wire names");
+    // Windows checkouts may convert the doc to CRLF; match headings on LF.
     let catalog = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/architecture/builtin-tools.md"
-    ));
+    ))
+    .replace("\r\n", "\n");
     for tool in implementations {
         assert!(
             catalog.contains(&format!("### {}\n", tool.name())),
