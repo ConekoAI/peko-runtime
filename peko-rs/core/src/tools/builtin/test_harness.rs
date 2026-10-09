@@ -172,6 +172,16 @@ pub(crate) struct ToolHarness {
 
 impl ToolHarness {
     pub(crate) async fn new() -> Self {
+        Self::with_router_timeout(
+            crate::extensions::framework::transport::async_router::DEFAULT_TOOL_TIMEOUT_SECS,
+        )
+        .await
+    }
+
+    /// Like [`Self::new`], but calls running longer than `secs` detach to
+    /// the background (the dispatcher's timeout path) instead of after the
+    /// production default.
+    pub(crate) async fn with_router_timeout(secs: u64) -> Self {
         let root = tempfile::tempdir().expect("harness tempdir");
         let workspace = root.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("harness workspace");
@@ -183,8 +193,15 @@ impl ToolHarness {
             Arc::new(crate::tools::catalog::ToolCatalog::new()),
             Arc::new(crate::extensions::workspace_dispatcher::WorkspaceHookDispatcher::new()),
             Arc::new(crate::extensions::framework::core::config::ExtensionServices::new()),
+            // Wired like the daemon: detached calls land in the shared
+            // `_global` registry the Async surface searches.
             Arc::new(
-                crate::extensions::framework::transport::async_router::AsyncExecutionRouter::new(),
+                crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
+                    crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox(
+                        standalone_inbox_registry(),
+                    ),
+                )
+                .tool_timeout(secs),
             ),
             Some(audit.clone()),
         ));

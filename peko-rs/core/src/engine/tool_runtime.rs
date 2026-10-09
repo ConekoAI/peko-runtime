@@ -37,6 +37,8 @@ use std::sync::Arc;
 pub struct ToolRuntime {
     tooling: Arc<ToolingRuntime>,
     path_resolver: PathResolver,
+    /// Default workspace for the test-only principal-less shims.
+    #[cfg_attr(not(test), allow(dead_code))]
     workspace: PathBuf,
 }
 
@@ -159,6 +161,7 @@ impl ToolRuntime {
     ///
     /// # Returns
     /// The JSON result of the tool execution
+    #[cfg(test)]
     pub async fn execute_tool(
         &self,
         tool_name: &str,
@@ -168,7 +171,9 @@ impl ToolRuntime {
             .await
     }
 
-    /// Execute a tool with an explicit workspace override
+    /// Execute a tool with an explicit workspace override. Test-only: it
+    /// dispatches without a principal, and production calls must carry one.
+    #[cfg(test)]
     pub async fn execute_tool_with_workspace(
         &self,
         tool_name: &str,

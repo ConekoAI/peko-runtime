@@ -106,6 +106,13 @@ impl AsyncExecutionRouter {
         }
     }
 
+    /// Override the default tool timeout, keeping the transport.
+    #[must_use]
+    pub fn tool_timeout(mut self, secs: u64) -> Self {
+        self.default_tool_timeout = Duration::from_secs(secs);
+        self
+    }
+
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
     pub fn with_executor(async_executor: crate::async_exec::executor::AsyncExecutor) -> Self {

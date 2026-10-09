@@ -124,9 +124,11 @@ impl ToolDispatcher {
 
     async fn execute_inner(&self, call: &ToolCallSpec) -> Result<(String, Value, bool)> {
         let tool_name = call.tool_name.clone();
-        let principal_id = call
-            .principal_id
-            .as_deref()
+        // An empty id is no principal: tools must see `None` (and fail
+        // closed), and background work it spawns must be system-owned —
+        // never owned by a principal named "".
+        let caller_principal = call.principal_id.as_deref().filter(|id| !id.is_empty());
+        let principal_id = caller_principal
             .map(|id| peko_subject::PrincipalId(id.to_string()))
             .unwrap_or_else(|| peko_subject::PrincipalId::system().clone());
 
@@ -168,12 +170,17 @@ impl ToolDispatcher {
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
         //    fields.
-        let base_ctx = peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
-            .with_agent_id(call.agent_id.clone().unwrap_or_default())
-            .with_session_id(call.session_id.clone().unwrap_or_default())
-            .with_workspace(call.workspace.clone().unwrap_or_default())
-            .with_principal_id(call.principal_id.clone().unwrap_or_default())
-            .with_principal_name(call.principal_name.clone().unwrap_or_default());
+        let mut base_ctx =
+            peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
+                .with_agent_id(call.agent_id.clone().unwrap_or_default())
+                .with_session_id(call.session_id.clone().unwrap_or_default())
+                .with_workspace(call.workspace.clone().unwrap_or_default());
+        if let Some(id) = caller_principal {
+            base_ctx = base_ctx.with_principal_id(id);
+            if let Some(name) = call.principal_name.as_deref().filter(|n| !n.is_empty()) {
+                base_ctx = base_ctx.with_principal_name(name);
+            }
+        }
         let tool_ctx = match call.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
             None => base_ctx,
@@ -221,7 +228,7 @@ impl ToolDispatcher {
             "hook_run".to_string(),
         )
         .with_workspace(call.workspace.clone().unwrap_or_else(|| ".".to_string()))
-        .with_principal_id(call.principal_id.clone());
+        .with_principal_id(caller_principal.map(str::to_string));
 
         let mut params = call.params.clone();
         apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());

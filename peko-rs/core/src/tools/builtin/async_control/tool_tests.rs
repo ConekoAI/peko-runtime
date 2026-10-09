@@ -279,3 +279,45 @@ async fn background_bash_is_owned_by_the_calling_principal() {
     let hidden = async_call(&harness, "status", &id(&unowned), json!({})).await;
     assert_eq!(hidden["error"], "Task not found", "{hidden}");
 }
+
+/// A dispatch that carries no principal must not invent one: background
+/// work it starts is system-owned, and principal-scoped tools refuse. (The
+/// dispatcher used to hand tools `Some("")`, which passed their
+/// principal checks and owned background tasks as principal "".)
+#[tokio::test]
+async fn principal_less_dispatch_is_system_owned_and_refused_by_scoped_tools() {
+    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
+    let harness = harness().await;
+    let dispatch = |tool: &str, params: Value| {
+        let call = peko_engine::ToolCallSpec::new(tool, params);
+        harness.tooling.dispatcher().execute(call)
+    };
+
+    let (_, receipt, ok) = dispatch(
+        "Bash",
+        json!({"command":"echo nobody", "run_in_background":true}),
+    )
+    .await
+    .unwrap();
+    assert!(ok, "{receipt}");
+    let id = receipt["task_id"].as_str().unwrap();
+    let entry = list_all_tasks_across_all_registries()
+        .await
+        .into_iter()
+        .find(|e| e.task_id == id)
+        .expect("background task registered");
+    assert_eq!(
+        entry.config.principal_id,
+        *peko_subject::PrincipalId::system()
+    );
+
+    let (display, _, ok) = dispatch(
+        "Cron",
+        json!({"action":"create", "message":"m", "delay":"5m"}),
+    )
+    .await
+    .unwrap();
+    assert!(!ok, "Cron must refuse a principal-less call");
+    assert!(display.contains("Principal context"), "{display}");
+    assert!(harness.cron.jobs().is_empty());
+}
