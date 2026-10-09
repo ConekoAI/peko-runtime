@@ -40,11 +40,8 @@ pub use executor::{
     standalone_inbox_registry, AsyncExecutor, DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
 };
 pub use registry::{
-    cancel_task_across_all_registries, find_owning_registry_for_task,
-    find_run_across_all_registries, find_task_across_all_registries,
-    get_or_create_registry_for_agent, list_all_runs_across_all_registries,
-    list_all_tasks_across_all_registries, AsyncTaskEntry, AsyncTaskRegistry, CancelResult,
-    SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult, TaskMetadata, TaskView,
+    AsyncTaskEntry, AsyncTaskRegistry, CancelResult, SharedAsyncTaskRegistry, SubagentMetadata,
+    SubagentResult, TaskMetadata, TaskView,
 };
 pub use task_file::{TaskFileRecord, TaskFileWriter};
 pub use types::{

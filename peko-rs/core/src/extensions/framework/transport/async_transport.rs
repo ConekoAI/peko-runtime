@@ -82,6 +82,11 @@ pub trait AsyncTaskTransport: Send + Sync {
     async fn deliver_on_completion(&self, _task_id: &AsyncTaskId) -> Result<bool> {
         Ok(false)
     }
+
+    /// Drop finished tasks past their retention window; returns how many.
+    async fn purge_finished(&self) -> usize {
+        0
+    }
 }
 
 // ================================================================================
@@ -159,6 +164,10 @@ impl AsyncTaskTransport for LocalAsyncTransport {
     async fn deliver_on_completion(&self, task_id: &AsyncTaskId) -> Result<bool> {
         Ok(self.executor.enable_completion_delivery(task_id).await)
     }
+
+    async fn purge_finished(&self) -> usize {
+        self.executor.registry().write().await.cleanup_completed()
+    }
 }
 
 impl LocalAsyncTransport {
@@ -193,9 +202,10 @@ pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
 pub fn create_local_transport_with_inbox(
     inbox_registry: Arc<peko_session::InboxRegistry>,
 ) -> Arc<dyn AsyncTaskTransport> {
-    let registry = crate::async_exec::executor::get_or_create_registry_for_agent("_global");
-    let executor =
-        crate::async_exec::executor::AsyncExecutor::with_registries(registry, inbox_registry);
+    // Calls from a bound principal route through that principal's
+    // executor; this transport only carries calls without one (system
+    // work, visible to no principal), so its registry is private.
+    let executor = crate::async_exec::executor::AsyncExecutor::new(inbox_registry);
     Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

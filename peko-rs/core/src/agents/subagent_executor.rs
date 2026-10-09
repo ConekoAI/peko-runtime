@@ -32,8 +32,8 @@ use crate::agents::subagent_error::SpawnError;
 use crate::agents::subagent_types::SubagentRunView;
 use crate::async_exec::executor::SubagentResult;
 use crate::async_exec::executor::{
-    get_or_create_registry_for_agent, AsyncExecutor, AsyncTaskStatus, AsyncToolConfig,
-    SharedAsyncTaskRegistry, SubagentMetadata, TaskMetadata, WaitResult,
+    AsyncExecutor, AsyncTaskStatus, AsyncToolConfig, SharedAsyncTaskRegistry, SubagentMetadata,
+    TaskMetadata, WaitResult,
 };
 
 use peko_auth::Subject;
@@ -330,8 +330,10 @@ pub struct SubagentExecutor {
 impl SubagentExecutor {
     /// Create a new subagent executor
     ///
-    /// Uses the global per-agent async task registry so that status queries
-    /// and result delivery work across stateless requests.
+    /// Registers runs in the spawning principal's task registry
+    /// (`ToolingRuntime::task_registry_for`), shared by all of that
+    /// principal's executors, so status queries and run guards work across
+    /// requests.
     ///
     /// `principal_id` is the spawning principal's runtime id. The injected
     /// tooling runtime is propagated to every child and recursive spawn.
@@ -343,7 +345,9 @@ impl SubagentExecutor {
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Self {
         let agent_name = agent_name.into();
-        let async_registry = get_or_create_registry_for_agent(&agent_name);
+        // The spawning principal's task registry: every executor doing this
+        // principal's work shares it, so run guards are principal-wide.
+        let async_registry = tooling.task_registry_for(&principal_id);
         let unified_executor = AsyncExecutor::with_registries(
             async_registry,
             crate::async_exec::executor::standalone_inbox_registry(),
@@ -387,7 +391,7 @@ impl SubagentExecutor {
             self.inbox_registry = Some(reg.clone());
             // Rebuild the AsyncExecutor against the shared registry so
             // completion pushes actually reach the loop's drain site.
-            let async_registry = get_or_create_registry_for_agent(&self.agent_name);
+            let async_registry = self.tooling.task_registry_for(&self.principal_id);
             self.unified_executor = AsyncExecutor::with_registries(async_registry, reg);
         }
         self

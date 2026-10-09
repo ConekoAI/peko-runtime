@@ -13,7 +13,6 @@ use crate::daemon::background_runtime::{
 use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
 
 use crate::agents::lifecycle::LifecycleManager;
-use crate::async_exec::executor::AsyncExecutor;
 use crate::async_exec::inbox::SessionInbox;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
 use crate::common::types::config::PekoConfig;
@@ -142,9 +141,6 @@ pub(crate) struct AppState {
     /// mints `PEKO_RUN_TOKEN`s here at spawn; the IPC `ExecuteTool`
     /// handler authenticates them. In-memory, dies with the daemon.
     pub run_token_registry: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
-
-    /// Async task executor for daemon-side background execution (ADR-020)
-    pub async_task_executor: Arc<AsyncExecutor>,
 
     /// Per-session inbox registry: shared `SessionInbox` and run-permit
     /// semaphore for every session the daemon knows about. The IPC
@@ -312,7 +308,6 @@ impl std::fmt::Debug for AppState {
             .field("config_service", &"<ConfigAuthorityImpl>")
             .field("principal_manager", &"<PrincipalManager>")
             .field("tool_runtime", &"<ToolRuntime>")
-            .field("async_task_executor", &"<AsyncExecutor>")
             .field("inbox_registry", &"<InboxRegistry>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
             .field("mcp_client_registry", &"<McpClientRegistry>")
@@ -695,7 +690,6 @@ impl AppState {
         // `inbox_registry` Arc is constructed ABOVE the tooling
         // block (WS3, 2026-08-11) so the AsyncExecutionRouter can be
         // wired to it; we just `Arc::clone` it here.
-        let async_task_executor = Arc::new(AsyncExecutor::new(Arc::clone(&inbox_registry)));
 
         // ADR-025: Initialize BackgroundRuntimeManager.
         // Sprint 9 Commit 3: the chat-gateway adapter framework was
@@ -942,7 +936,6 @@ impl AppState {
             session_service,
             tool_runtime,
             run_token_registry,
-            async_task_executor,
             inbox_registry,
             background_runtime_manager,
             mcp_client_registry,

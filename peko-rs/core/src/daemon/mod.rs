@@ -249,19 +249,16 @@ impl Daemon {
         // need to drive them.
         let _channel_handles = channel_handles;
 
-        // Build the cron engine's `AsyncExecutor` with the daemon's
-        // shared `InboxRegistry` so completion events and steer
-        // messages land in the same inboxes the in-flight `AgenticLoop`
-        // drains. The executor resolves tools via the daemon-global
-        // `ToolingRuntime` (`Arc::downgrade` so the cron engine does not
-        // extend the core's lifetime).
-        let cron_async_executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(
-            app_state.inbox_registry.clone(),
-        ));
+        // Cron tool jobs run on each owning principal's executor, against
+        // the daemon's shared `InboxRegistry` so completion events and
+        // steer messages land in the inboxes the in-flight `AgenticLoop`
+        // drains. Tools resolve via the daemon-global `ToolingRuntime`
+        // (`Arc::downgrade` so the cron engine does not extend the core's
+        // lifetime).
         let cron_tooling = std::sync::Arc::downgrade(app_state.tool_runtime.tooling());
 
         // Build the cron engine wired to the real PrincipalManager,
-        // shared idle detector, and cron-owned executor. Phase A: the
+        // shared idle detector, and the daemon inbox registry. Phase A: the
         // cron engine takes the typed path resolver directly; no
         // global `CronScheduler` is constructed here — the engine
         // derives per-principal schedulers on demand.
@@ -274,7 +271,6 @@ impl Daemon {
                 app_state.path_resolver.audit_dir(),
             )?),
             Some(app_state.principal_manager().clone()),
-            cron_async_executor,
             cron_tooling,
         ));
         // Hand the engine to AppState so the `Cron action trigger` tool (via
@@ -471,29 +467,31 @@ impl Daemon {
                     }
                 }
 
-                // Periodic async task janitor (ADR-020 Phase 6)
+                // Periodic async task janitor (ADR-020 Phase 6): cron
+                // reconciles its still-running runs against the registry
+                // first, then finished tasks are purged from every
+                // registry that actually holds them.
                 _ = janitor_tick.tick() => {
-                    let executor = &app_state.async_task_executor;
-                    match executor.run_janitor(Duration::from_hours(24)).await {
-                        Ok((files, registry)) => {
-                            if files > 0 || registry > 0 {
-                                info!("Async task janitor cleaned {} task files and {} registry entries", files, registry);
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error running async task janitor: {}", e);
-                        }
-                    }
-
-                    // Reconcile `CronRun` rows still marked `"running"`
-                    // against the executor's task registry so SpawnTool
-                    // fires reach their final status (Phase 4).
                     let engine = self.cron_engine.as_ref()
                         .expect("cron_engine initialized earlier in run()");
                     match engine.reconcile_running_runs().await {
                         Ok(0) => {}
                         Ok(n) => info!("Cron janitor reconciled {n} previously-running runs"),
                         Err(e) => error!("Cron janitor reconciliation failed: {e}"),
+                    }
+
+                    let files = crate::async_exec::executor::TaskFileWriter::new(
+                        peko_tools_core::default_data_dir().join("async_tasks"),
+                    )
+                    .cleanup_old(Duration::from_hours(24))
+                    .await
+                    .unwrap_or_else(|e| {
+                        error!("Error cleaning async task files: {e}");
+                        0
+                    });
+                    let registry = app_state.tool_runtime.tooling().purge_finished_tasks().await;
+                    if files > 0 || registry > 0 {
+                        info!("Async task janitor cleaned {files} task files and {registry} registry entries");
                     }
                 }
 

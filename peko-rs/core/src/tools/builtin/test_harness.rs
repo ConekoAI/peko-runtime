@@ -24,7 +24,7 @@
 //! backend. Domain-specific fakes stay in their own modules.
 
 use super::*;
-use crate::async_exec::executor::{standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime};
+use crate::async_exec::executor::{standalone_inbox_registry, AsyncExecutorRuntime};
 use crate::tools::metadata::ToolSource;
 use crate::tools::runtime::ToolingRuntime;
 use peko_channel::{ChannelConfig, ChannelId, ChannelPort, ChannelStore, CreateOpts};
@@ -213,8 +213,13 @@ impl ToolHarness {
             peko_providers::catalog::ModelCatalog::load_or_init(&root.path().join("models.toml"))
                 .await
                 .expect("harness model catalog");
+        // Built like `install_async`: the principal's executor is backed by
+        // its task registry on the tooling runtime.
+        let executor = tooling
+            .async_executor_for(&PrincipalId(PRINCIPAL.into()), standalone_inbox_registry())
+            .await;
         let async_runtime = Arc::new(AsyncExecutorRuntime::new(
-            Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
+            Arc::clone(&executor),
             Arc::downgrade(&tooling),
             None,
             PrincipalId(PRINCIPAL.into()),
@@ -232,6 +237,7 @@ impl ToolHarness {
         tooling.dispatcher().bind_async_runtime(
             PrincipalId(PRINCIPAL.into()),
             backends.async_runtime.clone(),
+            executor,
         );
         let fakes = Fakes::default();
         for tool in builtin_tools(&backends, &fakes) {
@@ -270,17 +276,22 @@ impl ToolHarness {
     /// Give `principal` its own Async runtime (and background spawner), as
     /// installation does for every loaded principal. The harness's `Async`
     /// tool stays bound to [`PRINCIPAL`].
-    pub(crate) fn bind_principal(&self, principal: &str) {
+    pub(crate) async fn bind_principal(&self, principal: &str) {
+        let principal = PrincipalId(principal.into());
+        let executor = self
+            .tooling
+            .async_executor_for(&principal, standalone_inbox_registry())
+            .await;
         let runtime = Arc::new(AsyncExecutorRuntime::new(
-            Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
+            Arc::clone(&executor),
             Arc::downgrade(&self.tooling),
             None,
-            PrincipalId(principal.into()),
+            principal.clone(),
         ))
         .as_shared();
         self.tooling
             .dispatcher()
-            .bind_async_runtime(PrincipalId(principal.into()), runtime);
+            .bind_async_runtime(principal, runtime, executor);
     }
 
     /// Register an extra tool (e.g. a test stub for Async to spawn)

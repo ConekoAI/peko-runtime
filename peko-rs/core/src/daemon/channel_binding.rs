@@ -86,9 +86,9 @@
 //!   session via the `Agent` tool while a channel turn is in flight) is
 //!   inherited from `resume_and_execute`'s
 //!   `has_active_subagent_run_for_child` guard: the driver's executor
-//!   deliberately shares the root agent's global registry key
-//!   (`default_root_prompt().name`), so both paths see each other's
-//!   runs and the loser is refused with `err_run_active`.
+//!   registers in the same principal task registry as the root agent's,
+//!   so both paths see each other's runs and the loser is refused with
+//!   `err_run_active`.
 //! - **Run-active collision → queued steering.** An `err_run_active`
 //!   refusal (and ONLY that refusal — every other failure keeps the
 //!   log-only skip below) is NOT dropped: the post text is pushed into
@@ -2629,8 +2629,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn driver_runs_a_real_turn_in_the_bound_session() {
         let (manager, _tmp) = store_with_standing_child().await;
-        // Unique agent name → private global registry for this test
-        // (mirrors the subagent integration tests' counter pattern).
+        // Unique agent name per test (mirrors the subagent integration
+        // tests' counter pattern).
         static CTR: AtomicUsize = AtomicUsize::new(0);
         let agent_name = format!(
             "channel-binding-test-{}",

@@ -53,6 +53,17 @@ const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
 pub struct ToolingRuntime {
     run_bindings: Arc<std::sync::RwLock<RunBindings>>,
     run_binding: Option<std::sync::Weak<ToolingRuntime>>,
+    /// One task registry per principal: every executor doing that
+    /// principal's background work registers here, so the principal's
+    /// tasks live in one place (and the janitor can find them all).
+    task_registries: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                PrincipalId,
+                crate::async_exec::executor::SharedAsyncTaskRegistry,
+            >,
+        >,
+    >,
     async_executors: Arc<
         tokio::sync::Mutex<
             std::collections::HashMap<PrincipalId, Arc<crate::async_exec::executor::AsyncExecutor>>,
@@ -104,6 +115,7 @@ impl ToolingRuntime {
         Self {
             run_bindings: Default::default(),
             run_binding: None,
+            task_registries: Default::default(),
             async_executors: Default::default(),
             agent_runs: Default::default(),
             catalog,
@@ -145,6 +157,7 @@ impl ToolingRuntime {
         Arc::new_cyclic(|binding| Self {
             run_bindings: Arc::clone(&self.run_bindings),
             run_binding: Some(binding.clone()),
+            task_registries: Arc::clone(&self.task_registries),
             async_executors: Arc::clone(&self.async_executors),
             agent_runs: Arc::clone(&self.agent_runs),
             dispatcher: Arc::new(
@@ -174,9 +187,44 @@ impl ToolingRuntime {
                 .await
                 .entry(principal_id.clone())
                 .or_insert_with(|| {
-                    Arc::new(crate::async_exec::executor::AsyncExecutor::new(inbox))
+                    Arc::new(crate::async_exec::executor::AsyncExecutor::with_registries(
+                        self.task_registry_for(principal_id),
+                        inbox,
+                    ))
                 }),
         )
+    }
+
+    /// The task registry for `principal`'s background work.
+    pub(crate) fn task_registry_for(
+        &self,
+        principal_id: &PrincipalId,
+    ) -> crate::async_exec::executor::SharedAsyncTaskRegistry {
+        Arc::clone(
+            self.task_registries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(principal_id.clone())
+                .or_default(),
+        )
+    }
+
+    /// Drop finished tasks past their retention window from every
+    /// principal's registry and from the router's own transport (calls
+    /// without a principal). Returns how many entries were removed.
+    pub(crate) async fn purge_finished_tasks(&self) -> usize {
+        let registries: Vec<_> = self
+            .task_registries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        let mut purged = self.dispatcher.router().purge_finished_tasks().await;
+        for registry in registries {
+            purged += registry.write().await.cleanup_completed();
+        }
+        purged
     }
 
     pub(crate) fn execution_binding(
@@ -456,6 +504,94 @@ impl EngineHooks for ToolingRuntime {
 mod tests {
     use super::*;
     use crate::tools::metadata::ToolSource;
+
+    /// Subagent runs register in the spawning principal's registry, keyed
+    /// by principal rather than agent name: one principal's executors share
+    /// it whatever their agent names, and two principals never do.
+    #[tokio::test]
+    async fn subagent_executors_share_their_principals_registry() {
+        use crate::agents::subagent_executor::SubagentExecutor;
+        let tooling = ToolingRuntime::standalone();
+        let sessions = Arc::new(tokio::sync::RwLock::new(peko_session::SessionManager::new()));
+        let alice = PrincipalId("prin_alice".into());
+        let registry = tooling.task_registry_for(&alice);
+        let root = SubagentExecutor::new(
+            Arc::clone(&sessions),
+            "primary",
+            alice.clone(),
+            Arc::clone(&tooling),
+        );
+        let reviewer = SubagentExecutor::new(
+            Arc::clone(&sessions),
+            "reviewer",
+            alice.clone(),
+            Arc::clone(&tooling),
+        )
+        .with_inbox_registry(Some(
+            crate::async_exec::executor::standalone_inbox_registry(),
+        ));
+        let bob = SubagentExecutor::new(
+            sessions,
+            "primary",
+            PrincipalId("prin_bob".into()),
+            Arc::clone(&tooling),
+        );
+        assert!(Arc::ptr_eq(root.registry(), &registry));
+        assert!(Arc::ptr_eq(reviewer.registry(), &registry));
+        assert!(!Arc::ptr_eq(bob.registry(), &registry));
+    }
+
+    /// The janitor sees every principal's tasks: a principal's executor is
+    /// backed by its registry here, and finished tasks past the retention
+    /// window are purged from it.
+    #[tokio::test]
+    async fn janitor_purges_finished_tasks_from_principal_registries() {
+        use crate::async_exec::executor::{standalone_inbox_registry, AsyncToolConfig};
+        let tooling = ToolingRuntime::standalone();
+        let principal = PrincipalId("prin_janitor".into());
+        let executor = tooling
+            .async_executor_for(&principal, standalone_inbox_registry())
+            .await;
+        assert!(Arc::ptr_eq(
+            executor.registry(),
+            &tooling.task_registry_for(&principal)
+        ));
+        let task = "tool:finished".to_string();
+        executor
+            .execute(
+                task.clone(),
+                "tool",
+                serde_json::json!({}),
+                "session",
+                AsyncToolConfig {
+                    principal_id: principal.clone(),
+                    ..Default::default()
+                },
+                || async { Ok(serde_json::json!("done")) },
+            )
+            .await
+            .unwrap();
+        executor
+            .wait_for_completion(&task, std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(tooling.purge_finished_tasks().await, 0, "within retention");
+
+        tooling
+            .task_registry_for(&principal)
+            .write()
+            .await
+            .get_mut(&task)
+            .unwrap()
+            .completed_at = Some(chrono::Utc::now() - chrono::Duration::minutes(10));
+        assert_eq!(tooling.purge_finished_tasks().await, 1);
+        assert!(tooling
+            .task_registry_for(&principal)
+            .read()
+            .await
+            .get(&task)
+            .is_none());
+    }
     use peko_tools_core::Tool;
     use serde_json::{json, Value};
 

@@ -4,7 +4,7 @@
 //! logging. Keeps the daemon's main loop focused on lifecycle and
 //! shutdown.
 
-use crate::async_exec::executor::{AsyncExecutor, AsyncTaskStatus, AsyncToolConfig};
+use crate::async_exec::executor::{AsyncTaskStatus, AsyncToolConfig};
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
 use crate::principal::manager::PrincipalManager;
@@ -60,13 +60,7 @@ pub struct CronEngine {
     idle_detector: Arc<IdleDetector>,
     observability: Arc<Observability>,
     principal_manager: Option<Arc<PrincipalManager>>,
-    /// Cron-owned `AsyncExecutor`. Spawned with a `Weak` reference to
-    /// the daemon's global `ToolingRuntime` so it can resolve tool
-    /// instances by name without keeping the core alive longer than the
-    /// daemon. Wired to the daemon's `InboxRegistry` so completion
-    /// events and steer messages land in the same inboxes the
-    /// in-flight `AgenticLoop` drains.
-    async_executor: Arc<AsyncExecutor>,
+    /// Held weakly so the cron engine never keeps the daemon's core alive.
     tooling: Weak<ToolingRuntime>,
 }
 
@@ -75,19 +69,15 @@ impl CronEngine {
     ///
     /// `path_resolver` is the typed resolver; cron state for each
     /// principal lives at `<resolver>.cron_schedule(name)`.
-    /// `async_executor` is the daemon-shared executor used to fire
-    /// `CronJobAction::SpawnTool` jobs. Pass a fresh `Arc<AsyncExecutor>`
-    /// (built with `AsyncExecutor::new(standalone_inbox_registry())`) when
-    /// no daemon-global executor is desired; the cron engine does not
-    /// share its executor with any agent's per-call executor today.
-    /// `tooling` is held weakly so the cron engine never keeps
-    /// the daemon's core alive past its natural lifetime.
+    /// Tool jobs run on the owning principal's executor (its Async
+    /// runtime's, against the manager's shared inbox registry). `tooling`
+    /// is held weakly so the cron engine never keeps the daemon's core
+    /// alive past its natural lifetime.
     pub fn new(
         path_resolver: PathResolver,
         idle_detector: Arc<IdleDetector>,
         observability: Arc<Observability>,
         principal_manager: Option<Arc<PrincipalManager>>,
-        async_executor: Arc<AsyncExecutor>,
         tooling: Weak<ToolingRuntime>,
     ) -> Self {
         Self {
@@ -99,9 +89,34 @@ impl CronEngine {
             idle_detector,
             observability,
             principal_manager,
-            async_executor,
             tooling,
         }
+    }
+
+    /// The task registry of the principal that owns cron state under
+    /// `key` (a job's principal id, usually its DID).
+    async fn owner_registry(
+        &self,
+        key: &PrincipalId,
+    ) -> Option<crate::async_exec::executor::SharedAsyncTaskRegistry> {
+        let tooling = self.tooling.upgrade()?;
+        let owner = match &self.principal_manager {
+            Some(pm) => resolve_principal(pm, key)
+                .await
+                .map_or_else(|| key.clone(), |p| p.id.clone()),
+            None => key.clone(),
+        };
+        Some(tooling.task_registry_for(&owner))
+    }
+
+    /// Status of a fired task in its owner's registry; `None` when the
+    /// registry no longer holds it.
+    async fn task_status(&self, key: &PrincipalId, task_id: &str) -> Option<AsyncTaskStatus> {
+        self.owner_registry(key)
+            .await?
+            .read()
+            .await
+            .check_status(&task_id.to_string())
     }
 
     /// Look up (or lazily construct) the `CronScheduler` for a given
@@ -150,7 +165,7 @@ impl CronEngine {
             // for the hourly janitor would suppress otherwise-due ticks.
             for run in scheduler.list_running_runs()? {
                 if let Some(task_id) = run.output.as_ref() {
-                    if self.async_executor.check_status(task_id).await.is_none() {
+                    if self.task_status(principal_id, task_id).await.is_none() {
                         finalize_missing_task(&scheduler, &run, task_id)?;
                     }
                 }
@@ -909,7 +924,11 @@ impl CronEngine {
             ..Default::default()
         };
 
-        let executor = self.async_executor.clone();
+        // The owning principal's executor: the task registers in its
+        // registry, visible to and stoppable from its Async surface.
+        let executor = core
+            .async_executor_for(&principal.id, pm.shared_inbox_registry())
+            .await;
 
         // F38: route through `executor.dispatch_tool(...)` so the F37
         // canonical-funnel closure construction lives inside the
@@ -1006,22 +1025,21 @@ impl CronEngine {
                 continue;
             };
 
-            let (cron_status, output, error) =
-                match self.async_executor.check_status(&task_id).await {
-                    Some(status) if status.is_terminal() => map_async_status(status),
-                    Some(_) => continue,
-                    // The registry is process-local and its janitor can also purge
-                    // terminal entries. Absence proves neither completion nor
-                    // failure of the tool's effects. Preserve the id for diagnosis
-                    // and release the running row without certifying success or
-                    // replaying the interrupted task.
-                    None => {
-                        let scheduler = self.scheduler_for(&principal_id).await?;
-                        finalized +=
-                            usize::from(finalize_missing_task(&scheduler, &run, &task_id)?);
-                        continue;
-                    }
-                };
+            let (cron_status, output, error) = match self.task_status(&principal_id, &task_id).await
+            {
+                Some(status) if status.is_terminal() => map_async_status(status),
+                Some(_) => continue,
+                // The registry is process-local and its janitor can also purge
+                // terminal entries. Absence proves neither completion nor
+                // failure of the tool's effects. Preserve the id for diagnosis
+                // and release the running row without certifying success or
+                // replaying the interrupted task.
+                None => {
+                    let scheduler = self.scheduler_for(&principal_id).await?;
+                    finalized += usize::from(finalize_missing_task(&scheduler, &run, &task_id)?);
+                    continue;
+                }
+            };
             // Phase A: target the principal that owns this run so
             // the finalize + last_status writes land on the right
             // schedule file.
@@ -1366,9 +1384,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Weak::new(),
         );
         let loaded = engine.scheduler_for(&did).await.unwrap();
@@ -1434,9 +1449,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Arc::downgrade(tooling.tooling()),
         );
         let loaded = engine.scheduler_for(&did).await.unwrap();
@@ -1503,9 +1515,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Arc::downgrade(tooling.tooling()),
         );
         let loaded = engine.scheduler_for(&did).await.unwrap();
@@ -1601,16 +1610,7 @@ mod tests {
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        CronEngine::new(
-            resolver,
-            idle,
-            obs,
-            None,
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
-            std::sync::Weak::new(),
-        )
+        CronEngine::new(resolver, idle, obs, None, std::sync::Weak::new())
     }
 
     async fn setup_principal_manager(tmp: &TempDir) -> Arc<PrincipalManager> {
@@ -1729,9 +1729,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Weak::new(),
         );
 
@@ -1813,9 +1810,6 @@ mod tests {
             idle,
             obs,
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
 
@@ -1931,11 +1925,10 @@ mod tests {
         // reconciler update it.
         scheduler.set_job_last_status(&job.id, "running").unwrap();
 
-        // Build a CronEngine with an executor whose registry holds a
-        // terminal entry for `shell:abc`.
-        let async_executor = Arc::new(AsyncExecutor::new(
-            crate::async_exec::executor::standalone_inbox_registry(),
-        ));
+        // The owning principal's task registry holds a terminal entry for
+        // `shell:abc`.
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        let owner_registry = tooling.task_registry_for(&PrincipalId("crony".into()));
         let mut entry = crate::async_exec::executor::registry::AsyncTaskEntry::new(
             "shell:abc".to_string(),
             "Bash".to_string(),
@@ -1944,9 +1937,9 @@ mod tests {
             AsyncToolConfig::default(),
         );
         entry.set_result(serde_json::json!("done"));
-        async_executor.registry().write().await.register(entry);
+        owner_registry.write().await.register(entry);
         // Mark the entry as Completed so reconcile treats it as terminal.
-        async_executor.registry().write().await.update_status(
+        owner_registry.write().await.update_status(
             &"shell:abc".to_string(),
             AsyncTaskStatus::Completed {
                 result: ToolResult::success(serde_json::json!("done")),
@@ -1966,8 +1959,7 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             None,
-            async_executor,
-            std::sync::Weak::new(),
+            Arc::downgrade(&tooling),
         );
         // Phase A: the engine no longer holds a single global
         // scheduler; install the test's scheduler into the engine's
@@ -2054,9 +2046,6 @@ mod tests {
             })
             .unwrap();
 
-        let async_executor = Arc::new(AsyncExecutor::new(
-            crate::async_exec::executor::standalone_inbox_registry(),
-        ));
         // Phase A: build a path resolver pointing at the test's
         // tmp dir so the cron engine derives per-principal schedule
         // files at `<tmp>/principals/{name}/local/cron/...`.
@@ -2070,7 +2059,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             None,
-            async_executor,
             std::sync::Weak::new(),
         );
         // Phase A: the engine no longer holds a single global
@@ -2203,9 +2191,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
         let job = CronJob {
@@ -2362,9 +2347,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Arc::downgrade(&core),
         );
         let mut job = CronJob {
@@ -2503,9 +2485,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
         let job = CronJob {
@@ -2620,9 +2599,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             None,
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
 
@@ -2768,9 +2744,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             obs.clone(),
             Some(manager),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             Arc::downgrade(&core),
         );
         let mut job = recovery_job(PrincipalId::from_did(&principal.did().await));
@@ -2871,6 +2844,9 @@ mod tests {
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
+        // One inbox registry, shared by the manager and the drain below,
+        // as in the daemon.
+        let registry = crate::async_exec::executor::standalone_inbox_registry();
         let catalog_path = tmp.path().join("models.toml");
         let (llm_resolver, _adapter) = LlmResolver::mock(MockAdapter::new(), catalog_path).await;
         let manager = Arc::new(
@@ -2878,7 +2854,7 @@ mod tests {
                 path_resolver,
                 Arc::new(DefaultPrincipalMemoryFactory),
                 Arc::new(DefaultPrincipalRouterFactory),
-                crate::async_exec::executor::standalone_inbox_registry(),
+                Arc::clone(&registry),
             )
             .with_resolver(llm_resolver),
         );
@@ -2889,8 +2865,6 @@ mod tests {
         // test wants the success path.
 
         // Executor wired to an inbox registry the test can inspect.
-        let registry = crate::async_exec::executor::standalone_inbox_registry();
-        let executor = Arc::new(AsyncExecutor::new(registry.clone()));
 
         // ToolingRuntime with the stub tool registered through the
         // built-in adapter so the F37 funnel resolves an execution
@@ -2915,7 +2889,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             Arc::new(Observability::new("daemon")),
             Some(manager.clone()),
-            executor.clone(),
             Arc::downgrade(&core),
         );
 
@@ -2948,11 +2921,17 @@ mod tests {
         // returned — the run's terminal status is).
         let (status, _output, _error) = engine.run_spawn_tool_job(&job).await.unwrap();
         assert_eq!(status, "success");
-        let tasks = executor.list_tasks(None).await;
+        // The fired task lives in the owning principal's registry.
+        let tasks = core
+            .task_registry_for(&principal.id)
+            .read()
+            .await
+            .list_tasks(None);
         let task_id = tasks
             .first()
             .map(|t| t.task_id.clone())
-            .expect("the dispatched task is registered");
+            .expect("the dispatched task is registered in the principal's registry");
+        assert_eq!(tasks[0].config.principal_id, principal.id);
 
         // Poll up to 2s for the steer message to land in the trunk
         // inbox (the closure runs in the background).
@@ -3020,9 +2999,6 @@ mod tests {
         // Grant the tool catalog so the F37 gate lets the stub run and
         // the failure comes from the tool body, not the gate.
 
-        let executor = Arc::new(AsyncExecutor::new(
-            crate::async_exec::executor::standalone_inbox_registry(),
-        ));
         let core = crate::tools::runtime::ToolingRuntime::standalone();
         core.catalog()
             .register(
@@ -3044,7 +3020,6 @@ mod tests {
             Arc::new(IdleDetector::new()),
             obs.clone(),
             Some(manager.clone()),
-            executor,
             Arc::downgrade(&core),
         );
 
@@ -3133,9 +3108,6 @@ mod tests {
             idle,
             obs,
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
         // No jobs registered yet — install the scheduler so the
@@ -3245,9 +3217,6 @@ mod tests {
             idle,
             obs,
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
 
@@ -3284,9 +3253,6 @@ mod tests {
             idle,
             obs,
             Some(manager.clone()),
-            Arc::new(AsyncExecutor::new(
-                crate::async_exec::executor::standalone_inbox_registry(),
-            )),
             std::sync::Weak::new(),
         );
         engine
