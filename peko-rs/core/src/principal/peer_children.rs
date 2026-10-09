@@ -53,6 +53,12 @@ use crate::principal::routers::root::trunk_session_id;
 /// per peer is far past any realistic collision chain.
 const MAX_SLUG_ATTEMPTS: usize = 10;
 
+/// Collision-resistant slug fragment for a principal DID.
+fn principal_slug_fragment(did: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(did.as_bytes()))[..16].to_string()
+}
+
 /// The stable per-parent slug for a peer's standing child of the
 /// trunk.
 ///
@@ -64,7 +70,9 @@ const MAX_SLUG_ATTEMPTS: usize = 10;
 ///   anonymous peers; same sanitization as users, distinct slug
 ///   space);
 /// - `principal:{did}` → `principal-{fragment}` where the fragment is
-///   the first 16 lowercase ascii alphanumerics of the DID.
+///   the first 16 hex digits of the DID's SHA-256 (DIDs share long
+///   scheme prefixes such as `did:peko:local:`, so a prefix of the DID
+///   itself would collide).
 ///
 /// The result is capped at [`MAX_SLUG_LEN`] chars and validated
 /// against `peko_session::path::validate_slug`. `Subject::Public` is
@@ -96,16 +104,7 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
             };
             cap_slug(&slug)
         }
-        Subject::Principal(did) => {
-            let fragment: String = did
-                .as_str()
-                .chars()
-                .map(|c| c.to_ascii_lowercase())
-                .filter(|c| c.is_ascii_alphanumeric())
-                .take(16)
-                .collect();
-            format!("principal-{fragment}")
-        }
+        Subject::Principal(did) => format!("principal-{}", principal_slug_fragment(did.as_str())),
         Subject::Public => {
             anyhow::bail!("public access is not a session peer — no peer child can be provisioned")
         }
@@ -418,10 +417,34 @@ mod tests {
     }
 
     #[test]
-    fn slug_for_principals_uses_did_fragment() {
+    fn slug_for_principals_uses_did_fingerprint() {
         let slug = peer_child_slug(&principal_peer("did:key:z6MkTestABCDEF1234567890")).unwrap();
-        assert_eq!(slug, "principal-didkeyz6mktestab");
+        assert_eq!(slug, "principal-54a679d9fdcc0265");
         assert!(slug.len() <= MAX_SLUG_LEN);
+        assert!(peko_session::path::validate_slug(&slug).is_ok());
+    }
+
+    /// Regression: the fragment used to be the DID's first 16
+    /// alphanumerics, so principals on one runtime (shared
+    /// `did:peko:<tier>:` prefix) and their peers' slugs collided. A
+    /// same-runtime `ChannelSend` then resolved the caller's own DM
+    /// channel to the target's (same binding path), double-posting
+    /// every request after the first.
+    #[test]
+    fn principal_slugs_differ_for_dids_sharing_a_long_prefix() {
+        let dids = [
+            "did:peko:public:offline-caller:d7b8bc4fb20b9e20",
+            "did:peko:public:offline-target:d7b8bc4fb20b9e20",
+            "did:peko:local:alice:0001",
+            "did:peko:local:alice:0002",
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doL",
+        ];
+        let slugs: std::collections::HashSet<_> = dids
+            .iter()
+            .map(|did| peer_child_slug(&principal_peer(did)).unwrap())
+            .collect();
+        assert_eq!(slugs.len(), dids.len(), "{slugs:?}");
     }
 
     #[test]
@@ -520,7 +543,10 @@ mod tests {
             .iter()
             .find(|m| m.session_id.to_string() == a2a_id)
             .unwrap();
-        assert_eq!(p.slug.as_deref(), Some("principal-didkeyz6mkstrang"));
+        assert_eq!(
+            p.slug.as_deref(),
+            Some(peer_child_slug(&a2a).unwrap().as_str())
+        );
         assert_eq!(p.peer_type.as_deref(), Some("principal"));
         assert_eq!(p.peer_id.as_deref(), Some("did:key:z6MkStranger"));
     }
