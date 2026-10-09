@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool coverage, round 3 (2026-10-09)
+
+- Cover the dispatcher's cancel path: a tool's interrupt notice is returned
+  (and audited once) when a call is aborted, cancel wins over a natural
+  completion, and an abort before the call starts is reported as cancelled.
+- Cover `ChannelSend` to a principal on another runtime: first-contact invite
+  (once), tunnel fan-out, mirrored reply, timeout, and directory refusals.
+
 ### One task registry per principal (2026-10-09)
 
 - Fix the async task janitor, which purged an executor nothing used: finished
