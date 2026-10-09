@@ -1,12 +1,12 @@
 //! `Plan action add_step` — append a new node to an existing plan.
 
 use async_trait::async_trait;
-use peko_plan::{NodeId, PlanNode, PlanNodeStatus};
+use peko_plan::{PlanNode, PlanNodeStatus};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
 use crate::tools::builtin::plan::{
-    parse_status_param, require_principal_id, resolve_node_id, SharedPlanPort,
+    parse_depends_on, parse_status_param, require_principal_id, resolve_node_id, SharedPlanPort,
 };
 
 /// Append a node to an existing plan. Errors when the plan is closed
@@ -35,11 +35,12 @@ Parameters:
 - planId: string (required)
 - step: string (required) — imperative description of the new step
 - nodeId: string? — auto-assigned if omitted
-- dependsOn: array<string>? — node ids this new step depends on
+- dependsOn: array<string>? — ids of existing nodes in this plan the new step depends on
 - status: string? — defaults to 'pending'
 
-Returns the updated PlanRecord. Errors when the plan is closed or
-when the supplied nodeId collides with an existing node."
+Returns the updated PlanRecord. Errors when the plan is closed or a
+dependsOn id is not in the plan. A nodeId that already exists is a
+no-op (the existing node is kept), so retries are safe."
             .to_string()
     }
 
@@ -61,10 +62,6 @@ when the supplied nodeId collides with an existing node."
             },
             "required": ["planId","step"]
         })
-    }
-
-    fn parallelizable(&self) -> bool {
-        false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -92,15 +89,23 @@ when the supplied nodeId collides with an existing node."
             .and_then(|v| v.as_str())
             .map(String::from);
         let node_id = resolve_node_id(node_id_str_for_error.as_deref())?;
-        let depends_on = params
-            .get("dependsOn")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().and_then(|s| NodeId::parse(s).ok()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let depends_on = parse_depends_on(params.get("dependsOn"))?;
+        if !depends_on.is_empty() {
+            // Nodes are never removed, so a dependency present now stays
+            // present. A missing plan falls through to `add_node`'s error.
+            if let Ok(plan) = self
+                .plan_port
+                .get_for_principal(&plan_id, &principal_id)
+                .await
+            {
+                if let Some(missing) = depends_on
+                    .iter()
+                    .find(|dep| !plan.nodes.iter().any(|n| &n.node_id == *dep))
+                {
+                    anyhow::bail!("dependsOn: node {missing} is not in plan {plan_id}");
+                }
+            }
+        }
         let status = match params.get("status").and_then(|v| v.as_str()) {
             Some(s) => parse_status_param(s)?,
             None => PlanNodeStatus::Pending,
@@ -225,5 +230,73 @@ mod tests {
             )
             .await;
         assert!(res.is_err(), "closed plan must reject add_node");
+    }
+
+    #[tokio::test]
+    async fn add_step_dependencies_must_be_nodes_of_the_plan() {
+        let port = std::sync::Arc::new(TestPlanPort::new());
+        let p = peko_subject::PrincipalId::generate();
+        let created = PlanCreateAction::new(port.clone())
+            .execute_with_context(
+                json!({ "title": "t", "nodes": [{ "step": "first", "nodeId": "node_first001" }] }),
+                &ctx_with(p.clone()),
+            )
+            .await
+            .unwrap();
+        let plan_id = created["planId"].as_str().unwrap().to_string();
+        let tool = PlanAddStepAction::new(port);
+
+        for (deps, expected) in [
+            (
+                json!(["node_ghost001"]),
+                "node node_ghost001 is not in plan",
+            ),
+            (json!(["first"]), "dependsOn"),
+        ] {
+            let error = tool
+                .execute_with_context(
+                    json!({ "planId": plan_id, "step": "second", "dependsOn": deps.clone() }),
+                    &ctx_with(p.clone()),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{deps}: {error}");
+        }
+
+        let updated = tool
+            .execute_with_context(
+                json!({
+                    "planId": plan_id,
+                    "step": "second",
+                    "dependsOn": ["node_first001"],
+                    "status": "blocked",
+                }),
+                &ctx_with(p),
+            )
+            .await
+            .unwrap();
+        let nodes = updated["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2, "only the valid call appended: {updated}");
+        assert_eq!(nodes[1]["dependsOn"], json!(["node_first001"]));
+        assert_eq!(nodes[1]["status"]["kind"], "blocked");
+    }
+
+    #[tokio::test]
+    async fn add_step_requires_plan_id_and_step() {
+        let port = std::sync::Arc::new(TestPlanPort::new());
+        let tool = PlanAddStepAction::new(port);
+        let ctx = ctx_with(peko_subject::PrincipalId::generate());
+        for (params, expected) in [
+            (json!({ "step": "s" }), "requires 'planId'"),
+            (json!({ "planId": "plan_aaaa0001" }), "requires 'step'"),
+        ] {
+            let error = tool
+                .execute_with_context(params, &ctx)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 }

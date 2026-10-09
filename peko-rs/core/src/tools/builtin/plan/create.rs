@@ -36,6 +36,8 @@ Parameters:
 - nodes: array (required) — at least one node, each shaped:
     { nodeId: string?, step: string, dependsOn: array<string>?, status: string? }
   - nodeId is auto-assigned if omitted (recommended)
+  - dependsOn lists nodeIds of other nodes in this plan; give those
+    nodes an explicit nodeId (node_<8 chars a-z0-9>) to reference them
   - status defaults to 'pending'; valid values: pending|in_progress|completed|blocked|failed
 
 Returns the created plan record including its planId and every
@@ -85,13 +87,6 @@ auto-assigned node id."
         })
     }
 
-    /// F33 race guard: two concurrent Plan action create calls in the same
-    /// principal's plans dir can race on plan_id assignment and
-    /// node-id collision checks.
-    fn parallelizable(&self) -> bool {
-        false
-    }
-
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(crate::tools::builtin::plan::missing_principal_error())
     }
@@ -112,13 +107,16 @@ auto-assigned node id."
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow::anyhow!("Plan action create requires 'nodes' array"))?;
         let nodes = parse_nodes(nodes_json)?;
+        // A dependency on a node outside the plan would never complete,
+        // leaving the step permanently not-ready; a cycle deadlocks.
+        peko_plan::validate_nodes(&nodes).map_err(|e| anyhow::anyhow!("{e}"))?;
         let record = self.plan_port.create(principal_id, title, nodes).await?;
         Ok(serde_json::to_value(record)?)
     }
 }
 
 fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
-    use crate::tools::builtin::plan::parse_status_param;
+    use crate::tools::builtin::plan::{parse_depends_on, parse_status_param};
     use chrono::Utc;
     arr.iter()
         .map(|n| {
@@ -128,18 +126,7 @@ fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
                 .ok_or_else(|| anyhow::anyhow!("each node requires 'step'"))?
                 .to_string();
             let node_id = resolve_node_id(n.get("nodeId").and_then(|v| v.as_str()))?;
-            // `depends_on` is `Vec<NodeId>` — parse each entry via
-            // `NodeId::parse` so a malformed id surfaces as a hard
-            // error (rather than silently landing as `Vec<String>`).
-            let depends_on: Vec<peko_plan::NodeId> = n
-                .get("dependsOn")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().and_then(|s| peko_plan::NodeId::parse(s).ok()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let depends_on = parse_depends_on(n.get("dependsOn"))?;
             let status = match n.get("status").and_then(|v| v.as_str()) {
                 Some(s) => parse_status_param(s)?,
                 None => PlanNodeStatus::Pending,
@@ -163,6 +150,8 @@ fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
 mod tests {
     use super::*;
     use crate::tools::builtin::plan::TestPlanPort;
+    use peko_plan::PlanPort;
+    use peko_subject::PrincipalId;
     use peko_tools_core::ToolContext;
     use serde_json::json;
 
@@ -180,9 +169,9 @@ mod tests {
                 json!({
                     "title": "ship v2",
                     "nodes": [
-                        { "step": "spec" },
-                        { "step": "build", "dependsOn": ["PHANTOM"] },
-                        { "step": "ship", "dependsOn": ["PHANTOM"], "status": "pending" }
+                        { "step": "spec", "nodeId": "node_spec0001" },
+                        { "step": "build", "dependsOn": ["node_spec0001"] },
+                        { "step": "ship", "status": "pending" }
                     ]
                 }),
                 &ctx_with_principal(),
@@ -197,6 +186,57 @@ mod tests {
         for n in nodes {
             assert!(n["nodeId"].as_str().unwrap().starts_with("node_"));
         }
+        assert_eq!(nodes[1]["dependsOn"], json!(["node_spec0001"]));
+    }
+
+    /// Dependencies are checked before anything is persisted: a malformed
+    /// id, a node outside the plan, or a cycle would leave a step that
+    /// starts early or never becomes ready.
+    #[tokio::test]
+    async fn create_rejects_dependencies_that_could_never_resolve() {
+        let port = std::sync::Arc::new(TestPlanPort::new());
+        let tool = PlanCreateAction::new(port.clone());
+        let ctx = ctx_with_principal();
+        for (nodes, expected) in [
+            (
+                json!([{ "step": "a", "dependsOn": ["PHANTOM"] }]),
+                "dependsOn",
+            ),
+            (
+                json!([{ "step": "a", "dependsOn": [7] }]),
+                "must be node ids",
+            ),
+            (
+                json!([{ "step": "a", "dependsOn": "node_aaaa0001" }]),
+                "must be an array",
+            ),
+            (
+                json!([{ "step": "a", "dependsOn": ["node_ghost001"] }]),
+                "depends on missing node node_ghost001",
+            ),
+            (
+                json!([
+                    { "step": "a", "nodeId": "node_aaaa0001", "dependsOn": ["node_bbbb0001"] },
+                    { "step": "b", "nodeId": "node_bbbb0001", "dependsOn": ["node_aaaa0001"] }
+                ]),
+                "cycle",
+            ),
+        ] {
+            let error = tool
+                .execute_with_context(json!({ "title": "t", "nodes": nodes.clone() }), &ctx)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{nodes}: {error}");
+        }
+        let principal = PrincipalId(ctx.principal_id.clone().unwrap());
+        assert!(
+            PlanPort::list_for_principal(port.as_ref(), &principal)
+                .await
+                .unwrap()
+                .is_empty(),
+            "rejected plans must not be persisted"
+        );
     }
 
     #[tokio::test]

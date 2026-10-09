@@ -50,10 +50,6 @@ principal (PrincipalMismatch — a corruption signal)."
         })
     }
 
-    fn parallelizable(&self) -> bool {
-        true
-    }
-
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(crate::tools::builtin::plan::missing_principal_error())
     }
