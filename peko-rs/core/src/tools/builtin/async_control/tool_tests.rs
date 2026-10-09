@@ -236,13 +236,162 @@ async fn spawning_an_unknown_tool_fails_the_task() {
     assert_eq!(out["status"], "failed", "{out}");
 }
 
-/// Background work is owned by the principal whose call created it: the
+/// Shell commands that print `started`, then idle long enough to be
+/// observed and stopped.
+fn long_running_command() -> &'static str {
+    if cfg!(windows) {
+        "Write-Output started; Start-Sleep -Seconds 30"
+    } else {
+        "echo started; sleep 30"
+    }
+}
+
+/// Poll `Async output` until the running task's live output contains
+/// `needle`.
+async fn wait_for_partial_output(harness: &ToolHarness, id: &str, needle: &str) -> Value {
+    for _ in 0..100 {
+        let out = async_call(harness, "output", id, json!({})).await;
+        if out["partial_output"]
+            .as_str()
+            .is_some_and(|p| p.contains(needle))
+        {
+            return out;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no live output containing {needle:?} for {id}");
+}
+
+/// Bash `run_in_background` and `Async action=spawn tool=Bash` are one
+/// path: each registers exactly one task, in the caller principal's
+/// executor, with the same ownership and delivery settings.
+#[tokio::test]
+async fn bash_background_and_async_bash_register_one_task_on_one_path() {
+    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
+    let harness = harness().await;
+    let direct = harness
+        .call(
+            "Bash",
+            json!({"command":"echo direct", "run_in_background":true}),
+        )
+        .await
+        .ok();
+    let spawned = harness
+        .call(
+            "Async",
+            json!({"action":"spawn", "tool":"Bash", "params":{"command":"echo spawned"}}),
+        )
+        .await
+        .ok();
+    let ids = [
+        direct["task_id"].as_str().unwrap().to_string(),
+        spawned["task_id"].as_str().unwrap().to_string(),
+    ];
+
+    for (id, text) in ids.iter().zip(["direct", "spawned"]) {
+        let out = async_call(&harness, "output", id, json!({"block":true})).await;
+        assert_eq!(out["status"], "completed", "{out}");
+        assert!(
+            out["result"]["stdout"].as_str().unwrap().contains(text),
+            "{out}"
+        );
+        let status = async_call(&harness, "status", id, json!({})).await;
+        assert_eq!(status["tool_name"], "Bash");
+        assert_eq!(
+            status["parent_session_key"],
+            crate::tools::builtin::test_harness::SESSION
+        );
+    }
+    // Neither landed in a process-wide registry (the retired "Bash"
+    // executor) — only in the principal's own executor.
+    let global = list_all_tasks_across_all_registries().await;
+    assert!(
+        !global.iter().any(|e| ids.contains(&e.task_id)),
+        "background work must not register outside the principal executor"
+    );
+}
+
+/// An Async task body runs inline under the task's own timeout. It used
+/// to pass through the foreground timeout, which detached the work and
+/// completed the task with a "queued" receipt instead of the result.
+#[tokio::test]
+async fn async_spawn_runs_past_the_foreground_timeout_and_returns_the_result() {
+    let harness = ToolHarness::with_router_timeout(1).await;
+    harness.register(Arc::new(Sleep)).await;
+    let id = spawn(&harness, json!({"tool":"Sleep", "params":{"ms":2500}})).await;
+    // Poll without blocking: a foreground call longer than the 1s router
+    // timeout would itself detach.
+    let mut out = Value::Null;
+    for _ in 0..100 {
+        out = async_call(&harness, "output", &id, json!({})).await;
+        if out["is_terminal"] == true {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(out["status"], "completed", "{out}");
+    assert_eq!(out["result"], json!({"slept_ms": 2500}), "{out}");
+}
+
+/// Both entrances stream live output while running, and stop kills them.
+#[tokio::test]
+async fn background_bash_streams_live_output_and_stops_from_either_entrance() {
+    let harness = harness().await;
+    let direct = harness
+        .call(
+            "Bash",
+            json!({"command": long_running_command(), "run_in_background":true}),
+        )
+        .await
+        .ok();
+    let spawned = harness
+        .call(
+            "Async",
+            json!({"action":"spawn", "tool":"Bash", "params":{"command": long_running_command()}}),
+        )
+        .await
+        .ok();
+    for receipt in [direct, spawned] {
+        let id = receipt["task_id"].as_str().unwrap().to_string();
+        let running = wait_for_partial_output(&harness, &id, "started").await;
+        assert_eq!(running["is_terminal"], false, "{running}");
+        let stopped = async_call(&harness, "stop", &id, json!({})).await;
+        assert_eq!(stopped["success"], true, "{stopped}");
+        let status = async_call(&harness, "status", &id, json!({})).await;
+        assert_eq!(status["status"], "cancelled", "{status}");
+    }
+}
+
+/// Bash's `timeout` (milliseconds) bounds a background task.
+#[tokio::test]
+async fn background_bash_timeout_bounds_the_task() {
+    let harness = harness().await;
+    let receipt = harness
+        .call(
+            "Bash",
+            json!({"command": long_running_command(), "run_in_background":true, "timeout":500}),
+        )
+        .await
+        .ok();
+    let id = receipt["task_id"].as_str().unwrap();
+    let out = async_call(
+        &harness,
+        "output",
+        id,
+        json!({"block":true, "timeout":10000}),
+    )
+    .await;
+    assert_eq!(out["status"], "timed_out", "{out}");
+}
+
+/// Background work belongs to the principal whose call created it: the
 /// harness's Async runtime (bound to the default caller) sees its own
-/// background Bash, and never one started by another principal.
+/// background Bash, never one started by another principal.
 #[tokio::test]
 async fn background_bash_is_owned_by_the_calling_principal() {
     use crate::tools::builtin::test_harness::Caller;
     let harness = harness().await;
+    harness.bind_principal("did:peko:other");
     let mine = harness
         .call(
             "Bash",
@@ -269,47 +418,27 @@ async fn background_bash_is_owned_by_the_calling_principal() {
         stop["success"], false,
         "cannot cancel another principal's task"
     );
-
-    // A call with no principal at all is system-owned — visible to no
-    // principal (it used to be visible to every principal).
-    let unowned = crate::tools::builtin::BashTool::new()
-        .execute(json!({"command":"echo unowned", "run_in_background":true}))
-        .await
-        .unwrap();
-    let hidden = async_call(&harness, "status", &id(&unowned), json!({})).await;
-    assert_eq!(hidden["error"], "Task not found", "{hidden}");
 }
 
-/// A dispatch that carries no principal must not invent one: background
-/// work it starts is system-owned, and principal-scoped tools refuse. (The
-/// dispatcher used to hand tools `Some("")`, which passed their
-/// principal checks and owned background tasks as principal "".)
+/// A dispatch that carries no principal cannot start background work, and
+/// principal-scoped tools refuse it. (The dispatcher used to hand tools
+/// `Some("")`, which passed their principal checks.)
 #[tokio::test]
-async fn principal_less_dispatch_is_system_owned_and_refused_by_scoped_tools() {
-    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
+async fn principal_less_dispatch_cannot_start_background_work() {
     let harness = harness().await;
     let dispatch = |tool: &str, params: Value| {
         let call = peko_engine::ToolCallSpec::new(tool, params);
         harness.tooling.dispatcher().execute(call)
     };
 
-    let (_, receipt, ok) = dispatch(
+    let (display, _, ok) = dispatch(
         "Bash",
         json!({"command":"echo nobody", "run_in_background":true}),
     )
     .await
     .unwrap();
-    assert!(ok, "{receipt}");
-    let id = receipt["task_id"].as_str().unwrap();
-    let entry = list_all_tasks_across_all_registries()
-        .await
-        .into_iter()
-        .find(|e| e.task_id == id)
-        .expect("background task registered");
-    assert_eq!(
-        entry.config.principal_id,
-        *peko_subject::PrincipalId::system()
-    );
+    assert!(!ok, "no principal, no background task");
+    assert!(display.contains("Async runtime"), "{display}");
 
     let (display, _, ok) = dispatch(
         "Cron",
@@ -320,4 +449,54 @@ async fn principal_less_dispatch_is_system_owned_and_refused_by_scoped_tools() {
     assert!(!ok, "Cron must refuse a principal-less call");
     assert!(display.contains("Principal context"), "{display}");
     assert!(harness.cron.jobs().is_empty());
+}
+
+/// `run_in_background` inside a background task body is moot: the body
+/// runs inline and the one task carries the result — no second task.
+#[tokio::test]
+async fn async_spawn_of_background_bash_does_not_spawn_a_second_task() {
+    let harness = harness().await;
+    let before = harness.call("Async", json!({"action":"list"})).await.ok()["total"]
+        .as_u64()
+        .unwrap();
+    let id = spawn(
+        &harness,
+        json!({"tool":"Bash", "params":{"command":"echo nested", "run_in_background":true}}),
+    )
+    .await;
+    let out = async_call(&harness, "output", &id, json!({"block":true})).await;
+    assert_eq!(out["status"], "completed", "{out}");
+    assert!(
+        out["result"]["stdout"].as_str().unwrap().contains("nested"),
+        "the task holds the command's output, not another receipt: {out}"
+    );
+    let after = harness.call("Async", json!({"action":"list"})).await.ok()["total"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(after, before + 1, "exactly one task");
+}
+
+/// Foreground calls are not background tasks: their routing entries stay
+/// out of `Async list` unless the call detaches on the foreground timeout,
+/// which turns it into a visible, stoppable task.
+#[tokio::test]
+async fn only_detached_foreground_calls_appear_as_tasks() {
+    let harness = ToolHarness::with_router_timeout(1).await;
+    harness.register(Arc::new(Emit)).await;
+    harness.register(Arc::new(Sleep)).await;
+
+    harness.call("Emit", json!({"lines":1})).await.ok();
+    let listed = harness.call("Async", json!({"action":"list"})).await.ok();
+    assert_eq!(listed["total"], 0, "inline calls are not tasks: {listed}");
+
+    let receipt = harness.call("Sleep", json!({"ms":30000})).await.ok();
+    assert_eq!(receipt["_async_status"], "queued", "{receipt}");
+    let id = receipt["task_id"].as_str().unwrap();
+    let status = async_call(&harness, "status", id, json!({})).await;
+    assert_eq!(
+        status["status"], "running",
+        "detached call is a task: {status}"
+    );
+    let stopped = async_call(&harness, "stop", id, json!({})).await;
+    assert_eq!(stopped["success"], true, "{stopped}");
 }

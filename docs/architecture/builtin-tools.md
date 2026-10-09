@@ -43,8 +43,16 @@ call, including connections made after installation.
 
 Async executors and task registries belong to the principal, so receipts remain
 resolvable after a run ends. Async action spawn stamps the caller session on each task;
-completion events go to that session's inbox. Background Bash and subagent tasks
-remain accessible through the existing principal-filtered registry fallback.
+completion events go to that session's inbox. Bash `run_in_background` takes
+the same path as `Async action=spawn tool=Bash`: the dispatcher hands every call
+from a principal a background spawner backed by that principal's Async runtime,
+so both register one task in the principal's executor. A background task's body
+runs inline under the task's own timeout and cancellation — it is not subject to
+the foreground tool timeout — and streams live output to `Async output`.
+Subagent runs and foreground calls detached on timeout remain reachable through
+the principal-filtered global registry fallback. A foreground call is not a
+background task: the dispatcher's routing entry for it appears in Async
+list/status only once the call detaches on the foreground timeout.
 Every background task has an owning principal: the principal of the call that
 created it (Async spawn, background Bash, a call detached on timeout, subagent
 runs, cron tool jobs). Async list/status/output/stop see only the caller's own
@@ -160,7 +168,7 @@ Execute shell commands, synchronously or in the background.
 | `timeout` | integer | no | ≥ 1 |
 | `max_output_bytes` | integer | no | ≥ 1 |
 
-timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode. Background execution returns an async receipt.
+timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode. Background execution returns an async receipt; it runs through the caller principal's Async runtime exactly like `Async action=spawn tool=Bash`, and `timeout` bounds the task.
 
 ## Agents, roles, and skills
 

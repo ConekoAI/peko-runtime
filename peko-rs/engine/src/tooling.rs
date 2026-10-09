@@ -31,6 +31,10 @@ pub struct ToolCallSpec {
     /// `is_aborted()` check is meaningful; `None` for non-cancellable
     /// dispatches.
     pub abort_signal: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Set when this call is the body of a background task: the task's
+    /// live-output buffer. The host runs such calls inline (the task's own
+    /// timeout and cancellation govern) and hands the buffer to the tool.
+    pub background_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
 }
 
 impl ToolCallSpec {
@@ -47,6 +51,7 @@ impl ToolCallSpec {
             principal_id: None,
             principal_name: None,
             abort_signal: None,
+            background_progress: None,
         }
     }
 }

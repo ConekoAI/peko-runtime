@@ -6,10 +6,11 @@
 //! - Security boundary is tool enablement (enabled = full access)
 //!
 //! Supports both blocking execution and `run_in_background` for parity with
-//! Claude Code's `Bash` tool. Background tasks are tracked by the async executor
-//! framework; poll them with the Async* family (Async action output, Async action status,
-//! Async action stop, Async action list) — there is no implicit auto-detach in this tool;
-//! blocking calls are bounded only by `timeout`.
+//! Claude Code's `Bash` tool. `run_in_background` spawns the command through
+//! the caller principal's background spawner — the same path as
+//! `Async action=spawn tool=Bash` — and the task body then streams its output
+//! into the task's live buffer. Poll with the Async family (output, status,
+//! stop, list); blocking calls are bounded only by `timeout`.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -18,11 +19,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::process::Command;
 
-use crate::async_exec::executor::{
-    get_or_create_registry_for_agent, shared_inbox_registry, AsyncExecutor,
-};
-use crate::async_exec::AsyncToolConfig;
-use peko_tools_core::{Tool, ToolContext};
+use peko_tools_core::{BackgroundSpawn, Tool, ToolContext};
 
 /// Platform-specific shell configuration
 #[cfg(unix)]
@@ -111,43 +108,6 @@ impl BashTool {
             .or_else(|| self.workspace_dir.clone())
     }
 
-    /// Shared background executor for `run_in_background`.
-    ///
-    /// Uses a global registry keyed under the synthetic agent name `Bash` so
-    /// the async-task-control family can find background shell tasks through
-    /// the `AsyncExecutorRuntime` global-registry fallback (which consults
-    /// `find_task_across_all_registries` when the per-call registry misses).
-    ///
-    /// The inbox registry is the process-shared one
-    /// ([`shared_inbox_registry`]) — the daemon installs it at `AppState`
-    /// construction — so completion events land in the same per-session
-    /// inboxes the agentic loop drains (P0-4, 2026-09-27; previously this
-    /// was a standalone registry nobody read).
-    fn background_executor() -> Arc<AsyncExecutor> {
-        use std::sync::OnceLock;
-        static EXECUTOR: OnceLock<Arc<AsyncExecutor>> = OnceLock::new();
-        EXECUTOR
-            .get_or_init(|| {
-                let registry = get_or_create_registry_for_agent("Bash");
-                Arc::new(AsyncExecutor::with_registries(
-                    registry,
-                    shared_inbox_registry(),
-                ))
-            })
-            .clone()
-    }
-
-    /// Parent session key for a background task: the plain session id
-    /// from the tool context — the same key the agentic loop drains its
-    /// inbox under (`Agent::build_agentic_loop`'s `async_inbox_key`).
-    /// The previous `{agent_id}_{session_id}` composite landed in an
-    /// inbox nobody drains (P0-4).
-    fn parent_session_key(ctx: Option<&ToolContext>) -> String {
-        ctx.and_then(|c| c.session_id.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".to_string())
-    }
-
     /// Execute a shell command with an optional per-call timeout.
     ///
     /// `ctx` is observed for soft-interrupt: when the engine has plumbed
@@ -212,65 +172,38 @@ impl BashTool {
         Self::format_output(&output, max_output_bytes)
     }
 
-    /// Run a command in the background via the async executor.
-    async fn execute_command_background(
-        command: String,
-        working_dir: Option<std::path::PathBuf>,
+    /// Start the command as a background task owned by the caller's
+    /// principal: the call re-enters this tool as the task body (see
+    /// [`ToolContext::background`]), exactly like `Async action=spawn`.
+    async fn spawn_background(
+        params: serde_json::Value,
         timeout_ms: Option<u64>,
         ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
-        let task_id = format!("Bash:{}", uuid::Uuid::new_v4());
-        // §4.1: live progress buffer, shared three ways — into the task's
-        // config (so the registry entry carries it), into the streaming
-        // reader below (which appends child output as it is produced),
-        // and read back by `Async action output` on a still-running task and by
-        // the executor's delivery pass when the task is cancelled or
-        // times out (where no real result ever materializes).
-        let progress: Arc<std::sync::Mutex<String>> = Arc::default();
-        let config = AsyncToolConfig {
-            // Preserve millisecond precision by using `timeout_millis` when set;
-            // the executor will fall back to `timeout_secs` otherwise.
-            timeout_millis: timeout_ms,
-            // Per-principal isolation (P1-4): the calling principal owns the
-            // task; a call without one is system-owned and invisible to all.
-            principal_id: ctx
-                .and_then(|c| c.principal_id.clone())
-                .map(peko_subject::PrincipalId)
-                .unwrap_or_else(|| peko_subject::PrincipalId::system().clone()),
-            progress: Some(Arc::clone(&progress)),
-            ..Default::default()
+        let (Some(ctx), Some(spawner)) = (ctx, ctx.and_then(|c| c.background.spawner.clone()))
+        else {
+            anyhow::bail!(
+                "Bash run_in_background needs the calling principal's Async runtime; \
+                 none is available for this call"
+            );
         };
-
-        let receipt = Self::background_executor()
-            .execute_cancellable(
-                task_id.clone(),
-                "Bash",
-                json!({ "command": &command, "cwd": working_dir.as_ref().map(|p| p.to_string_lossy().to_string()) }),
-                Self::parent_session_key(ctx),
-                config,
-                move |abort_rx| async move {
-                    // Background tasks stream their output through
-                    // `Async action output` (fed by the progress buffer) and the
-                    // per-call cap is not applied here. The abort receiver
-                    // is the executor's cancel channel: `Async action stop` →
-                    // `AsyncExecutor::cancel` flips it, the `select!` in
-                    // the streaming path bails, and dropping the child
-                    // (`kill_on_drop(true)`) kills the process, so a
-                    // stopped background shell command no longer leaves
-                    // the process running (P1-2).
-                    Self::execute_command_streaming(
-                        &command,
-                        working_dir,
-                        abort_rx,
-                        Arc::clone(&progress),
-                    )
-                    .await
+        let mut params = params;
+        if let Some(object) = params.as_object_mut() {
+            object.remove("run_in_background");
+            object.remove("timeout");
+        }
+        let task_id = spawner
+            .spawn(
+                BackgroundSpawn {
+                    tool: "Bash".to_string(),
+                    params,
+                    timeout_millis: timeout_ms,
                 },
+                ctx,
             )
             .await?;
-
         Ok(json!({
-            "task_id": receipt.task_id,
+            "task_id": task_id,
             "status": "running",
             "tool": "Bash",
         }))
@@ -414,13 +347,18 @@ impl BashTool {
         params: serde_json::Value,
         ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
-        let args: BashArgs = serde_json::from_value(params)
+        let args: BashArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let cwd = self.resolve_cwd(args.cwd.as_deref());
 
-        if args.run_in_background {
-            Self::execute_command_background(args.command, cwd, args.timeout, ctx).await
+        // A background-task body streams into the task's live buffer under
+        // the task's timeout and cancellation; `run_in_background` inside a
+        // task is moot (it is already background).
+        if let Some((ctx, progress)) = ctx.and_then(|c| Some((c, c.background.progress.clone()?))) {
+            Self::execute_command_streaming(&args.command, cwd, ctx.abort_signal(), progress).await
+        } else if args.run_in_background {
+            Self::spawn_background(params, args.timeout, ctx).await
         } else {
             Self::execute_command_blocking(
                 &args.command,
@@ -754,21 +692,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bash_run_in_background_returns_receipt() {
-        let tool = BashTool::new();
+    async fn run_in_background_without_a_spawner_is_refused() {
+        // Background tasks are always owned by a principal: without the
+        // caller's Async runtime there is nowhere to register one.
+        let error = BashTool::new()
+            .execute(json!({"command": "echo nope", "run_in_background": true}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Async runtime"), "{error}");
+    }
 
-        let params = json!({
-            "command": if cfg!(windows) { "Start-Sleep -Seconds 1; Write-Output done" } else { "sleep 1 && echo done" },
-            "run_in_background": true,
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok(), "Failed: {result:?}");
-
-        let response = result.unwrap();
-        assert!(response["task_id"].as_str().unwrap().starts_with("Bash:"));
-        assert_eq!(response["status"], "running");
-        assert_eq!(response["tool"], "Bash");
+    #[tokio::test]
+    async fn task_body_streams_into_the_progress_buffer() {
+        let progress: Arc<std::sync::Mutex<String>> = Arc::default();
+        let mut ctx = ToolContext::default_for_tool("Bash");
+        ctx.background.progress = Some(Arc::clone(&progress));
+        // `max_output_bytes` does not apply to a background task body.
+        let result = BashTool::new()
+            .execute_with_context(
+                json!({"command": "echo streamed", "max_output_bytes": 1}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            result["stdout"].as_str().unwrap().contains("streamed"),
+            "{result}"
+        );
+        assert!(progress.lock().unwrap().contains("streamed"));
     }
 
     #[tokio::test]

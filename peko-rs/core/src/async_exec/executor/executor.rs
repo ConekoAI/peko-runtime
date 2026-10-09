@@ -823,10 +823,14 @@ impl AsyncExecutor {
         &self,
         tooling: &Arc<ToolingRuntime>,
         context: ToolDispatchContext,
-        config: AsyncToolConfig,
+        mut config: AsyncToolConfig,
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<AsyncTaskReceipt> {
         let task_id = context.make_task_id();
+        // The dispatched call IS the task body: it runs inline under this
+        // task's timeout and cancellation (no foreground detach), and the
+        // same buffer backs the entry's live `partial_output`.
+        let progress = config.progress.get_or_insert_with(Arc::default).clone();
 
         // Snapshot the fields execute_inner needs before the closure
         // consumes `context`.
@@ -864,6 +868,7 @@ impl AsyncExecutor {
                     principal_id: context.principal_id,
                     principal_name: context.principal_name,
                     abort_signal: Some(rx),
+                    background_progress: Some(progress),
                 };
                 let (text, json, success) =
                     peko_engine::ToolFunnel::execute(&*tooling_for_closure, spec).await?;

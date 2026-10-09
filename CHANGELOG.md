@@ -24,6 +24,15 @@ All notable changes to Peko.
   tasks were previously visible to, and cancellable by, every principal).
   `ExecuteTool` IPC fails closed when its session key resolves to no loaded
   principal, restoring ADR-061 D2 (lost when ADR-066 removed the grant gate).
+- Unify background execution. Bash `run_in_background` now spawns through the
+  caller principal's Async runtime — the same path, executor, and registry as
+  `Async action=spawn tool=Bash` — via a `BackgroundSpawner` the dispatcher
+  attaches to `ToolContext`; Bash's process-global executor is gone. A
+  background task's body runs inline under the task's timeout instead of the
+  foreground tool timeout, fixing Async (and cron tool) tasks that were capped
+  at 300s and completed with a "queued" receipt instead of their result. Both
+  entrances stream live output and stop kills the process. Foreground calls'
+  routing entries no longer appear in `Async list` unless they detach.
 
 ### Vendor-neutral model setup docs (2026-10-09)
 

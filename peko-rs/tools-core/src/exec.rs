@@ -121,6 +121,8 @@ pub struct ToolContext {
     /// Human-readable Principal name. Cron-scoped tools use this to
     /// create and filter jobs for the current Principal.
     pub principal_name: Option<String>,
+    /// Background-execution hooks (spawner + task-body progress sink).
+    pub background: crate::background::BackgroundContext,
 }
 
 impl ToolContext {
@@ -149,6 +151,7 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            background: Default::default(),
         }
     }
 
@@ -177,6 +180,7 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            background: Default::default(),
         }
     }
 
@@ -207,6 +211,7 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            background: Default::default(),
         }
     }
 
@@ -262,6 +267,7 @@ impl ToolContext {
             workspace: None,
             principal_id: None,
             principal_name: None,
+            background: Default::default(),
         }
     }
 

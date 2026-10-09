@@ -182,6 +182,16 @@ workspace, agent id, and principal name when scheduling. Its default delegates t
 `spawn`, preserving existing adapter implementations. Production captures a live
 run binding before scheduling and otherwise uses caller-aware daemon defaults.
 Detached dispatcher futures retain their run binding through execution.
+
+`peko_tools_core::{BackgroundContext, BackgroundSpawner, BackgroundSpawn}`:
+`ToolContext.background` carries a `spawner` (the caller principal's Async
+runtime, bound by `install_async` via `ToolDispatcher::bind_async_runtime`) and,
+for a background-task body, a `progress` buffer. Tools start themselves in the
+background through the spawner (Bash `run_in_background`), which is the
+`Async action=spawn` path. `ToolCallSpec.background_progress` marks a task body;
+the dispatcher runs it inline, skipping the foreground timeout router.
+`SpawnRequest.timeout_millis` (internal) carries millisecond task lifetimes.
+`AsyncExecutionRouter::tool_timeout(secs)` overrides the foreground timeout.
 ModelList is a stable principal service; AgentConfig has no tool visibility toggle.
 McpManager::get_tool_bindings returns server/tool pairs for MCP catalog attribution.
 
