@@ -21,20 +21,9 @@ pub struct CronUpdateAction {
 }
 
 impl CronUpdateAction {
-    /// Create a new `Cron action update` tool
-    pub fn new() -> Self {
-        Self::bound(RuntimeBinding::default())
-    }
-
     /// Bind the action to the runtime its domain tool resolves.
     pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
         Self { runtime }
-    }
-}
-
-impl Default for CronUpdateAction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -92,12 +81,6 @@ impl Tool for CronUpdateAction {
                 {"anyOf": [{"required": ["enabled"]}, {"required": ["wake_on_completion"]}]}
             ]
         })
-    }
-
-    /// F33: cron DB write — opt out of parallel dispatch. See
-    /// `Cron action create::parallelizable` for the rationale.
-    fn parallelizable(&self) -> bool {
-        false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

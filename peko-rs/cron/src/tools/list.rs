@@ -16,20 +16,9 @@ pub struct CronListAction {
 }
 
 impl CronListAction {
-    /// Create a new `Cron action list` tool
-    pub fn new() -> Self {
-        Self::bound(RuntimeBinding::default())
-    }
-
     /// Bind the action to the runtime its domain tool resolves.
     pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
         Self { runtime }
-    }
-}
-
-impl Default for CronListAction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

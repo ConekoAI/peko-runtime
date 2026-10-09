@@ -21,20 +21,9 @@ pub struct CronDeleteAction {
 }
 
 impl CronDeleteAction {
-    /// Create a new `Cron action delete` tool
-    pub fn new() -> Self {
-        Self::bound(RuntimeBinding::default())
-    }
-
     /// Bind the action to the runtime its domain tool resolves.
     pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
         Self { runtime }
-    }
-}
-
-impl Default for CronDeleteAction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -83,14 +72,6 @@ impl Tool for CronDeleteAction {
                 { "required": ["label"] }
             ]
         })
-    }
-
-    /// F33: cron DB write — opt out of parallel dispatch. See
-    /// `Cron action create::parallelizable` for the rationale (single-row
-    /// delete is atomic but interleaving with a concurrent create or
-    /// delete by the same id can race).
-    fn parallelizable(&self) -> bool {
-        false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
