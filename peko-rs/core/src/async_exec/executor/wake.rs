@@ -99,6 +99,11 @@ pub fn notify_completion_wake(notice: CompletionWakeNotice) {
 
 #[cfg(test)]
 mod tests {
+    //! The hook is process-global and `cargo test` runs tests in parallel:
+    //! every test that installs or fires it is `serial(wake_hook)` (shared
+    //! with the executor's wake tests), and assertions only count notices
+    //! for this test's own session keys, since unrelated executor tests
+    //! may complete tasks while a handler is installed.
     use super::*;
     use std::sync::Mutex;
 
@@ -112,39 +117,48 @@ mod tests {
         }
     }
 
-    #[test]
-    fn notify_without_handler_is_noop() {
-        uninstall_completion_wake_handler();
-        notify_completion_wake(notice("s1")); // must not panic
-    }
-
-    #[test]
-    fn installed_handler_receives_notice() {
+    /// Install a handler recording session keys that start with `prefix`.
+    fn record(prefix: &'static str) -> Arc<Mutex<Vec<String>>> {
         let hits = Arc::new(Mutex::new(Vec::new()));
         let hits_w = Arc::clone(&hits);
         install_completion_wake_handler(Arc::new(move |n| {
-            hits_w.lock().unwrap().push(n.session_key);
+            if n.session_key.starts_with(prefix) {
+                hits_w.lock().unwrap().push(n.session_key);
+            }
         }));
-        notify_completion_wake(notice("s-wake"));
-        assert_eq!(hits.lock().unwrap().as_slice(), &["s-wake".to_string()]);
-        uninstall_completion_wake_handler();
+        hits
     }
 
     #[test]
-    fn reinstall_replaces_previous_handler() {
-        let first = Arc::new(Mutex::new(0usize));
-        let second = Arc::new(Mutex::new(0usize));
-        let first_w = Arc::clone(&first);
-        install_completion_wake_handler(Arc::new(move |_| {
-            *first_w.lock().unwrap() += 1;
-        }));
-        let second_w = Arc::clone(&second);
-        install_completion_wake_handler(Arc::new(move |_| {
-            *second_w.lock().unwrap() += 1;
-        }));
-        notify_completion_wake(notice("s"));
-        assert_eq!(*first.lock().unwrap(), 0, "replaced handler must not fire");
-        assert_eq!(*second.lock().unwrap(), 1);
+    #[serial_test::serial(wake_hook)]
+    fn notify_without_handler_is_noop() {
         uninstall_completion_wake_handler();
+        notify_completion_wake(notice("wake-noop")); // must not panic
+    }
+
+    #[test]
+    #[serial_test::serial(wake_hook)]
+    fn installed_handler_receives_notice() {
+        let hits = record("wake-installed");
+        notify_completion_wake(notice("wake-installed"));
+        uninstall_completion_wake_handler();
+        assert_eq!(
+            hits.lock().unwrap().as_slice(),
+            &["wake-installed".to_string()]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(wake_hook)]
+    fn reinstall_replaces_previous_handler() {
+        let first = record("wake-reinstall");
+        let second = record("wake-reinstall");
+        notify_completion_wake(notice("wake-reinstall"));
+        uninstall_completion_wake_handler();
+        assert!(
+            first.lock().unwrap().is_empty(),
+            "replaced handler must not fire"
+        );
+        assert_eq!(second.lock().unwrap().len(), 1);
     }
 }
