@@ -1058,4 +1058,63 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_grep_include_hidden_searches_dotfiles_and_dot_dirs() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join(".git"))
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("visible.txt"), "TOKEN")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join(".env"), "TOKEN")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join(".git").join("config"), "TOKEN")
+            .await
+            .unwrap();
+
+        let files = |result: serde_json::Value| result["files_with_matches"].clone();
+        let default = tool
+            .execute(json!({"pattern": "TOKEN", "output_mode": "files_with_matches"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            files(default),
+            1,
+            "dotfiles and dot-dirs skipped by default"
+        );
+        let hidden = tool
+            .execute(json!({
+                "pattern": "TOKEN",
+                "output_mode": "files_with_matches",
+                "include_hidden": true
+            }))
+            .await
+            .unwrap();
+        assert_eq!(files(hidden), 3);
+    }
+
+    #[tokio::test]
+    async fn test_grep_include_content_false_omits_line_text() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("a.txt"), "first\nsecret line\n")
+            .await
+            .unwrap();
+
+        let with = tool.execute(json!({"pattern": "secret"})).await.unwrap();
+        let with = with["output"].as_str().unwrap().to_string();
+        assert!(with.ends_with("a.txt:2:secret line\n"), "{with}");
+
+        let without = tool
+            .execute(json!({"pattern": "secret", "include_content": false}))
+            .await
+            .unwrap();
+        let without = without["output"].as_str().unwrap().to_string();
+        assert!(without.ends_with("a.txt:2:\n"), "location only: {without}");
+        assert!(!without.contains("secret"), "{without}");
+    }
 }
