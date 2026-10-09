@@ -1361,6 +1361,120 @@ mod tests {
     use crate::agents::subagent_runtime_impl::{AgentPrompt, AgentPromptFrontmatter};
     use std::path::PathBuf;
 
+    fn validate(params: serde_json::Value) -> Result<(), String> {
+        let args: AgentArgs = serde_json::from_value(params).unwrap();
+        parse_action(&args.action)
+            .and_then(|action| validate_action_args(action, &args))
+            .map_err(|e| e.to_string())
+    }
+
+    /// The argument contract every action enforces before any session is
+    /// touched: each refusal names what was wrong.
+    #[test]
+    fn malformed_arguments_are_refused_with_the_reason() {
+        let ok = |extra: serde_json::Value| {
+            let mut p = serde_json::json!({ "prompt": "go", "role": "primary" });
+            p.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            p
+        };
+        for (params, expected) in [
+            (
+                ok(serde_json::json!({ "action": "fork", "path": "a" })),
+                "unknown action 'fork'",
+            ),
+            (
+                ok(serde_json::json!({ "path": "a", "source": "sess:/x" })),
+                "'source' is only valid",
+            ),
+            (
+                ok(serde_json::json!({ "action": "resume", "path": "sess:/a", "overwrite": true })),
+                "'overwrite' is only valid",
+            ),
+            (
+                ok(serde_json::json!({ "action": "resume", "path": "sess:/a", "page_limit": 5 })),
+                "'page_limit' is only valid",
+            ),
+            (
+                ok(serde_json::json!({ "path": "a", "page_limit": 0 })),
+                "between 1 and 10000",
+            ),
+            (
+                ok(serde_json::json!({ "path": "a", "page_limit": 10_001 })),
+                "between 1 and 10000",
+            ),
+            (
+                serde_json::json!({ "path": "a", "role": "primary" }),
+                "requires 'prompt' and 'role'",
+            ),
+            (ok(serde_json::json!({})), "\"new\" requires 'path'"),
+            (ok(serde_json::json!({ "path": "a/b" })), "not a valid slug"),
+            (
+                ok(serde_json::json!({ "path": "sess:/a//b" })),
+                "not a valid slug path",
+            ),
+            (
+                ok(serde_json::json!({ "action": "resume" })),
+                "\"resume\" requires 'path'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "resume", "path": "sess:/" })),
+                "not a valid slug path",
+            ),
+            (
+                serde_json::json!({ "action": "resume", "path": "sess:/a", "role": "primary" }),
+                "\"resume\" requires 'prompt'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "compact" })),
+                "\"compact\" requires 'path'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "compact", "path": "sess:/" })),
+                "not a valid slug path",
+            ),
+            (
+                serde_json::json!({ "action": "compact", "path": "sess:/a", "prompt": "go" }),
+                "\"compact\" requires 'prompt'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "branch" })),
+                "\"branch\" requires 'path'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "branch", "path": "a/b" })),
+                "not a valid slug",
+            ),
+            (
+                ok(serde_json::json!({ "action": "branch", "path": "sess:/a//b" })),
+                "not a valid slug path",
+            ),
+            (
+                serde_json::json!({ "action": "branch", "path": "b", "role": "primary" }),
+                "\"branch\" requires 'prompt'",
+            ),
+            (
+                ok(serde_json::json!({ "action": "branch", "path": "b", "source": "sess:/a//b" })),
+                "'source' is not a valid slug path",
+            ),
+        ] {
+            let error = validate(params.clone()).expect_err(&params.to_string());
+            assert!(error.contains(expected), "{params}: {error}");
+        }
+        for params in [
+            ok(serde_json::json!({ "path": "a", "page_limit": 10_000 })),
+            ok(serde_json::json!({ "path": "sess:/top" })),
+            ok(serde_json::json!({ "action": "resume", "path": "sess:/a/b" })),
+            ok(serde_json::json!({ "action": "compact", "path": "sess:/a" })),
+            ok(
+                serde_json::json!({ "action": "branch", "path": "b", "source": "sess:/a", "overwrite": true }),
+            ),
+        ] {
+            validate(params.clone()).unwrap_or_else(|e| panic!("{params}: {e}"));
+        }
+    }
+
     fn make_test_prompt(name: &str, description: Option<&str>) -> Arc<AgentPrompt> {
         Arc::new(AgentPrompt {
             name: name.to_string(),
