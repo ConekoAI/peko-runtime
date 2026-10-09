@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool coverage, round 4 (2026-10-09)
+
+- Fix unbounded background-task progress: the 64 KiB cap on a task's live
+  progress buffer lived only in an uncalled registry method, so a chatty
+  background `Bash` grew it for the task's whole lifetime. Task bodies now
+  write through `peko_tools_core::background::append_progress`, which keeps
+  the newest 64 KiB.
+- Remove dead async-backbone code found by coverage: the inbox sink traits and
+  `InboxSinkRegistry` (no implementors outside their own test), the
+  `TestAsyncRuntime` fake, `AsyncExecutor::{execute_cancellable, run_janitor,
+  wait_for_all_tasks, list_tasks}`, a `wait_for_async_tasks` chain whose router
+  end only slept for the full timeout, unused registry methods and its
+  `TaskView` copy, `AsyncTaskStatus`'s hand-written serde (nothing serializes
+  it), and a duplicate `SubagentResult`.
+- Cover task-file records and the daemon's task-file cleanup, and the Agent
+  tool's argument contract for every action.
+
 ### Built-in tool coverage, round 3 (2026-10-09)
 
 - Fix Plan steps with unresolvable dependencies: a malformed `dependsOn` id was
