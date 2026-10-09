@@ -231,10 +231,12 @@ impl BashTool {
             // Preserve millisecond precision by using `timeout_millis` when set;
             // the executor will fall back to `timeout_secs` otherwise.
             timeout_millis: timeout_ms,
-            // Per-principal isolation: stamp the calling principal so other
-            // principals' `Async action list`/`Async action stop` can't see or cancel this
-            // task (P1-4).
-            principal_id: ctx.and_then(|c| c.principal_id.clone()),
+            // Per-principal isolation (P1-4): the calling principal owns the
+            // task; a call without one is system-owned and invisible to all.
+            principal_id: ctx
+                .and_then(|c| c.principal_id.clone())
+                .map(peko_subject::PrincipalId)
+                .unwrap_or_else(|| peko_subject::PrincipalId::system().clone()),
             progress: Some(Arc::clone(&progress)),
             ..Default::default()
         };

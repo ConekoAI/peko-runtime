@@ -45,6 +45,12 @@ Async executors and task registries belong to the principal, so receipts remain
 resolvable after a run ends. Async action spawn stamps the caller session on each task;
 completion events go to that session's inbox. Background Bash and subagent tasks
 remain accessible through the existing principal-filtered registry fallback.
+Every background task has an owning principal: the principal of the call that
+created it (Async spawn, background Bash, a call detached on timeout, subagent
+runs, cron tool jobs). Async list/status/output/stop see only the caller's own
+tasks. Work created without a principal is owned by the system principal and is
+visible to no principal; the `ExecuteTool` IPC path refuses calls whose session
+key resolves to no loaded principal (ADR-061 D2).
 These lifetimes do not introduce a new authorization boundary; the principal
 remains the trust boundary. See [ADR-069](adr/ADR-069-builtin-tool-installation-lifetimes.md).
 

@@ -235,3 +235,47 @@ async fn spawning_an_unknown_tool_fails_the_task() {
     assert_eq!(out["is_terminal"], true, "{out}");
     assert_eq!(out["status"], "failed", "{out}");
 }
+
+/// Background work is owned by the principal whose call created it: the
+/// harness's Async runtime (bound to the default caller) sees its own
+/// background Bash, and never one started by another principal.
+#[tokio::test]
+async fn background_bash_is_owned_by_the_calling_principal() {
+    use crate::tools::builtin::test_harness::Caller;
+    let harness = harness().await;
+    let mine = harness
+        .call(
+            "Bash",
+            json!({"command":"echo owned", "run_in_background":true}),
+        )
+        .await
+        .ok();
+    let theirs = harness
+        .call_as(
+            &Caller::principal("did:peko:other"),
+            "Bash",
+            json!({"command":"echo foreign", "run_in_background":true}),
+        )
+        .await
+        .ok();
+    let id = |receipt: &Value| receipt["task_id"].as_str().expect("receipt").to_string();
+
+    let status = async_call(&harness, "status", &id(&mine), json!({})).await;
+    assert_eq!(status["tool_name"], "Bash", "owner sees its task: {status}");
+    let foreign = async_call(&harness, "status", &id(&theirs), json!({})).await;
+    assert_eq!(foreign["error"], "Task not found", "{foreign}");
+    let stop = async_call(&harness, "stop", &id(&theirs), json!({})).await;
+    assert_eq!(
+        stop["success"], false,
+        "cannot cancel another principal's task"
+    );
+
+    // A call with no principal at all is system-owned — visible to no
+    // principal (it used to be visible to every principal).
+    let unowned = crate::tools::builtin::BashTool::new()
+        .execute(json!({"command":"echo unowned", "run_in_background":true}))
+        .await
+        .unwrap();
+    let hidden = async_call(&harness, "status", &id(&unowned), json!({})).await;
+    assert_eq!(hidden["error"], "Task not found", "{hidden}");
+}

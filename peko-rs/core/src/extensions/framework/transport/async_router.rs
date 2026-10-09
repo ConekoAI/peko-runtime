@@ -213,7 +213,11 @@ impl AsyncExecutionRouter {
             label: Some(tool_name.to_string()),
             wake_on_completion: true,
             principal_root_session_key: None,
-            principal_id: tool_context.principal_id.clone(),
+            principal_id: tool_context
+                .principal_id
+                .clone()
+                .map(peko_subject::PrincipalId)
+                .unwrap_or_else(|| peko_subject::PrincipalId::system().clone()),
             deliver_completion: false,
             // The router polls the registry for its result; the inbox
             // event is suppressed until the call detaches (see the

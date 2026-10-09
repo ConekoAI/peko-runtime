@@ -994,7 +994,7 @@ delivery stack. New/changed public items:
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `AsyncToolConfig.principal_id` / `.deliver_completion` | `async_exec::executor::types` | ✅ Extended | Per-principal ownership stamp (filtered by `AsyncExecutorRuntime`); `deliver_completion: false` suppresses the inbox push until `enable_completion_delivery` flips it (router detach). `delivery_mode`/`delivery_target` removed |
+| `AsyncToolConfig.principal_id` / `.deliver_completion` | `async_exec::executor::types` | ✅ Extended | Required `PrincipalId` owner (defaults to `PrincipalId::system()`, visible to no principal); `AsyncExecutorRuntime` shows a task only to its owner; `deliver_completion: false` suppresses the inbox push until `enable_completion_delivery` flips it (router detach). `delivery_mode`/`delivery_target` removed |
 | `wake::{install_completion_wake_handler, uninstall_completion_wake_handler, notify_completion_wake, CompletionWakeNotice, CompletionWakeHandler, WAKE_TURN_MARKER}` | `async_exec::executor::wake` | ✅ New | Process-global idle-session wake hook; daemon handler in `daemon::completion_wake` drives the successor turn |
 | `executor::{install_shared_inbox_registry, shared_inbox_registry, DEFAULT_MAX_CONCURRENT_TASKS}` | `async_exec::executor` | ✅ New | Process-global daemon inbox registry slot (installed by `AppState::new`); default task concurrency bound |
 | `AsyncExecutor::{execute_cancellable, enable_completion_delivery, with_max_concurrent}` | `async_exec::executor` | ✅ New | Watch-channel cancel wiring for non-dispatch spawns (background `Bash`); detach-time delivery flip; bound override |

@@ -18,6 +18,12 @@ All notable changes to Peko.
   request serialization. Plan tool tests use the production PlanStorage
   instead of a hand-written fake. New coverage for Async action
   parameters and Glob/Grep `include_dirs`/`include_hidden`/`include_content`.
+- Every background task now has an owning principal. `AsyncToolConfig`'s
+  owner is a required `PrincipalId`; calls without a principal are owned by the
+  system principal, which no principal's Async surface can see (unattributed
+  tasks were previously visible to, and cancellable by, every principal).
+  `ExecuteTool` IPC fails closed when its session key resolves to no loaded
+  principal, restoring ADR-061 D2 (lost when ADR-066 removed the grant gate).
 
 ### Vendor-neutral model setup docs (2026-10-09)
 

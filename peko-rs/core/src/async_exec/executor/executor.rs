@@ -369,7 +369,8 @@ impl AsyncExecutor {
                 session_key: delivered_key,
                 task_id,
                 tool_name,
-                principal_id: claimed.config.principal_id.clone(),
+                principal_id: (claimed.config.principal_id != *peko_subject::PrincipalId::system())
+                    .then(|| claimed.config.principal_id.0.clone()),
                 via_steering,
             });
         }
@@ -1255,7 +1256,7 @@ mod consolidation_tests {
 
         let (exec, _registry) = make_executor();
         let mut cfg = AsyncToolConfig::default();
-        cfg.principal_id = Some("prin_a".to_string());
+        cfg.principal_id = peko_subject::PrincipalId("prin_a".to_string());
         exec.execute(
             "tool:wake-me".to_string(),
             "tool",
@@ -1339,7 +1340,7 @@ mod consolidation_tests {
         let (exec, _registry) = make_executor();
         let mut cfg = AsyncToolConfig::default();
         cfg.principal_root_session_key = Some("root:alice".to_string());
-        cfg.principal_id = Some("prin_a".to_string());
+        cfg.principal_id = peko_subject::PrincipalId("prin_a".to_string());
         exec.execute(
             "tool:cron-wake".to_string(),
             "tool",

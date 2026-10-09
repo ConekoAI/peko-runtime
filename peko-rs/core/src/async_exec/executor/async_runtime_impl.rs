@@ -120,7 +120,7 @@ impl AsyncExecutorRuntime {
             wake_on_completion: request.wake_on_completion,
             // Ownership stamping (P1-4): the task belongs to the spawning
             // principal so other principals' Async* surfaces can't see it.
-            principal_id: Some(self.principal_id.0.clone()),
+            principal_id: self.principal_id.clone(),
             ..Default::default()
         };
 
@@ -183,17 +183,14 @@ impl AsyncExecutorRuntime {
     }
 
     /// Per-principal isolation (P1-4): an entry is visible to this
-    /// runtime iff it was stamped with this principal's id, or is
-    /// unattributed (`None` — process-level/test tasks). A task stamped
-    /// with a DIFFERENT principal is treated as nonexistent — same
+    /// runtime iff this principal owns it. Every task has an owner —
+    /// system-owned tasks (calls without a principal) are visible to no
+    /// principal. Anything else is treated as nonexistent — same
     /// `NotFound` the caller would get for a genuinely unknown id, so
     /// the cross-registry fallback no longer leaks other principals'
     /// tasks into `Async action list`/`Async action status`/`Async action stop`.
     fn is_visible(&self, entry: &super::registry::AsyncTaskEntry) -> bool {
-        match entry.config.principal_id.as_deref() {
-            None => true,
-            Some(owner) => owner == self.principal_id.0,
-        }
+        entry.config.principal_id == self.principal_id
     }
 }
 
@@ -665,7 +662,9 @@ mod tests {
 
     /// P1-4: a task stamped with principal A is invisible to principal
     /// B's runtime across lookup / list / cancel / wait — and visible
-    /// to A's own runtime through the global-registry fallback.
+    /// to A's own runtime through the global-registry fallback. A
+    /// system-owned task (a call that carried no principal) is visible to
+    /// neither: unattributed work must never leak across principals.
     #[tokio::test]
     async fn cross_principal_tasks_are_invisible() {
         let agent_key = format!("test-isolation-{}", uuid::Uuid::new_v4());
@@ -678,9 +677,16 @@ mod tests {
                 serde_json::json!({}),
                 "session_a".to_string(),
                 super::super::types::AsyncToolConfig {
-                    principal_id: Some("prin_a".to_string()),
+                    principal_id: PrincipalId("prin_a".to_string()),
                     ..Default::default()
                 },
+            ));
+            reg.register(super::super::registry::AsyncTaskEntry::new(
+                "tool:system-task".to_string(),
+                "tool".to_string(),
+                serde_json::json!({}),
+                "session_s".to_string(),
+                super::super::types::AsyncToolConfig::default(),
             ));
         }
 
@@ -727,12 +733,23 @@ mod tests {
             "other principal's blocking wait must error as not-found"
         );
 
-        // The task itself is untouched (cancel was refused).
+        for runtime in [&runtime_a, &runtime_b] {
+            assert!(runtime.lookup("tool:system-task").await.is_none());
+            assert!(runtime
+                .list(None, None)
+                .await
+                .iter()
+                .all(|t| t.task_id != "tool:system-task"));
+            assert!(matches!(
+                runtime.cancel("tool:system-task").await,
+                PortCancelResult::NotFound
+            ));
+        }
+
+        // The tasks themselves are untouched (every cancel was refused).
         let reg = registry.read().await;
-        assert!(!reg
-            .get(&"tool:a-task".to_string())
-            .unwrap()
-            .status
-            .is_terminal());
+        for id in ["tool:a-task", "tool:system-task"] {
+            assert!(!reg.get(&id.to_string()).unwrap().status.is_terminal());
+        }
     }
 }

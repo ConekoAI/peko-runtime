@@ -1897,7 +1897,7 @@ impl SubagentExecutor {
             // Subagent runs belong to the spawning principal — stamped so
             // the `Async*` control surface of OTHER principals cannot see
             // or cancel them (P1-4).
-            principal_id: Some(self.principal_id.0.clone()),
+            principal_id: self.principal_id.clone(),
             deliver_completion: true,
             progress: None,
         };

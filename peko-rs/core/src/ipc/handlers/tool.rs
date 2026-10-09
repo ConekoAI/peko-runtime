@@ -266,6 +266,24 @@ impl ToolHandler {
         let attribution = self
             .resolve_session_grants(&session_key, "ExecuteTool")
             .await;
+        // ADR-061 D2: attribution failure fails closed. The capability
+        // gate's deny-all used to provide this; with the gate retired
+        // (ADR-066) the refusal is explicit, so no call — and no
+        // background task it spawns — runs without an owning principal.
+        if attribution.principal_id.is_none() {
+            send_response(
+                sink,
+                ResponsePacket::Error {
+                    request_id,
+                    message: format!(
+                        "ExecuteTool refused: session_key '{session_key}' does not resolve \
+                         to a loaded principal"
+                    ),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
 
         // Session-id selection: a valid token carrying the calling node
         // id threads the real session UUID; a token without one (or no
@@ -569,12 +587,11 @@ mod tests {
         assert!(!truncated);
     }
 
-    /// ADR-066 P2: no capability gate — an unknown `session_key`
-    /// resolves to no principal attribution, and the tool still runs
-    /// (there is no grant set to deny against).
+    /// ADR-061 D2: an unknown `session_key` resolves to no principal, so
+    /// the call fails closed — nothing runs unattributed.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn execute_tool_unknown_session_key_executes_unattributed() {
+    async fn execute_tool_unknown_session_key_fails_closed() {
         let fx = fixture("known").await;
         let marker = fx.workspace.join("created-by-unattributed-call");
 
@@ -588,14 +605,11 @@ mod tests {
         )
         .await;
 
-        let ResponsePacket::ToolExecuted {
-            content, success, ..
-        } = response
-        else {
-            panic!("expected ToolExecuted, got {response:?}");
+        let ResponsePacket::Error { message, .. } = response else {
+            panic!("expected Error, got {response:?}");
         };
-        assert!(success, "no gate: tool executes unattributed: {content}");
-        assert!(marker.exists(), "the tool ran");
+        assert!(message.contains("does not resolve"), "message: {message}");
+        assert!(!marker.exists(), "refused tool must not have run");
     }
 
     /// ADR-066 P2: a principal with no grants at all executes Bash —
