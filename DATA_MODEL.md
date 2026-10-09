@@ -463,12 +463,11 @@ pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 # Remote registry settings are retired (ADR-066).
 
 # ── Provider credentials ───────────────────────────────────────────────────
-# API keys are resolved at runtime from environment variables.
+# There is no [providers] table. Models live in the catalog
+# (~/.peko/models.toml, written by `peko model add`) and API keys live in
+# the encrypted vault (OS keychain), referenced by each entry's
+# `credential_id`. Keys are not read from environment variables.
 # Never store keys in this file.
-
-[providers]
-anthropic_api_key_env = "ANTHROPIC_API_KEY"   # Optional. Default: "ANTHROPIC_API_KEY"
-openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_KEY"
 
 # Tooling is supplied by workspace files; no capability installation settings.
 

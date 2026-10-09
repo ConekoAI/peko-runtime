@@ -26,7 +26,7 @@ Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, peko-
 - ✅ **Event Router** — Central event routing and subscription system
 
 ### LLM & Providers
-- ✅ **15+ LLM Providers** — OpenAI, Anthropic, Kimi, OpenRouter, and more
+- ✅ **Any LLM Endpoint** — Add any model that speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses wire format (hosted or self-hosted); no built-in vendor presets
 - ✅ **Streaming Output** — Real-time progressive output with tool visibility
 
 ### Tools & Extensions
@@ -53,11 +53,11 @@ Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, peko-
 
 ### Prerequisites
 
-Set your LLM provider API key:
-
-```bash
-export OPENAI_API_KEY="your-key"  # or ANTHROPIC_API_KEY, KIMI_API_KEY, etc.
-```
+You need an LLM endpoint that speaks one of the three supported wire formats
+(`anthropic_messages`, `openai_completions`, `openai_responses`), its base URL,
+the wire model id it expects, and — unless it is a keyless local endpoint — an
+API key. The key is stored in the encrypted vault (OS keychain) when you add the
+model; the runtime does not read provider keys from environment variables.
 
 ### Build
 
@@ -76,11 +76,16 @@ cargo build --release
 ### Basic Usage
 
 ```bash
-# Add a model to the catalog (only needed once; specify the endpoint + wire id)
-./target/release/peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
+# Add a model to the catalog (only needed once). Supply the endpoint's API
+# format, base URL, and wire model id; --key stores the API key in the vault.
+./target/release/peko model add --id my-model \
+    --api-format openai_completions \
+    --base-url https://llm.example.com/v1 \
+    --model <wire-model-id> \
+    --key "<your-api-key>"
 
 # Create a peko using the configured model
-./target/release/peko create myprincipal --model openai-gpt-4o
+./target/release/peko create myprincipal --model my-model
 
 # Send a message to a peko (primary interaction method)
 ./target/release/peko send myprincipal "Hello, what can you do?"
@@ -142,21 +147,25 @@ peko log <PEKO> --watch                       # Follow the thread live
 #### Authentication (model catalog + vault)
 ```bash
 # 1. Configure the model and store its key in the vault (`~/.peko/models.toml` stores only a reference)
-peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
+peko model add --id my-model \
+               --api-format anthropic_messages \
+               --base-url https://llm.example.com \
+               --model <wire-model-id> \
+               --key "<your-api-key>"
 peko model add --no-key --id my-local \
                --api-format openai_completions \
                --base-url http://localhost:8080/v1 \
                --model llama-3.1-8b
 
 # 2. Create a peko using the configured model
-peko create alice --model openai-gpt-4o
+peko create alice --model my-model
 
 # Inspect / manage the catalog and vault
 peko model list
-peko model show openai-gpt-4o
-peko model compare openai-gpt-4o claude-sonnet-4-5
+peko model show my-model
+peko model compare my-model my-local
 peko credential list --namespace llm
-peko model test openai-gpt-4o
+peko model test my-model
 
 # PekoHub login (separate flow)
 peko login --api-key ph_xxx --registry https://hub.example.com

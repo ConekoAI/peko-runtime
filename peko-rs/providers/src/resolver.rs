@@ -14,13 +14,14 @@
 //!    `preferred_model_id`. The Principal must be created with a model.
 //! 3. error — "no model configured for this call"
 //!
-//! ## Env-var bootstrap (CI / headless)
+//! ## Env-var bootstrap (tests only)
 //!
-//! On platforms without an OS keychain (or for CI), `LlmResolver`
-//! can be started with `--bootstrap-env-keys`. In that mode, if the
-//! credential vault has no credential for the configured model, the
-//! resolver falls back to the conventional `*_API_KEY` env vars. This
-//! is a read-only path: keys found this way are never written back.
+//! Provider keys live in the credential vault (OS keychain). The daemon
+//! enables an env-var fallback only when `PEKO_TEST_RESOLVER_BOOTSTRAP`
+//! is set, which the integration-test harnesses use. In that mode, if
+//! the vault has no credential for the configured model, the resolver
+//! reads `<MODEL_ID>_API_KEY` (see `env_var_candidates`). This is a
+//! read-only path: keys found this way are never written back.
 
 use anyhow::{anyhow, Context, Result};
 use secrecy::{ExposeSecret, SecretString};
@@ -121,8 +122,8 @@ impl LlmResolver {
         self
     }
 
-    /// Enable the env-var bootstrap path. Intended for CI and headless
-    /// deployments where the OS keychain is unavailable.
+    /// Enable the env-var bootstrap path. Test-only: the daemon calls
+    /// this when `PEKO_TEST_RESOLVER_BOOTSTRAP` is set.
     #[must_use]
     pub fn with_env_bootstrap(mut self) -> Self {
         self.bootstrap_env_keys = true;

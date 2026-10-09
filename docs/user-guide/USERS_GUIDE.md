@@ -20,7 +20,7 @@ Welcome to the Peko User Guide! This guide will help you understand and use Peko
 Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
 
 - Run autonomous AI pekos locally
-- Connect pekos to LLM providers (OpenAI, Anthropic, Kimi, Ollama, etc.)
+- Connect pekos to any LLM endpoint that speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses wire format (hosted or local)
 - Manage persistent conversation memory automatically
 - Orchestrate tools, skills, MCP servers, and gateways through a unified extension system
 
@@ -165,29 +165,35 @@ for the send/stop/log surface built on it.
 
 ## Running Your First Peko
 
-### 1. Set Your API Key
+### 1. Add a Model
+
+Models are added generically — there are no built-in vendor presets. Supply
+the endpoint's wire format, base URL, and wire model id:
 
 ```bash
-# For OpenAI
-export OPENAI_API_KEY="sk-..."
-
-# For Anthropic
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-# For Kimi
-export KIMI_API_KEY="your-kimi-key"
+./target/release/peko model add --id my-model \
+    --api-format openai_completions \
+    --base-url https://llm.example.com/v1 \
+    --model <wire-model-id> \
+    --key "<your-api-key>"
 ```
 
-### 2. Add a Model
+`--api-format` is one of `anthropic_messages`, `openai_completions`, or
+`openai_responses`. `--key` stores the API key in the encrypted vault (OS
+keychain); `~/.peko/models.toml` keeps only a reference. Use `--no-key` for
+local endpoints that need no key. Provider keys are never read from
+environment variables.
+
+### 2. Verify the Model
 
 ```bash
-./target/release/peko model add --id openai-gpt-4o --api-format openai_completions --base-url https://api.openai.com/v1 --model gpt-4o --key "$OPENAI_API_KEY"
+./target/release/peko model test my-model
 ```
 
 ### 3. Create a Peko
 
 ```bash
-./target/release/peko create my-principal
+./target/release/peko create my-principal --model my-model
 ```
 
 ### 4. Send a Message
@@ -248,12 +254,13 @@ spawning a fresh one; `subagent_type` must match the declaration.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Your OpenAI API key |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key |
-| `KIMI_API_KEY` | Your Kimi API key |
 | `RUST_LOG` | Logging level (debug, info, warn, error) |
 | `PEKO_CONFIG_DIR` | Configuration directory override |
 | `PEKO_DATA_DIR` | Data directory override |
+
+Model API keys are **not** read from environment variables — they live in
+the encrypted vault (OS keychain). Store them with `peko model add --key`
+or `peko credential set llm <model-id> --kind api_key`.
 
 ### Configuration Priority
 
@@ -419,8 +426,8 @@ listed, inspected, and removed with `Cron` with list/delete actions from inside 
 
 **Solution:**
 - Check the peko exists: `peko list`
-- Verify your API key is set: `echo $OPENAI_API_KEY`
 - Check a model is configured: `peko model list`
+- Live-test the model and its stored key: `peko model test <model-id>`
 - Check the peko configuration: `peko show my-principal`
 
 ### API Key Errors
@@ -428,7 +435,12 @@ listed, inspected, and removed with `Cron` with list/delete actions from inside 
 **Problem:** "Failed to create provider" or API errors.
 
 **Solution:**
-- Verify the API key is set: `echo $OPENAI_API_KEY`
+- Check the model's credential wiring: `peko model show <model-id>` (a
+  missing `credential_id` means no key is stored for it)
+- List stored keys: `peko credential list --namespace llm`
+- Replace a stored key in place: `peko credential set llm <model-id> --kind api_key`
+  (omit `--material` for a hidden prompt)
+- Live-test the endpoint: `peko model test <model-id>`
 - Check the key has sufficient credits
 - Verify network connectivity to the provider
 

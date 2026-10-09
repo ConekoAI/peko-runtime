@@ -270,9 +270,9 @@ max_attempts = 8
 # max_compactions_per_session = 100
 # cooldown_seconds = 60
 #
-# [compaction.model_limits]         # optional context-window overrides
-# openai.gpt-4o = 128000
-# kimi.K2.6 = 262144
+# Context windows come from the model catalog, not this file:
+# `peko model add --context-window <tokens>`. A legacy
+# [compaction.model_limits] block is accepted but ignored.
 "#;
 
 fn config_template(template: &str) -> Option<&'static str> {

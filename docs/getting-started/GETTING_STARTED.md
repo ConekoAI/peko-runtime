@@ -7,11 +7,10 @@ Get up and running with Peko in under 5 minutes.
 ## Prerequisites
 
 - **Rust** 1.70+ — [Install via rustup](https://rustup.rs)
-- **API Key** for one of these providers:
-  - [OpenAI](https://platform.openai.com/api-keys) (GPT-4, GPT-3.5)
-  - [Anthropic](https://console.anthropic.com/) (Claude)
-  - [Kimi](https://platform.moonshot.cn/) (Kimi K2.5)
-  - [Ollama](https://ollama.com) (local models, no key needed)
+- **An LLM endpoint** that speaks one of the three supported wire formats —
+  `anthropic_messages`, `openai_completions`, or `openai_responses` — hosted
+  or self-hosted. You need its base URL, the wire model id it expects, and an
+  API key (local endpoints that need no key are fine too).
 
 ---
 
@@ -31,36 +30,40 @@ cargo build --release
 ./target/release/peko --version
 ```
 
-### 2. Set Your API Key
+### 2. Add a Model
 
 ```bash
-# For OpenAI
-export OPENAI_API_KEY="sk-your-key-here"
-
-# For Anthropic
-export ANTHROPIC_API_KEY="sk-ant-your-key-here"
-
-# For Kimi
-export KIMI_API_KEY="your-kimi-key"
+./target/release/peko model add --id my-model \
+    --api-format anthropic_messages \
+    --base-url https://llm.example.com \
+    --model <wire-model-id> \
+    --key "<your-api-key>"
 ```
 
-> 💡 **Tip:** Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist across sessions.
+| Flag | Meaning |
+|------|---------|
+| `--id` | Name you use for this model inside Peko (defaults to `--model`) |
+| `--api-format` | Wire format: `anthropic_messages`, `openai_completions`, or `openai_responses` |
+| `--base-url` | Endpoint base URL, including any required path prefix (e.g. `/v1`) |
+| `--model` | Model id the endpoint expects on the wire |
+| `--key` | API key; stored in the encrypted vault (OS keychain), never in `models.toml` |
 
-### 3. Add a Provider
+This stores the model wiring in the runtime catalog (`~/.peko/models.toml`)
+and the API key in the vault. Peko does not read provider keys from
+environment variables. For a local endpoint that needs no key, pass
+`--no-key` instead of `--key`. Add `--dry-run` to preview without writing.
+
+### 3. Verify the Model
 
 ```bash
-./target/release/peko model add --id anthropic-claude-sonnet-4-5 --api-format anthropic_messages --base-url https://api.anthropic.com --model claude-sonnet-4-5 \
-    --key "$ANTHROPIC_API_KEY"
+./target/release/peko model test my-model
 ```
-
-This stores the provider wiring in the runtime catalog and the API key in the
-encrypted vault.
 
 ### 4. Create Your First Peko
 
 ```bash
-# Create a new peko
-./target/release/peko create my-principal
+# Create a new peko pinned to the model you added
+./target/release/peko create my-principal --model my-model
 ```
 
 This creates:
@@ -121,7 +124,7 @@ You'll see the peko's response streamed to your terminal.
 ```bash
 # peko lifecycle
 peko list              # List all pekos
-peko create my-principal  # Create a new peko
+peko create my-principal --model my-model  # Create a new peko
 peko show my-principal # Show peko details
 peko export my-principal  # Export to .peko package
 
@@ -151,16 +154,26 @@ peko daemon --help               # Daemon commands
 peko list
 
 # Create the peko if needed
-peko create my-principal
+peko create my-principal --model my-model
 ```
 
-### "API key not found"
+### "no key for model '…'"
 ```bash
-# Verify your key is set
-echo $OPENAI_API_KEY
+# Check the model's credential wiring and that the key is in the vault
+peko model show my-model
+peko credential list --namespace llm
 
-# Set it in your shell
-export OPENAI_API_KEY="sk-..."
+# Model has a credential_id: replace the key in place
+# (omit --material for a hidden prompt)
+peko credential set llm my-model --kind api_key
+
+# Model has no credential_id: re-add it with --key
+peko model remove my-model
+peko model add --id my-model --api-format <fmt> --base-url <url> \
+    --model <wire-model-id> --key "<your-api-key>"
+
+# Confirm the endpoint accepts it
+peko model test my-model
 ```
 
 ### Build fails on Linux

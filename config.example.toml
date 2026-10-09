@@ -3,8 +3,8 @@
 # Peko keeps very little in config files. Before editing anything by hand,
 # know where state actually lives:
 #
-#   models + API keys ..... `peko model add --template <id> --model <wire-id>
-#                           --key "$KEY"` — catalog in ~/.peko/models.toml,
+#   models + API keys ..... `peko model add --api-format <fmt> --base-url <url>
+#                           --model <wire-id> --key <key>` — catalog in ~/.peko/models.toml,
 #                           key material in the OS keychain vault
 #                           (`peko credential set` for manual management)
 #   per-peko settings ..... the peko's own principal.toml (identity, quota,
@@ -53,10 +53,9 @@
 # max_compactions_per_session = 100 # quota limit
 # cooldown_seconds = 60             # minimum seconds between compactions
 
-# Optional: override model context window limits
-# [compaction.model_limits]
-# openai.gpt-4o = 128000
-# kimi.K2.6 = 262144
+# Model context windows are not configured here: compaction reads them from
+# the model catalog. Set one with `peko model add --context-window <tokens>`.
+# A legacy [compaction.model_limits] block is accepted but ignored.
 
 # ════════════════════════════════════════════════════════════════════
 # Notes
