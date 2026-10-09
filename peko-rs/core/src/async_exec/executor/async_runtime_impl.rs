@@ -19,9 +19,9 @@
 //! Production installs a stable executor per principal. Its registry preserves
 //! Async action spawn receipts across turns. Invocation context carries the parent
 //! session, workspace, and principal name, and a live caller binding is retained
-//! for background execution. Lookup/list/cancel also search the existing global
-//! registries for Bash and subagent tasks, applying the principal ownership
-//! filter to every entry.
+//! for background execution. Lookup/list/cancel also search the global
+//! registries (subagent runs, calls detached on the foreground timeout),
+//! applying the principal ownership filter to every entry.
 
 use super::dispatch::ToolDispatchContext;
 use super::executor::AsyncExecutor;
@@ -116,11 +116,12 @@ impl AsyncExecutorRuntime {
             timeout_secs: request
                 .timeout_secs
                 .or_else(|| AsyncToolConfig::default().timeout_secs),
+            timeout_millis: request.timeout_millis,
             label: request.label,
             wake_on_completion: request.wake_on_completion,
             // Ownership stamping (P1-4): the task belongs to the spawning
             // principal so other principals' Async* surfaces can't see it.
-            principal_id: Some(self.principal_id.0.clone()),
+            principal_id: self.principal_id.clone(),
             ..Default::default()
         };
 
@@ -183,17 +184,19 @@ impl AsyncExecutorRuntime {
     }
 
     /// Per-principal isolation (P1-4): an entry is visible to this
-    /// runtime iff it was stamped with this principal's id, or is
-    /// unattributed (`None` — process-level/test tasks). A task stamped
-    /// with a DIFFERENT principal is treated as nonexistent — same
+    /// runtime iff this principal owns it. Every task has an owner —
+    /// system-owned tasks (calls without a principal) are visible to no
+    /// principal. Anything else is treated as nonexistent — same
     /// `NotFound` the caller would get for a genuinely unknown id, so
     /// the cross-registry fallback no longer leaks other principals'
     /// tasks into `Async action list`/`Async action status`/`Async action stop`.
+    ///
+    /// The dispatcher registers every foreground call as a routing task
+    /// (`deliver_completion: false`) so it can detach on timeout; such a
+    /// task becomes background work — and visible — only once it detaches
+    /// (which turns delivery on before the receipt is returned).
     fn is_visible(&self, entry: &super::registry::AsyncTaskEntry) -> bool {
-        match entry.config.principal_id.as_deref() {
-            None => true,
-            Some(owner) => owner == self.principal_id.0,
-        }
+        entry.config.principal_id == self.principal_id && entry.config.deliver_completion
     }
 }
 
@@ -237,7 +240,7 @@ impl AsyncRuntime for AsyncExecutorRuntime {
         // Own-registry entries first, then any tasks from the global
         // per-agent registries (deduped by task_id, own wins). The
         // principal registry owns Async action spawn tasks across turns; the global
-        // merge also includes background Bash and subagent tasks. Every entry passes the
+        // merge also includes subagent runs and detached foreground calls. Every entry passes the
         // per-principal ownership filter (P1-4).
         let mut seen = std::collections::HashSet::new();
         let mut tasks: Vec<TaskView> = Vec::new();
@@ -495,98 +498,6 @@ impl AsyncRuntime for TestAsyncRuntime {
 mod tests {
     use super::*;
     use crate::async_exec::executor::{standalone_inbox_registry, AsyncExecutor};
-    use peko_tools_core::Tool;
-
-    /// Build a runtime whose own executor registry is empty — any
-    /// resolution of a task id must come from the global-registry
-    /// fallback.
-    fn make_runtime() -> Arc<AsyncExecutorRuntime> {
-        let core = crate::tools::runtime::ToolingRuntime::standalone();
-        Arc::new(AsyncExecutorRuntime::new(
-            Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
-            Arc::downgrade(&core),
-            None,
-            PrincipalId::system().clone(),
-        ))
-    }
-
-    /// Bug pin: `Bash { run_in_background: true }` receipts are
-    /// registered in the process-global registry keyed by the
-    /// synthetic `"Bash"` agent, so a runtime bound to a fresh
-    /// per-call executor could not resolve them ("Task not found").
-    /// lookup / list / wait_for_completion / cancel must all resolve
-    /// the receipt through the global-registry fallback.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn bash_background_receipt_resolves_via_global_fallback() {
-        let bash = crate::tools::builtin::BashTool::new();
-        let receipt = bash
-            .execute(serde_json::json!({
-                "command": "echo bg-done",
-                "run_in_background": true,
-            }))
-            .await
-            .unwrap();
-        let task_id = receipt["task_id"].as_str().unwrap().to_string();
-        assert!(task_id.starts_with("Bash:"));
-
-        let runtime = make_runtime();
-
-        let view = runtime
-            .lookup(&task_id)
-            .await
-            .expect("lookup must resolve the Bash receipt id");
-        assert_eq!(view.tool_name, "Bash");
-
-        let list = runtime.list(None, Some("Bash")).await;
-        assert!(
-            list.iter().any(|t| t.task_id == task_id),
-            "list must include the Bash background task"
-        );
-
-        let wait = runtime
-            .wait_for_completion(&task_id, Duration::from_secs(10))
-            .await
-            .unwrap();
-        assert!(
-            matches!(wait, WaitResult::Completed { .. }),
-            "blocking wait must observe completion: {wait:?}"
-        );
-
-        let view = runtime.lookup(&task_id).await.unwrap();
-        assert!(view.is_terminal(), "task should be terminal after wait");
-
-        // Cancel on the terminal task must report AlreadyTerminal —
-        // NotFound would mean the fallback still can't see the task.
-        let cancel = runtime.cancel(&task_id).await;
-        assert!(
-            matches!(cancel, PortCancelResult::AlreadyTerminal { .. }),
-            "cancel on completed task: {cancel:?}"
-        );
-    }
-
-    /// `Async action stop` on a still-running background Bash task must find it
-    /// through the fallback and return `Success`, not `NotFound`.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn bash_background_cancel_resolves_via_global_fallback() {
-        let bash = crate::tools::builtin::BashTool::new();
-        let receipt = bash
-            .execute(serde_json::json!({
-                "command": "sleep 30",
-                "run_in_background": true,
-            }))
-            .await
-            .unwrap();
-        let task_id = receipt["task_id"].as_str().unwrap().to_string();
-
-        let runtime = make_runtime();
-        let cancel = runtime.cancel(&task_id).await;
-        assert!(
-            matches!(cancel, PortCancelResult::Success { .. }),
-            "cancel on running task: {cancel:?}"
-        );
-    }
 
     /// Regression pin: `AsyncExecutor::wait_for_completion` used to
     /// hold the registry read guard for the entire wait, starving the
@@ -647,6 +558,7 @@ mod tests {
                 label: None,
                 wake_on_completion: false,
                 timeout_secs: None,
+                timeout_millis: None,
                 parent_session_id: Some("session_t".to_string()),
             })
             .await
@@ -665,7 +577,9 @@ mod tests {
 
     /// P1-4: a task stamped with principal A is invisible to principal
     /// B's runtime across lookup / list / cancel / wait — and visible
-    /// to A's own runtime through the global-registry fallback.
+    /// to A's own runtime through the global-registry fallback. A
+    /// system-owned task (a call that carried no principal) is visible to
+    /// neither: unattributed work must never leak across principals.
     #[tokio::test]
     async fn cross_principal_tasks_are_invisible() {
         let agent_key = format!("test-isolation-{}", uuid::Uuid::new_v4());
@@ -678,9 +592,16 @@ mod tests {
                 serde_json::json!({}),
                 "session_a".to_string(),
                 super::super::types::AsyncToolConfig {
-                    principal_id: Some("prin_a".to_string()),
+                    principal_id: PrincipalId("prin_a".to_string()),
                     ..Default::default()
                 },
+            ));
+            reg.register(super::super::registry::AsyncTaskEntry::new(
+                "tool:system-task".to_string(),
+                "tool".to_string(),
+                serde_json::json!({}),
+                "session_s".to_string(),
+                super::super::types::AsyncToolConfig::default(),
             ));
         }
 
@@ -727,12 +648,23 @@ mod tests {
             "other principal's blocking wait must error as not-found"
         );
 
-        // The task itself is untouched (cancel was refused).
+        for runtime in [&runtime_a, &runtime_b] {
+            assert!(runtime.lookup("tool:system-task").await.is_none());
+            assert!(runtime
+                .list(None, None)
+                .await
+                .iter()
+                .all(|t| t.task_id != "tool:system-task"));
+            assert!(matches!(
+                runtime.cancel("tool:system-task").await,
+                PortCancelResult::NotFound
+            ));
+        }
+
+        // The tasks themselves are untouched (every cancel was refused).
         let reg = registry.read().await;
-        assert!(!reg
-            .get(&"tool:a-task".to_string())
-            .unwrap()
-            .status
-            .is_terminal());
+        for id in ["tool:a-task", "tool:system-task"] {
+            assert!(!reg.get(&id.to_string()).unwrap().status.is_terminal());
+        }
     }
 }

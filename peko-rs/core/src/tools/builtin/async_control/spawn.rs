@@ -145,6 +145,7 @@ impl AsyncSpawnAction {
             label,
             wake_on_completion,
             timeout_secs,
+            timeout_millis: None,
             parent_session_id: ctx
                 .and_then(|ctx| ctx.session_id.clone())
                 .filter(|s| !s.is_empty()),

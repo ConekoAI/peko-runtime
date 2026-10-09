@@ -905,7 +905,7 @@ impl CronEngine {
             wake_on_completion: wake,
             principal_root_session_key: Some(caller_session_key.clone()),
             label: Some(job.name.clone()),
-            principal_id: Some(snapshot_principal_id.clone()),
+            principal_id: PrincipalId(snapshot_principal_id.clone()),
             ..Default::default()
         };
 

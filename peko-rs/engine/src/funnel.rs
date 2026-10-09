@@ -94,6 +94,7 @@ pub async fn execute_tool_via_core_with_context(
         principal_id,
         principal_name,
         abort_signal,
+        background_progress: None,
     };
     core.execute(spec).await
 }

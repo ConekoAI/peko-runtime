@@ -590,4 +590,43 @@ mod tests {
         assert!(GlobTool::simple_glob_match("my_test_file.rs", "*.rs"));
         assert!(GlobTool::simple_glob_match("test.rs", "test.*"));
     }
+
+    #[tokio::test]
+    async fn test_glob_include_dirs_adds_directory_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join("sub"))
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("a.txt"), "").await.unwrap();
+
+        let kinds = |result: serde_json::Value| -> Vec<(String, String)> {
+            let mut kinds: Vec<_> = result["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    (
+                        e["name"].as_str().unwrap().to_string(),
+                        e["type"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            kinds.sort();
+            kinds
+        };
+        let files_only = tool.execute(json!({"pattern": "*"})).await.unwrap();
+        assert_eq!(kinds(files_only), vec![("a.txt".into(), "file".into())]);
+        let with_dirs = tool
+            .execute(json!({"pattern": "*", "include_dirs": true}))
+            .await
+            .unwrap();
+        assert_eq!(
+            kinds(with_dirs),
+            vec![
+                ("a.txt".into(), "file".into()),
+                ("sub".into(), "dir".into())
+            ]
+        );
+    }
 }

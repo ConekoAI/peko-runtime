@@ -12,7 +12,7 @@
 //! | Backend | Tools |
 //! |---|---|
 //! | temp workspace | Bash, Read, Write, Edit, Glob, Grep, Skill, RoleCatalog |
-//! | real `AsyncExecutor` over this catalog | Async |
+//! | real `AsyncExecutor` over this catalog | Async, Bash `run_in_background` |
 //! | real `ChannelStore` | ChannelRead, ChannelSend (local branches) |
 //! | real `CronScheduler` files (`peko_cron::testing`) | Cron |
 //! | real `ModelCatalog` file | ModelList |
@@ -172,6 +172,16 @@ pub(crate) struct ToolHarness {
 
 impl ToolHarness {
     pub(crate) async fn new() -> Self {
+        Self::with_router_timeout(
+            crate::extensions::framework::transport::async_router::DEFAULT_TOOL_TIMEOUT_SECS,
+        )
+        .await
+    }
+
+    /// Like [`Self::new`], but calls running longer than `secs` detach to
+    /// the background (the dispatcher's timeout path) instead of after the
+    /// production default.
+    pub(crate) async fn with_router_timeout(secs: u64) -> Self {
         let root = tempfile::tempdir().expect("harness tempdir");
         let workspace = root.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("harness workspace");
@@ -183,8 +193,15 @@ impl ToolHarness {
             Arc::new(crate::tools::catalog::ToolCatalog::new()),
             Arc::new(crate::extensions::workspace_dispatcher::WorkspaceHookDispatcher::new()),
             Arc::new(crate::extensions::framework::core::config::ExtensionServices::new()),
+            // Wired like the daemon: detached calls land in the shared
+            // `_global` registry the Async surface searches.
             Arc::new(
-                crate::extensions::framework::transport::async_router::AsyncExecutionRouter::new(),
+                crate::extensions::framework::transport::async_router::AsyncExecutionRouter::with_transport(
+                    crate::extensions::framework::transport::async_transport::create_local_transport_with_inbox(
+                        standalone_inbox_registry(),
+                    ),
+                )
+                .tool_timeout(secs),
             ),
             Some(audit.clone()),
         ));
@@ -210,6 +227,12 @@ impl ToolHarness {
             async_runtime,
             models: Arc::downgrade(&models),
         };
+        // As `install_async` does: the principal's Async runtime is also the
+        // background spawner for its calls (Bash `run_in_background`).
+        tooling.dispatcher().bind_async_runtime(
+            PrincipalId(PRINCIPAL.into()),
+            backends.async_runtime.clone(),
+        );
         let fakes = Fakes::default();
         for tool in builtin_tools(&backends, &fakes) {
             tooling
@@ -242,6 +265,31 @@ impl ToolHarness {
         }
         std::fs::write(&path, contents).expect("write workspace file");
         path
+    }
+
+    /// Give `principal` its own Async runtime (and background spawner), as
+    /// installation does for every loaded principal. The harness's `Async`
+    /// tool stays bound to [`PRINCIPAL`].
+    pub(crate) fn bind_principal(&self, principal: &str) {
+        let runtime = Arc::new(AsyncExecutorRuntime::new(
+            Arc::new(AsyncExecutor::new(standalone_inbox_registry())),
+            Arc::downgrade(&self.tooling),
+            None,
+            PrincipalId(principal.into()),
+        ))
+        .as_shared();
+        self.tooling
+            .dispatcher()
+            .bind_async_runtime(PrincipalId(principal.into()), runtime);
+    }
+
+    /// Register an extra tool (e.g. a test stub for Async to spawn)
+    /// alongside the built-ins.
+    pub(crate) async fn register(&self, tool: Arc<dyn Tool>) {
+        self.tooling
+            .catalog()
+            .register_system(tool, ToolSource::BuiltIn)
+            .await;
     }
 
     /// Dispatch `tool` as the default caller.

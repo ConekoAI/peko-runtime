@@ -4,6 +4,36 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool coverage, round 2 (2026-10-09)
+
+- Fix same-runtime `ChannelSend` to another principal double-posting every
+  request after the first: principal peer slugs took the DID's first 16
+  alphanumerics (spent on the shared `did:peko:<tier>:` prefix), so the
+  caller's DM lookup matched the target's channel. Slugs now use a SHA-256
+  fingerprint of the DID; existing children keep their stored slugs.
+- Fix Plan lookups stalling 10s and failing on principals with no plans yet:
+  PlanStorage now creates its directory before taking the per-plan lock.
+- ChannelSend principal-branch tests run in `cargo test --lib` (they were
+  gated behind `test-utils`) and cover the reply path and per-target
+  request serialization. Plan tool tests use the production PlanStorage
+  instead of a hand-written fake. New coverage for Async action
+  parameters and Glob/Grep `include_dirs`/`include_hidden`/`include_content`.
+- Every background task now has an owning principal. `AsyncToolConfig`'s
+  owner is a required `PrincipalId`; calls without a principal are owned by the
+  system principal, which no principal's Async surface can see (unattributed
+  tasks were previously visible to, and cancellable by, every principal).
+  `ExecuteTool` IPC fails closed when its session key resolves to no loaded
+  principal, restoring ADR-061 D2 (lost when ADR-066 removed the grant gate).
+- Unify background execution. Bash `run_in_background` now spawns through the
+  caller principal's Async runtime — the same path, executor, and registry as
+  `Async action=spawn tool=Bash` — via a `BackgroundSpawner` the dispatcher
+  attaches to `ToolContext`; Bash's process-global executor is gone. A
+  background task's body runs inline under the task's timeout instead of the
+  foreground tool timeout, fixing Async (and cron tool) tasks that were capped
+  at 300s and completed with a "queued" receipt instead of their result. Both
+  entrances stream live output and stop kills the process. Foreground calls'
+  routing entries no longer appear in `Async list` unless they detach.
+
 ### Vendor-neutral model setup docs (2026-10-09)
 
 - Rewrite user-facing model setup (README, GETTING_STARTED, tutorial,

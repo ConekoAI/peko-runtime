@@ -182,6 +182,16 @@ workspace, agent id, and principal name when scheduling. Its default delegates t
 `spawn`, preserving existing adapter implementations. Production captures a live
 run binding before scheduling and otherwise uses caller-aware daemon defaults.
 Detached dispatcher futures retain their run binding through execution.
+
+`peko_tools_core::{BackgroundContext, BackgroundSpawner, BackgroundSpawn}`:
+`ToolContext.background` carries a `spawner` (the caller principal's Async
+runtime, bound by `install_async` via `ToolDispatcher::bind_async_runtime`) and,
+for a background-task body, a `progress` buffer. Tools start themselves in the
+background through the spawner (Bash `run_in_background`), which is the
+`Async action=spawn` path. `ToolCallSpec.background_progress` marks a task body;
+the dispatcher runs it inline, skipping the foreground timeout router.
+`SpawnRequest.timeout_millis` (internal) carries millisecond task lifetimes.
+`AsyncExecutionRouter::tool_timeout(secs)` overrides the foreground timeout.
 ModelList is a stable principal service; AgentConfig has no tool visibility toggle.
 McpManager::get_tool_bindings returns server/tool pairs for MCP catalog attribution.
 
@@ -994,7 +1004,7 @@ delivery stack. New/changed public items:
 
 | Component | Module | Status | Purpose |
 |-----------|--------|--------|---------|
-| `AsyncToolConfig.principal_id` / `.deliver_completion` | `async_exec::executor::types` | ✅ Extended | Per-principal ownership stamp (filtered by `AsyncExecutorRuntime`); `deliver_completion: false` suppresses the inbox push until `enable_completion_delivery` flips it (router detach). `delivery_mode`/`delivery_target` removed |
+| `AsyncToolConfig.principal_id` / `.deliver_completion` | `async_exec::executor::types` | ✅ Extended | Required `PrincipalId` owner (defaults to `PrincipalId::system()`, visible to no principal); `AsyncExecutorRuntime` shows a task only to its owner; `deliver_completion: false` suppresses the inbox push until `enable_completion_delivery` flips it (router detach). `delivery_mode`/`delivery_target` removed |
 | `wake::{install_completion_wake_handler, uninstall_completion_wake_handler, notify_completion_wake, CompletionWakeNotice, CompletionWakeHandler, WAKE_TURN_MARKER}` | `async_exec::executor::wake` | ✅ New | Process-global idle-session wake hook; daemon handler in `daemon::completion_wake` drives the successor turn |
 | `executor::{install_shared_inbox_registry, shared_inbox_registry, DEFAULT_MAX_CONCURRENT_TASKS}` | `async_exec::executor` | ✅ New | Process-global daemon inbox registry slot (installed by `AppState::new`); default task concurrency bound |
 | `AsyncExecutor::{execute_cancellable, enable_completion_delivery, with_max_concurrent}` | `async_exec::executor` | ✅ New | Watch-channel cancel wiring for non-dispatch spawns (background `Bash`); detach-time delivery flip; bound override |

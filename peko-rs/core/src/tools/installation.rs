@@ -261,6 +261,11 @@ pub(crate) async fn install_async(
         principal.clone(),
     ))
     .as_shared();
+    // Tools that start themselves in the background (Bash
+    // `run_in_background`) spawn through this same runtime.
+    tooling
+        .dispatcher()
+        .bind_async_runtime(principal.clone(), Arc::clone(&runtime));
     install_defaults(
         tooling.catalog(),
         principal,

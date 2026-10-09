@@ -164,7 +164,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_step_rejects_duplicate_node_id() {
+    /// A colliding `nodeId` (e.g. a retried call) is idempotent in the
+    /// production storage: the existing node wins and nothing is appended.
+    async fn add_step_with_existing_node_id_is_idempotent() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
         let create = PlanCreateAction::new(port.clone());
@@ -188,7 +190,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res["error"], "Node not found");
+        assert!(res.get("error").is_none(), "{res}");
+        let nodes = res["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1, "nothing appended: {res}");
+        assert_eq!(nodes[0]["step"], "a", "existing node wins");
     }
 
     #[tokio::test]

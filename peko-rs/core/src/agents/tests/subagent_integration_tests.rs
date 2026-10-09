@@ -913,7 +913,7 @@ async fn test_executor_cancel() {
                 label: None,
                 wake_on_completion: true,
                 principal_root_session_key: None,
-                principal_id: None,
+                principal_id: peko_subject::PrincipalId::system().clone(),
                 deliver_completion: true,
                 progress: None,
             },

@@ -10,10 +10,9 @@
 //! reply await surfaces a structured timeout. Offline behavior is now
 //! exactly "durable local post + await timeout".
 //!
-//! Originally `tests/principal_send_offline.rs` (gated by `--features
-//! test-utils`). Moved inline as part of F9.3 so the gated surface can
-//! narrow — the test only consumes `crate::principal::*`, `crate::tunnel::*`,
-//! `peko_auth::*`, `peko_providers::*` etc., all of which stay `pub`.
+//! A fake target responder (see [`spawn_responder`]) covers the reply
+//! path: the reply is returned and mirrored, and concurrent requests to
+//! one target each receive their own reply.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +30,7 @@ use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
 use peko_auth::Subject;
-use peko_channel::{ChannelEvent, ChannelPort, Checkpoint};
+use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint, PostMsg};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 
@@ -121,126 +120,194 @@ async fn dm_posted_rows(
         .collect()
 }
 
+/// Two same-runtime principals, a caller-bound `ChannelSend`, and the
+/// shared channel port, wired like the daemon.
+struct Fixture {
+    _temp: tempfile::TempDir,
+    tooling: Arc<crate::tools::runtime::ToolingRuntime>,
+    manager: Arc<PrincipalManager>,
+    tunnel_port: TunnelChannelPort,
+    channel_port: Arc<dyn ChannelPort>,
+    caller: Arc<crate::principal::Principal>,
+    caller_did: String,
+    target: Arc<crate::principal::Principal>,
+    target_did: String,
+    tool: Arc<dyn peko_tools_core::Tool>,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_HOME", temp.path());
+
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            temp.path().join("config"),
+            temp.path().join("data"),
+            temp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
+            .await
+            .expect("tool runtime should initialize");
+        let workspace = temp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let (resolver, _adapter) = LlmResolver::mock(
+            peko_providers::MockAdapter::new(),
+            &temp.path().join("models.toml"),
+        )
+        .await;
+
+        // One store shared by the manager (DM provisioning) and the
+        // cross-runtime ctx (posts + reply subscription), as in the daemon.
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: temp.path().join("runtime"),
+                shared_dir: None,
+            },
+        ));
+        let tunnel_port = TunnelChannelPort::new(store);
+        let channel_port: Arc<dyn ChannelPort> = Arc::new(tunnel_port.clone());
+
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_tooling(tool_runtime.tooling().clone())
+            .with_resolver(resolver)
+            .with_channel_port(channel_port.clone()),
+        );
+        let caller =
+            create_test_principal(&manager, &workspace, "offline-caller", Subject::Public).await;
+        let caller_did = caller.config.read().await.did.as_ref().unwrap().0.clone();
+        let target = create_test_principal(
+            &manager,
+            &workspace,
+            "offline-target",
+            Subject::Principal(PrincipalDID(caller_did.clone())),
+        )
+        .await;
+        let target_did = target.config.read().await.did.as_ref().unwrap().0.clone();
+
+        // Installed before any tunnel context exists, as on an offline daemon.
+        let tooling = tool_runtime.tooling().clone();
+        tooling.services().set_channel_port(channel_port.clone());
+        let tool = build_channel_send_tool(&tooling, &caller_did).unwrap();
+        Self {
+            _temp: temp,
+            tooling,
+            manager,
+            tunnel_port,
+            channel_port,
+            caller,
+            caller_did,
+            target,
+            target_did,
+            tool,
+        }
+    }
+
+    /// Connect the cross-runtime context; the installed tool picks it up
+    /// on its next call without re-registration.
+    fn connect(&self, response_timeout: Duration) {
+        let runtime_id = "did:key:test-runtime".to_string();
+        self.tooling
+            .services()
+            .set_cross_runtime_a2a_ctx(Arc::new(CrossRuntimeA2aCtx {
+                directory: Arc::new(LocalFirstAgentDirectory::new(
+                    runtime_id.clone(),
+                    self.manager.clone(),
+                    Arc::new(PanicDirectory),
+                )),
+                caller_runtime_id: runtime_id,
+                principal_manager: self.manager.clone(),
+                channel_port: Arc::new(self.tunnel_port.clone()),
+                response_timeout,
+            }));
+    }
+
+    async fn send(&self, text: &str) -> serde_json::Value {
+        let ctx =
+            peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+                .with_principal_id(self.caller.id.0.clone());
+        self.tool
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{}", self.target_did), "text": text}),
+                &ctx,
+            )
+            .await
+            .expect("execute_with_context should not throw")
+    }
+
+    /// The target's DM channel for the caller, provisioned the way the
+    /// tool provisions it (idempotent).
+    async fn target_channel(&self) -> ChannelId {
+        let peer = Subject::Principal(PrincipalDID(self.caller_did.clone()));
+        self.manager
+            .ensure_peer_child_ingress(&self.target, &peer)
+            .await
+            .expect("provision target-side DM")
+            .dm_channel
+            .expect("DM channel")
+    }
+
+    /// Stand in for the target's responder: answer each caller-authored
+    /// root post on the target's DM channel with `pong: <text>` after
+    /// `delay`, authored by the target. Replies are produced in arrival
+    /// order, one at a time.
+    async fn spawn_responder(&self, delay: Duration) -> tokio::task::JoinHandle<()> {
+        let channel = self.target_channel().await;
+        let port = self.channel_port.clone();
+        let caller_raw = self.caller.id.0.clone();
+        let target = Subject::from(&self.target.id);
+        let mut rx = port.subscribe_events(&channel).await;
+        tokio::spawn(async move {
+            let mut answered = 0usize;
+            while rx.recv().await.is_ok() {
+                let roots: Vec<_> = port
+                    .peek_with_ids(&channel, &Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|(id, ev)| match ev {
+                        ChannelEvent::Posted {
+                            author,
+                            parent: None,
+                            text,
+                            ..
+                        } if author == caller_raw => Some((id, text)),
+                        _ => None,
+                    })
+                    .collect();
+                for (id, text) in roots.into_iter().skip(answered) {
+                    tokio::time::sleep(delay).await;
+                    port.post(
+                        &channel,
+                        &target,
+                        PostMsg::reply(id, format!("pong: {text}")),
+                    )
+                    .await
+                    .unwrap();
+                    answered += 1;
+                }
+            }
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
-    let temp = tempfile::tempdir().unwrap();
-    std::env::set_var("PEKO_HOME", temp.path());
-
-    let path_resolver = crate::common::paths::PathResolver::with_dirs(
-        temp.path().join("config"),
-        temp.path().join("data"),
-        temp.path().join("cache"),
-    );
-    let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
-        .await
-        .expect("tool runtime should initialize");
-
-    let workspace = temp.path().join("principals");
-    let workspace_ref = workspace.clone();
-    tokio::fs::create_dir_all(&workspace).await.unwrap();
-
-    let catalog_path = temp.path().join("models.toml");
-    let (resolver, _adapter) =
-        LlmResolver::mock(peko_providers::MockAdapter::new(), &catalog_path).await;
-
-    // The channel port both the manager (DM provisioning) and the
-    // ctx (posts + reply subscription) share — one underlying store,
-    // exactly like the daemon wiring.
-    let store = Arc::new(peko_channel::ChannelStore::new(
-        peko_channel::ChannelConfig {
-            runtime_dir: temp.path().join("runtime"),
-            shared_dir: None,
-        },
-    ));
-    let tunnel_port = TunnelChannelPort::new(store);
-    let channel_port: Arc<dyn ChannelPort> = Arc::new(tunnel_port.clone());
-
-    let principal_manager = Arc::new(
-        PrincipalManager::with_path_resolver(
-            path_resolver,
-            Arc::new(DefaultPrincipalMemoryFactory),
-            Arc::new(DefaultPrincipalRouterFactory),
-            crate::async_exec::executor::standalone_inbox_registry(),
-        )
-        .with_tooling(tool_runtime.tooling().clone())
-        .with_resolver(resolver)
-        .with_channel_port(channel_port.clone()),
-    );
-
-    // Caller principal — its DID becomes the owner of the target.
-    let caller = create_test_principal(
-        &principal_manager,
-        &workspace_ref,
-        "offline-caller",
-        Subject::Public,
-    )
-    .await;
-
-    let caller_did = {
-        let cfg = caller.config.read().await;
-        cfg.did.as_ref().unwrap().0.clone()
-    };
-
-    // Target principal — owned by the caller.
-    let target = create_test_principal(
-        &principal_manager,
-        &workspace_ref,
-        "offline-target",
-        Subject::Principal(PrincipalDID(caller_did.clone())),
-    )
-    .await;
-
-    let target_did = {
-        let cfg = target.config.read().await;
-        cfg.did.as_ref().unwrap().0.clone()
-    };
-
-    // Install before the tunnel context exists, as on an offline daemon.
-    let tooling = tool_runtime.tooling();
-    tooling.services().set_channel_port(channel_port.clone());
-    let tool = build_channel_send_tool(tooling, &caller_did).unwrap();
-    let tool_ctx =
-        peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
-            .with_principal_id(caller.id.0.clone());
-    let offline = tool
-        .execute_with_context(
-            serde_json::json!({"channel": format!("principal:{target_did}"), "text": "ping"}),
-            &tool_ctx,
-        )
-        .await
-        .unwrap();
+    let fx = Fixture::new().await;
+    let offline = fx.send("ping").await;
     assert!(offline["error"]
         .as_str()
         .unwrap()
         .contains("cross-runtime context"));
 
-    let caller_runtime_id = "did:key:test-runtime".to_string();
-    let ctx = Arc::new(CrossRuntimeA2aCtx {
-        directory: Arc::new(LocalFirstAgentDirectory::new(
-            caller_runtime_id.clone(),
-            principal_manager.clone(),
-            Arc::new(PanicDirectory),
-        )),
-        caller_runtime_id,
-        principal_manager: principal_manager.clone(),
-        channel_port: Arc::new(tunnel_port),
-        response_timeout: Duration::from_millis(200),
-    });
-
-    // Connecting later must activate the same tool without re-registration.
-    tooling.services().set_cross_runtime_a2a_ctx(ctx);
-
-    let result = tool
-        .execute_with_context(
-            serde_json::json!({
-                "channel": format!("principal:{target_did}"),
-                "text": "ping",
-            }),
-            &tool_ctx,
-        )
-        .await
-        .expect("execute_with_context should not throw");
+    fx.connect(Duration::from_millis(200));
+    let result = fx.send("ping").await;
 
     // No live responder in this harness → the reply await times out
     // with a structured error.
@@ -255,21 +322,88 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
     // …but the message stands durably on BOTH DM channels:
     // 1. the caller's own channel (self-authored root — the `peko log`
     //    mirror);
-    let caller_peer = Subject::Principal(PrincipalDID(target_did.clone()));
-    let caller_rows = dm_posted_rows(&channel_port, &caller, &caller_peer).await;
+    let caller_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
+    let caller_rows = dm_posted_rows(&fx.channel_port, &fx.caller, &caller_peer).await;
     assert_eq!(
         caller_rows,
-        vec![(caller.id.0.clone(), None, "ping".to_string())],
+        vec![(fx.caller.id.0.clone(), None, "ping".to_string())],
         "caller's DM channel must hold the self-authored outbound post"
     );
 
     // 2. the target's channel (caller-authored root — the post the
     //    target's responder would fire on).
-    let target_peer = Subject::Principal(PrincipalDID(caller_did.clone()));
-    let target_rows = dm_posted_rows(&channel_port, &target, &target_peer).await;
+    let target_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
+    let target_rows = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer).await;
     assert_eq!(
         target_rows,
-        vec![(caller.id.0.clone(), None, "ping".to_string())],
+        vec![(fx.caller.id.0.clone(), None, "ping".to_string())],
         "target's DM channel must hold the caller's root post"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn same_runtime_reply_is_returned_and_mirrored_to_the_callers_log() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_secs(10));
+    let responder = fx.spawn_responder(Duration::ZERO).await;
+
+    let parsed: ChannelSendResult =
+        serde_json::from_value(fx.send("ping").await).expect("parse result");
+    responder.abort();
+    assert!(parsed.success, "{:?}", parsed.error);
+    assert_eq!(parsed.response, "pong: ping");
+    assert_eq!(parsed.kind.as_deref(), Some("principal"));
+    assert_eq!(parsed.channel, format!("principal:{}", fx.target_did));
+    assert!(
+        !parsed.session_id.is_empty(),
+        "caller-side child session id"
+    );
+
+    // The caller's log holds the full exchange: its root, then the reply
+    // attributed to the target and parented on that root.
+    let caller_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
+    let rows = dm_posted_rows(&fx.channel_port, &fx.caller, &caller_peer).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0], (fx.caller.id.0.clone(), None, "ping".to_string()));
+    assert_eq!(rows[1].0, fx.target.id.0, "reply attributed to the target");
+    assert!(
+        rows[1].1.is_some(),
+        "reply is parented on the outbound root"
+    );
+    assert_eq!(rows[1].2, "pong: ping");
+}
+
+/// Replies carry no correlation id, so the per-target await lock is what
+/// keeps overlapping requests from claiming each other's replies.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn concurrent_requests_to_one_target_each_receive_their_own_reply() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_secs(10));
+    let responder = fx.spawn_responder(Duration::from_millis(150)).await;
+
+    let (a, b, c) = tokio::join!(fx.send("a"), fx.send("b"), fx.send("c"));
+    responder.abort();
+    for (sent, result) in [("a", a), ("b", b), ("c", c)] {
+        let parsed: ChannelSendResult = serde_json::from_value(result).expect("parse result");
+        assert!(parsed.success, "{sent}: {:?}", parsed.error);
+        assert_eq!(
+            parsed.response,
+            format!("pong: {sent}"),
+            "{sent} got another reply"
+        );
+    }
+    // Each request lands exactly once on the target's channel: one root,
+    // one reply. (A slug collision once resolved the caller's own DM to
+    // the target's, double-posting every request after the first.)
+    let target_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
+    let rows = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer).await;
+    let roots: Vec<_> = rows
+        .iter()
+        .filter(|r| r.1.is_none())
+        .map(|r| r.2.as_str())
+        .collect();
+    assert_eq!(roots.len(), 3, "one root per request: {rows:?}");
+    assert_eq!(rows.len(), 6, "one reply per request: {rows:?}");
 }

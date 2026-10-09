@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use peko_subject::PrincipalId;
 use peko_tools_core::ToolResult;
 use serde::{Deserialize, Serialize};
 
@@ -65,14 +66,14 @@ pub struct AsyncToolConfig {
     /// `parent_session_key` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_root_session_key: Option<String>,
-    /// Owning principal (string form of the principal id), stamped at
-    /// spawn time by dispatch paths that know the caller. `None` means
-    /// system/unattributed — such tasks remain visible to every
-    /// principal. `AsyncExecutorRuntime` filters `list`/`lookup`/`cancel`
-    /// by this field so one principal's agent cannot observe or cancel
-    /// another principal's tasks.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub principal_id: Option<String>,
+    /// The principal that owns this task. Ownership scopes the Async
+    /// control surface: a principal's `Async list/status/output/stop` see
+    /// only its own tasks (P1-4). Calls that carry no principal (tests,
+    /// process-level work) are owned by [`PrincipalId::system`], which no
+    /// principal's runtime can see — so every task is attributed, and an
+    /// unattributed task can never leak across principals.
+    #[serde(default = "system_owner")]
+    pub principal_id: PrincipalId,
     /// Whether reaching a terminal state pushes a `CompletionEvent`
     /// into the parent session's inbox at all.
     ///
@@ -101,6 +102,11 @@ pub struct AsyncToolConfig {
     pub progress: Option<Arc<std::sync::Mutex<String>>>,
 }
 
+/// Owner for tasks created without a principal.
+fn system_owner() -> PrincipalId {
+    PrincipalId::system().clone()
+}
+
 fn default_wake_on_completion() -> bool {
     true
 }
@@ -122,7 +128,7 @@ impl Default for AsyncToolConfig {
             label: None,
             wake_on_completion: default_wake_on_completion(),
             principal_root_session_key: None,
-            principal_id: None,
+            principal_id: system_owner(),
             deliver_completion: default_deliver_completion(),
             progress: None,
         }

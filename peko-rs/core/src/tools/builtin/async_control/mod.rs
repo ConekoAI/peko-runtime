@@ -52,6 +52,11 @@ pub struct SpawnRequest {
     /// executor's default (2h).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Millisecond-precision lifetime; takes precedence over
+    /// `timeout_secs`. Internal: set by tools that spawn themselves (Bash
+    /// `run_in_background` + `timeout`), not exposed in the Async schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_millis: Option<u64>,
     /// Per-call parent session identity (ADR-061 follow-up): the
     /// session the spawn is attributed to — stamped as the task
     /// record's `parent_session_key` and used as the completion-event
@@ -189,7 +194,7 @@ pub enum CancelResult {
 /// production shares one executor per principal across turns. Caller session
 /// and workspace context are supplied through `spawn_with_context`.
 /// Lookup/list/cancel apply principal ownership, including registry fallbacks
-/// for Bash and subagent producers.
+/// for subagent runs and detached foreground calls.
 #[async_trait]
 pub trait AsyncRuntime: Send + Sync {
     /// Spawn a new async task by invoking `request.tool_name` with
@@ -225,8 +230,42 @@ pub trait AsyncRuntime: Send + Sync {
 /// per-agent swapping (e.g. in tests) is straightforward.
 pub type SharedAsyncRuntime = Arc<dyn AsyncRuntime>;
 
+/// [`peko_tools_core::BackgroundSpawner`] backed by a principal's Async
+/// runtime, so a tool that starts itself in the background (Bash
+/// `run_in_background`) takes exactly the `Async action=spawn` path: same
+/// executor, same registry, same owner.
+pub(crate) struct RuntimeSpawner(pub SharedAsyncRuntime);
+
+#[async_trait]
+impl peko_tools_core::BackgroundSpawner for RuntimeSpawner {
+    async fn spawn(
+        &self,
+        request: peko_tools_core::BackgroundSpawn,
+        ctx: &peko_tools_core::ToolContext,
+    ) -> anyhow::Result<String> {
+        let receipt = self
+            .0
+            .spawn_with_context(
+                SpawnRequest {
+                    tool_name: request.tool,
+                    params: request.params,
+                    label: None,
+                    wake_on_completion: true,
+                    timeout_secs: None,
+                    timeout_millis: request.timeout_millis,
+                    parent_session_id: ctx.session_id.clone().filter(|s| !s.is_empty()),
+                },
+                ctx,
+            )
+            .await?;
+        Ok(receipt.task_id)
+    }
+}
+
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod tool_tests;
 
 mod tool;
 pub use tool::AsyncTool;

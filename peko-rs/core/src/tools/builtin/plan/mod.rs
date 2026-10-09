@@ -96,40 +96,28 @@ pub fn resolve_node_id(s: Option<&str>) -> AnyhowResult<NodeId> {
 }
 
 // ---------------------------------------------------------------------------
-// Test fixture — in-memory PlanPort. Mirrors TestTodoRuntime shape.
+// Test fixture — the production `PlanStorage` in a private tempdir.
 // ---------------------------------------------------------------------------
 
-/// In-memory [`PlanPort`] for tests. Mirrors the production
-/// `PlanStorage` semantics: auto-assigned `plan_id`, monotonic
-/// `updated_at`, the same `AlreadyClosed` / `PrincipalMismatch` /
-/// `InvalidNodeId` error surface. Used by per-tool unit tests.
+/// Production [`peko_plan::PlanStorage`] rooted in a tempdir that lives as
+/// long as the port, so tool tests exercise the real persistence,
+/// validation, and ownership rules instead of a hand-maintained mirror.
 #[cfg(test)]
 pub struct TestPlanPort {
-    plans: std::sync::Mutex<std::collections::HashMap<String, PlanRecord>>,
-    /// Monotonic counter for plan ids (no random component — tests
-    /// are deterministic; the production `rand_u32` + splitmix64
-    /// path stays in `PlanStorage`).
-    next_plan_seq: std::sync::atomic::AtomicU64,
+    _dir: tempfile::TempDir,
+    storage: peko_plan::PlanStorage,
 }
 
 #[cfg(test)]
-use peko_plan::{PlanError, PlanNode, PlanRecord};
+use peko_plan::{NodeEvidence, PlanNode, PlanRecord};
 
 #[cfg(test)]
 impl TestPlanPort {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            plans: std::sync::Mutex::new(std::collections::HashMap::new()),
-            next_plan_seq: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    fn next_plan_id(&self) -> String {
-        let n = self
-            .next_plan_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        format!("plan_{n:08x}")
+        let dir = tempfile::tempdir().expect("plan tempdir");
+        let storage = peko_plan::PlanStorage::new(dir.path().join("plans"));
+        Self { _dir: dir, storage }
     }
 }
 
@@ -141,111 +129,38 @@ impl Default for TestPlanPort {
 }
 
 #[cfg(test)]
-fn now() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc::now()
-}
-
-#[cfg(test)]
 #[async_trait]
 impl PlanPort for TestPlanPort {
     async fn get(&self, plan_id: &str) -> Result<Option<PlanRecord>> {
-        Ok(self.plans.lock().unwrap().get(plan_id).cloned())
+        PlanPort::get(&self.storage, plan_id).await
     }
-
     async fn get_for_principal(
         &self,
         plan_id: &str,
         principal_id: &PrincipalId,
     ) -> Result<PlanRecord> {
-        let plans = self.plans.lock().unwrap();
-        let rec = plans.get(plan_id).cloned().ok_or(PlanError::NotFound)?;
-        if &rec.principal_id != principal_id {
-            return Err(PlanError::PrincipalMismatch {
-                expected: rec.principal_id.0.clone(),
-                got: principal_id.0.clone(),
-            });
-        }
-        Ok(rec)
+        PlanPort::get_for_principal(&self.storage, plan_id, principal_id).await
     }
-
     async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
-        Ok(self
-            .plans
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|r| &r.principal_id == principal_id)
-            .cloned()
-            .collect())
+        PlanPort::list_for_principal(&self.storage, principal_id).await
     }
-
     async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
-        let plans = self.plans.lock().unwrap();
-        Ok(plans
-            .values()
-            .filter(|r| &r.principal_id == principal_id && r.closed.is_none())
-            .filter(|r| {
-                r.nodes
-                    .iter()
-                    .any(|n| matches!(n.status, PlanNodeStatus::InProgress))
-            })
-            .max_by_key(|r| r.updated_at)
-            .cloned())
+        PlanPort::current_focus(&self.storage, principal_id).await
     }
-
     async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
-        let plans = self.plans.lock().unwrap();
-        Ok(plans
-            .values()
-            .filter(|r| &r.principal_id == principal_id && r.closed.is_none())
-            .filter(|r| {
-                r.nodes
-                    .iter()
-                    .any(|n| !matches!(n.status, PlanNodeStatus::Completed { .. }))
-            })
-            .cloned()
-            .collect())
+        PlanPort::load_resumable(&self.storage, principal_id).await
     }
-
     async fn create(
         &self,
         principal_id: PrincipalId,
         title: String,
         nodes: Vec<PlanNode>,
     ) -> Result<PlanRecord> {
-        let id = self.next_plan_id();
-        let ts = now();
-        let rec = PlanRecord {
-            plan_id: id.clone(),
-            principal_id,
-            schema_version: peko_plan::PLAN_SCHEMA_VERSION,
-            title,
-            created_at: ts,
-            updated_at: ts,
-            nodes,
-            closed: None,
-        };
-        self.plans.lock().unwrap().insert(id, rec.clone());
-        Ok(rec)
+        PlanPort::create(&self.storage, principal_id, title, nodes).await
     }
-
     async fn close(&self, plan_id: &str, principal_id: &PrincipalId, reason: String) -> Result<()> {
-        let mut plans = self.plans.lock().unwrap();
-        let rec = plans.get_mut(plan_id).ok_or(PlanError::NotFound)?;
-        if &rec.principal_id != principal_id {
-            return Err(PlanError::PrincipalMismatch {
-                expected: rec.principal_id.0.clone(),
-                got: principal_id.0.clone(),
-            });
-        }
-        if rec.closed.is_some() {
-            return Err(PlanError::AlreadyClosed);
-        }
-        rec.closed = Some(peko_plan::ClosedState::new(reason));
-        rec.updated_at = now();
-        Ok(())
+        PlanPort::close(&self.storage, plan_id, principal_id, reason).await
     }
-
     async fn mark_node_status(
         &self,
         plan_id: &str,
@@ -253,92 +168,24 @@ impl PlanPort for TestPlanPort {
         node_id: &NodeId,
         status: PlanNodeStatus,
     ) -> Result<PlanRecord> {
-        let mut plans = self.plans.lock().unwrap();
-        let rec = plans.get_mut(plan_id).ok_or(PlanError::NotFound)?;
-        if &rec.principal_id != principal_id {
-            return Err(PlanError::PrincipalMismatch {
-                expected: rec.principal_id.0.clone(),
-                got: principal_id.0.clone(),
-            });
-        }
-        let node = rec
-            .nodes
-            .iter_mut()
-            .find(|n| &n.node_id == node_id)
-            .ok_or_else(|| {
-                PlanError::InvalidNodeId(format!(
-                    "node {node_id} not found in plan {}",
-                    rec.plan_id
-                ))
-            })?;
-        node.status = status.clone();
-        node.updated_at = now();
-        node.blocked_reason = match &status {
-            PlanNodeStatus::Blocked { reason, .. } => Some(reason.clone()),
-            _ => None,
-        };
-        rec.updated_at = now();
-        Ok(rec.clone())
+        PlanPort::mark_node_status(&self.storage, plan_id, principal_id, node_id, status).await
     }
-
     async fn set_node_evidence(
         &self,
         plan_id: &str,
         principal_id: &PrincipalId,
         node_id: &NodeId,
-        evidence: peko_plan::NodeEvidence,
+        evidence: NodeEvidence,
     ) -> Result<PlanRecord> {
-        let mut plans = self.plans.lock().unwrap();
-        let rec = plans.get_mut(plan_id).ok_or(PlanError::NotFound)?;
-        if &rec.principal_id != principal_id {
-            return Err(PlanError::PrincipalMismatch {
-                expected: rec.principal_id.0.clone(),
-                got: principal_id.0.clone(),
-            });
-        }
-        let node = rec
-            .nodes
-            .iter_mut()
-            .find(|n| &n.node_id == node_id)
-            .ok_or_else(|| {
-                PlanError::InvalidNodeId(format!(
-                    "node {node_id} not found in plan {}",
-                    rec.plan_id
-                ))
-            })?;
-        node.evidence = Some(evidence);
-        node.updated_at = now();
-        rec.updated_at = now();
-        Ok(rec.clone())
+        PlanPort::set_node_evidence(&self.storage, plan_id, principal_id, node_id, evidence).await
     }
-
     async fn add_node(
         &self,
         plan_id: &str,
         principal_id: &PrincipalId,
         node: PlanNode,
     ) -> Result<PlanRecord> {
-        let mut plans = self.plans.lock().unwrap();
-        let rec = plans.get_mut(plan_id).ok_or(PlanError::NotFound)?;
-        if &rec.principal_id != principal_id {
-            return Err(PlanError::PrincipalMismatch {
-                expected: rec.principal_id.0.clone(),
-                got: principal_id.0.clone(),
-            });
-        }
-        if rec.closed.is_some() {
-            return Err(PlanError::AlreadyClosed);
-        }
-        if rec.nodes.iter().any(|n| n.node_id == node.node_id) {
-            return Err(PlanError::InvalidNodeId(format!(
-                "node {} already exists in plan {}",
-                node.node_id.as_str(),
-                rec.plan_id
-            )));
-        }
-        rec.nodes.push(node);
-        rec.updated_at = now();
-        Ok(rec.clone())
+        PlanPort::add_node(&self.storage, plan_id, principal_id, node).await
     }
 }
 

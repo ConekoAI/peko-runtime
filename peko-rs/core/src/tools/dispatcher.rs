@@ -40,6 +40,18 @@ pub struct ToolDispatcher {
     hooks: Arc<WorkspaceHookDispatcher>,
     router: Arc<AsyncExecutionRouter>,
     audit: Option<Arc<peko_observability::Observability>>,
+    /// Each principal's Async runtime, bound at installation. Calls from a
+    /// bound principal get a background spawner on their context, so every
+    /// background task — Async spawn or a tool starting itself — registers
+    /// in that principal's executor. Shared with run overlays.
+    async_runtimes: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<
+                peko_subject::PrincipalId,
+                crate::tools::builtin::SharedAsyncRuntime,
+            >,
+        >,
+    >,
 }
 
 impl std::fmt::Debug for ToolDispatcher {
@@ -80,7 +92,36 @@ impl ToolDispatcher {
             hooks,
             router,
             audit,
+            async_runtimes: Arc::default(),
         }
+    }
+
+    /// Bind `principal`'s Async runtime as the background spawner for its
+    /// calls.
+    pub(crate) fn bind_async_runtime(
+        &self,
+        principal: peko_subject::PrincipalId,
+        runtime: crate::tools::builtin::SharedAsyncRuntime,
+    ) {
+        self.async_runtimes
+            .write()
+            .expect("async runtimes lock poisoned")
+            .insert(principal, runtime);
+    }
+
+    fn background_spawner(
+        &self,
+        principal: &peko_subject::PrincipalId,
+    ) -> Option<Arc<dyn peko_tools_core::BackgroundSpawner>> {
+        let runtime = self
+            .async_runtimes
+            .read()
+            .expect("async runtimes lock poisoned")
+            .get(principal)
+            .cloned()?;
+        Some(Arc::new(
+            crate::tools::builtin::async_control::RuntimeSpawner(runtime),
+        ))
     }
 
     /// The catalog this dispatcher executes against.
@@ -124,9 +165,11 @@ impl ToolDispatcher {
 
     async fn execute_inner(&self, call: &ToolCallSpec) -> Result<(String, Value, bool)> {
         let tool_name = call.tool_name.clone();
-        let principal_id = call
-            .principal_id
-            .as_deref()
+        // An empty id is no principal: tools must see `None` (and fail
+        // closed), and background work it spawns must be system-owned —
+        // never owned by a principal named "".
+        let caller_principal = call.principal_id.as_deref().filter(|id| !id.is_empty());
+        let principal_id = caller_principal
             .map(|id| peko_subject::PrincipalId(id.to_string()))
             .unwrap_or_else(|| peko_subject::PrincipalId::system().clone());
 
@@ -168,12 +211,21 @@ impl ToolDispatcher {
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
         //    fields.
-        let base_ctx = peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
-            .with_agent_id(call.agent_id.clone().unwrap_or_default())
-            .with_session_id(call.session_id.clone().unwrap_or_default())
-            .with_workspace(call.workspace.clone().unwrap_or_default())
-            .with_principal_id(call.principal_id.clone().unwrap_or_default())
-            .with_principal_name(call.principal_name.clone().unwrap_or_default());
+        let mut base_ctx =
+            peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
+                .with_agent_id(call.agent_id.clone().unwrap_or_default())
+                .with_session_id(call.session_id.clone().unwrap_or_default())
+                .with_workspace(call.workspace.clone().unwrap_or_default());
+        if let Some(id) = caller_principal {
+            base_ctx = base_ctx.with_principal_id(id);
+            if let Some(name) = call.principal_name.as_deref().filter(|n| !n.is_empty()) {
+                base_ctx = base_ctx.with_principal_name(name);
+            }
+        }
+        base_ctx.background = peko_tools_core::BackgroundContext {
+            progress: call.background_progress.clone(),
+            spawner: caller_principal.and_then(|_| self.background_spawner(&principal_id)),
+        };
         let tool_ctx = match call.abort_signal.as_ref() {
             Some(rx) => base_ctx.with_abort_signal(rx.clone()),
             None => base_ctx,
@@ -221,7 +273,7 @@ impl ToolDispatcher {
             "hook_run".to_string(),
         )
         .with_workspace(call.workspace.clone().unwrap_or_else(|| ".".to_string()))
-        .with_principal_id(call.principal_id.clone());
+        .with_principal_id(caller_principal.map(str::to_string));
 
         let mut params = call.params.clone();
         apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());
@@ -229,21 +281,29 @@ impl ToolDispatcher {
         // Detached tools (including Workflow subprocesses) retain their
         // caller's binding until execution ends, without a registry cycle.
         let run_binding = self.run_binding.upgrade();
-        let result = self
-            .router
-            .route(&tool_name, &mut params, &tool_exec_ctx, move |p| {
-                let tool = tool.clone();
-                let tool_ctx = tool_ctx.clone();
-                async move {
-                    let _run_binding = run_binding;
-                    let _interrupt_watch = interrupt_watch;
-                    std::panic::AssertUnwindSafe(tool.execute_with_context(p, &tool_ctx))
-                        .catch_unwind()
-                        .await
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("Tool panicked during execution")))
-                }
-            })
-            .await;
+        let exec = move |p| {
+            let tool = tool.clone();
+            let tool_ctx = tool_ctx.clone();
+            async move {
+                let _run_binding = run_binding;
+                let _interrupt_watch = interrupt_watch;
+                std::panic::AssertUnwindSafe(tool.execute_with_context(p, &tool_ctx))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Tool panicked during execution")))
+            }
+        };
+        // A background-task body already runs in the background under its
+        // task's timeout and cancellation: run it inline. Routing it would
+        // register a second task and impose the foreground timeout, which
+        // detached the work and completed the task with a mere receipt.
+        let result = if call.background_progress.is_some() {
+            exec(params).await
+        } else {
+            self.router
+                .route(&tool_name, &mut params, &tool_exec_ctx, exec)
+                .await
+        };
 
         // 6. Cancel wins over a natural completion.
         let (text, json, success) = if cancel_fired.load(Ordering::SeqCst)
