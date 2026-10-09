@@ -102,3 +102,116 @@ impl Tool for PlanTool {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::builtin::plan::TestPlanPort;
+    use serde_json::json;
+
+    /// One plan's life, every action routed through the domain tool.
+    #[tokio::test]
+    async fn every_action_dispatches_through_the_domain_tool() {
+        let tool = PlanTool::new(std::sync::Arc::new(TestPlanPort::new()));
+        let ctx = ToolContext::for_hook_run("run", "tc", "Plan")
+            .with_principal_id(peko_subject::PrincipalId::generate().0);
+        let call = |params: Value| {
+            let (tool, ctx) = (&tool, &ctx);
+            async move {
+                tool.execute_with_context(params.clone(), ctx)
+                    .await
+                    .unwrap_or_else(|e| panic!("{params}: {e}"))
+            }
+        };
+
+        let created = call(json!({
+            "action": "create",
+            "title": "ship",
+            "nodes": [{ "step": "build", "nodeId": "node_build001" }]
+        }))
+        .await;
+        let plan_id = created["planId"].as_str().unwrap().to_string();
+        call(json!({
+            "action": "add_step",
+            "planId": plan_id,
+            "step": "deploy",
+            "nodeId": "node_deploy01",
+            "dependsOn": ["node_build001"]
+        }))
+        .await;
+        let failed = call(json!({
+            "action": "mark_step",
+            "planId": plan_id,
+            "nodeId": "node_build001",
+            "status": "failed",
+            "reason": "flaky linker"
+        }))
+        .await;
+        assert_eq!(failed["nodes"][0]["status"]["kind"], "failed");
+        assert_eq!(failed["nodes"][0]["status"]["reason"], "flaky linker");
+        let blocked = call(json!({
+            "action": "mark_step",
+            "planId": plan_id,
+            "nodeId": "node_deploy01",
+            "status": "blocked"
+        }))
+        .await;
+        assert_eq!(blocked["nodes"][1]["status"]["reason"], "set by tool");
+        call(json!({
+            "action": "record_evidence",
+            "planId": plan_id,
+            "nodeId": "node_build001",
+            "output": "linker log"
+        }))
+        .await;
+        let got = call(json!({ "action": "get", "planId": plan_id })).await;
+        assert_eq!(got["nodes"].as_array().unwrap().len(), 2);
+        let listed = call(json!({ "action": "list" })).await;
+        assert!(listed.to_string().contains(&plan_id), "{listed}");
+        call(json!({ "action": "close", "planId": plan_id, "reason": "done" })).await;
+
+        let error = tool
+            .execute_with_context(
+                json!({
+                    "action": "mark_step",
+                    "planId": plan_id,
+                    "nodeId": "node_build001",
+                    "status": "paused"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown plan node status: paused"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_actions_and_contextless_calls_are_rejected() {
+        let tool = PlanTool::new(std::sync::Arc::new(TestPlanPort::new()));
+        let ctx = ToolContext::for_hook_run("run", "tc", "Plan").with_principal_id("p");
+        for params in [json!({ "action": "purge" }), json!({})] {
+            let error = tool.execute_with_context(params, &ctx).await.unwrap_err();
+            assert!(error.to_string().contains("supported action"), "{error}");
+        }
+        for action in [
+            "create",
+            "list",
+            "get",
+            "add_step",
+            "mark_step",
+            "record_evidence",
+            "close",
+        ] {
+            let error = tool.execute(json!({ "action": action })).await.unwrap_err();
+            assert!(
+                error.to_string().contains("principal context"),
+                "{action}: {error}"
+            );
+        }
+    }
+}

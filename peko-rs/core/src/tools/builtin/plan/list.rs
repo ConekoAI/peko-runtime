@@ -39,10 +39,6 @@ by created_at ascending (matches PlanStorage::list_for_principal)."
         })
     }
 
-    fn parallelizable(&self) -> bool {
-        true
-    }
-
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(crate::tools::builtin::plan::missing_principal_error())
     }

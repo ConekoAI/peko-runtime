@@ -190,102 +190,106 @@ impl PlanRecord {
             .collect()
     }
 
-    /// DFS cycle check. Returns `Err(PlanError::InvalidNodeId)` if a
-    /// `depends_on` references a node that doesn't exist; returns
-    /// `Err(CorruptCycle)` if the graph has a cycle. Storage does NOT
-    /// call this — it's available to the runtime for callers who want
-    /// strictness on `create`.
+    /// DFS cycle check over this record's nodes; see [`validate_nodes`].
+    /// Storage does NOT call this — it's available to the runtime for
+    /// callers who want strictness on `create`.
     pub fn validate_dag(&self) -> Result<()> {
-        let ids: HashSet<&NodeId> = self.nodes.iter().map(|n| &n.node_id).collect();
-
-        // First pass: every depends_on target must exist.
-        for n in &self.nodes {
-            for dep in &n.depends_on {
-                if !ids.contains(dep) {
-                    return Err(PlanError::InvalidNodeId(format!(
-                        "node {} depends on missing node {}",
-                        n.node_id.as_str(),
-                        dep.as_str()
-                    )));
-                }
-            }
-        }
-
-        // Second pass: cycle check via DFS with white/grey/black coloring.
-        // Implemented by *index* into `nodes` — values, not references —
-        // because stacked references into a borrowed graph fragment fight
-        // the borrow checker on multi-branch DFS. Indices are stable for
-        // the duration of a single call.
-        #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-        enum Color {
-            White,
-            Grey,
-            Black,
-        }
-        let mut color: Vec<Color> = vec![Color::White; self.nodes.len()];
-
-        // Build a forward adjacency by index: dep -> [things that depend on dep].
-        // The dep-existence check above guarantees all `deps[j]` indices
-        // are valid.
-        let mut forward: Vec<Vec<usize>> = vec![Vec::new(); self.nodes.len()];
-        let nodes_by_id: std::collections::HashMap<&NodeId, usize> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (&n.node_id, i))
-            .collect();
-        for (i, n) in self.nodes.iter().enumerate() {
-            for dep in &n.depends_on {
-                let j = *nodes_by_id.get(dep).expect("dep existence checked above");
-                forward[j].push(i);
-            }
-        }
-
-        // Iterative DFS: each frame holds the remaining-neighbors list of
-        // one frame-node. `frame_nodes[i]` parallels `stack[i]` and is
-        // the canonical node id for that frame. Standard 3-color DFS.
-        let mut stack: Vec<Vec<usize>> = Vec::new();
-        let mut frame_nodes: Vec<usize> = Vec::new();
-
-        for start in 0..self.nodes.len() {
-            if color[start] != Color::White {
-                continue;
-            }
-            color[start] = Color::Grey;
-            stack.push(forward[start].clone());
-            frame_nodes.push(start);
-
-            while !stack.is_empty() {
-                // Scoped borrow: `last_mut()` and `pop()` are on a single
-                // expression so the mutable borrow ends before the match.
-                let next_opt = stack.last_mut().unwrap().pop();
-                match next_opt {
-                    Some(next) => match color[next] {
-                        Color::White => {
-                            color[next] = Color::Grey;
-                            stack.push(forward[next].clone());
-                            frame_nodes.push(next);
-                        }
-                        Color::Grey => {
-                            return Err(PlanError::InvalidNodeId(format!(
-                                "plan has cycle through node {}",
-                                self.nodes[next].node_id.as_str()
-                            )));
-                        }
-                        Color::Black => {}
-                    },
-                    None => {
-                        // Frame exhausted: mark Black and pop.
-                        let done = frame_nodes.pop().unwrap();
-                        color[done] = Color::Black;
-                        stack.pop();
-                    }
-                }
-            }
-        }
-
-        Ok(())
+        validate_nodes(&self.nodes)
     }
+}
+
+/// Validate a node set as a DAG. Returns `Err(PlanError::InvalidNodeId)`
+/// if a `depends_on` references a node that isn't in `nodes`, or if the
+/// graph has a cycle.
+pub fn validate_nodes(nodes: &[PlanNode]) -> Result<()> {
+    let ids: HashSet<&NodeId> = nodes.iter().map(|n| &n.node_id).collect();
+
+    // First pass: every depends_on target must exist.
+    for n in nodes {
+        for dep in &n.depends_on {
+            if !ids.contains(dep) {
+                return Err(PlanError::InvalidNodeId(format!(
+                    "node {} depends on missing node {}",
+                    n.node_id.as_str(),
+                    dep.as_str()
+                )));
+            }
+        }
+    }
+
+    // Second pass: cycle check via DFS with white/grey/black coloring.
+    // Implemented by *index* into `nodes` — values, not references —
+    // because stacked references into a borrowed graph fragment fight
+    // the borrow checker on multi-branch DFS. Indices are stable for
+    // the duration of a single call.
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    enum Color {
+        White,
+        Grey,
+        Black,
+    }
+    let mut color: Vec<Color> = vec![Color::White; nodes.len()];
+
+    // Build a forward adjacency by index: dep -> [things that depend on dep].
+    // The dep-existence check above guarantees all `deps[j]` indices
+    // are valid.
+    let mut forward: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let nodes_by_id: std::collections::HashMap<&NodeId, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (&n.node_id, i))
+        .collect();
+    for (i, n) in nodes.iter().enumerate() {
+        for dep in &n.depends_on {
+            let j = *nodes_by_id.get(dep).expect("dep existence checked above");
+            forward[j].push(i);
+        }
+    }
+
+    // Iterative DFS: each frame holds the remaining-neighbors list of
+    // one frame-node. `frame_nodes[i]` parallels `stack[i]` and is
+    // the canonical node id for that frame. Standard 3-color DFS.
+    let mut stack: Vec<Vec<usize>> = Vec::new();
+    let mut frame_nodes: Vec<usize> = Vec::new();
+
+    for start in 0..nodes.len() {
+        if color[start] != Color::White {
+            continue;
+        }
+        color[start] = Color::Grey;
+        stack.push(forward[start].clone());
+        frame_nodes.push(start);
+
+        while !stack.is_empty() {
+            // Scoped borrow: `last_mut()` and `pop()` are on a single
+            // expression so the mutable borrow ends before the match.
+            let next_opt = stack.last_mut().unwrap().pop();
+            match next_opt {
+                Some(next) => match color[next] {
+                    Color::White => {
+                        color[next] = Color::Grey;
+                        stack.push(forward[next].clone());
+                        frame_nodes.push(next);
+                    }
+                    Color::Grey => {
+                        return Err(PlanError::InvalidNodeId(format!(
+                            "plan has cycle through node {}",
+                            nodes[next].node_id.as_str()
+                        )));
+                    }
+                    Color::Black => {}
+                },
+                None => {
+                    // Frame exhausted: mark Black and pop.
+                    let done = frame_nodes.pop().unwrap();
+                    color[done] = Color::Black;
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -33,24 +33,6 @@ pub enum TodoStatus {
     Completed,
 }
 
-impl TodoStatus {
-    /// Return the canonical string representation.
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TodoStatus::Pending => "pending",
-            TodoStatus::InProgress => "in_progress",
-            TodoStatus::Completed => "completed",
-        }
-    }
-}
-
-impl std::fmt::Display for TodoStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 impl FromStr for TodoStatus {
     type Err = anyhow::Error;
 
@@ -166,13 +148,6 @@ impl TestTodoRuntime {
         Self {
             sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
-    }
-}
-
-#[cfg(test)]
-impl Default for TestTodoRuntime {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

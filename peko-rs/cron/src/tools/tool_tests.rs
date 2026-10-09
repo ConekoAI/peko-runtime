@@ -66,20 +66,75 @@ impl Fixture {
     }
 }
 
+const ACTIONS: [&str; 6] = ["create", "list", "delete", "update", "trigger", "history"];
+
 #[tokio::test]
 async fn unbound_tool_reports_missing_runtime() {
     let ctx = ToolContext::for_hook_run("run", "call", "Cron").with_principal_id(ALICE);
-    let error = CronTool::new()
-        .execute_with_context(json!({"action":"list"}), &ctx)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("not initialized"), "{error}");
+    for action in ACTIONS {
+        let error = CronTool::new()
+            .execute_with_context(json!({"action": action}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not initialized"),
+            "{action}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_action_refuses_a_contextless_call() {
+    let fx = Fixture::new();
+    for action in ACTIONS {
+        let error = fx
+            .tool
+            .execute(json!({"action": action}))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("use execute_with_context"),
+            "{action}: {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_action_rejects_mistyped_arguments() {
+    let fx = Fixture::new();
+    for (action, bad) in [
+        ("create", json!({"message": 7})),
+        ("delete", json!({"id": 7})),
+        ("update", json!({"enabled": "yes"})),
+        ("trigger", json!({"label": 7})),
+        ("history", json!({"limit": "ten"})),
+    ] {
+        let mut params = bad;
+        params["action"] = json!(action);
+        let error = fx.err(ALICE, params).await;
+        assert!(error.contains("arguments"), "{action}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn targeted_actions_require_an_id_or_label() {
+    let fx = Fixture::new();
+    for action in ["delete", "update", "trigger", "history"] {
+        // `enabled` gives update something to change; the others ignore it.
+        for params in [
+            json!({"action": action, "enabled": true}),
+            json!({"action": action, "enabled": true, "id": ""}),
+        ] {
+            let error = fx.err(ALICE, params).await;
+            assert!(error.contains("id or label"), "{action}: {error}");
+        }
+    }
 }
 
 #[tokio::test]
 async fn every_action_requires_a_principal_context() {
     let fx = Fixture::new();
-    for action in ["create", "list", "delete", "update", "trigger", "history"] {
+    for action in ACTIONS {
         let error = fx
             .tool
             .execute_with_context(

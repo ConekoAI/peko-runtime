@@ -54,10 +54,6 @@ return value so callers can detect duplicate-close races."
         })
     }
 
-    fn parallelizable(&self) -> bool {
-        false
-    }
-
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(crate::tools::builtin::plan::missing_principal_error())
     }

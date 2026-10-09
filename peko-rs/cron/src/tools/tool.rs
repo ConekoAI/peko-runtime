@@ -101,6 +101,9 @@ impl Tool for CronTool {
             ("history", self.history.parameters()),
         ])
     }
+    /// F33: cron DB write — opt out of parallel dispatch. Concurrent
+    /// creates with the same job name race on the uniqueness check;
+    /// interleaving a create with a delete by id can land half-applied.
     fn parallelizable(&self) -> bool {
         false
     }

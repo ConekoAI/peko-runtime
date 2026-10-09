@@ -285,6 +285,10 @@ impl ToolDispatcher {
         // Detached tools (including Workflow subprocesses) retain their
         // caller's binding until execution ends, without a registry cycle.
         let run_binding = self.run_binding.upgrade();
+        // Kept for the cancel branch: the watcher above is dropped (and so
+        // aborted) when execution ends, which can cut it off before it
+        // stores the tool's notice.
+        let (notice_tool, notice_ctx) = (tool.clone(), tool_ctx.clone());
         let exec = move |p| {
             let tool = tool.clone();
             let tool_ctx = tool_ctx.clone();
@@ -313,11 +317,14 @@ impl ToolDispatcher {
         let (text, json, success) = if cancel_fired.load(Ordering::SeqCst)
             || call.abort_signal.as_ref().is_some_and(|rx| *rx.borrow())
         {
-            let notice = notice_slot
-                .lock()
-                .await
-                .take()
-                .unwrap_or_else(|| ToolInterruptNotice::soft_default("", &tool_name));
+            let stashed = notice_slot.lock().await.take();
+            let notice = match stashed {
+                Some(notice) => notice,
+                // The tool returned before the watcher stored its notice:
+                // ask the tool directly so its preserved / rolled-back
+                // report still reaches the agent.
+                None => notice_tool.on_interrupt("", &notice_ctx).await,
+            };
             let text = notice.to_tool_result_text();
             (text.clone(), Value::String(text), true)
         } else {
@@ -576,5 +583,145 @@ mod tests {
             4,
             "each dispatch is durably audited once"
         );
+    }
+
+    /// Waits for the abort signal (or `ms`), then reports which happened.
+    /// Its interrupt notice records a preserved and a rolled-back effect.
+    struct Interruptible {
+        ignore_abort: bool,
+        ms: u64,
+    }
+    #[async_trait::async_trait]
+    impl Tool for Interruptible {
+        fn name(&self) -> &str {
+            "Interruptible"
+        }
+        fn description(&self) -> String {
+            "cancel probe".into()
+        }
+        async fn execute(&self, _: Value) -> Result<Value> {
+            unreachable!("context required")
+        }
+        async fn execute_with_context(&self, _: Value, ctx: &ToolContext) -> Result<Value> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(self.ms);
+            while std::time::Instant::now() < deadline {
+                if !self.ignore_abort && ctx.is_aborted() {
+                    return Ok(serde_json::json!("observed abort"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Ok(serde_json::json!("finished"))
+        }
+        async fn on_interrupt(&self, id: &str, ctx: &ToolContext) -> ToolInterruptNotice {
+            let mut notice = ToolInterruptNotice::soft_default(id, ctx.tool_name.as_str());
+            notice.preserved = vec!["wrote a.txt".into()];
+            notice.rolled_back = vec!["temp files".into()];
+            notice
+        }
+    }
+
+    async fn dispatch_with_abort(
+        tool: Interruptible,
+        abort_after: Option<std::time::Duration>,
+    ) -> (
+        (String, Value, bool),
+        Vec<peko_observability::AuditEvent>,
+        std::time::Duration,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(
+            peko_observability::Observability::with_audit_dir("test", dir.path().to_path_buf())
+                .unwrap(),
+        );
+        let catalog = Arc::new(ToolCatalog::new());
+        catalog
+            .register_system(Arc::new(tool), ToolSource::BuiltIn)
+            .await;
+        let dispatcher = ToolDispatcher::new(
+            catalog,
+            Arc::new(WorkspaceHookDispatcher::new()),
+            Arc::new(AsyncExecutionRouter::new()),
+            Some(Arc::clone(&audit)),
+        );
+        let (tx, rx) = tokio::sync::watch::channel(abort_after == Some(Default::default()));
+        let mut call = ToolCallSpec::new("Interruptible", serde_json::json!({}));
+        call.principal_id = Some("principal".into());
+        call.abort_signal = Some(rx);
+        if let Some(delay) = abort_after.filter(|d| !d.is_zero()) {
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = tx.send(true);
+            });
+        } else {
+            std::mem::forget(tx);
+        }
+        let start = std::time::Instant::now();
+        let result = dispatcher.execute(call).await.unwrap();
+        let elapsed = start.elapsed();
+        (result, audit.get_audit_log(10).await, elapsed)
+    }
+
+    /// An abort mid-call returns the tool's own interrupt notice — what was
+    /// preserved and rolled back — as a successful result, audited once.
+    #[tokio::test]
+    async fn abort_mid_call_returns_the_tools_interrupt_notice() {
+        let tool = Interruptible {
+            ignore_abort: false,
+            ms: 10_000,
+        };
+        let ((text, value, success), events, elapsed) =
+            dispatch_with_abort(tool, Some(std::time::Duration::from_millis(100))).await;
+        assert!(success, "a cancelled call is not a tool failure: {text}");
+        assert!(
+            text.starts_with("[Interruptible call was CANCELLED]"),
+            "{text}"
+        );
+        assert!(text.contains("Preserved: wrote a.txt"), "{text}");
+        assert!(text.contains("temp files"), "{text}");
+        assert_eq!(value, Value::String(text.clone()));
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+        assert_eq!(events.len(), 1, "audited once");
+        assert_eq!(events[0].details["tool_name"], "Interruptible");
+    }
+
+    /// Cancel wins: a tool that ignores the signal and completes still
+    /// yields the interrupt notice, not its natural result.
+    #[tokio::test]
+    async fn cancel_wins_over_a_natural_completion() {
+        let tool = Interruptible {
+            ignore_abort: true,
+            ms: 300,
+        };
+        let ((text, _, success), _, _) =
+            dispatch_with_abort(tool, Some(std::time::Duration::from_millis(50))).await;
+        assert!(success);
+        assert!(text.contains("CANCELLED"), "{text}");
+        assert!(!text.contains("finished"), "{text}");
+    }
+
+    /// A call aborted before it starts is reported as cancelled.
+    #[tokio::test]
+    async fn abort_before_the_call_starts_is_reported_as_cancelled() {
+        let tool = Interruptible {
+            ignore_abort: false,
+            ms: 10_000,
+        };
+        let ((text, _, success), _, elapsed) =
+            dispatch_with_abort(tool, Some(std::time::Duration::ZERO)).await;
+        assert!(success);
+        assert!(text.contains("CANCELLED"), "{text}");
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    /// Without an abort the tool's result passes through untouched.
+    #[tokio::test]
+    async fn no_abort_returns_the_tools_result() {
+        let tool = Interruptible {
+            ignore_abort: false,
+            ms: 20,
+        };
+        let ((text, value, success), _, _) = dispatch_with_abort(tool, None).await;
+        assert!(success);
+        assert_eq!(value, serde_json::json!("finished"), "{text}");
     }
 }

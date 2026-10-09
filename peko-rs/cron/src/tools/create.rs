@@ -30,20 +30,9 @@ pub struct CronCreateAction {
 }
 
 impl CronCreateAction {
-    /// Create a new `Cron action create` tool
-    pub fn new() -> Self {
-        Self::bound(RuntimeBinding::default())
-    }
-
     /// Bind the action to the runtime its domain tool resolves.
     pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
         Self { runtime }
-    }
-}
-
-impl Default for CronCreateAction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -229,14 +218,6 @@ impl Tool for CronCreateAction {
                 }
             ]
         })
-    }
-
-    /// F33: cron DB write — opt out of parallel dispatch. Concurrent
-    /// `Cron action create` with the same job name races on the uniqueness
-    /// check; interleaving with `Cron action delete` by id can land in a
-    /// half-applied state.
-    fn parallelizable(&self) -> bool {
-        false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

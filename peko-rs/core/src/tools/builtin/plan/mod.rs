@@ -85,6 +85,27 @@ pub fn parse_status_param(s: &str) -> AnyhowResult<PlanNodeStatus> {
     }
 }
 
+/// Parse a step's `dependsOn`. Every entry must be a valid node id: a
+/// malformed one would otherwise drop the dependency silently and let
+/// the step start early.
+pub fn parse_depends_on(value: Option<&serde_json::Value>) -> AnyhowResult<Vec<NodeId>> {
+    let entries = match value {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(v) => v
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("'dependsOn' must be an array of node ids"))?,
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let raw = entry.as_str().ok_or_else(|| {
+                anyhow::anyhow!("'dependsOn' entries must be node ids, got {entry}")
+            })?;
+            NodeId::parse(raw).map_err(|e| anyhow::anyhow!("dependsOn: {e}"))
+        })
+        .collect()
+}
+
 /// Resolve a `NodeId` from a string the LLM supplied. User-supplied
 /// ids must round-trip through [`NodeId::parse`]; fresh ids are
 /// generated when the field is absent.

@@ -20,20 +20,9 @@ pub struct CronHistoryAction {
 }
 
 impl CronHistoryAction {
-    /// Create a new `Cron action history` tool
-    pub fn new() -> Self {
-        Self::bound(RuntimeBinding::default())
-    }
-
     /// Bind the action to the runtime its domain tool resolves.
     pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
         Self { runtime }
-    }
-}
-
-impl Default for CronHistoryAction {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -83,12 +72,6 @@ impl Tool for CronHistoryAction {
                 { "required": ["label"] }
             ]
         })
-    }
-
-    /// Read-only, but shares the cron port with the write tools; keep
-    /// it out of parallel dispatch for consistency with them.
-    fn parallelizable(&self) -> bool {
-        false
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

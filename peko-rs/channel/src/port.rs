@@ -381,7 +381,7 @@ pub struct PostMsg {
     pub text: String,
     pub parent: Option<TaskId>,
     /// Optional agent attribution: the session slug path (e.g.
-    /// `/user-a/reminder`) of the posting agent within the sender's
+    /// `sess:/user-a/reminder`) of the posting agent within the sender's
     /// principal. Persisted verbatim onto `ChannelEvent::Posted::via`
     /// — audit metadata only, never an authority claim. `None` for
     /// human/CLI posts and peer-authored inbound projections.

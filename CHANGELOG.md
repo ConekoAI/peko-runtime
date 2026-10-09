@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool coverage, round 3 (2026-10-09)
+
+- Fix Plan steps with unresolvable dependencies: a malformed `dependsOn` id was
+  silently dropped (the step could start early) and an id not in the plan was
+  stored as a dangling edge (the step could never become ready). `create` now
+  rejects malformed, missing, and cyclic dependencies before persisting, and
+  `add_step` rejects ids that are not in the plan; `peko_plan::validate_nodes`
+  exposes the DAG check. The `add_step` description now matches its
+  idempotent handling of an existing `nodeId`.
+- Fix a lost interrupt notice: a tool aborted just as it finished returned an
+  empty cancellation instead of its own notice.
+- Cover the dispatcher's cancel path: a tool's interrupt notice is returned
+  (and audited once) when a call is aborted, cancel wins over a natural
+  completion, and an abort before the call starts is reported as cancelled.
+- Cover `ChannelSend` to a principal on another runtime: first-contact invite
+  (once), tunnel fan-out, mirrored reply, timeout, and directory refusals.
+- Cover `ChannelSend` `via` attribution (the calling session's slug path on
+  every root post), a caller principal not loaded on this runtime, missing
+  channels, malformed calls, and undeliverable user notes. Its unit tests now
+  run on a real `ChannelStore` instead of an in-memory fake.
+- Cover every Cron, Plan, and Task action routed through its domain tool,
+  including unbound-runtime, contextless, and malformed-argument errors.
+- Remove dead code found by the unit-tier coverage baseline (`make coverage`):
+  per-action constructors and `parallelizable` overrides shadowed by the Cron,
+  Plan, and Task domain tools, `ChannelSendTool::new_with_peer`, an unreachable
+  empty-DID check, an unused `TestSkillRuntime` and `SkillRuntime::skill_exists`,
+  and `TodoStatus::as_str`/`Display`.
+
 ### One task registry per principal (2026-10-09)
 
 - Fix the async task janitor, which purged an executor nothing used: finished

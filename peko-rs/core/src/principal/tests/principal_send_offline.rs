@@ -1,18 +1,16 @@
-//! Same-runtime offline `ChannelSend` (principal branch) integration
-//! test (sprint 4 — was sprint 3 Phase 12b rewrite).
+//! `ChannelSend` principal-branch tests over real DM channels.
 //!
-//! Verifies that `LocalFirstAgentDirectory` resolves a target principal
-//! without consulting the hub, and that `ChannelSendTool`'s
-//! same-runtime branch runs over the DM channels: the message is
-//! durably posted to BOTH the caller's own DM channel (the `peko log`
-//! mirror) and the target's DM channel (where the target's responder
-//! would fire), and — with no live responder in this harness — the
-//! reply await surfaces a structured timeout. Offline behavior is now
-//! exactly "durable local post + await timeout".
+//! Same runtime: `LocalFirstAgentDirectory` resolves the target without
+//! the hub; the message is posted to both the caller's DM channel (the
+//! `peko log` record) and the target's, and the reply await times out
+//! cleanly with no responder. A fake target responder (`spawn_responder`)
+//! covers the reply path and per-target request serialization.
 //!
-//! A fake target responder (see [`spawn_responder`]) covers the reply
-//! path: the reply is returned and mirrored, and concurrent requests to
-//! one target each receive their own reply.
+//! Remote runtime: a `FakeAgentDirectory` resolves the target to another
+//! runtime and a captured `TunnelHandle` records outbound traffic; a fake
+//! peer (`spawn_remote_peer`) mirrors the reply back into the caller's DM
+//! channel. Covers first-contact invite (once), fan-out, reply, timeout,
+//! and directory refusals.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,6 +35,10 @@ use peko_subject::PrincipalDID;
 /// A directory client that panics if consulted. Wrapping it inside
 /// `LocalFirstAgentDirectory` proves the hub fallback is never reached
 /// for same-runtime `ChannelSend` principal branch.
+const CALLER_RUNTIME: &str = "did:key:test-runtime";
+const REMOTE_RUNTIME: &str = "did:key:remote-runtime";
+const REMOTE_TARGET: &str = "did:key:z6MkRemoteTarget";
+
 struct PanicDirectory;
 
 #[async_trait]
@@ -115,6 +117,30 @@ async fn dm_posted_rows(
                 text,
                 ..
             } => Some((author.clone(), parent.clone(), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `(text, via)` of every `Posted` event on `principal`'s DM channel
+/// with `peer`.
+async fn posted_via(
+    port: &Arc<dyn ChannelPort>,
+    principal: &Arc<crate::principal::Principal>,
+    peer: &Subject,
+) -> Vec<(String, Option<String>)> {
+    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let channel =
+        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
+            .await
+            .expect("dm lookup")
+            .expect("DM channel exists after ChannelSend");
+    port.peek(&channel, &Checkpoint::default())
+        .await
+        .expect("peek")
+        .into_iter()
+        .filter_map(|ev| match ev {
+            ChannelEvent::Posted { text, via, .. } => Some((text, via)),
             _ => None,
         })
         .collect()
@@ -225,6 +251,58 @@ impl Fixture {
                 channel_port: Arc::new(self.tunnel_port.clone()),
                 response_timeout,
             }));
+    }
+
+    /// Connect as a runtime with a live (captured) tunnel, where DIDs not
+    /// loaded here resolve through `directory` — the remote-principal
+    /// path. Returns the outbound tunnel traffic.
+    async fn connect_remote(
+        &self,
+        directory: Arc<crate::tunnel::hub_directory::FakeAgentDirectory>,
+        response_timeout: Duration,
+    ) -> tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let tunnel = Arc::new(tokio::sync::RwLock::new(Some(
+            crate::tunnel::client::TunnelHandle::new(tx),
+        )));
+        self.tunnel_port
+            .set_ctx(Arc::new(crate::tunnel::CrossRuntimeChannelCtx {
+                directory: directory.clone(),
+                signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])),
+                caller_runtime_id: CALLER_RUNTIME.into(),
+                tunnel,
+                principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
+            }))
+            .await;
+        self.tooling
+            .services()
+            .set_cross_runtime_a2a_ctx(Arc::new(CrossRuntimeA2aCtx {
+                directory: Arc::new(LocalFirstAgentDirectory::new(
+                    CALLER_RUNTIME.to_string(),
+                    self.manager.clone(),
+                    directory,
+                )),
+                caller_runtime_id: CALLER_RUNTIME.into(),
+                principal_manager: self.manager.clone(),
+                channel_port: Arc::new(self.tunnel_port.clone()),
+                response_timeout,
+            }));
+        rx
+    }
+
+    async fn send_to(&self, target_did: &str, text: &str) -> ChannelSendResult {
+        let ctx =
+            peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+                .with_principal_id(self.caller.id.0.clone());
+        let result = self
+            .tool
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{target_did}"), "text": text}),
+                &ctx,
+            )
+            .await
+            .expect("execute_with_context should not throw");
+        serde_json::from_value(result).expect("parse result")
     }
 
     async fn send(&self, text: &str) -> serde_json::Value {
@@ -374,6 +452,88 @@ async fn same_runtime_reply_is_returned_and_mirrored_to_the_callers_log() {
     assert_eq!(rows[1].2, "pong: ping");
 }
 
+/// Every root post a call makes carries the calling session's slug path
+/// (`via`); calls from outside a known session, and the reply mirror,
+/// stay unattributed.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn root_posts_carry_the_calling_sessions_slug_path() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_secs(10));
+    let responder = fx.spawn_responder(Duration::ZERO).await;
+
+    // The first exchange provisions the caller's peer child; the second
+    // is made from inside it, as the child's own agent would.
+    let first = fx.send_to(&fx.target_did, "one").await;
+    assert!(first.success, "{:?}", first.error);
+    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id(fx.caller.id.0.clone())
+        .with_session_id(first.session_id.clone())
+        .with_workspace(fx.caller.workspace_path.to_string_lossy());
+    let second: ChannelSendResult = serde_json::from_value(
+        fx.tool
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "two"}),
+                &ctx,
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    responder.abort();
+    assert!(second.success, "{:?}", second.error);
+
+    let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
+    let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
+    let via = Some(format!("{}/{slug}", peko_session::path::SCHEME_PREFIX));
+    let caller_side = posted_via(&fx.channel_port, &fx.caller, &target_peer).await;
+    assert_eq!(
+        caller_side,
+        vec![
+            ("one".to_string(), None),
+            ("pong: one".to_string(), None),
+            ("two".to_string(), via.clone()),
+            ("pong: two".to_string(), None),
+        ]
+    );
+    let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
+    let target_side = posted_via(&fx.channel_port, &fx.target, &caller_peer).await;
+    assert_eq!(target_side[0], ("one".to_string(), None));
+    assert_eq!(target_side[2], ("two".to_string(), via));
+}
+
+/// A `ChannelSend` bound to a principal this runtime has not loaded
+/// refuses before touching any channel.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn caller_not_loaded_on_this_runtime_is_a_structured_error() {
+    let fx = Fixture::new().await;
+    fx.connect(Duration::from_millis(200));
+    let ghost = build_channel_send_tool(&fx.tooling, "did:key:zGhostCaller").unwrap();
+    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id("ghost");
+    let result: ChannelSendResult = serde_json::from_value(
+        ghost
+            .execute_with_context(
+                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
+                &ctx,
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!result.success);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("caller principal is not loaded"),
+        "{:?}",
+        result.error
+    );
+}
+
 /// Replies carry no correlation id, so the per-target await lock is what
 /// keeps overlapping requests from claiming each other's replies.
 #[tokio::test(flavor = "multi_thread")]
@@ -406,4 +566,182 @@ async fn concurrent_requests_to_one_target_each_receive_their_own_reply() {
         .collect();
     assert_eq!(roots.len(), 3, "one root per request: {rows:?}");
     assert_eq!(rows.len(), 6, "one reply per request: {rows:?}");
+}
+
+fn remote_resolution(
+    exposure: crate::tunnel::hub_directory::ResolvedExposure,
+    agent_did: &str,
+) -> crate::tunnel::hub_directory::AgentResolution {
+    crate::tunnel::hub_directory::AgentResolution {
+        runtime_id: REMOTE_RUNTIME.into(),
+        instance_id: "inst-remote".into(),
+        agent_did: agent_did.into(),
+        owner_principal: Subject::Public,
+        exposure,
+    }
+}
+
+/// Play the remote runtime: for each outbound channel event (a fanned-out
+/// root post), mirror a `pong: <text>` reply from the remote principal
+/// into the caller's DM channel, as the inbound tunnel mirror would.
+/// Records every outbound message kind.
+fn spawn_remote_peer(
+    fx: &Fixture,
+    mut outbound: tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<std::sync::Mutex<Vec<&'static str>>>,
+) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_w = Arc::clone(&seen);
+    let store = Arc::clone(fx.tunnel_port.local());
+    let caller = Subject::from(&fx.caller.id);
+    let caller_raw = fx.caller.id.0.clone();
+    let channel = ChannelId::for_principal(REMOTE_TARGET);
+    let handle = tokio::spawn(async move {
+        let mut answered = 0usize;
+        while let Some(message) = outbound.recv().await {
+            match message {
+                crate::tunnel::TunnelMessage::TunnelChannelInvite { .. } => {
+                    seen_w.lock().unwrap().push("invite");
+                }
+                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. } => {
+                    seen_w.lock().unwrap().push("event");
+                    let roots: Vec<_> = store
+                        .peek_with_ids(&channel, &Checkpoint::default())
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter_map(|(id, ev)| match ev {
+                            ChannelEvent::Posted {
+                                author,
+                                parent: None,
+                                text,
+                                ..
+                            } if author == caller_raw => Some((id, text)),
+                            _ => None,
+                        })
+                        .collect();
+                    for (id, text) in roots.into_iter().skip(answered) {
+                        store
+                            .post_attributed(
+                                &channel,
+                                &caller,
+                                REMOTE_TARGET,
+                                PostMsg::reply(id, format!("pong: {text}")),
+                            )
+                            .await
+                            .unwrap();
+                        answered += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    (handle, seen)
+}
+
+/// Remote principal: first contact invites the target's runtime over the
+/// tunnel, the root post fans out, and the reply mirrored back into the
+/// caller's DM channel is returned. Later requests do not re-invite.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn remote_request_invites_once_fans_out_and_returns_the_mirrored_reply() {
+    use crate::tunnel::hub_directory::ResolvedExposure;
+    let fx = Fixture::new().await;
+    let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
+    directory.register_did(
+        REMOTE_TARGET,
+        remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
+    );
+    let outbound = fx.connect_remote(directory, Duration::from_secs(10)).await;
+    let (peer, seen) = spawn_remote_peer(&fx, outbound);
+
+    let first = fx.send_to(REMOTE_TARGET, "ping").await;
+    assert!(first.success, "{:?}", first.error);
+    assert_eq!(first.response, "pong: ping");
+    assert_eq!(first.channel, format!("principal:{REMOTE_TARGET}"));
+    let second = fx.send_to(REMOTE_TARGET, "again").await;
+    assert!(second.success, "{:?}", second.error);
+    assert_eq!(second.response, "pong: again");
+    peer.abort();
+
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter().filter(|k| **k == "invite").count(),
+        1,
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().filter(|k| **k == "event").count() >= 2,
+        "{seen:?}"
+    );
+    let remote_members = fx
+        .tunnel_port
+        .local()
+        .list_remote_members(&ChannelId::for_principal(REMOTE_TARGET))
+        .await
+        .unwrap();
+    assert_eq!(remote_members.len(), 1);
+    assert_eq!(remote_members[0].runtime_id, REMOTE_RUNTIME);
+}
+
+/// Without a reply the remote request fails with a timeout naming the
+/// remote runtime; the invite routing state is still recorded.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn remote_request_without_a_reply_times_out_cleanly() {
+    use crate::tunnel::hub_directory::ResolvedExposure;
+    let fx = Fixture::new().await;
+    let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
+    directory.register_did(
+        REMOTE_TARGET,
+        remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
+    );
+    let _outbound = fx
+        .connect_remote(directory, Duration::from_millis(200))
+        .await;
+    let result = fx.send_to(REMOTE_TARGET, "ping").await;
+    assert!(!result.success);
+    let error = result.error.unwrap();
+    assert!(error.contains("timed out"), "{error}");
+    assert!(error.contains(REMOTE_RUNTIME), "{error}");
+}
+
+/// Directory refusals and unusable resolutions are structured errors,
+/// and nothing is sent over the tunnel.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn remote_resolution_failures_are_structured_errors() {
+    use crate::tunnel::hub_directory::DirectoryErrorKind;
+    use crate::tunnel::hub_directory::ResolvedExposure;
+    let fx = Fixture::new().await;
+    let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
+    directory.register_did_err("did:key:missing", DirectoryErrorKind::NotFound);
+    directory.register_did_err("did:key:forbidden", DirectoryErrorKind::Forbidden);
+    directory.register_did(
+        "did:key:hidden",
+        remote_resolution(ResolvedExposure::Unexposed, "did:key:hidden"),
+    );
+    directory.register_did(
+        "did:key:nodid",
+        remote_resolution(ResolvedExposure::Public, ""),
+    );
+    let mut outbound = fx
+        .connect_remote(directory, Duration::from_millis(200))
+        .await;
+
+    for (target, needle) in [
+        ("did:key:missing", "not found in hub directory"),
+        ("did:key:forbidden", "denied resolution"),
+        ("did:key:hidden", "unexposed"),
+        ("did:key:nodid", "empty target DID"),
+    ] {
+        let result = fx.send_to(target, "ping").await;
+        assert!(!result.success, "{target}");
+        let error = result.error.unwrap();
+        assert!(error.contains(needle), "{target}: {error}");
+    }
+    assert!(outbound.try_recv().is_err(), "nothing sent over the tunnel");
 }
