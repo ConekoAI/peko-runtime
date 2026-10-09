@@ -974,6 +974,15 @@ impl CronEngine {
     /// terminal, finalize the row with the executor's outcome
     /// (`success`/`failed`/`timed_out`/`cancelled`) and propagate
     /// `last_status` onto the owning `CronJob`.
+    /// Drop finished cron-fired tasks past their retention window.
+    pub async fn purge_finished_tasks(&self) -> usize {
+        self.async_executor
+            .registry()
+            .write()
+            .await
+            .cleanup_completed()
+    }
+
     pub async fn reconcile_running_runs(&self) -> Result<usize> {
         // Phase A: aggregate running rows across all loaded
         // principals. We keep `(principal_id, run)` pairs so the

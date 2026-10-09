@@ -706,6 +706,20 @@ pub async fn list_all_tasks_across_all_registries() -> Vec<AsyncTaskEntry> {
     all
 }
 
+/// Drop finished tasks past their retention window from every global
+/// registry. Returns how many entries were removed.
+pub async fn purge_finished_across_all_registries() -> usize {
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = lock_global_registries();
+        map.values().cloned().collect()
+    };
+    let mut purged = 0;
+    for registry in registries {
+        purged += registry.write().await.cleanup_completed();
+    }
+    purged
+}
+
 /// Look up a subagent run by ID across all agent registries.
 ///
 /// This is a convenience wrapper for subagent-specific lookups.
