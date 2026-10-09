@@ -582,7 +582,7 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | `timezone` | string | no | — |
 | `idle_ms` | integer | no | — |
 
-Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
 
 #### list
 
@@ -647,7 +647,32 @@ Fetch a job’s recent run history.
 | `label` | string | no | — |
 | `limit` | integer | no | — |
 
-Supply exactly one of id or label. limit defaults to 10, caps at 50, and returns newest runs first.
+Supply exactly one of id or label. limit defaults to 10, caps at 50, and returns newest runs first. Fired one-shot jobs delete themselves but keep their runs: read them by the job_id returned at creation (labels resolve live jobs only).
+
+## Testing
+
+Three tiers cover the built-in tools; put a test in the lowest tier that can
+observe the behavior.
+
+| Tier | Where | Runs in | Use for |
+|---|---|---|---|
+| Unit | `#[cfg(test)]` beside each implementation | `cargo test --lib` | Argument handling and domain rules against the tool's own fake or backend |
+| Harness | [`ToolHarness`](../../peko-rs/core/src/tools/builtin/test_harness.rs) | `cargo test --lib` | Dispatch semantics (validation, workspace injection, audit), multi-tool flows, caller/principal scoping |
+| Daemon | [`cli_tools.rs`](../../peko-rs/core/tests/cli_tools.rs) | `make test-cli-tools` (mock LLM) | Daemon wiring only: workspace resolution, process spawning, result persistence |
+
+`ToolHarness::new()` registers all 19 tools behind the production dispatcher,
+backed by tempdir storage where it is cheap (workspace files, ChannelStore,
+CronScheduler, ModelCatalog, AsyncExecutor) and fakes where the real backend
+is a daemon (Task, Plan, Agent, Session). ModelCall and Workflow stay unbound
+and fail closed. Its smoke test must cover the installation manifest, so a new
+built-in fails until it has a backend and a smoke case. Cron actions take an
+explicit runtime through `CronTool::with_runtime`; `peko_cron::testing` provides
+`FileCronRuntime` behind the `test-support` feature.
+
+Mock LLM replies are scripted, so a daemon test must assert on effects the
+mock cannot produce (files, persisted tool results), never on a reply
+sentinel alone. `make coverage` reports unit-tier line coverage via
+cargo-llvm-cov.
 
 ## Related contracts
 

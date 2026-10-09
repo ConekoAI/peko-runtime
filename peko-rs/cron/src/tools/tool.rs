@@ -1,12 +1,13 @@
 //! Cron domain tool. Action handlers remain private to this domain.
 
 use super::{
-    CronCreateAction, CronDeleteAction, CronHistoryAction, CronListAction, CronTriggerAction,
-    CronUpdateAction,
+    CronCreateAction, CronDeleteAction, CronHistoryAction, CronListAction, CronRuntime,
+    CronTriggerAction, CronUpdateAction, RuntimeBinding,
 };
 use async_trait::async_trait;
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// Manage principal-owned scheduled jobs: create, list, delete, update, trigger, or history. Create schedules a message or a tool invocation; identify existing jobs by id or label.
 pub struct CronTool {
@@ -19,15 +20,25 @@ pub struct CronTool {
 }
 
 impl CronTool {
-    /// Bind the domain tool to its existing runtime.
+    /// Dispatch to the daemon-installed runtime, resolved per call so the
+    /// catalog can be installed before daemon startup completes.
     pub fn new() -> Self {
+        Self::with_binding(RuntimeBinding::default())
+    }
+
+    /// Dispatch to `runtime` instead of the daemon-installed slot.
+    pub fn with_runtime(runtime: Arc<dyn CronRuntime>) -> Self {
+        Self::with_binding(RuntimeBinding(Some(runtime)))
+    }
+
+    fn with_binding(runtime: RuntimeBinding) -> Self {
         Self {
-            create: CronCreateAction::new(),
-            list: CronListAction::new(),
-            delete: CronDeleteAction::new(),
-            update: CronUpdateAction::new(),
-            trigger: CronTriggerAction::new(),
-            history: CronHistoryAction::new(),
+            create: CronCreateAction::bound(runtime.clone()),
+            list: CronListAction::bound(runtime.clone()),
+            delete: CronDeleteAction::bound(runtime.clone()),
+            update: CronUpdateAction::bound(runtime.clone()),
+            trigger: CronTriggerAction::bound(runtime.clone()),
+            history: CronHistoryAction::bound(runtime),
         }
     }
 

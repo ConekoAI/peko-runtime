@@ -19,7 +19,7 @@
         test-cli-providers \
         test-scenarios-s4 test-scenarios-s6 \
         test-mock-llm-sequence \
-        ci
+        coverage ci
 
 # All integration test crates (live in peko-rs/core/tests/*.rs and
 # peko-rs/core/tests/scenarios/*.rs after Phase 0.Z-D moved tests/).
@@ -70,6 +70,7 @@ help:
 	@echo "  docker-up                 Start the test stack (pekohub + mock LLM)"
 	@echo "  docker-down               Stop and remove the test stack"
 	@echo ""
+	@echo "  coverage                  Unit-tier line coverage (needs cargo-llvm-cov)"
 	@echo "  ci                        Layered run used in GitHub Actions"
 	@echo ""
 	@echo "  Granular slices of test-integration (one file at a time):"
@@ -90,6 +91,19 @@ test-lib: test   ## deprecated alias for `test`
 
 test-subagent:
 	cargo test --lib subagent_integration
+
+# Line coverage for the unit tier (no Docker). Writes an HTML report to
+# target/llvm-cov/html and prints a per-file summary. COVERAGE_ARGS narrows
+# the run, e.g. `make coverage COVERAGE_ARGS="-p peko-cron"`.
+COVERAGE_ARGS ?= --workspace
+coverage:
+	@command -v cargo-llvm-cov >/dev/null || { \
+	    echo "cargo-llvm-cov is not installed. Install it with:"; \
+	    echo "  rustup component add llvm-tools-preview"; \
+	    echo "  cargo install cargo-llvm-cov --locked"; \
+	    exit 1; }
+	cargo llvm-cov $(COVERAGE_ARGS) --lib --html
+	cargo llvm-cov report --summary-only
 
 # ── Docker stack lifecycle ───────────────────────────────────────────────
 # Images are built via `docker build` (not compose), so the context
@@ -227,14 +241,10 @@ test-tiered-prompt: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test tiered_prompt -- --include-ignored --test-threads=1
 
-# Built-in tools (shell / read_file / write_file / glob / grep /
-# str_replace_file) slice. All single-turn tests, all `#[serial]`
-# because they share the mock LLM's per-substring counter. The
-# 6 `e2e_tests/tools/built-in/*.ps1` scripts that this slice
-# replaced were deleted in Phase E (see
-# docs/integration/TESTING.md §7). The 4 deferred
-# `e2e_tests/tools/tool_{async,timeout,update_mid_session,all}.ps1`
-# scripts stay in place — see TESTING.md for the deferred list.
+# Built-in tools daemon path: one scripted turn drives Read/Glob/Grep/
+# Write/Edit/Bash through `peko send` and checks files + the persisted
+# transcript. In-process coverage of all 19 tools lives in `make test`
+# (tools::builtin::test_harness).
 test-cli-tools: docker-up
 	@env -u MINIMAX_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored

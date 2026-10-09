@@ -31,6 +31,12 @@ chrono-tz = "0.10"
 # string. Subject crate is the canonical home of `PrincipalId`.
 peko-subject = { path = "../subject" }
 
+[features]
+# Exposes `peko_cron::testing` (a file-backed `CronRuntime`) to downstream
+# test builds. Never enable for production builds.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.7", features = ["v4"] }

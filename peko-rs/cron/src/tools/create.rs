@@ -14,7 +14,7 @@
 //!   composes fresh output (and can use tools, e.g. ChannelSend) on
 //!   every fire. LLM-driven; costs tokens per fire.
 
-use crate::tools::{add_job_via_runtime, global_runtime, resolve_schedule_kind};
+use crate::tools::{add_job_via_runtime, resolve_schedule_kind, RuntimeBinding};
 use crate::{CronJob, CronJobAction};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -25,12 +25,19 @@ use serde_json::json;
 use uuid::Uuid;
 
 /// `Cron action create` tool — create scheduled jobs
-pub struct CronCreateAction;
+pub struct CronCreateAction {
+    runtime: RuntimeBinding,
+}
 
 impl CronCreateAction {
     /// Create a new `Cron action create` tool
     pub fn new() -> Self {
-        Self
+        Self::bound(RuntimeBinding::default())
+    }
+
+    /// Bind the action to the runtime its domain tool resolves.
+    pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
+        Self { runtime }
     }
 }
 
@@ -252,7 +259,7 @@ impl Tool for CronCreateAction {
             .ok_or_else(|| anyhow::anyhow!("Cron action create requires a Principal context"))?
             .clone();
 
-        let runtime = global_runtime().ok_or_else(|| {
+        let runtime = self.runtime.resolve().ok_or_else(|| {
             anyhow::anyhow!(
                 "Cron action create requires the daemon's cron runtime; not initialized"
             )
@@ -341,38 +348,6 @@ impl Tool for CronCreateAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_cron_create_tool_name() {
-        let tool = CronCreateAction::new();
-        assert_eq!(tool.name(), "Cron");
-    }
-
-    #[test]
-    fn test_cron_create_tool_parameters() {
-        let tool = CronCreateAction::new();
-        let params = tool.parameters();
-        assert!(params.get("properties").is_some());
-        // Two mutually exclusive shapes: `tool`+`params` → SpawnTool,
-        // `message` → Send. `message` was restored after Sprint 7's
-        // SpawnTool-only Commit D left the Send fire path uncreatable
-        // (the `peko cron` CLI that used to write Send jobs is retired).
-        assert!(params.get("required").is_none());
-        let props = params.get("properties").unwrap();
-        assert!(props.get("tool").is_some());
-        assert!(props.get("params").is_some());
-        assert!(props.get("message").is_some());
-        assert!(props.get("wake_on_completion").is_some());
-        assert!(props.get("timeout_secs").is_some());
-        // Sprint 7 Commit C + D + E: dropped fields stay gone.
-        assert!(props.get("prompt").is_none());
-        assert!(props.get("target").is_none());
-        assert!(props.get("description").is_none());
-        assert!(props.get("recurring").is_none());
-        assert!(props.get("durable").is_none());
-        assert!(props.get("task").is_none());
-        assert!(props.get("start_at").is_none());
-    }
 
     /// Phase 3: `target` parsed through the typed args struct, and the
     /// value validator (shared with the DTO deserializer) rejected

@@ -4,19 +4,26 @@
 //! at startup. Results are filtered to the current Principal from the
 //! tool execution context.
 
-use crate::tools::{global_runtime, render_job_list};
+use crate::tools::{render_job_list, RuntimeBinding};
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
 use serde_json::json;
 
 /// `Cron action list` tool — list scheduled jobs
-pub struct CronListAction;
+pub struct CronListAction {
+    runtime: RuntimeBinding,
+}
 
 impl CronListAction {
     /// Create a new `Cron action list` tool
     pub fn new() -> Self {
-        Self
+        Self::bound(RuntimeBinding::default())
+    }
+
+    /// Bind the action to the runtime its domain tool resolves.
+    pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
+        Self { runtime }
     }
 }
 
@@ -64,7 +71,7 @@ impl Tool for CronListAction {
             .ok_or_else(|| anyhow::anyhow!("Cron action list requires a Principal context"))?
             .clone();
 
-        let runtime = global_runtime().ok_or_else(|| {
+        let runtime = self.runtime.resolve().ok_or_else(|| {
             anyhow::anyhow!("Cron action list requires the daemon's cron runtime; not initialized")
         })?;
 
@@ -74,26 +81,5 @@ impl Tool for CronListAction {
             .filter(|j| j.principal_id.0 == principal_id)
             .collect();
         Ok(render_job_list(filtered))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cron_list_tool_name() {
-        let tool = CronListAction::new();
-        assert_eq!(tool.name(), "Cron");
-    }
-
-    #[test]
-    fn test_cron_list_tool_parameters() {
-        let tool = CronListAction::new();
-        let params = tool.parameters();
-        // Sprint 7 Commit A: empty properties block (status_filter /
-        // kind_filter were dropped — they had no consumer).
-        assert_eq!(params["properties"], serde_json::json!({}));
-        assert!(params.get("required").is_none());
     }
 }

@@ -98,6 +98,7 @@ jobs:
       src: ${{ steps.filter.outputs.src }}
       crates: ${{ steps.filter.outputs.crates }}
       tests: ${{ steps.filter.outputs.tests }}
+      tools: ${{ steps.filter.outputs.tools }}
       docker: ${{ steps.filter.outputs.docker }}
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
       workflow: ${{ steps.filter.outputs.workflow }}
@@ -136,6 +137,14 @@ jobs:
             tests:
               # Phase 0.Z-D: tests/ moved to peko-rs/core/tests/.
               - 'peko-rs/core/tests/**'
+            tools:
+              # Built-in tool implementations and their installation. The
+              # unit tier covers them in-process (tools::builtin::test_harness);
+              # the integration tier adds the daemon path (cli_tools.rs), which
+              # otherwise ran only nightly for tool-only PRs.
+              - 'peko-rs/core/src/tools/**'
+              - 'peko-rs/cron/src/tools/**'
+              - 'peko-rs/core/src/daemon/cron_runtime.rs'
             docker:
               - '.github/docker/**'
             dockerfile:
@@ -264,15 +273,16 @@ jobs:
         run: cargo test --lib
 
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ─────────────────────
-  # Path-aware gate: only run when peko-rs/core/tests/, peko-rs/core/src/,
-  # Cargo.*, Makefile, or Docker assets changed. Pure refactors
-  # (peko-rs/core/src/** only) skip this tier but still run lint + unit-linux.
+  # Path-aware gate: only run when peko-rs/core/tests/, built-in tool
+  # sources, Docker assets, or this workflow changed. Other source-only
+  # refactors skip this tier but still run lint + unit-linux.
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest
     needs: [changes, unit-linux]
     if: >-
       (needs.changes.outputs.tests == 'true'
+       || needs.changes.outputs.tools == 'true'
        || needs.changes.outputs.docker == 'true'
        || needs.changes.outputs.dockerfile == 'true'
        || needs.changes.outputs.workflow == 'true'

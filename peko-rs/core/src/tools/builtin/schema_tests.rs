@@ -6,42 +6,20 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 
+/// The shared harness inventory with inert backends: schema checks never
+/// touch storage.
 fn tools() -> Vec<Arc<dyn Tool>> {
-    let asynchronous = Arc::new(crate::async_exec::executor::TestAsyncRuntime::new());
-    let todos = Arc::new(tasks::TestTodoRuntime::new());
-    let plans = Arc::new(plan::TestPlanPort::new());
-    let channels = Arc::new(peko_channel::NoopChannelPort);
-    vec![
-        Arc::new(BashTool::new()),
-        Arc::new(ReadTool::new()),
-        Arc::new(WriteTool::new()),
-        Arc::new(EditTool::new()),
-        Arc::new(GlobTool::new()),
-        Arc::new(GrepTool::new()),
-        Arc::new(SessionTool::new(Arc::new(SessionCache::new("test")))),
-        Arc::new(AgentTool::new(Arc::new(
-            messaging::agent::TestSubagentRuntime::new(),
-        ))),
-        Arc::new(AgentCatalogTool::new(vec![])),
-        Arc::new(SkillTool::new(Arc::new(
-            crate::extensions::skill::reader::WorkspaceSkillRuntime::new("skills".into()),
-        ))),
-        Arc::new(ModelListTool::new(Weak::new())),
-        Arc::new(ModelCallTool::new(Weak::new())),
-        Arc::new(WorkflowTool::new(
-            Weak::new(),
-            Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new()),
-        )),
-        Arc::new(ChannelReadTool::new(channels.clone())),
-        Arc::new(ChannelSendTool::new_local_only(
-            channels,
-            "did:peko:test".into(),
-        )),
-        Arc::new(AsyncTool::new(asynchronous)),
-        Arc::new(TaskTool::new(todos)),
-        Arc::new(PlanTool::new(plans)),
-        Arc::new(peko_cron::CronTool::new()),
-    ]
+    use super::test_harness::{builtin_tools, Backends, Fakes};
+    builtin_tools(
+        &Backends {
+            workspace: "workspace".into(),
+            cron: Arc::new(peko_cron::testing::FileCronRuntime::new("cron")),
+            channels: Arc::new(peko_channel::NoopChannelPort),
+            async_runtime: Arc::new(crate::async_exec::executor::TestAsyncRuntime::new()),
+            models: Weak::new(),
+        },
+        &Fakes::default(),
+    )
 }
 
 #[test]
@@ -223,6 +201,31 @@ fn schemas_accept_valid_calls_and_reject_incomplete_or_conflicting_calls() {
             true,
         ),
         ("Cron", json!({"action":"update", "id":"job"}), false),
+        (
+            "Cron",
+            json!({"action":"delete", "id":"job", "label":"l"}),
+            false,
+        ),
+        (
+            "Cron",
+            json!({"action":"trigger", "id":"job", "label":"l"}),
+            false,
+        ),
+        (
+            "Cron",
+            json!({"action":"history", "id":"job", "label":"l"}),
+            false,
+        ),
+        (
+            "Cron",
+            json!({"action":"history", "label":"l", "limit":5}),
+            true,
+        ),
+        (
+            "Cron",
+            json!({"action":"create", "message":"m", "delay":"5m", "target":"trunk"}),
+            false,
+        ),
         ("Cron", json!({"action":"update", "enabled":false}), false),
         (
             "Async",

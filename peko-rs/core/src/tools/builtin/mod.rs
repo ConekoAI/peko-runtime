@@ -13,6 +13,8 @@ pub mod tasks;
 
 #[cfg(test)]
 mod schema_tests;
+#[cfg(test)]
+pub(crate) mod test_harness;
 
 pub mod model_call;
 pub mod model_list;

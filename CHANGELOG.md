@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool test foundation (2026-10-09)
+
+- Fix Cron history for fired one-shot jobs: the ownership check consulted only
+  live jobs, so a reaped `at`/`delay` job's retained runs were unreachable by id.
+  CronRuntime gains owns_job_history; labels still resolve live jobs only.
+- Add CronTool::with_runtime so Cron actions run against an explicit runtime;
+  the daemon-installed slot remains the default. Add peko_cron::testing's
+  FileCronRuntime (test-support feature) and behavior tests for all six actions,
+  including cross-principal refusals; retire the name/schema-only action tests.
+- Add tools::builtin::test_harness::ToolHarness: all 19 built-in tools behind the
+  production dispatcher with tempdir-backed storage, plus a smoke test that must
+  cover the full installation manifest. Schema tests reuse its inventory.
+- Make RoleCatalog workspace-only and test its roles/ scan; remove the unused
+  list-backed constructor.
+- Replace the six sentinel-only cli_tools e2e tests with one daemon test that
+  verifies files and persisted tool results; delete the core_tools stub. Run the
+  mock-LLM tier for built-in tool source changes; add `make coverage`.
+
 ### Agent and Session schema cohesion (2026-10-08)
 
 - Use strict action variants and cached direct-call validation for Agent/Session;
