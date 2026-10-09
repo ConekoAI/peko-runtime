@@ -162,14 +162,9 @@ async fn list_filters_by_status_and_tool() {
     async_call(&harness, "output", &done, json!({"block":true})).await;
     let running = spawn(&harness, json!({"tool":"Sleep", "params":{"ms":30000}})).await;
 
-    let ids = |list: &Value| -> Vec<String> {
-        list["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["task_id"].as_str().unwrap().to_string())
-            .collect()
-    };
+    // `list` also merges the process-wide background registry (background
+    // Bash, subagents), which sibling tests populate concurrently. Assert
+    // the filter holds for every entry and classifies this test's tasks.
     let list = |filter: Value| {
         let mut params = json!({"action":"list"});
         for (key, value) in filter.as_object().unwrap() {
@@ -177,15 +172,39 @@ async fn list_filters_by_status_and_tool() {
         }
         harness.call("Async", params)
     };
-    let completed = list(json!({"status_filter":"completed"})).await.ok();
-    assert_eq!(ids(&completed), vec![done.clone()], "{completed}");
-    let active = list(json!({"status_filter":"running"})).await.ok();
-    assert_eq!(ids(&active), vec![running.clone()], "{active}");
-    let sleeps = list(json!({"tool_filter":"Sleep"})).await.ok();
-    assert_eq!(ids(&sleeps), vec![running.clone()], "{sleeps}");
-    let all = list(json!({})).await.ok();
-    assert_eq!(all["total"], 2, "{all}");
-    assert_eq!(all["active"], 1, "{all}");
+    let entries = |list: &Value| -> Vec<(String, String, String)> {
+        list["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["task_id"].as_str().unwrap().to_string(),
+                    t["status"].as_str().unwrap().to_string(),
+                    t["tool_name"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    let has = |rows: &[(String, String, String)], id: &str| rows.iter().any(|r| r.0 == id);
+
+    let completed = entries(&list(json!({"status_filter":"completed"})).await.ok());
+    assert!(
+        completed.iter().all(|r| r.1 == "completed"),
+        "{completed:?}"
+    );
+    assert!(
+        has(&completed, &done) && !has(&completed, &running),
+        "{completed:?}"
+    );
+
+    let active = entries(&list(json!({"status_filter":"running"})).await.ok());
+    assert!(active.iter().all(|r| r.1 == "running"), "{active:?}");
+    assert!(has(&active, &running) && !has(&active, &done), "{active:?}");
+
+    let sleeps = entries(&list(json!({"tool_filter":"Sleep"})).await.ok());
+    assert!(sleeps.iter().all(|r| r.2 == "Sleep"), "{sleeps:?}");
+    assert!(has(&sleeps, &running) && !has(&sleeps, &done), "{sleeps:?}");
 
     async_call(&harness, "stop", &running, json!({})).await;
 }
