@@ -257,10 +257,10 @@ impl BashTool {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         buf.extend_from_slice(&chunk[..n]);
-                        let mut guard = progress_for_stdout
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        peko_tools_core::background::append_progress(
+                            &progress_for_stdout,
+                            &String::from_utf8_lossy(&chunk[..n]),
+                        );
                     }
                 }
             }
@@ -275,10 +275,10 @@ impl BashTool {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         buf.extend_from_slice(&chunk[..n]);
-                        let mut guard = progress_for_stderr
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        peko_tools_core::background::append_progress(
+                            &progress_for_stderr,
+                            &String::from_utf8_lossy(&chunk[..n]),
+                        );
                     }
                 }
             }
@@ -700,6 +700,34 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("Async runtime"), "{error}");
+    }
+
+    /// A long-running chatty task keeps only the newest output in its
+    /// progress buffer instead of growing it for its whole lifetime.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn task_body_progress_is_capped_to_the_newest_output() {
+        let progress: Arc<std::sync::Mutex<String>> = Arc::default();
+        let mut ctx = ToolContext::default_for_tool("Bash");
+        ctx.background.progress = Some(Arc::clone(&progress));
+        BashTool::new()
+            .execute_with_context(
+                json!({"command": "head -c 300000 /dev/zero | tr '\\0' x; echo; echo LAST"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let buf = progress.lock().unwrap();
+        assert!(
+            buf.len() <= peko_tools_core::background::PROGRESS_MAX_BYTES,
+            "progress grew to {} bytes",
+            buf.len()
+        );
+        assert!(
+            buf.ends_with("LAST\n"),
+            "newest output kept: {:?}",
+            &buf[buf.len() - 10..]
+        );
     }
 
     #[tokio::test]
