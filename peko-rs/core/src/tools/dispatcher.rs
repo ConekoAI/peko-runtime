@@ -285,6 +285,10 @@ impl ToolDispatcher {
         // Detached tools (including Workflow subprocesses) retain their
         // caller's binding until execution ends, without a registry cycle.
         let run_binding = self.run_binding.upgrade();
+        // Kept for the cancel branch: the watcher above is dropped (and so
+        // aborted) when execution ends, which can cut it off before it
+        // stores the tool's notice.
+        let (notice_tool, notice_ctx) = (tool.clone(), tool_ctx.clone());
         let exec = move |p| {
             let tool = tool.clone();
             let tool_ctx = tool_ctx.clone();
@@ -313,11 +317,14 @@ impl ToolDispatcher {
         let (text, json, success) = if cancel_fired.load(Ordering::SeqCst)
             || call.abort_signal.as_ref().is_some_and(|rx| *rx.borrow())
         {
-            let notice = notice_slot
-                .lock()
-                .await
-                .take()
-                .unwrap_or_else(|| ToolInterruptNotice::soft_default("", &tool_name));
+            let stashed = notice_slot.lock().await.take();
+            let notice = match stashed {
+                Some(notice) => notice,
+                // The tool returned before the watcher stored its notice:
+                // ask the tool directly so its preserved / rolled-back
+                // report still reaches the agent.
+                None => notice_tool.on_interrupt("", &notice_ctx).await,
+            };
             let text = notice.to_tool_result_text();
             (text.clone(), Value::String(text), true)
         } else {
