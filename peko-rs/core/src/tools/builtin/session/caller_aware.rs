@@ -126,6 +126,7 @@ impl CallerAwareSessionTool {
     async fn per_call_tool(
         principal: &Principal,
         inbox_registry: &Arc<InboxRegistry>,
+        task_registry: crate::async_exec::executor::SharedAsyncTaskRegistry,
         session_id: Option<String>,
     ) -> SessionTool {
         let name = principal.name().await;
@@ -139,7 +140,8 @@ impl CallerAwareSessionTool {
             name,
             Some(Arc::clone(inbox_registry)),
             Some(Arc::clone(&principal.quota_meter)),
-        );
+        )
+        .with_task_registry(task_registry);
         SessionTool::new(Arc::new(runtime) as SharedSessionRuntime)
     }
 }
@@ -195,9 +197,17 @@ impl Tool for CallerAwareSessionTool {
                 inbox_registry,
             } => {
                 let principal = Self::resolve_principal(principals, ctx).await?;
+                let task_registry = principals
+                    .upgrade()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("session: PrincipalManager unavailable on this runtime")
+                    })?
+                    .tooling()
+                    .task_registry_for(&principal.id);
                 let tool = Self::per_call_tool(
                     &principal,
                     inbox_registry,
+                    task_registry,
                     ctx.session_id.clone().filter(|s| !s.is_empty()),
                 )
                 .await;

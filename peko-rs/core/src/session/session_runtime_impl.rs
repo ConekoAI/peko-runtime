@@ -80,6 +80,9 @@ pub struct SessionManagerRuntime {
     /// reports "no quota meter bound" rather than silently leaking
     /// an unlimited sentinel.
     quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
+    /// The owning principal's task registry, where its subagent runs
+    /// register; the run-active guards consult it.
+    task_registry: Option<crate::async_exec::executor::SharedAsyncTaskRegistry>,
 }
 
 impl SessionManagerRuntime {
@@ -98,6 +101,28 @@ impl SessionManagerRuntime {
             caller_agent_name,
             inbox_registry,
             quota_meter,
+            task_registry: None,
+        }
+    }
+
+    /// Bind the owning principal's task registry so the run-active guards
+    /// see its in-flight subagent runs.
+    #[must_use]
+    pub fn with_task_registry(
+        mut self,
+        registry: crate::async_exec::executor::SharedAsyncTaskRegistry,
+    ) -> Self {
+        self.task_registry = Some(registry);
+        self
+    }
+
+    /// Whether a subagent run is in flight on session `id`. Subagent runs
+    /// hold no `InboxRegistry` permit; they register in the principal's
+    /// task registry instead.
+    async fn subagent_run_active(&self, id: &str) -> bool {
+        match &self.task_registry {
+            Some(registry) => registry.read().await.has_active_subagent_run_for_child(id),
+            None => false,
         }
     }
 
@@ -128,6 +153,7 @@ impl SessionManagerRuntime {
             caller_agent_name: self.caller_agent_name.clone(),
             inbox_registry: self.inbox_registry.clone(),
             quota_meter: self.quota_meter.clone(),
+            task_registry: self.task_registry.clone(),
         }
     }
 
@@ -440,14 +466,12 @@ impl SessionRuntime for SessionManagerRuntime {
         // register in the per-agent `AsyncTaskRegistry` instead — so a
         // live subagent session shows up via the unified-registry check
         // (the same guard the delete path uses at `delete_session`).
-        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for info in &mut sessions {
             let run_held = match &self.inbox_registry {
                 Some(registry) => registry.peek_run_held(&info.session_id).await,
                 None => false,
             };
-            info.run_active =
-                run_held || has_active_subagent_run_across_all_registries(&info.session_id).await;
+            info.run_active = run_held || self.subagent_run_active(&info.session_id).await;
         }
 
         Ok(sessions)
@@ -964,9 +988,8 @@ impl SessionRuntime for SessionManagerRuntime {
         // same reason as the InboxRegistry check above — otherwise the
         // in-flight task's completion announcement lands on a
         // tombstone session id. See PR review 2026-08-10.
-        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
-            if has_active_subagent_run_across_all_registries(id).await {
+            if self.subagent_run_active(id).await {
                 return Err(self.refuse(err_run_active(id)));
             }
         }
@@ -1078,9 +1101,8 @@ impl SessionRuntime for SessionManagerRuntime {
         }
         // Subagent runs never hold InboxRegistry permits (they register
         // in the per-agent AsyncTaskRegistry) — same check as delete.
-        use crate::async_exec::executor::registry::has_active_subagent_run_across_all_registries;
         for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
-            if has_active_subagent_run_across_all_registries(id).await {
+            if self.subagent_run_active(id).await {
                 return Err(self.refuse(err_run_active(id)));
             }
         }
@@ -1703,7 +1725,7 @@ mod tests {
     #[tokio::test]
     async fn list_marks_run_active_for_subagent_run() {
         use crate::async_exec::executor::registry::{
-            get_or_create_registry_for_agent, AsyncTaskEntry, SubagentMetadata, TaskMetadata,
+            AsyncTaskEntry, AsyncTaskRegistry, SubagentMetadata, TaskMetadata,
         };
         use crate::async_exec::executor::types::{AsyncTaskStatus, AsyncToolConfig};
 
@@ -1711,7 +1733,12 @@ mod tests {
         h.create("subrun_probe", Some(sid("root:user:alice").as_str()))
             .await;
 
-        let registry = get_or_create_registry_for_agent("test-agent-list-run-active");
+        // The principal's task registry, as the agent run binds it.
+        let registry = Arc::new(tokio::sync::RwLock::new(AsyncTaskRegistry::new()));
+        let runtime = h
+            .runtime
+            .with_current_session(h.current.read().await.clone())
+            .with_task_registry(Arc::clone(&registry));
         let task_id = "task_subrun_probe".to_string();
         registry
             .write()
@@ -1738,8 +1765,7 @@ mod tests {
                 }),
             ));
 
-        let all = h
-            .runtime
+        let all = runtime
             .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();
@@ -1754,8 +1780,7 @@ mod tests {
             .write()
             .await
             .update_status(&task_id, AsyncTaskStatus::Cancelled);
-        let all = h
-            .runtime
+        let all = runtime
             .list_sessions(None, None, 50, None, None)
             .await
             .unwrap();

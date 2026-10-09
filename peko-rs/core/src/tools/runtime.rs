@@ -504,6 +504,42 @@ mod tests {
     use super::*;
     use crate::tools::metadata::ToolSource;
 
+    /// Subagent runs register in the spawning principal's registry, keyed
+    /// by principal rather than agent name: one principal's executors share
+    /// it whatever their agent names, and two principals never do.
+    #[tokio::test]
+    async fn subagent_executors_share_their_principals_registry() {
+        use crate::agents::subagent_executor::SubagentExecutor;
+        let tooling = ToolingRuntime::standalone();
+        let sessions = Arc::new(tokio::sync::RwLock::new(peko_session::SessionManager::new()));
+        let alice = PrincipalId("prin_alice".into());
+        let registry = tooling.task_registry_for(&alice);
+        let root = SubagentExecutor::new(
+            Arc::clone(&sessions),
+            "primary",
+            alice.clone(),
+            Arc::clone(&tooling),
+        );
+        let reviewer = SubagentExecutor::new(
+            Arc::clone(&sessions),
+            "reviewer",
+            alice.clone(),
+            Arc::clone(&tooling),
+        )
+        .with_inbox_registry(Some(
+            crate::async_exec::executor::standalone_inbox_registry(),
+        ));
+        let bob = SubagentExecutor::new(
+            sessions,
+            "primary",
+            PrincipalId("prin_bob".into()),
+            Arc::clone(&tooling),
+        );
+        assert!(Arc::ptr_eq(root.registry(), &registry));
+        assert!(Arc::ptr_eq(reviewer.registry(), &registry));
+        assert!(!Arc::ptr_eq(bob.registry(), &registry));
+    }
+
     /// The janitor sees every principal's tasks: a principal's executor is
     /// backed by its registry here, and finished tasks past the retention
     /// window are purged from it.

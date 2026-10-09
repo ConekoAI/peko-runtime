@@ -35,10 +35,9 @@
 //!
 //! ## Registry key (cross-guard)
 //!
-//! The executor's agent name keys the GLOBAL async task registry
-//! (`get_or_create_registry_for_agent`). The builder uses the default
-//! root prompt's name — the same key the root agent's own executor
-//! uses — so `has_active_subagent_run_for_child` sees Agent-tool runs,
+//! Every executor of a principal registers runs in that principal's task
+//! registry (`ToolingRuntime::task_registry_for`), whatever its agent
+//! name, so `has_active_subagent_run_for_child` sees Agent-tool runs,
 //! channel-driven turns, and streaming ingress turns on the same child
 //! and refuses the second (no double-run of one session JSONL).
 

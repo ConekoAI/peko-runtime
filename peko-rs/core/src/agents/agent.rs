@@ -183,7 +183,8 @@ impl Agent {
             self.config.name.clone(),
             self.inbox_registry.clone(),
             self.subagent_executor.quota_meter().cloned(),
-        );
+        )
+        .with_task_registry(self.tooling.task_registry_for(&self.principal_id));
         install_run(
             tooling,
             &self.principal_id,
