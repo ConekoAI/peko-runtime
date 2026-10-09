@@ -65,12 +65,6 @@ Returns the updated todo, or an error if it does not exist."
         })
     }
 
-    /// F33: task-list mutation — opt out of parallel dispatch. See
-    /// `Task action create::parallelizable` for the rationale.
-    fn parallelizable(&self) -> bool {
-        false
-    }
-
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Err(missing_session_error())
     }

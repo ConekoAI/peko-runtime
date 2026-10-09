@@ -78,3 +78,47 @@ impl Tool for TaskTool {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::builtin::tasks::TestTodoRuntime;
+    use serde_json::json;
+
+    /// One todo's life, every action routed through the domain tool.
+    #[tokio::test]
+    async fn every_action_dispatches_through_the_domain_tool() {
+        let tool = TaskTool::new(std::sync::Arc::new(TestTodoRuntime::new()));
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task").with_session_id("sess-1");
+        let call = |params: Value| {
+            let (tool, ctx) = (&tool, &ctx);
+            async move { tool.execute_with_context(params, ctx).await.unwrap() }
+        };
+
+        let created = call(json!({ "action": "create", "subject": "write tests" })).await;
+        let id = created["taskId"].as_str().unwrap().to_string();
+        let got = call(json!({ "action": "get", "taskId": id })).await;
+        assert_eq!(got["subject"], "write tests");
+        let updated =
+            call(json!({ "action": "update", "taskId": id, "status": "completed" })).await;
+        assert_eq!(updated["status"], "completed");
+        let listed = call(json!({ "action": "list", "status_filter": "completed" })).await;
+        assert!(listed.to_string().contains(&id), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn unsupported_actions_and_contextless_calls_are_rejected() {
+        let tool = TaskTool::new(std::sync::Arc::new(TestTodoRuntime::new()));
+        let ctx = ToolContext::for_hook_run("run", "tc", "Task").with_session_id("sess-1");
+        for params in [json!({ "action": "purge" }), json!({})] {
+            let error = tool.execute_with_context(params, &ctx).await.unwrap_err();
+            assert!(error.to_string().contains("supported action"), "{error}");
+        }
+        for action in ["create", "get", "list", "update"] {
+            assert!(
+                tool.execute(json!({ "action": action })).await.is_err(),
+                "{action} without a context must fail"
+            );
+        }
+    }
+}
