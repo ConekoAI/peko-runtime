@@ -203,7 +203,7 @@ description = "General-purpose assistant"
 host_runtime_id = "did:key:z6MkhaXgZCiMTaW8m5pX4z7kR3FqYqN3d2y1vQpLrStUvWxw"
 
 [agent.provider]
-model = "minimax"
+model = "example"
 ```
 
 **Semantics:**

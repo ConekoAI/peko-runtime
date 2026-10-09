@@ -8,7 +8,6 @@ name: Integration Tests
 # unit-linux   every PR that triggers the workflow  ~3 min              cargo test --lib
 # unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner
 # integration  PR that touches integration paths    ~10-15 min          docker compose + PekoHub
-# integration-llm `[llm]` / nightly / manual        ~5 min extra        real LLM cost
 #
 # Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
 # this workflow at all — see the workflow-level `paths` filter below.
@@ -17,9 +16,9 @@ name: Integration Tests
 # Docker-backed integration is actually needed for the PR's diff. Pure
 # refactors (peko-rs/core/src/** only) skip the integration tier.
 #
-# MINIMAX_API_KEY is a repo secret read ONLY by integration-llm. The
-# integration job runs with the secret unset — that's how we guarantee
-# mock-tier tests stay mock-only.
+# No job reads an LLM API key: CI runs the mock-LLM tier only, and its
+# Make recipe unsets LLM_API_KEY so tests stay mock-only. The real-LLM
+# tier (`make test-integration-llm`) is local and opt-in.
 
 on:
   push:
@@ -71,7 +70,7 @@ on:
       - 'scripts/check_*.ps1'
       - '.github/workflows/integration.yml'
   schedule:
-    - cron: '0 2 * * *'       # nightly integration-llm
+    - cron: '0 2 * * *'       # nightly full run (unit-windows + integration)
   workflow_dispatch:          # manual force-trigger
 
 env:
@@ -329,7 +328,7 @@ jobs:
           exit 1
       - name: Run integration tests
         working-directory: peko-runtime
-        # Make recipe enforces `env -u MINIMAX_API_KEY` so a leaking key
+        # Make recipe enforces `env -u LLM_API_KEY` so a leaking key
         # in the runner env can't switch dual-mode tests to the real provider.
         run: make test-integration
       - name: Dump container logs on failure
@@ -340,72 +339,6 @@ jobs:
           echo "::endgroup::"
           echo "::group::mock-llm logs"
           docker logs $(docker ps -aqf "name=mock-llm") 2>&1 || true
-          echo "::endgroup::"
-      - name: Tear down
-        if: always()
-        working-directory: peko-runtime
-        run: make docker-down
-
-  # ── Tier 2: Real-LLM tests (nightly + [llm] commit tag) ───────────────
-  # Path-aware gate: only run when the diff could plausibly affect
-  # provider/CLI plumbing, plus the existing event/schedule/manual gates.
-  integration-llm:
-    name: Integration (real LLM)
-    runs-on: ubuntu-latest
-    needs: [changes, integration]
-    if: >-
-      (needs.changes.outputs.src == 'true'
-       || needs.changes.outputs.tests == 'true'
-       || needs.changes.outputs.workflow == 'true')
-      && (github.event_name == 'schedule'
-          || github.event_name == 'workflow_dispatch'
-          || contains(github.event.head_commit.message, '[llm]'))
-    steps:
-      - name: Checkout peko-runtime
-        uses: actions/checkout@v4
-        with:
-          path: peko-runtime
-      - name: Checkout pekohub
-        uses: actions/checkout@v4
-        with:
-          repository: ConekoAI/pekohub
-          path: pekohub
-      - uses: docker/setup-buildx-action@v3
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: peko-runtime
-          shared-key: peko-runtime-rust
-      - name: Start test stack
-        working-directory: peko-runtime
-        run: make docker-up
-      - name: Wait for pekohub-test to become healthy
-        # Mirror of the Tier 1 loop above — same 180s budget for the
-        # PGlite cold-start window on slow runners.
-        run: |
-          for i in {1..60}; do
-            if curl -fsS http://localhost:3000/health >/dev/null 2>&1; then
-              echo "pekohub-test healthy after ${i} attempts"; exit 0
-            fi
-            sleep 3
-          done
-          echo "::error::pekohub-test failed to become healthy in 180s"
-          docker ps -a
-          docker logs $(docker ps -aqf "name=pekohub-test") || true
-          exit 1
-      - name: Run real-LLM tests
-        working-directory: peko-runtime
-        # Make recipe enforces `env -u MOCK_LLM_URL` so dual-mode tests
-        # fall through to the real provider.
-        env:
-          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-        run: make test-integration-llm
-      - name: Dump container logs on failure
-        if: failure()
-        run: |
-          echo "::group::pekohub-test logs"
-          docker logs $(docker ps -aqf "name=pekohub-test") 2>&1 || true
           echo "::endgroup::"
       - name: Tear down
         if: always()

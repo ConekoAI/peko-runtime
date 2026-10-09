@@ -50,8 +50,8 @@ pub enum ApiFormat {
     /// OpenAI Chat Completions API. Compatible with OpenAI, Groq,
     /// Together, OpenRouter, Ollama, vLLM, llama.cpp, …
     OpenaiCompletions,
-    /// Anthropic Messages API. Compatible with Anthropic, Kimi Code,
-    /// MiniMax, …
+    /// Anthropic Messages API. Compatible with Anthropic and
+    /// Anthropic-compatible endpoints.
     AnthropicMessages,
     /// OpenAI Responses API (`POST /v1/responses`). Successor surface
     /// to Chat Completions; preferred by gpt-4.1, gpt-5, and o-series

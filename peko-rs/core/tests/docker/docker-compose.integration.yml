@@ -46,7 +46,7 @@ services:
       - peko-test
 
   # ── Mock LLM Server ──────────────────────────────────────────────
-  # For tunnel_e2e + Phase B cli_*.rs. Sends MiniMax-compatible SSE.
+  # For tunnel_e2e + Phase B cli_*.rs. Sends OpenAI-compatible SSE.
   # Image is pre-built by `make docker-build`.
   mock-llm:
     image: peko/mock-llm:latest

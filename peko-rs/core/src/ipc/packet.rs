@@ -3354,8 +3354,8 @@ mod tests {
             request_id: 902,
             providers: vec![
                 CredentialRow {
-                    id: "id-minimax".to_string(),
-                    namespace: "provider:minimax".to_string(),
+                    id: "id-example".to_string(),
+                    namespace: "provider:example".to_string(),
                     name: "default".to_string(),
                     kind: "api_key".to_string(),
                     has_key: true,
@@ -3395,8 +3395,8 @@ mod tests {
             } => {
                 assert_eq!(request_id, 902);
                 assert_eq!(providers.len(), 2);
-                assert_eq!(providers[0].id, "id-minimax");
-                assert_eq!(providers[0].namespace, "provider:minimax");
+                assert_eq!(providers[0].id, "id-example");
+                assert_eq!(providers[0].namespace, "provider:example");
                 assert_eq!(providers[0].name, "default");
                 assert_eq!(providers[0].kind, "api_key");
                 assert!(providers[0].has_key);
@@ -3420,7 +3420,7 @@ mod tests {
         // Model-first: live-model-test is keyed by catalog model id.
         let req = RequestPacket::ModelTest {
             request_id: 911,
-            id: "minimax".to_string(),
+            id: "example-model".to_string(),
         };
         let bytes = req.to_bytes().unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -3429,13 +3429,16 @@ mod tests {
             Some("model_test")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(911));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("minimax"));
+        assert_eq!(
+            json.get("id").and_then(|v| v.as_str()),
+            Some("example-model")
+        );
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
             RequestPacket::ModelTest { request_id, id } => {
                 assert_eq!(request_id, 911);
-                assert_eq!(id, "minimax");
+                assert_eq!(id, "example-model");
             }
             _ => panic!("Wrong variant"),
         }
@@ -3506,7 +3509,7 @@ mod tests {
     fn test_credential_set_request_roundtrip() {
         let req = RequestPacket::CredentialSet {
             request_id: 921,
-            namespace: "provider:minimax".to_string(),
+            namespace: "provider:example".to_string(),
             name: "default".to_string(),
             kind: "api_key".to_string(),
             material: "sk-test-123".to_string(),
@@ -3522,7 +3525,7 @@ mod tests {
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(921));
         assert_eq!(
             json.get("namespace").and_then(|v| v.as_str()),
-            Some("provider:minimax")
+            Some("provider:example")
         );
         assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("default"));
         assert_eq!(json.get("kind").and_then(|v| v.as_str()), Some("api_key"));
@@ -3549,7 +3552,7 @@ mod tests {
                 replace_on,
             } => {
                 assert_eq!(request_id, 921);
-                assert_eq!(namespace, "provider:minimax");
+                assert_eq!(namespace, "provider:example");
                 assert_eq!(name, "default");
                 assert_eq!(kind, "api_key");
                 assert_eq!(material, "sk-test-123");
@@ -3573,7 +3576,7 @@ mod tests {
     fn test_credential_set_done_response_roundtrip() {
         let resp = ResponsePacket::CredentialSetDone {
             request_id: 922,
-            id: "id-minimax".to_string(),
+            id: "id-example".to_string(),
             rewired_models: 0,
         };
         let bytes = resp.to_bytes().unwrap();
@@ -3583,7 +3586,7 @@ mod tests {
             Some("credential_set_done")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(922));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-example"));
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
@@ -3593,7 +3596,7 @@ mod tests {
                 rewired_models,
             } => {
                 assert_eq!(request_id, 922);
-                assert_eq!(id, "id-minimax");
+                assert_eq!(id, "id-example");
                 assert_eq!(rewired_models, 0);
             }
             _ => panic!("Wrong variant"),
@@ -3608,7 +3611,7 @@ mod tests {
     fn test_credential_delete_request_roundtrip() {
         let req = RequestPacket::CredentialDelete {
             request_id: 931,
-            id: "id-minimax".to_string(),
+            id: "id-example".to_string(),
             force: false,
         };
         let bytes = req.to_bytes().unwrap();
@@ -3618,7 +3621,7 @@ mod tests {
             Some("credential_delete")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(931));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-example"));
 
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
@@ -3628,7 +3631,7 @@ mod tests {
                 force,
             } => {
                 assert_eq!(request_id, 931);
-                assert_eq!(id, "id-minimax");
+                assert_eq!(id, "id-example");
                 assert!(!force);
             }
             _ => panic!("Wrong variant"),
@@ -3640,7 +3643,7 @@ mod tests {
     fn test_credential_deleted_response_roundtrip() {
         let resp = ResponsePacket::CredentialDeleted {
             request_id: 932,
-            id: "id-minimax".to_string(),
+            id: "id-example".to_string(),
             broken_references: 0,
         };
         let bytes = resp.to_bytes().unwrap();
@@ -3650,7 +3653,7 @@ mod tests {
             Some("credential_deleted")
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(932));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-example"));
 
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
@@ -3660,7 +3663,7 @@ mod tests {
                 broken_references,
             } => {
                 assert_eq!(request_id, 932);
-                assert_eq!(id, "id-minimax");
+                assert_eq!(id, "id-example");
                 assert_eq!(broken_references, 0);
             }
             _ => panic!("Wrong variant"),

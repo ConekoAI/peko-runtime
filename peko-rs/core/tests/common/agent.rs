@@ -68,7 +68,7 @@ pub fn create_mock_principal_with_tools(
 }
 
 /// Seed one configured-model entry in the model catalog at
-/// `~/.peko/models.toml`. All three public seeders below delegate
+/// `~/.peko/models.toml`. The public seeders below delegate
 /// here; the only differences are the entry's id, endpoint format,
 /// base URL, and wire model id.
 ///
@@ -144,30 +144,17 @@ pub fn seed_mock_provider_in_catalog(home: &Path, mock_llm_url: &str) {
     );
 }
 
-/// Seed a `minimax` catalog entry pointing at the production MiniMax
-/// (Anthropic-compatible) endpoint. The API key is read from the
-/// `MINIMAX_API_KEY` env var via `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
-pub fn seed_minimax_provider_in_catalog(home: &Path) {
+/// Seed the env-described real LLM ([`super::real_llm::RealLlm`]) as the
+/// catalog entry [`super::real_llm::REAL_LLM_MODEL_ID`]. Its key comes from
+/// `LLM_API_KEY` via `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
+pub fn seed_real_llm_in_catalog(home: &Path, llm: &super::real_llm::RealLlm) {
+    let entry = llm.catalog_entry();
     seed_model_in_catalog(
         home,
-        "minimax",
-        "MiniMax",
-        peko_providers::catalog::ApiFormat::AnthropicMessages,
-        "https://api.minimaxi.com/anthropic",
-        "MiniMax-M3",
-    );
-}
-
-/// Seed a `kimi` catalog entry pointing at the Kimi Code API endpoint.
-/// The API key is read from the `KIMI_API_KEY` env var via
-/// `PEKO_TEST_RESOLVER_BOOTSTRAP=1`.
-pub fn seed_kimi_provider_in_catalog(home: &Path) {
-    seed_model_in_catalog(
-        home,
-        "kimi",
-        "Kimi (Kimi Code API)",
-        peko_providers::catalog::ApiFormat::AnthropicMessages,
-        "https://api.kimi.com/coding",
-        "kimi-for-coding",
+        &entry.id,
+        &entry.display_name,
+        entry.api_format,
+        &entry.base_url,
+        &entry.model_id,
     );
 }

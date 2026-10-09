@@ -268,8 +268,8 @@ Rotation (`--rotate-keys`) remains an operator escape hatch that
   `organized` verbatim, stale-id rebinding), seed-rule boot reset,
   cron remap (JSON shape + TOML fallback + idempotence + malformed
   pass-through), manifest legacy-field tolerance.
-- e2e: `scripts/e2e/flows/snapshot-roundtrip-llm.sh` (real LLM,
-  MiniMax) — genesis turn via `create -f`, trunk-authored state
+- e2e: `scripts/e2e/flows/snapshot-roundtrip-llm.sh` (real LLM)
+  — genesis turn via `create -f`, trunk-authored state
   (CronCreate attempt with a schema-safe clone fallback, skill, kb
   note, plan, hand-stamped `organized`), snapshot tar inspection,
   remove → import → per-tier restore with stale-id rebinding,
@@ -349,7 +349,7 @@ re-seed.
   `seed_boot_defaults` for non-organized imports.
 - **CronCreate-authored job in e2e:** the flow's trunk-authored cron
   job currently falls back to a schema-safe schedule clone when the
-  model skips the tool call; revisit MiniMax tool-call reliability
+  model skips the tool call; revisit real-model tool-call reliability
   before tightening the flow to the real path only.
 
 ## 6. References

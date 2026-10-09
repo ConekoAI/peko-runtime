@@ -198,7 +198,7 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
   was removed (unshipped experiment); the default config no longer
   fabricates an identity.
 - `scripts/e2e/flows/genesis-pipeline-llm.sh` (new) — live-LLM flow
-  (MiniMax) driving all phases end-to-end: P0/P1 stamps, boot seeding,
+  driving all phases end-to-end: P0/P1 stamps, boot seeding,
   the real genesis self-turn, an ingress round-trip, and restart
   idempotence.
 

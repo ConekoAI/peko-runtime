@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Vendor-neutral real-LLM tier and nightly CI cleanup (2026-10-09)
+
+- Remove the real-LLM job from CI; the nightly run is unit (Linux/Windows) plus
+  mock-LLM integration. `make test-integration-llm` stays as a local, opt-in tier.
+- Make real-LLM tests vendor-neutral: one env-described endpoint (`LLM_API_KEY`,
+  `LLM_BASE_URL`, `LLM_MODEL`, optional `LLM_API_FORMAT`; tests/common/real_llm.rs)
+  replaces the MiniMax/Kimi catalog seeders, smoke tests, and tunnel_e2e branch.
+  Mock tiers strip `LLM_API_KEY` instead of `MINIMAX_API_KEY`.
+- Drop the mock LLM's MiniMax route and response shape (OpenAI SSE only) and
+  remaining MiniMax references in source, fixtures, examples, and ADRs.
+- Fix the wake-hook test race behind the Windows nightly failure: the wake.rs
+  tests share the executor's `serial(wake_hook)` key and filter by session key.
+- Delete the orphaned `e2e_tests_archive/` (retired `peko ext` fixtures) and
+  Makefile slices whose test files no longer exist (pekohub/registry
+  integration, cli_agent_signature).
+
 ### Built-in tool test foundation (2026-10-09)
 
 - Fix Cron history for fired one-shot jobs: the ownership check consulted only

@@ -309,8 +309,8 @@ pub struct A2AAddress {
 
 ```bash
 # Agent management (team is optional)
-peko agent create alice --provider minimax          # Standalone agent
-peko agent create bob --provider minimax            # Standalone agent
+peko agent create alice --provider example          # Standalone agent
+peko agent create bob --provider example            # Standalone agent
 
 # Team membership
 peko team join engineering --agent alice             # Add alice to engineering
@@ -536,7 +536,7 @@ Simpler membership model where every agent has a mandatory home team.
 
 | # | Criterion | How to Verify |
 |---|-----------|---------------|
-| 1 | New standalone agents can be created without a team | `peko agent create solo --provider minimax` succeeds |
+| 1 | New standalone agents can be created without a team | `peko agent create solo --provider example` succeeds |
 | 2 | Agents can join multiple teams | `peko team join t1 --agent alice` and `peko team join t2 --agent alice` both succeed |
 | 3 | Team deletion does not delete member agents | `peko team delete t1` leaves `alice` in `agents/` |
 | 4 | Team-context sessions are isolated | Sessions in `sessions/alice/t1/` and `sessions/alice/t2/` are separate |

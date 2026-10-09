@@ -18,11 +18,12 @@ pub mod daemon;
 pub mod harness;
 pub mod mock_configure;
 pub mod package_builder;
+pub mod real_llm;
 pub mod subprocess;
 
 pub use agent::{
-    create_mock_principal, create_mock_principal_with_tools, seed_kimi_provider_in_catalog,
-    seed_minimax_provider_in_catalog, seed_mock_provider_in_catalog,
+    create_mock_principal, create_mock_principal_with_tools, seed_mock_provider_in_catalog,
+    seed_real_llm_in_catalog,
 };
 pub use auth::{create_test_user, generate_jwt};
 pub use cli::PekoCli;
@@ -31,4 +32,5 @@ pub use daemon::DaemonGuard;
 pub use harness::{reset_pekohub, PekohubBackend};
 pub use mock_configure::configure_mock;
 pub use package_builder::PrincipalPackageBuilder;
+pub use real_llm::{RealLlm, REAL_LLM_MODEL_ID};
 pub use subprocess::{run_with_stdin, run_with_timeout, try_run_with_timeout};

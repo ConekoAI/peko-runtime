@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Mock LLM server for integration tests.
 
-Streams SSE responses in the MiniMax-compatible wire format (the historical
-contract that `tunnel_e2e` was built against). Each chunk also carries an
-OpenAI-compatible `delta` shape, so the same chunks parse correctly under
-either the `minimax` or the `openai_compatible` provider adapter.
+Streams SSE responses in the OpenAI Chat Completions wire format, so test
+catalogs point an `openai_completions` model entry at this server.
 
 Response selection (first match wins):
 
@@ -29,9 +27,8 @@ Response selection (first match wins):
      `tunnel_e2e` assertion expects).
 
 Routes:
-  POST /v1/text/chatcompletion_v2   (MiniMax path used by tunnel_e2e)
-  POST /v1/chat/completions         (OpenAI path; same handler)
-  POST /chat/completions            (OpenAI path with /v1 stripped)
+  POST /v1/chat/completions         (OpenAI path)
+  POST /chat/completions            (OpenAI path with /v1 stripped; same handler)
   POST /_test/configure             (test-only; set MOCK_LLM_SCRIPT + reset counters)
   GET  /health
 """
@@ -130,13 +127,10 @@ def _next_tool_call_id() -> str:
 
 
 def _text_chunk(word: str) -> str:
-    """One streamed text chunk in both MiniMax and OpenAI shape."""
+    """One streamed text chunk."""
     chunk = {
         "choices": [
             {
-                # MiniMax shape (preserved for the existing tunnel_e2e test).
-                "messages": [{"role": "assistant", "content": word}],
-                # OpenAI shape (so the openai_compatible adapter sees text too).
                 "delta": {"content": word},
                 "finish_reason": None,
             }
@@ -162,7 +156,6 @@ def _tool_call_chunks(name: str, arguments: str):
                         }
                     ],
                 },
-                "messages": [],
                 "finish_reason": None,
             }
         ]
@@ -178,7 +171,6 @@ def _tool_call_chunks(name: str, arguments: str):
                         }
                     ],
                 },
-                "messages": [],
                 "finish_reason": None,
             }
         ]
@@ -192,7 +184,6 @@ def _done_chunk(stop_reason: str) -> str:
         "choices": [
             {
                 "delta": {},
-                "messages": [],
                 "finish_reason": stop_reason,
             }
         ]
@@ -238,12 +229,6 @@ async def _handle_chat(request: Request) -> StreamingResponse:
     user_message = _extract_user_message(messages)
     response = _resolve_response(user_message)
     return await _stream(response)
-
-
-@app.post("/v1/text/chatcompletion_v2")
-async def chat_completion_minimax(request: Request):
-    """MiniMax-compatible chat completion endpoint."""
-    return await _handle_chat(request)
 
 
 @app.post("/v1/chat/completions")

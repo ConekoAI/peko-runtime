@@ -1187,7 +1187,7 @@ max_compactions_per_session = 100
 cooldown_seconds = 0
 
 [compaction.model_limits]
-minimax = { "M3" = 4000 }
+example = { "model-a" = 4000 }
 "#;
         let root = toml::from_str::<toml::Value>(toml_str).unwrap();
         let compaction_table = root

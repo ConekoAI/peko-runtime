@@ -320,17 +320,12 @@ impl AnthropicAdapter {
     /// Strips JSON-Schema combinators (`anyOf`, `oneOf`, `allOf`) from
     /// `input_schema` before sending. The upstream Anthropic API accepts
     /// these keywords, but several Anthropic-compatible providers don't:
-    /// Kimi's `https://api.minimaxi.com/anthropic` shim returns 429
-    /// "engine overloaded" (instead of a proper 400) when a tool's
-    /// `input_schema` contains `anyOf`. The combinators are a
-    /// documentation nicety for our tools (`Cron action delete` and `Task action update`
-    /// use them to say "either id or label"), not a functional
-    /// requirement — the validation lives on the server side anyway
-    /// because our tool executor rejects missing required fields with a
-    /// clear message. See tests/cli_providers.rs (the kimi smoke test
-    /// failed for ~60s straight before this strip) and the reproduce
-    /// script in `scripts/bisect_kimi_anyof.py` for the original
-    /// diagnostic.
+    /// at least one compat shim returned 429 "engine overloaded"
+    /// (instead of a proper 400) when a tool's `input_schema` contained
+    /// `anyOf`. The combinators are a documentation nicety for our tools
+    /// (e.g. Cron's id-or-label actions), not a functional requirement —
+    /// the dispatcher validates every call against the complete schema
+    /// before execution.
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
         tools
             .iter()
@@ -381,7 +376,7 @@ fn tool_choice_anthropic(choice: &ToolChoice) -> serde_json::Value {
     // Anthropic's documented shape is the object form
     // `{"type": "auto"|"any"|"tool", ...}`. We previously emitted bare
     // strings ("auto"/"none"/"any"); Anthropic tolerates those, but
-    // third-party anthropic-compat endpoints (e.g. MiniMax) reject the
+    // some third-party anthropic-compat endpoints reject the
     // bare strings with `invalid_request_error: invalid params`.
     // Always emit the object form for forward-compat.
     match choice {
@@ -812,7 +807,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                         ),
                         None => (0, 0, 0),
                     };
-                    // Some providers (MiniMax M3 — see Bug H in the
+                    // Some Anthropic-compatible providers (Bug H in the
                     // 2026-08-01 v3 field test) put the real
                     // `input_tokens` here rather than in
                     // `message_start.message.usage`. Prefer the
@@ -1053,7 +1048,7 @@ struct AnthropicMessageStartInfo {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicDeltaUsage {
-    /// Some providers (notably MiniMax M3) follow a "final usage in
+    /// Some Anthropic-compatible providers follow a "final usage in
     /// `message_delta`" pattern: they report `input_tokens: 0` in
     /// `message_start.message.usage` and only fill in the real value
     /// here. The standard Anthropic API leaves this field absent
@@ -1459,9 +1454,9 @@ mod tests {
         }
     }
 
-    /// Bug H (2026-08-01 v3 field test): MiniMax M3
-    /// (`https://api.minimaxi.com/anthropic`) reports `input_tokens:
-    /// 0` in `message_start.message.usage` and only fills in the
+    /// Bug H (2026-08-01 v3 field test): an Anthropic-compatible
+    /// provider reported `input_tokens:
+    /// 0` in `message_start.message.usage` and only filled in the
     /// real value on `message_delta.usage`. Before this fix the
     /// adapter dropped the delta's `input_tokens` and the meter
     /// recorded 0 for every call. The fix: prefer the delta's
@@ -1470,8 +1465,8 @@ mod tests {
     #[test]
     fn test_message_delta_input_tokens_overrides_start_zero() {
         let adapter = AnthropicAdapter::new();
-        // Pretend message_start reported the all-zeros summary that
-        // MiniMax M3 actually sends.
+        // Pretend message_start reported the all-zeros summary such
+        // providers actually send.
         *adapter.pending_input_tokens.lock().unwrap() = Some(AnthropicUsage {
             input_tokens: 0,
             output_tokens: 0,
@@ -1482,7 +1477,7 @@ mod tests {
         // message_delta carries the real input + cache read counts.
         let data = r#"{"type":"message_delta","usage":{"input_tokens":36,"output_tokens":11,"cache_read_input_tokens":128}}"#;
         let event = adapter
-            .parse_sse_event("MiniMax-M3", data)
+            .parse_sse_event("compat-model", data)
             .expect("parse_sse_event succeeds");
 
         match event {

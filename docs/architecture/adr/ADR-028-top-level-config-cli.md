@@ -82,7 +82,7 @@ bind_address = "127.0.0.1:11435"
 log_level = "info"
 
 [defaults]
-provider = "minimax"
+provider = "example"
 model = "gpt-4o-mini"
 temperature = 0.7
 max_tokens = 2048
@@ -123,7 +123,7 @@ All commands respect the global `--json` flag:
 
 ```bash
 $ peko config get defaults.provider --json
-{"key": "defaults.provider", "value": "minimax"}
+{"key": "defaults.provider", "value": "example"}
 
 $ peko config set defaults.provider kimi --json
 {"success": true, "key": "defaults.provider", "value": "kimi"}

@@ -1864,7 +1864,7 @@ mod tests {
             display_name: "Python CLI Helper",
             did: None,
             workspace: std::path::Path::new("/tmp/pyhelper"),
-            preferred_model_id: Some("minimax-MiniMax-M3"),
+            preferred_model_id: Some("example-model"),
             agents: vec![AgentView {
                 name: "primary",
                 description: "Default assistant for pyhelper",
