@@ -131,3 +131,56 @@ impl TaskFileWriter {
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn records_land_at_a_filesystem_safe_path_with_the_receipt_mirror() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = TaskFileWriter::new(dir.path().join("tasks"));
+        let mut record = TaskFileRecord::new("Bash:a/b".into(), "Bash".into());
+        record.set_running();
+        record.set_timed_out("too slow".into());
+        writer.write(&record).await.unwrap();
+
+        let path = writer.task_file_path("Bash:a/b");
+        assert_eq!(path, dir.path().join("tasks").join("Bash_a_b.json"));
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(on_disk["status"], "timed_out");
+        assert_eq!(on_disk["_async_status"], "timed_out");
+        assert_eq!(on_disk["error"], "too slow");
+        assert!(on_disk["started_at"].is_string() && on_disk["completed_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_files_older_than_the_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = TaskFileWriter::new(dir.path().to_path_buf());
+        for id in ["old", "fresh"] {
+            writer
+                .write(&TaskFileRecord::new(id.into(), "Bash".into()))
+                .await
+                .unwrap();
+        }
+        let day_ago = std::time::SystemTime::now() - Duration::from_hours(25);
+        std::fs::File::options()
+            .write(true)
+            .open(writer.task_file_path("old"))
+            .unwrap()
+            .set_modified(day_ago)
+            .unwrap();
+
+        assert_eq!(
+            writer.cleanup_old(Duration::from_hours(24)).await.unwrap(),
+            1
+        );
+        assert!(!writer.task_file_path("old").exists());
+        assert!(writer.task_file_path("fresh").exists());
+
+        let missing = TaskFileWriter::new(dir.path().join("never-created"));
+        assert_eq!(missing.cleanup_old(Duration::ZERO).await.unwrap(), 0);
+    }
+}

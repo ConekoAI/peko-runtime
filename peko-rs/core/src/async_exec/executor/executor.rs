@@ -674,44 +674,6 @@ impl AsyncExecutor {
         .await
     }
 
-    /// Like [`Self::execute`], but wires a `watch` abort channel into the
-    /// task: the sender is attached to the `AsyncTaskEntry` so
-    /// [`Self::cancel`] flips it, and the receiver is handed to the
-    /// execution closure so cooperative bodies (e.g. background `Bash`)
-    /// can short-circuit instead of running to natural completion after
-    /// an `Async action stop`. Returns the receipt plus the receiver.
-    pub async fn execute_cancellable<F, Fut>(
-        &self,
-        task_id: AsyncTaskId,
-        tool_name: impl Into<String>,
-        params: Value,
-        parent_session_key: impl Into<String>,
-        config: AsyncToolConfig,
-        execution_fn: F,
-    ) -> Result<AsyncTaskReceipt>
-    where
-        F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
-    {
-        let tool_name = tool_name.into();
-        let parent_session_key = parent_session_key.into();
-
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let boxed_fn: BoxedExecutionFn = Box::new(move || Box::pin(execution_fn(rx)));
-
-        self.execute_inner(
-            task_id,
-            tool_name,
-            params,
-            parent_session_key,
-            config,
-            TaskMetadata::None,
-            Some(tx),
-            boxed_fn,
-        )
-        .await
-    }
-
     /// Execute an async task with metadata attached to the registry entry.
     ///
     /// This is used by domain-specific executors (e.g., `SubagentExecutor`)
@@ -942,47 +904,6 @@ impl AsyncExecutor {
             }
         }
         Ok(false)
-    }
-
-    /// Wait for all tasks to reach a terminal state
-    pub async fn wait_for_all_tasks(&self, timeout: Duration) {
-        let start = tokio::time::Instant::now();
-        loop {
-            let has_pending = {
-                let registry = self.registry.read().await;
-                registry.has_pending_tasks()
-            };
-            if !has_pending {
-                break;
-            }
-            if start.elapsed() >= timeout {
-                tracing::warn!("Timeout waiting for async tasks to complete");
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// List all tasks in the registry, optionally filtered by session_key
-    pub async fn list_tasks(&self, session_key: Option<&str>) -> Vec<AsyncTaskEntry> {
-        let registry = self.registry.read().await;
-        registry.list_tasks(session_key)
-    }
-
-    /// Run janitor: clean old task files and purge stale registry entries
-    pub async fn run_janitor(&self, file_ttl: Duration) -> Result<(usize, usize)> {
-        let files_removed = if let Some(ref writer) = self.task_file_writer {
-            writer.cleanup_old(file_ttl).await?
-        } else {
-            0
-        };
-
-        let registry_purged = {
-            let mut registry = self.registry.write().await;
-            registry.cleanup_completed()
-        };
-
-        Ok((files_removed, registry_purged))
     }
 }
 

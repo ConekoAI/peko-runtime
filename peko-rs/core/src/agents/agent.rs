@@ -1329,11 +1329,6 @@ impl Agent {
         Ok(loop_)
     }
 
-    /// Wait for background async tasks to complete
-    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
-        self.tooling.wait_for_async_tasks(timeout).await;
-    }
-
     /// Get agent DID
     #[must_use]
     pub fn did(&self) -> &str {

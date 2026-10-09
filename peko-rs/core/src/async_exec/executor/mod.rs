@@ -26,11 +26,6 @@ pub mod types;
 pub mod wake;
 
 pub use async_runtime_impl::AsyncExecutorRuntime;
-// Phase 8c.1.A: gated on `test-utils` feature so external root tests
-// (src/tools/builtin/async_*.rs) can construct `TestAsyncRuntime` via
-// the host's `test-utils` feature flag, not just host-internal tests.
-#[cfg(any(test, feature = "test-utils"))]
-pub use async_runtime_impl::{TestAsyncRuntime, TestTaskEntry};
 pub use completion_queue::{
     CompletionEvent, InboxItem, SessionInbox, SharedSessionInbox, SteeringMessage,
 };
@@ -41,7 +36,7 @@ pub use executor::{
 };
 pub use registry::{
     AsyncTaskEntry, AsyncTaskRegistry, CancelResult, SharedAsyncTaskRegistry, SubagentMetadata,
-    SubagentResult, TaskMetadata, TaskView,
+    SubagentResult, TaskMetadata,
 };
 pub use task_file::{TaskFileRecord, TaskFileWriter};
 pub use types::{

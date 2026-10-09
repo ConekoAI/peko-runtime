@@ -422,15 +422,7 @@ fn project_run_view(view: crate::agents::subagent_types::SubagentRunView) -> Sub
             peko_session::types::SpawnCleanupPolicy::Delete => SpawnCleanupPolicy::Delete,
         },
         label: view.label,
-        result: view
-            .result
-            .map(|r| crate::tools::builtin::messaging::SubagentResult {
-                status: r.status,
-                output: r.output,
-                error: r.error,
-                token_usage: r.token_usage,
-                completed_at: r.completed_at,
-            }),
+        result: view.result,
         depth: view.depth,
     }
 }

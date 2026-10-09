@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub use peko_tools_core::async_status::{AsyncTaskId, AsyncTaskResult, AsyncTaskStatus};
 
 /// Receipt returned to agent when spawning an async task
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AsyncTaskReceipt {
     pub task_id: AsyncTaskId,
     pub status: AsyncTaskStatus,
@@ -18,7 +18,6 @@ pub struct AsyncTaskReceipt {
     /// Path to the task file on disk for polling
     pub task_file: Option<std::path::PathBuf>,
     /// Parameters the agent used to invoke the tool (audit transparency)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
 }
 
