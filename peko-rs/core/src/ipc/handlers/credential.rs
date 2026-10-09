@@ -606,8 +606,8 @@ mod tests {
     async fn credential_list_emits_rows_with_has_key_flag() {
         let host = stub_host(vec![
             CredentialRow {
-                id: "id-minimax".to_string(),
-                namespace: "provider:minimax".to_string(),
+                id: "id-example".to_string(),
+                namespace: "provider:example".to_string(),
                 name: "default".to_string(),
                 kind: "api_key".to_string(),
                 has_key: true,
@@ -667,26 +667,26 @@ mod tests {
         assert_eq!(providers.len(), 2);
 
         // Field names must match the desktop's CredentialRow exactly.
-        let minimax = &providers[0];
+        let example = &providers[0];
         assert_eq!(
-            minimax.get("id").and_then(|v| v.as_str()),
-            Some("id-minimax")
+            example.get("id").and_then(|v| v.as_str()),
+            Some("id-example")
         );
         assert_eq!(
-            minimax.get("namespace").and_then(|v| v.as_str()),
-            Some("provider:minimax")
+            example.get("namespace").and_then(|v| v.as_str()),
+            Some("provider:example")
         );
         assert_eq!(
-            minimax.get("name").and_then(|v| v.as_str()),
+            example.get("name").and_then(|v| v.as_str()),
             Some("default")
         );
         assert_eq!(
-            minimax.get("kind").and_then(|v| v.as_str()),
+            example.get("kind").and_then(|v| v.as_str()),
             Some("api_key")
         );
-        assert_eq!(minimax.get("has_key").and_then(|v| v.as_bool()), Some(true));
-        assert!(minimax.get("last_tested_at").map_or(true, |v| v.is_null()));
-        assert!(minimax.get("last_tested_ok").is_none());
+        assert_eq!(example.get("has_key").and_then(|v| v.as_bool()), Some(true));
+        assert!(example.get("last_tested_at").map_or(true, |v| v.is_null()));
+        assert!(example.get("last_tested_ok").is_none());
 
         let openai = &providers[1];
         assert_eq!(openai.get("id").and_then(|v| v.as_str()), Some("id-openai"));
@@ -738,7 +738,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 50,
-                    namespace: "provider:minimax".to_string(),
+                    namespace: "provider:example".to_string(),
                     name: "default".to_string(),
                     kind: "api_key".to_string(),
                     material: "sk-test-123".to_string(),
@@ -766,7 +766,7 @@ mod tests {
 
         let writes = writes.lock().unwrap();
         assert_eq!(writes.len(), 1, "host should record exactly one write");
-        assert_eq!(writes[0].0, "provider:minimax");
+        assert_eq!(writes[0].0, "provider:example");
         assert_eq!(writes[0].1, "default");
         assert_eq!(writes[0].2, "api_key");
         assert_eq!(writes[0].3, "sk-test-123");
@@ -785,7 +785,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 51,
-                    namespace: "provider:minimax".to_string(),
+                    namespace: "provider:example".to_string(),
                     name: "default".to_string(),
                     kind: "api_key".to_string(),
                     material: String::new(),
@@ -832,7 +832,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialSet {
                     request_id: 52,
-                    namespace: "provider:minimax".to_string(),
+                    namespace: "provider:example".to_string(),
                     name: "default".to_string(),
                     kind: "api_key".to_string(),
                     material: "sk-ok".to_string(),
@@ -871,7 +871,7 @@ mod tests {
             .handle(
                 RequestPacket::CredentialDelete {
                     request_id: 60,
-                    id: "id-minimax".to_string(),
+                    id: "id-example".to_string(),
                     force: false,
                 },
                 &test_caller(),
@@ -889,14 +889,14 @@ mod tests {
             Some("credential_deleted"),
         );
         assert_eq!(json.get("request_id").and_then(|v| v.as_u64()), Some(60));
-        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-minimax"));
+        assert_eq!(json.get("id").and_then(|v| v.as_str()), Some("id-example"));
         assert_eq!(
             json.get("broken_references").and_then(|v| v.as_u64()),
             Some(0)
         );
         assert_eq!(
             *deletes.lock().unwrap(),
-            vec![("id-minimax".to_string(), false)]
+            vec![("id-example".to_string(), false)]
         );
     }
 

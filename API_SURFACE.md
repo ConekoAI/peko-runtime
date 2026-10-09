@@ -26,6 +26,12 @@ See [the complete catalog](docs/architecture/builtin-tools.md) for all parameter
 
 TaskTool, PlanTool, and AsyncTool are exported from tools::builtin; CronTool is
 exported by peko_cron. Their per-action implementations are private handlers.
+CronTool::new dispatches to the daemon-installed runtime; CronTool::with_runtime
+binds an explicit Arc<dyn CronRuntime>. CronRuntime::owns_job_history answers
+history ownership for reaped one-shot jobs, whose runs outlive the job. The
+test-support feature exposes peko_cron::testing::FileCronRuntime, a runtime over
+real CronScheduler files. AgentCatalogTool (RoleCatalog) is workspace-only:
+from_workspace scans roles/ on every call.
 Task/Plan/Cron use the existing exclusive parallel gate for all actions; Async
 retains parallel execution. Domain dispatch preserves the caller ToolContext and
 emits one outer tool.call audit event with tool_name and action (including a declared default; otherwise null when absent or undeclared).

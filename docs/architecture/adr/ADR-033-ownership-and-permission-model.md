@@ -515,7 +515,7 @@ Team members automatically get `Chat` on all member agents; team admins get `Man
 
 | # | Criterion | Status | How to Verify |
 |---|-----------|--------|---------------|
-| 1 | Every new agent has an `owner_id` | ✅ Pass | `peko agent create test --provider minimax` → `config.toml` contains `owner_id` |
+| 1 | Every new agent has an `owner_id` | ✅ Pass | `peko agent create test --provider example` → `config.toml` contains `owner_id` |
 | 2 | Owner can transfer ownership | ✅ Pass | `peko agent transfer test --to user:456` → `owner_id` updated, old owner no longer has rights |
 | 3 | Permission grants are persisted | ✅ Pass | `peko agent permit test --subject user:789 --permission Chat` → appears in `config.toml` |
 | 4 | Permission checks block unauthorized actions | ⚠️ Partial | `transfer`/`permit`/`revoke` are protected; `delete` still uses legacy auth (see Limitations) |

@@ -7,7 +7,7 @@
 //! double-firing) and land in the same run history.
 
 use crate::tools::delete::{resolve_id_by_label, verify_id_belongs_to_principal};
-use crate::tools::global_runtime;
+use crate::tools::RuntimeBinding;
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
@@ -15,12 +15,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// `Cron action trigger` tool — fire a scheduled job now
-pub struct CronTriggerAction;
+pub struct CronTriggerAction {
+    runtime: RuntimeBinding,
+}
 
 impl CronTriggerAction {
     /// Create a new `Cron action trigger` tool
     pub fn new() -> Self {
-        Self
+        Self::bound(RuntimeBinding::default())
+    }
+
+    /// Bind the action to the runtime its domain tool resolves.
+    pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
+        Self { runtime }
     }
 }
 
@@ -94,7 +101,7 @@ impl Tool for CronTriggerAction {
             .ok_or_else(|| anyhow::anyhow!("Cron action trigger requires a Principal context"))?
             .clone();
 
-        let runtime = global_runtime().ok_or_else(|| {
+        let runtime = self.runtime.resolve().ok_or_else(|| {
             anyhow::anyhow!(
                 "Cron action trigger requires the daemon's cron runtime; not initialized"
             )
@@ -121,26 +128,5 @@ impl Tool for CronTriggerAction {
             "run_id": run_id,
             "note": "the job is running in the background; check the outcome with Cron action history",
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cron_trigger_tool_name() {
-        let tool = CronTriggerAction::new();
-        assert_eq!(tool.name(), "Cron");
-    }
-
-    #[test]
-    fn test_cron_trigger_tool_parameters() {
-        let tool = CronTriggerAction::new();
-        let params = tool.parameters();
-        let branches = params
-            .get("oneOf")
-            .expect("Cron action trigger schema must use oneOf for id-or-label");
-        assert_eq!(branches.as_array().unwrap().len(), 2);
     }
 }

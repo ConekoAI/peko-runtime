@@ -1,260 +1,111 @@
-//! CLI integration tests for the real-LLM provider smoke flows
-//! (Phase B slice per `docs/integration/TESTING.md` §7).
+//! Real-LLM provider smoke tests: `peko send` → daemon → a real endpoint.
 //!
-//! Coverage mirrors the `e2e_tests/providers/*.ps1` PowerShell scripts
-//! that previously exercised this surface outside CI:
+//! Vendor-neutral: the endpoint comes from the environment (see
+//! `common::real_llm` — `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`,
+//! optional `LLM_API_FORMAT`). Each test skips when those are unset, so a
+//! bare `cargo test` still passes.
 //!
-//! | PS script          | Rust test                                       | Provider  |
-//! |--------------------|-------------------------------------------------|-----------|
-//! | `minimax.ps1`      | `cli_providers_minimax_smoke`                   | minimax   |
-//! | `kimi.ps1`         | `cli_providers_kimi_smoke`                      | kimi      |
-//! | `minimax_tools.ps1`| `cli_providers_minimax_anthropic_native_tool_call` | minimax |
+//! Tier: real-LLM, opt-in and local only (`make test-cli-providers` or
+//! `make test-integration-llm`); CI does not run it. The mock-LLM tier
+//! covers the same daemon paths deterministically.
 //!
-//! ## Tier: real-LLM
-//!
-//! Each test early-returns if the relevant API-key env var
-//! (`MINIMAX_API_KEY` for the minimax test, `KIMI_API_KEY` for the
-//! kimi test) is unset, so `cargo test` on a bare checkout without
-//! real-LLM credentials still passes.
-//!
-//! The test runner is the GitHub Actions `Integration (real LLM)` job
-//! (see [`.github/workflows/integration.yml`](../peko/peko-runtime/.github/workflows/integration.yml)),
-//! which only fires on:
-//! 1. Nightly cron (line 37: `cron: '0 2 * * *'`),
-//! 2. Manual `workflow_dispatch`, or
-//! 3. A commit message containing `[llm]`.
-//!
-//! The test runner unsets `MOCK_LLM_URL` (per the `test-integration-llm`
-//! Makefile recipe) and passes both `MINIMAX_API_KEY` and `KIMI_API_KEY`
-//! as `secrets.*` env. The `MINIMAX_API_KEY` env is what the daemon's
-//! `provider.api_key_env` lookup reads; `KIMI_API_KEY` is the same
-//! path for Kimi.
-//!
-//! ## Principal-era target model
-//!
-//! After the "Principal as the single actor" migration, `peko send <name>`
-//! targets a **Principal** (`PrincipalSend` → `PrincipalManager::receive`),
-//! not a legacy `~/.peko/agents/<name>/` config. These tests therefore
-//! create a Principal via the real `peko create` command, then
-//! drive `peko send` against it.
-//!
-//! ## v3 provider catalog setup
-//!
-//! In the v3 provider model, the root agent only carries soft hints;
-//! the actual provider metadata lives in `~/.peko/providers.toml`, and API
-//! keys live in the OS keychain (or fall back to env vars under
-//! `PEKO_TEST_RESOLVER_BOOTSTRAP=1` in CI).
-//!
-//! Each test:
-//! 1. Creates a `PekoCli` with [`PekoCli::allow_real_llm_keys`] so the
-//!    daemon keeps `MINIMAX_API_KEY` / `KIMI_API_KEY` and enables the
-//!    env-var bootstrap.
-//! 2. Seeds `providers.toml` with the minimax or kimi catalog entry as the
-//!    SOLE entry, so the root agent's provider resolution falls through to
-//!    it (last-resort "first enabled catalog entry" rule in `LlmResolver`).
-//! 3. Creates the Principal with `peko create`.
-//!
-//! This bypasses `peko auth set` + `peko provider add`, both of which
-//! are exercised by other test paths.
-//!
-//! ## Provider specifics
-//!
-//! - **kimi**: catalog id `kimi`, `base_url = "https://api.kimi.com/coding"`,
-//!   `default_model = "kimi-for-coding"`, env var = `KIMI_API_KEY`.
-//! - **minimax**: catalog id `minimax`,
-//!   `base_url = "https://api.minimaxi.com/anthropic"`,
-//!   `default_model = "MiniMax-M3"`, env var = `MINIMAX_API_KEY`.
+//! Each test seeds the env-described endpoint as the sole catalog entry,
+//! creates a Principal pinned to it with `peko create --model`, and keeps
+//! `LLM_API_KEY` in the daemon's environment via
+//! [`PekoCli::allow_real_llm_keys`] (env-var key bootstrap, no keychain).
 
 mod common;
-use common::{run_with_timeout, DaemonGuard, PekoCli};
+use common::{run_with_timeout, DaemonGuard, PekoCli, RealLlm, REAL_LLM_MODEL_ID};
 use std::process::Stdio;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Read `KIMI_API_KEY` env, return Some(key) if set and non-empty, None
-/// otherwise. Tests early-return on None so `cargo test` on a bare
-/// checkout still passes.
-fn kimi_api_key() -> Option<String> {
-    let k = std::env::var("KIMI_API_KEY").ok()?;
-    if k.is_empty() {
-        return None;
-    }
-    Some(k)
-}
-
-/// Read `MINIMAX_API_KEY` env, return Some(key) if set and non-empty.
-fn minimax_api_key() -> Option<String> {
-    let k = std::env::var("MINIMAX_API_KEY").ok()?;
-    if k.is_empty() {
-        return None;
-    }
-    Some(k)
-}
-
-/// Create a Principal that resolves to a real-LLM provider.
-///
-/// Unlike `common::agent::create_mock_principal`, this does NOT seed the
-/// Create a Principal pinned to the seeded configured model. The
-/// caller seeds the real endpoint (minimax/kimi) as the sole catalog
-/// entry first and passes its configured model id — model-first
-/// create requires `--model` and validates it against the catalog.
-///
-/// ADR-066 P2: no grants are recorded any more — a fresh principal
-/// sees every tool (presence = executability).
-///
-/// Must be called BEFORE `DaemonGuard::spawn`: `peko create`
-/// writes files directly and needs no daemon.
-fn create_provider_principal(cli: &PekoCli, name: &str, model_id: &str) {
+/// A Principal pinned to the seeded real LLM. Call before spawning the
+/// daemon: `peko create` writes files directly.
+fn real_llm_principal(cli: &PekoCli, name: &str, llm: &RealLlm) {
+    common::seed_real_llm_in_catalog(cli.home(), llm);
     let output = cli
         .cmd()
-        .args(["create", name, "--model", model_id])
+        .args(["create", name, "--model", REAL_LLM_MODEL_ID])
         .output()
         .expect("run `peko create`");
     assert!(
         output.status.success(),
-        "`peko create {name} --model {model_id}` failed: stdout={} stderr={}",
+        "`peko create {name}` failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
 }
 
-/// Run a `peko …` command and return (stdout, stderr, status).
-fn run(
-    cli: &PekoCli,
-    args: &[&str],
-    timeout: Duration,
-) -> (String, String, std::process::ExitStatus) {
+/// Run `peko send <principal> <prompt>`, asserting a zero exit; returns stdout.
+fn send(cli: &PekoCli, principal: &str, prompt: &str, timeout: Duration) -> String {
     let (out, _, _) = run_with_timeout(
         || {
             let mut c = cli.cmd();
             c.stdout(Stdio::piped()).stderr(Stdio::piped());
             c
         },
-        args,
+        &["send", principal, prompt],
         timeout,
     )
-    .expect("run peko command");
+    .expect("run peko send");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    (stdout, stderr, out.status)
-}
-
-fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
     assert_eq!(
-        status.code(),
+        out.status.code(),
         Some(0),
-        "exited non-zero (status={status:?})\nstdout: {stdout}\nstderr: {stderr}",
+        "peko send failed\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr),
     );
+    stdout
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-/// `e2e_tests/providers/minimax.ps1` — end-to-end smoke against the
-/// MiniMax (Anthropic-compatible) provider. Sends a short prompt and
-/// asserts the response is non-empty (a real LLM call to
-/// `https://api.minimaxi.com/anthropic` with the configured
-/// `MiniMax-M3` model).
-///
-/// Skips when `MINIMAX_API_KEY` is unset.
+/// A short prompt produces a non-empty reply.
 #[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn cli_providers_minimax_smoke() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
+#[ignore = "requires LLM_API_KEY/LLM_BASE_URL/LLM_MODEL and peko daemon"]
+async fn cli_providers_real_llm_smoke() {
+    let Some(llm) = RealLlm::from_env() else {
+        eprintln!("{}; skipping", RealLlm::missing_env());
         return;
     };
-
     let cli = PekoCli::new().allow_real_llm_keys();
-    let principal = "providers_minimax_smoke";
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal, "minimax");
+    real_llm_principal(&cli, "providers_smoke", &llm);
     let _daemon = DaemonGuard::spawn(&cli);
 
-    // PS script: `peko send <principal> "Hello, can you tell me a short joke?"`
-    let (out, err, status) = run(
+    let out = send(
         &cli,
-        &["send", principal, "Hello, can you tell me a short joke?"],
-        Duration::from_secs(45),
+        "providers_smoke",
+        "Reply with one short sentence.",
+        Duration::from_secs(60),
     );
-    assert_ok(&out, &err, &status);
-    assert!(
-        !out.trim().is_empty(),
-        "expected non-empty response from minimax, got: stdout={out:?} stderr={err:?}",
-    );
+    assert!(!out.trim().is_empty(), "expected a non-empty reply");
 }
 
-/// `e2e_tests/providers/kimi.ps1` — end-to-end smoke against the
-/// Kimi provider. Sends a short prompt and asserts the response is
-/// non-empty (a real LLM call to `https://api.kimi.com/coding` with
-/// the configured `kimi-for-coding` model).
-///
-/// Skips when `KIMI_API_KEY` is unset.
+/// The model emits a native tool call: it must Read a file whose contents
+/// appear nowhere else, then report them.
 #[tokio::test]
-#[ignore = "requires KIMI_API_KEY and peko daemon"]
-async fn cli_providers_kimi_smoke() {
-    let Some(_api_key) = kimi_api_key() else {
-        eprintln!("KIMI_API_KEY not set; skipping");
+#[ignore = "requires LLM_API_KEY/LLM_BASE_URL/LLM_MODEL and peko daemon"]
+async fn cli_providers_real_llm_native_tool_call() {
+    let Some(llm) = RealLlm::from_env() else {
+        eprintln!("{}; skipping", RealLlm::missing_env());
         return;
     };
-
     let cli = PekoCli::new().allow_real_llm_keys();
-    let principal = "providers_kimi_smoke";
-    common::agent::seed_kimi_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal, "kimi");
-    let _daemon = DaemonGuard::spawn(&cli);
+    real_llm_principal(&cli, "providers_tool_call", &llm);
 
-    // PS script: `peko send <principal> "Hi"`
-    let (out, err, status) = run(&cli, &["send", principal, "Hi"], Duration::from_secs(45));
-    assert_ok(&out, &err, &status);
-    assert!(
-        !out.trim().is_empty(),
-        "expected non-empty response from kimi, got: stdout={out:?} stderr={err:?}",
-    );
-}
-
-/// Anthropic-format native tool calling smoke test.
-///
-/// MiniMax exposes an Anthropic-compatible chat-completion endpoint at
-/// `https://api.minimaxi.com/anthropic`. This test drives the full
-/// agentic loop with a real MiniMax model and asserts that the model
-/// emits a native Anthropic-format `tool_use`/`tool_result` exchange,
-/// executing `Read` and surfacing the file content in its final answer.
-///
-///
-/// Skips when `MINIMAX_API_KEY` is unset.
-#[tokio::test]
-#[ignore = "requires MINIMAX_API_KEY and peko daemon"]
-async fn cli_providers_minimax_anthropic_native_tool_call() {
-    let Some(_api_key) = minimax_api_key() else {
-        eprintln!("MINIMAX_API_KEY not set; skipping");
-        return;
-    };
-
-    let cli = PekoCli::new().allow_real_llm_keys();
-    let principal = "providers_minimax_anthropic_tool_call";
-    common::agent::seed_minimax_provider_in_catalog(cli.home());
-    create_provider_principal(&cli, principal, "minimax");
-
-    // The daemon's `Read` resolves relative paths against the shared
-    // workspaces root, so place the sentinel file there.
+    // Read resolves relative paths against the shared workspaces root.
     let workspace = cli.peko_dir().join("data").join("workspaces");
     std::fs::create_dir_all(&workspace).expect("create workspaces root");
     std::fs::write(workspace.join("tool_test.txt"), "TOOL_TEST_SECRET_123")
         .expect("write sentinel file");
-
     let _daemon = DaemonGuard::spawn(&cli);
 
-    let prompt = "Read the file tool_test.txt in your workspace and report its exact contents.";
-    let (out, err, status) = run(&cli, &["send", principal, prompt], Duration::from_secs(120));
-    assert_ok(&out, &err, &status);
+    let out = send(
+        &cli,
+        "providers_tool_call",
+        "Read the file tool_test.txt in your workspace and report its exact contents.",
+        Duration::from_secs(120),
+    );
     assert!(
         out.contains("TOOL_TEST_SECRET_123"),
-        "expected the LLM to call Read and report the secret; \
-         stdout={out:?} stderr={err:?}",
+        "expected the model to call Read and report the secret; stdout={out:?}",
     );
 }

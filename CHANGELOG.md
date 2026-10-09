@@ -4,6 +4,40 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Vendor-neutral real-LLM tier and nightly CI cleanup (2026-10-09)
+
+- Remove the real-LLM job from CI; the nightly run is unit (Linux/Windows) plus
+  mock-LLM integration. `make test-integration-llm` stays as a local, opt-in tier.
+- Make real-LLM tests vendor-neutral: one env-described endpoint (`LLM_API_KEY`,
+  `LLM_BASE_URL`, `LLM_MODEL`, optional `LLM_API_FORMAT`; tests/common/real_llm.rs)
+  replaces the MiniMax/Kimi catalog seeders, smoke tests, and tunnel_e2e branch.
+  Mock tiers strip `LLM_API_KEY` instead of `MINIMAX_API_KEY`.
+- Drop the mock LLM's MiniMax route and response shape (OpenAI SSE only) and
+  remaining MiniMax references in source, fixtures, examples, and ADRs.
+- Fix the wake-hook test race behind the Windows nightly failure: the wake.rs
+  tests share the executor's `serial(wake_hook)` key and filter by session key.
+- Delete the orphaned `e2e_tests_archive/` (retired `peko ext` fixtures) and
+  Makefile slices whose test files no longer exist (pekohub/registry
+  integration, cli_agent_signature).
+
+### Built-in tool test foundation (2026-10-09)
+
+- Fix Cron history for fired one-shot jobs: the ownership check consulted only
+  live jobs, so a reaped `at`/`delay` job's retained runs were unreachable by id.
+  CronRuntime gains owns_job_history; labels still resolve live jobs only.
+- Add CronTool::with_runtime so Cron actions run against an explicit runtime;
+  the daemon-installed slot remains the default. Add peko_cron::testing's
+  FileCronRuntime (test-support feature) and behavior tests for all six actions,
+  including cross-principal refusals; retire the name/schema-only action tests.
+- Add tools::builtin::test_harness::ToolHarness: all 19 built-in tools behind the
+  production dispatcher with tempdir-backed storage, plus a smoke test that must
+  cover the full installation manifest. Schema tests reuse its inventory.
+- Make RoleCatalog workspace-only and test its roles/ scan; remove the unused
+  list-backed constructor.
+- Replace the six sentinel-only cli_tools e2e tests with one daemon test that
+  verifies files and persisted tool results; delete the core_tools stub. Run the
+  mock-LLM tier for built-in tool source changes; add `make coverage`.
+
 ### Agent and Session schema cohesion (2026-10-08)
 
 - Use strict action variants and cached direct-call validation for Agent/Session;

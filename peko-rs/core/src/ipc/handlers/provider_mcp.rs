@@ -223,12 +223,12 @@ mod tests {
     /// Disabled-flavor entry to verify enabled=false flows through.
     fn disabled_info() -> ModelSummary {
         ModelSummary {
-            id: "minimax".to_string(),
-            display_name: "MiniMax (disabled)".to_string(),
+            id: "disabled-model".to_string(),
+            display_name: "Disabled model".to_string(),
             template_id: None,
             api_type: "anthropic".to_string(),
-            base_url: "https://api.minimaxi.com/anthropic".to_string(),
-            model_id: "MiniMax-M3".to_string(),
+            base_url: "https://llm.example.test/anthropic".to_string(),
+            model_id: "model-a".to_string(),
             context_window: None,
             max_output_tokens: None,
             headers: Default::default(),
@@ -337,7 +337,10 @@ mod tests {
 
         // The disabled row must round-trip `enabled = false`.
         let disabled = &models[2];
-        assert_eq!(disabled.get("id").and_then(|v| v.as_str()), Some("minimax"));
+        assert_eq!(
+            disabled.get("id").and_then(|v| v.as_str()),
+            Some("disabled-model")
+        );
         assert_eq!(
             disabled.get("enabled").and_then(|v| v.as_bool()),
             Some(false)

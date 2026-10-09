@@ -29,7 +29,7 @@ pub struct PekoCli {
     /// Windows-only: per-test unique named pipe. `None` on Unix.
     #[cfg(windows)]
     pipe_name: String,
-    /// If true, do not strip `MINIMAX_API_KEY` / `KIMI_API_KEY` from the
+    /// If true, do not strip `LLM_API_KEY` from the
     /// daemon's environment and enable `PEKO_TEST_RESOLVER_BOOTSTRAP=1`
     /// so real-LLM tests can resolve API keys without an OS keychain.
     /// Default false keeps mock-tier tests safe from leaking env vars.
@@ -85,9 +85,9 @@ impl PekoCli {
 
     /// Allow real-LLM API keys to flow through to spawned subprocesses.
     ///
-    /// Call this for tests that intentionally exercise minimax/kimi. It
-    /// enables the daemon's env-var keychain bootstrap and prevents
-    /// `PekoCli::cmd` from stripping `MINIMAX_API_KEY` / `KIMI_API_KEY`.
+    /// Call this for tests that intentionally exercise a real LLM
+    /// (`common::real_llm`). It enables the daemon's env-var keychain
+    /// bootstrap and prevents `PekoCli::cmd` from stripping `LLM_API_KEY`.
     #[must_use]
     pub fn allow_real_llm_keys(mut self) -> Self {
         self.allow_real_llm_keys = true;
@@ -166,7 +166,7 @@ impl PekoCli {
     /// CWD) from polluting the project root and causing flaky environmental
     /// failures.
     ///
-    /// By default `MINIMAX_API_KEY` / `KIMI_API_KEY` are stripped so a
+    /// By default `LLM_API_KEY` is stripped so a
     /// leaking env can't switch a mock-tier test to a paid provider.
     /// Call [`Self::allow_real_llm_keys`] for tests that intentionally
     /// exercise real providers.
@@ -220,7 +220,7 @@ impl PekoCli {
         // a `mock-llm` entry and export the matching `MOCK_LLM_API_KEY`.
         //
         // Real-LLM tests: `allow_real_llm_keys` is true; we keep
-        // `MINIMAX_API_KEY` / `KIMI_API_KEY` in the env and flip the
+        // `LLM_API_KEY` in the env and flip the
         // bootstrap flag so the daemon can read them.
         if std::env::var_os("MOCK_LLM_URL").is_some() {
             c.env("PEKO_TEST_RESOLVER_BOOTSTRAP", "1");
@@ -232,8 +232,7 @@ impl PekoCli {
         if !self.allow_real_llm_keys {
             // Strip real-LLM keys so a leaking env can't switch a mock-tier
             // test to a paid provider mid-run.
-            c.env_remove("MINIMAX_API_KEY");
-            c.env_remove("KIMI_API_KEY");
+            c.env_remove(super::real_llm::REAL_LLM_KEY_VAR);
         }
 
         // Platform-specific IPC endpoint override.

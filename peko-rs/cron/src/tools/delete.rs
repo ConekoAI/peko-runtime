@@ -8,7 +8,7 @@
 //! Label and ID resolution are scoped to the current Principal from
 //! the tool execution context.
 
-use crate::tools::global_runtime;
+use crate::tools::RuntimeBinding;
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
@@ -16,12 +16,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// `Cron action delete` tool — cancel scheduled jobs
-pub struct CronDeleteAction;
+pub struct CronDeleteAction {
+    runtime: RuntimeBinding,
+}
 
 impl CronDeleteAction {
     /// Create a new `Cron action delete` tool
     pub fn new() -> Self {
-        Self
+        Self::bound(RuntimeBinding::default())
+    }
+
+    /// Bind the action to the runtime its domain tool resolves.
+    pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
+        Self { runtime }
     }
 }
 
@@ -105,7 +112,7 @@ impl Tool for CronDeleteAction {
             .ok_or_else(|| anyhow::anyhow!("Cron action delete requires a Principal context"))?
             .clone();
 
-        let runtime = global_runtime().ok_or_else(|| {
+        let runtime = self.runtime.resolve().ok_or_else(|| {
             anyhow::anyhow!(
                 "Cron action delete requires the daemon's cron runtime; not initialized"
             )
@@ -162,30 +169,5 @@ pub(crate) async fn verify_id_belongs_to_principal(
         Err(anyhow::anyhow!(
             "Job '{job_id}' not found for Principal '{principal_id}'"
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cron_delete_tool_name() {
-        let tool = CronDeleteAction::new();
-        assert_eq!(tool.name(), "Cron");
-    }
-
-    #[test]
-    fn test_cron_delete_tool_parameters() {
-        let tool = CronDeleteAction::new();
-        let params = tool.parameters();
-        assert!(params.get("properties").is_some());
-        // The schema uses `oneOf` so that callers who supply both `id`
-        // and `label` get a validation error instead of silent acceptance.
-        let branches = params
-            .get("oneOf")
-            .expect("Cron action delete schema must use oneOf for id-or-label");
-        assert!(branches.is_array());
-        assert_eq!(branches.as_array().unwrap().len(), 2);
     }
 }

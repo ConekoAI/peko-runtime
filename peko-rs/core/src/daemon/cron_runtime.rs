@@ -12,9 +12,9 @@
 //! 2026-08-25: cron is now an internal principal tool (like Bash,
 //! Session). The legacy `Cron action list`/`CronAdd`/... IPC variants and the
 //! `peko cron` CLI were deleted; this adapter is the only cron
-//! read/write surface in the daemon. Per-principal `tool:Cron*`
-//! grants gate tool access (F37 funnel); this adapter itself does
-//! not re-check caps because the funnel already did.
+//! read/write surface in the daemon. Job ids resolve across every
+//! loaded principal here; the Cron tool actions scope each call to the
+//! calling principal before reaching this adapter.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_cron::{set_global_runtime, CronJob, CronRuntime, CronScheduler};
+use peko_subject::PrincipalId;
 use tracing::warn;
 
 use crate::common::paths::PathResolver;
@@ -184,6 +185,29 @@ impl CronRuntime for DaemonCronAdapter {
         scheduler
             .get_run_history(job_id, limit)
             .map_err(|e| anyhow::anyhow!("Failed to read run history: {e}"))
+    }
+
+    async fn owns_job_history(&self, principal_id: &PrincipalId, job_id: &str) -> Result<bool> {
+        let Some(principal) =
+            crate::daemon::cron_engine::resolve_principal(&self.principal_manager, principal_id)
+                .await
+        else {
+            return Ok(false);
+        };
+        let path = self.path_resolver.cron_schedule(&principal.name().await);
+        let scheduler =
+            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
+        if scheduler
+            .get_job(job_id)
+            .map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        let runs = scheduler
+            .get_run_history(job_id, 1)
+            .map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
+        Ok(!runs.is_empty())
     }
 
     async fn list_jobs(&self) -> Result<Vec<CronJob>> {

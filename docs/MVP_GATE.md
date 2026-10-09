@@ -27,9 +27,10 @@ These are currently unstated assumptions. Write the answer into this file.
       fan-out is push-only; offline peers miss posts (CHANGELOG "Phase 12b
       accepted gap"). Confirm this is acceptable for MVP and document it in
       the user's guide.
-- [ ] **LLM providers for launch are named.** The real-LLM CI tier currently
-      runs with Kimi suspended (`Makefile` notes a provider-side API key
-      issue). List which providers/models are launch-supported and verified.
+- [ ] **LLM providers for launch are named.** CI runs no real-LLM tier; the
+      vendor-neutral local tier (`make test-integration-llm`, configured by
+      `LLM_*` env vars) is the verification path. List which providers/models
+      are launch-supported and verified with it.
 
 ---
 

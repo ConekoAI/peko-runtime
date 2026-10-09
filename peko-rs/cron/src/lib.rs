@@ -19,6 +19,8 @@
 #![allow(dead_code)]
 
 pub mod idle;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod tools;
 
 use anyhow::{Context, Result};

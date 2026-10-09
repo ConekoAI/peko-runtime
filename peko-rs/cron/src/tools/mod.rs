@@ -307,6 +307,12 @@ pub trait CronRuntime: Send + Sync {
     /// Read a job's run history, most recent first, capped at `limit`.
     /// Errors when the job (or its history) does not exist.
     async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>>;
+
+    /// Whether `principal_id` owns `job_id`'s run history: the job is live
+    /// in that principal's schedule, or it was deleted (a fired one-shot
+    /// job reaps itself) and its runs remain there. Live-job listings
+    /// cannot answer this for reaped jobs.
+    async fn owns_job_history(&self, principal_id: &PrincipalId, job_id: &str) -> Result<bool>;
 }
 
 // ─── Public helpers used by the cron tools ────────────────────────
@@ -602,6 +608,19 @@ pub fn set_global_runtime(runtime: Arc<dyn CronRuntime>) {
 /// Read the cron runtime, or `None` before daemon installation.
 pub fn global_runtime() -> Option<Arc<dyn CronRuntime>> {
     RUNTIME.get().cloned()
+}
+
+/// The runtime a [`CronTool`] dispatches to: an explicitly bound runtime,
+/// or the daemon-installed slot when unbound. Explicit binding lets tests
+/// (and future composition roots) drive the tool without process-global
+/// state, which can only be installed once per process.
+#[derive(Clone, Default)]
+pub(crate) struct RuntimeBinding(Option<Arc<dyn CronRuntime>>);
+
+impl RuntimeBinding {
+    pub(crate) fn resolve(&self) -> Option<Arc<dyn CronRuntime>> {
+        self.0.clone().or_else(global_runtime)
+    }
 }
 
 #[cfg(test)]
@@ -903,3 +922,6 @@ mod tests {
 
 mod tool;
 pub use tool::CronTool;
+
+#[cfg(test)]
+mod tool_tests;

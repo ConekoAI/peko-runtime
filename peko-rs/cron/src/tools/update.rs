@@ -8,7 +8,7 @@
 //! creating session's inbox (trunk fallback)).
 
 use crate::tools::delete::{resolve_id_by_label, verify_id_belongs_to_principal};
-use crate::tools::global_runtime;
+use crate::tools::RuntimeBinding;
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
@@ -16,12 +16,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// `Cron action update` tool — patch a scheduled job's mutable fields
-pub struct CronUpdateAction;
+pub struct CronUpdateAction {
+    runtime: RuntimeBinding,
+}
 
 impl CronUpdateAction {
     /// Create a new `Cron action update` tool
     pub fn new() -> Self {
-        Self
+        Self::bound(RuntimeBinding::default())
+    }
+
+    /// Bind the action to the runtime its domain tool resolves.
+    pub(crate) fn bound(runtime: RuntimeBinding) -> Self {
+        Self { runtime }
     }
 }
 
@@ -110,7 +117,7 @@ impl Tool for CronUpdateAction {
             .ok_or_else(|| anyhow::anyhow!("Cron action update requires a Principal context"))?
             .clone();
 
-        let runtime = global_runtime().ok_or_else(|| {
+        let runtime = self.runtime.resolve().ok_or_else(|| {
             anyhow::anyhow!(
                 "Cron action update requires the daemon's cron runtime; not initialized"
             )
@@ -145,39 +152,5 @@ impl Tool for CronUpdateAction {
             "enabled": args.enabled,
             "wake_on_completion": args.wake_on_completion,
         }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cron_update_tool_name() {
-        let tool = CronUpdateAction::new();
-        assert_eq!(tool.name(), "Cron");
-    }
-
-    #[test]
-    fn test_cron_update_tool_parameters() {
-        let tool = CronUpdateAction::new();
-        let params = tool.parameters();
-        let props = params.get("properties").unwrap();
-        assert!(props.get("id").is_some());
-        assert!(props.get("label").is_some());
-        assert!(props.get("enabled").is_some());
-        assert!(props.get("wake_on_completion").is_some());
-    }
-
-    #[test]
-    fn test_cron_update_args_roundtrip() {
-        let args: CronUpdateArgs = serde_json::from_value(json!({
-            "id": "cron_x",
-            "enabled": false,
-        }))
-        .unwrap();
-        assert_eq!(args.id.as_deref(), Some("cron_x"));
-        assert_eq!(args.enabled, Some(false));
-        assert_eq!(args.wake_on_completion, None);
     }
 }

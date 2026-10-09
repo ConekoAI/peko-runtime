@@ -157,11 +157,6 @@ impl ModelContextRegistry {
     pub fn new() -> Self {
         let mut limits = HashMap::new();
 
-        // minimax
-        limits.entry("minimax".to_string())
-            .or_insert_with(HashMap::new)
-            .insert("M2.7".to_string(), 204_800);
-
         // kimi
         limits.entry("kimi".to_string())
             .or_insert_with(HashMap::new)
@@ -621,7 +616,6 @@ cooldown_seconds = 60             # from background quota
 
 # Optional: override model limits
 [compaction.model_limits]
-minimax.M2.7 = 204800
 kimi.K2.6 = 262144
 openai.gpt-4o = 128000
 ```
@@ -702,7 +696,7 @@ pub struct CompactionConfig {
 ### What Was Built
 
 **Phase 1 — ModelContextRegistry + CompactionConfig**
-- `src/compaction/registry.rs`: `ModelContextRegistry` with built-in limits for OpenAI, Anthropic, Google, Kimi, Minimax, Ollama
+- `src/compaction/registry.rs`: `ModelContextRegistry` with built-in limits for OpenAI, Anthropic, Google, Kimi, Ollama
 - `src/types/config.rs`: `CompactionConfig` with TOML integration (`[compaction]` section in `config.example.toml`)
 - Registry supports `model_limits` overrides from config
 

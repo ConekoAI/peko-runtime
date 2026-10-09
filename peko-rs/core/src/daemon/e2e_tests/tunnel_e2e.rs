@@ -12,7 +12,7 @@
 //! This test requires:
 //!   - Node.js 22+ with tsx installed  (local mode)
 //!   - OR a running PekoHub test container (container mode via PEKOHUB_URL)
-//!   - For real LLM: MINIMAX_API_KEY environment variable
+//!   - For real LLM: LLM_API_KEY + LLM_BASE_URL + LLM_MODEL (see tests/common/real_llm.rs)
 //!   - For mock LLM: MOCK_LLM_URL environment variable (CI mode)
 //!
 //! The test:
@@ -43,7 +43,8 @@
 //!
 //! Run locally with real LLM:
 //!   cd peko-runtime
-//!   MINIMAX_API_KEY=sk-xxx cargo test --lib --features test-utils tunnel_e2e -- --ignored
+//!   LLM_API_KEY=sk-xxx LLM_BASE_URL=https://… LLM_MODEL=… \
+//!     cargo test --lib --features test-utils tunnel_e2e -- --ignored
 //!
 //! Run in container with mock LLM:
 //!   PEKOHUB_URL=http://pekohub-test:3000 MOCK_LLM_URL=http://mock-llm:8080 \
@@ -72,6 +73,9 @@ use auth_helper::generate_jwt;
 #[path = "../../../tests/common/harness.rs"]
 mod harness_helper;
 use harness_helper::PekohubBackend;
+
+#[path = "../../../tests/common/real_llm.rs"]
+mod real_llm;
 
 // ---------------------------------------------------------------------------
 // Workspace setup
@@ -103,7 +107,7 @@ async fn create_test_workspace(
     tokio::fs::create_dir_all(&cache_dir).await?;
 
     // Determine the model: use mock LLM if MOCK_LLM_URL is set, otherwise
-    // minimax. Model-first splits endpoint config out of the actor's
+    // the env-described real LLM. Model-first splits endpoint config out of the actor's
     // identity: the actual base_url + api_key live in the model catalog
     // at `<config_dir>/models.toml`, and the principal config pins the
     // configured model via `preferred_model_id` — there is no runtime
@@ -125,15 +129,13 @@ async fn create_test_workspace(
         seed_mock_provider_catalog(workspace_dir, &mock_llm_url, "mock-llm-test-key")?;
         "mock-llm"
     } else {
-        let api_key = std::env::var("MINIMAX_API_KEY").map_err(|_| {
-            anyhow::anyhow!("MINIMAX_API_KEY or MOCK_LLM_URL environment variable not set")
+        let llm = real_llm::RealLlm::from_env().ok_or_else(|| {
+            anyhow::anyhow!("set MOCK_LLM_URL, or {}", real_llm::RealLlm::missing_env())
         })?;
-        // Seed the catalog with a `minimax` entry pointing at the
-        // production Minimax endpoint. The API key is loaded from the
-        // OS keychain (or, under PEKO_TEST_RESOLVER_BOOTSTRAP=1, the
-        // MINIMAX_API_KEY env var).
-        seed_minimax_catalog_entry(workspace_dir, &api_key)?;
-        "minimax"
+        // The key is loaded from the OS keychain (or, under
+        // PEKO_TEST_RESOLVER_BOOTSTRAP=1, the LLM_API_KEY env var).
+        seed_real_llm_catalog_entry(workspace_dir, &llm)?;
+        real_llm::REAL_LLM_MODEL_ID
     };
 
     // Create the Principal's directory + principal.toml. The Principal's
@@ -249,49 +251,25 @@ fn seed_mock_provider_catalog(
     Ok(())
 }
 
-/// Seed a `minimax` catalog entry under `<workspace_dir>/config/`
-/// pointing at the production Minimax endpoint.
-fn seed_minimax_catalog_entry(
+/// Seed the env-described real LLM as the sole entry in
+/// `<workspace_dir>/config/models.toml`.
+fn seed_real_llm_catalog_entry(
     workspace_dir: &std::path::Path,
-    api_key: &str,
+    llm: &real_llm::RealLlm,
 ) -> anyhow::Result<()> {
-    use peko_providers::catalog::{ApiFormat, ModelCatalogFile, ModelConfig};
+    use peko_providers::catalog::ModelCatalogFile;
     use std::collections::BTreeMap;
 
     let config_dir = workspace_dir.join("config");
     std::fs::create_dir_all(&config_dir)?;
-    let catalog_path = config_dir.join("models.toml");
-    let now = chrono::Utc::now();
-    let entry = ModelConfig {
-        id: "minimax".to_string(),
-        display_name: "Minimax".to_string(),
-        template_id: None,
-        api_format: ApiFormat::AnthropicMessages,
-        base_url: "https://api.minimaxi.com/anthropic".to_string(),
-        model_id: "MiniMax-M3".to_string(),
-        context_window: None,
-        max_output_tokens: None,
-        headers: BTreeMap::new(),
-        credential_id: None,
-        requires_key: true,
-        enabled: true,
-        created_at: now,
-        updated_at: now,
-        compat: None,
-        spec: None,
-        // Phase 2 of `feature/multi-model-subagents`: no user
-        // annotation on the seeded Minimax catalog entry.
-        note: None,
-    };
     let mut entries = BTreeMap::new();
-    entries.insert("minimax".to_string(), entry);
+    entries.insert(real_llm::REAL_LLM_MODEL_ID.to_string(), llm.catalog_entry());
     let file = ModelCatalogFile {
         version: "4.0".to_string(),
         entries,
     };
     let toml = toml::to_string_pretty(&file).expect("serialize catalog");
-    std::fs::write(&catalog_path, toml)?;
-    let _ = api_key;
+    std::fs::write(config_dir.join("models.toml"), toml)?;
     Ok(())
 }
 
@@ -306,7 +284,7 @@ fn seed_minimax_catalog_entry(
 // with "can call blocking only when running on the multi-threaded
 // runtime" — pin this test to the production flavor.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires PekoHub backend and LLM (MINIMAX_API_KEY or MOCK_LLM_URL)"]
+#[ignore = "requires PekoHub backend and LLM (MOCK_LLM_URL or LLM_API_KEY/LLM_BASE_URL/LLM_MODEL)"]
 async fn test_e2e_tunnel_chat_with_llm() {
     // v3 headless bootstrap: this test builds an in-process AppState that
     // uses the OS keychain by default. In CI there is no keychain, so we
@@ -324,7 +302,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     let (did, signing_key) = generate_runtime_identity();
 
     let client = reqwest::Client::builder()
-        // Real-LLM chat calls (minimax) routinely take 5-15s end-to-end
+        // Real-LLM chat calls routinely take 5-15s end-to-end
         // (provider round-trip + SSE start). 10s was tight enough that
         // any provider hiccup caused the chat request to time out before
         // the first SSE chunk arrived (flaked in CI run #28307811834).
