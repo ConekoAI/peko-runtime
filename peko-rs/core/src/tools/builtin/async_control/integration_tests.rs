@@ -391,10 +391,7 @@ mod tests {
             .execute(serde_json::json!({"action":"list",}))
             .await
             .unwrap();
-        // `Async action list` merges the process-global per-agent registries
-        // (background `Bash` tasks, subagent runs from other tests in
-        // this binary), so the total is a lower bound — pin that both
-        // spawned tasks are present instead of an exact count.
+        // Pin that both spawned tasks are present.
         let all_tasks = list_all["tasks"].as_array().expect("tasks is array");
         assert!(
             all_tasks

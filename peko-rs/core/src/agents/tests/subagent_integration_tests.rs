@@ -9,7 +9,7 @@
 
 use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::async_exec::executor::AsyncTaskStatus;
-use crate::async_exec::executor::{get_or_create_registry_for_agent, SharedAsyncTaskRegistry};
+use crate::async_exec::executor::{AsyncTaskRegistry, SharedAsyncTaskRegistry};
 use crate::common::paths::PathResolver;
 use peko_auth::Subject;
 use peko_session::manager::SessionManager;
@@ -42,11 +42,8 @@ macro_rules! path {
     };
 }
 
-/// Per-test agent-name counter so each subagent integration test gets its own
-/// global async-task registry. Without this, every test shares one registry
-/// (keyed by "test_agent" in `get_or_create_registry_for_agent`) and
-/// `count_active_runs` / `list_subagents_for_parent` see stale entries from
-/// earlier tests in the same process.
+/// Per-test agent-name counter so each subagent integration test gets its
+/// own session namespace.
 static TEST_AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Test fixture that sets up a temporary `PEKO_HOME` directory.
@@ -90,8 +87,8 @@ impl Drop for PekoHomeFixture {
 
 /// Test helper to create a test session manager and registry
 ///
-/// Returns `(session_manager, registry, agent_name)` where `agent_name` is
-/// unique per call so each test gets its own global async-task registry.
+/// Returns `(session_manager, registry, agent_name)` with a fresh task
+/// registry (the principal registry the executor would share in production).
 /// Uses a temporary `PEKO_HOME` so tests don't require `~/.peko`.
 async fn create_test_components() -> (Arc<RwLock<SessionManager>>, SharedAsyncTaskRegistry, String)
 {
@@ -116,7 +113,7 @@ async fn create_test_components() -> (Arc<RwLock<SessionManager>>, SharedAsyncTa
         .await
         .unwrap();
     let session_manager = Arc::new(RwLock::new(session_manager));
-    let registry = get_or_create_registry_for_agent(&agent_name);
+    let registry: SharedAsyncTaskRegistry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
 
     // Leak the fixture so it lives for the duration of the test
     // (the temp dir will be cleaned up when the test process exits)

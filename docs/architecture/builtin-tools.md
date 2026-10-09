@@ -49,8 +49,11 @@ from a principal a background spawner backed by that principal's Async runtime,
 so both register one task in the principal's executor. A background task's body
 runs inline under the task's own timeout and cancellation — it is not subject to
 the foreground tool timeout — and streams live output to `Async output`.
-Subagent runs and foreground calls detached on timeout remain reachable through
-the principal-filtered global registry fallback. A foreground call is not a
+Each principal has one task registry, shared by every executor doing its
+work — Async spawn, background Bash, foreground calls detached on timeout,
+subagent runs, and cron tool jobs — so the Async surface reads only the
+caller's own registry, and the janitor purges finished tasks from each. A
+foreground call is not a
 background task: the dispatcher's routing entry for it appears in Async
 list/status only once the call detaches on the foreground timeout.
 Every background task has an owning principal: the principal of the call that

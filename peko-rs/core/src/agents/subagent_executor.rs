@@ -330,8 +330,10 @@ pub struct SubagentExecutor {
 impl SubagentExecutor {
     /// Create a new subagent executor
     ///
-    /// Uses the global per-agent async task registry so that status queries
-    /// and result delivery work across stateless requests.
+    /// Registers runs in the spawning principal's task registry
+    /// (`ToolingRuntime::task_registry_for`), shared by all of that
+    /// principal's executors, so status queries and run guards work across
+    /// requests.
     ///
     /// `principal_id` is the spawning principal's runtime id. The injected
     /// tooling runtime is propagated to every child and recursive spawn.

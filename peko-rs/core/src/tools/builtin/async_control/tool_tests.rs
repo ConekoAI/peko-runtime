@@ -267,7 +267,6 @@ async fn wait_for_partial_output(harness: &ToolHarness, id: &str, needle: &str) 
 /// executor, with the same ownership and delivery settings.
 #[tokio::test]
 async fn bash_background_and_async_bash_register_one_task_on_one_path() {
-    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
     let harness = harness().await;
     let direct = harness
         .call(
@@ -302,13 +301,18 @@ async fn bash_background_and_async_bash_register_one_task_on_one_path() {
             crate::tools::builtin::test_harness::SESSION
         );
     }
-    // Neither landed in a process-wide registry (the retired "Bash"
-    // executor) — only in the principal's own executor.
-    let global = list_all_tasks_across_all_registries().await;
-    assert!(
-        !global.iter().any(|e| ids.contains(&e.task_id)),
-        "background work must not register outside the principal executor"
-    );
+    // Both live in the principal's own registry.
+    let registry = harness
+        .tooling
+        .task_registry_for(&peko_subject::PrincipalId(
+            crate::tools::builtin::test_harness::PRINCIPAL.into(),
+        ));
+    for id in &ids {
+        assert!(
+            registry.read().await.get(id).is_some(),
+            "{id} not in the principal registry"
+        );
+    }
 }
 
 /// An Async task body runs inline under the task's own timeout. It used
@@ -505,7 +509,6 @@ async fn only_detached_foreground_calls_appear_as_tasks() {
 /// calling principal's own registry — not in a process-wide one.
 #[tokio::test]
 async fn detached_foreground_calls_register_in_the_principals_registry() {
-    use crate::async_exec::executor::registry::list_all_tasks_across_all_registries;
     use crate::tools::builtin::test_harness::PRINCIPAL;
     let harness = ToolHarness::with_router_timeout(1).await;
     harness.register(Arc::new(Sleep)).await;
@@ -522,12 +525,5 @@ async fn detached_foreground_calls_register_in_the_principals_registry() {
         .cloned()
         .expect("detached call registered in the principal's registry");
     assert_eq!(entry.config.principal_id.0, PRINCIPAL);
-    assert!(
-        !list_all_tasks_across_all_registries()
-            .await
-            .iter()
-            .any(|e| e.task_id == id),
-        "not in a process-wide registry"
-    );
     async_call(&harness, "stop", &id, json!({})).await;
 }

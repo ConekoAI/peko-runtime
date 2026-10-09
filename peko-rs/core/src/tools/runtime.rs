@@ -210,7 +210,8 @@ impl ToolingRuntime {
     }
 
     /// Drop finished tasks past their retention window from every
-    /// principal's registry. Returns how many entries were removed.
+    /// principal's registry and from the router's own transport (calls
+    /// without a principal). Returns how many entries were removed.
     pub(crate) async fn purge_finished_tasks(&self) -> usize {
         let registries: Vec<_> = self
             .task_registries
@@ -219,7 +220,7 @@ impl ToolingRuntime {
             .values()
             .cloned()
             .collect();
-        let mut purged = 0;
+        let mut purged = self.dispatcher.router().purge_finished_tasks().await;
         for registry in registries {
             purged += registry.write().await.cleanup_completed();
         }

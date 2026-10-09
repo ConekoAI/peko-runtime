@@ -331,6 +331,11 @@ impl AsyncExecutionRouter {
         }))
     }
 
+    /// Drop finished routing tasks of calls without a bound principal.
+    pub async fn purge_finished_tasks(&self) -> usize {
+        self.transport.purge_finished().await
+    }
+
     /// Get a reference to the underlying transport
     #[must_use]
     pub fn transport(&self) -> &std::sync::Arc<dyn AsyncTaskTransport> {

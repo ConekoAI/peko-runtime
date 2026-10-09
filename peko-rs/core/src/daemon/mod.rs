@@ -489,8 +489,7 @@ impl Daemon {
                         error!("Error cleaning async task files: {e}");
                         0
                     });
-                    let registry = app_state.tool_runtime.tooling().purge_finished_tasks().await
-                        + crate::async_exec::executor::registry::purge_finished_across_all_registries().await;
+                    let registry = app_state.tool_runtime.tooling().purge_finished_tasks().await;
                     if files > 0 || registry > 0 {
                         info!("Async task janitor cleaned {files} task files and {registry} registry entries");
                     }

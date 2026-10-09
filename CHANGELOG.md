@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### One task registry per principal (2026-10-09)
+
+- Fix the async task janitor, which purged an executor nothing used: finished
+  tasks were never removed from the registries that hold them (including a
+  routing entry for every foreground tool call), growing for the daemon's life.
+  The janitor now purges every principal registry and the router's own.
+- Each principal has one task registry (`ToolingRuntime::task_registry_for`),
+  shared by every executor doing its work: Async spawn, background Bash,
+  foreground calls detached on timeout, subagent runs, and cron tool jobs (now
+  visible to and stoppable from the owner's Async surface). Session run-active
+  guards read the owning principal's registry.
+- Delete the process-wide agent-name registry map and its scan-everything
+  helpers; the Async surface reads only the caller's own registry.
+
 ### Built-in tool coverage, round 2 (2026-10-09)
 
 - Fix same-runtime `ChannelSend` to another principal double-posting every

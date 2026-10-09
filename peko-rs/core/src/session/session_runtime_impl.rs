@@ -1718,10 +1718,9 @@ mod tests {
     }
 
     /// Subagent runs never hold `InboxRegistry` permits — they register
-    /// in the per-agent `AsyncTaskRegistry`. `session list` must still
+    /// in the principal's `AsyncTaskRegistry`. `session list` must still
     /// mark such a session `run_active` (same check the delete path
-    /// uses). The probe session id is unique to this test so entries
-    /// from other tests in the shared global registries can't collide.
+    /// uses).
     #[tokio::test]
     async fn list_marks_run_active_for_subagent_run() {
         use crate::async_exec::executor::registry::{
