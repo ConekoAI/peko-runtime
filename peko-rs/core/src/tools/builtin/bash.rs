@@ -225,8 +225,6 @@ impl BashTool {
         abort_rx: tokio::sync::watch::Receiver<bool>,
         progress: Arc<std::sync::Mutex<String>>,
     ) -> Result<serde_json::Value> {
-        use tokio::io::AsyncReadExt;
-
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
         cmd.stdout(std::process::Stdio::piped());
@@ -239,66 +237,33 @@ impl BashTool {
         // killing everything the command started.
         let (mut child, tree) =
             spawn_in_own_group(&mut cmd).context("Failed to execute Bash command")?;
-        let mut stdout_pipe = child.stdout.take().context("stdout not captured")?;
-        let mut stderr_pipe = child.stderr.take().context("stderr not captured")?;
+        let stdout_pipe = child.stdout.take().context("stdout not captured")?;
+        let stderr_pipe = child.stderr.take().context("stderr not captured")?;
 
         // One reader task per stream, each mirroring into the shared
-        // progress buffer. `from_utf8_lossy` per chunk can emit a
-        // replacement char at a chunk boundary that splits a multi-byte
-        // character — acceptable for a progress display, and the final
-        // result below is built from the exact bytes.
-        let progress_for_stdout = Arc::clone(&progress);
-        let stdout_task = tokio::spawn(async move {
-            let mut buf: Vec<u8> = Vec::new();
-            let mut chunk = [0u8; 8192];
-            loop {
-                match stdout_pipe.read(&mut chunk).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        peko_tools_core::background::append_progress(
-                            &progress_for_stdout,
-                            &String::from_utf8_lossy(&chunk[..n]),
-                        );
-                    }
-                }
-            }
-            buf
-        });
-        let progress_for_stderr = Arc::clone(&progress);
-        let stderr_task = tokio::spawn(async move {
-            let mut buf: Vec<u8> = Vec::new();
-            let mut chunk = [0u8; 8192];
-            loop {
-                match stderr_pipe.read(&mut chunk).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&chunk[..n]);
-                        peko_tools_core::background::append_progress(
-                            &progress_for_stderr,
-                            &String::from_utf8_lossy(&chunk[..n]),
-                        );
-                    }
-                }
-            }
-            buf
-        });
+        // progress buffer and keeping only the stream's newest bytes.
+        let stdout_task = tokio::spawn(read_stream_tail(
+            stdout_pipe,
+            Arc::clone(&progress),
+            DEFAULT_MAX_OUTPUT_BYTES,
+        ));
+        let stderr_task = tokio::spawn(read_stream_tail(
+            stderr_pipe,
+            Arc::clone(&progress),
+            DEFAULT_MAX_OUTPUT_BYTES,
+        ));
 
         // Race the child against the executor's cancel channel. On abort
         // the child is killed explicitly (the reader tasks then see EOF
         // and drain), and we bail exactly like the blocking path.
         let mut abort_rx = abort_rx;
-        let (status, stdout_bytes, stderr_bytes) = tokio::select! {
+        let (status, stdout, stderr) = tokio::select! {
             res = child.wait() => {
                 let status = res.context("Failed to execute Bash command")?;
                 tree.disarm();
-                let stdout_bytes = stdout_task
-                    .await
-                    .unwrap_or_default();
-                let stderr_bytes = stderr_task
-                    .await
-                    .unwrap_or_default();
-                (status, stdout_bytes, stderr_bytes)
+                let stdout = stdout_task.await.unwrap_or_default();
+                let stderr = stderr_task.await.unwrap_or_default();
+                (status, stdout, stderr)
             }
             () = async {
                 let _ = abort_rx.changed().await;
@@ -309,12 +274,16 @@ impl BashTool {
             }
         };
 
-        let output = std::process::Output {
-            status,
-            stdout: stdout_bytes,
-            stderr: stderr_bytes,
-        };
-        Self::format_output(&output, None)
+        let (stdout, stdout_truncated) = tail_text(&stdout);
+        let (stderr, stderr_truncated) = tail_text(&stderr);
+        Ok(json!({
+            "exit_code": status.code().unwrap_or(-1),
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "success": status.success(),
+        }))
     }
 
     /// Format command output
@@ -396,6 +365,68 @@ async fn wait_for_abort(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
 /// Truncate a stream at `limit` bytes and append a `...(truncated)` marker.
 /// Returns `(value, was_truncated)`. Walks back to a UTF-8 char boundary so
 /// the returned string is always valid UTF-8.
+/// A background stream's newest bytes, and whether earlier output was
+/// dropped to keep them.
+#[derive(Default)]
+struct StreamTail {
+    bytes: Vec<u8>,
+    dropped: bool,
+}
+
+/// Read a background task's stream to EOF, mirroring it into the task's
+/// progress buffer and keeping only its last `cap` bytes: memory stays
+/// bounded however long the command runs, and the end of the output (where
+/// a build's errors and summary are) survives for `tail_lines`.
+async fn read_stream_tail<R: tokio::io::AsyncRead + Unpin>(
+    mut pipe: R,
+    progress: Arc<std::sync::Mutex<String>>,
+    cap: usize,
+) -> StreamTail {
+    use tokio::io::AsyncReadExt;
+    let mut tail = StreamTail::default();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                tail.bytes.extend_from_slice(&chunk[..n]);
+                if tail.bytes.len() > cap {
+                    let excess = tail.bytes.len() - cap;
+                    tail.bytes.drain(..excess);
+                    tail.dropped = true;
+                }
+                // `from_utf8_lossy` per chunk can emit a replacement char
+                // where a chunk splits a character — fine for a progress
+                // display; the result is built from the kept bytes.
+                peko_tools_core::background::append_progress(
+                    &progress,
+                    &String::from_utf8_lossy(&chunk[..n]),
+                );
+            }
+        }
+    }
+    tail
+}
+
+/// Render a stream tail, prefixed with `(truncated)...` when its start was
+/// dropped. A cut inside a multi-byte character skips to the next one.
+fn tail_text(tail: &StreamTail) -> (String, bool) {
+    let mut bytes = tail.bytes.as_slice();
+    if tail.dropped {
+        while bytes
+            .first()
+            .is_some_and(|b| b & 0b1100_0000 == 0b1000_0000)
+        {
+            bytes = &bytes[1..];
+        }
+        return (
+            format!("(truncated)...{}", String::from_utf8_lossy(bytes)),
+            true,
+        );
+    }
+    (String::from_utf8_lossy(bytes).to_string(), false)
+}
+
 fn truncate_with_marker(s: &str, limit: usize) -> (String, bool) {
     if s.len() <= limit {
         return (s.to_string(), false);
@@ -463,7 +494,9 @@ Stdout and stderr are each capped at `max_output_bytes` (default 100000).
 When a stream is truncated, it ends with `...(truncated)` and the response
 sets `stdout_truncated: true` and/or `stderr_truncated: true`. If you
 expect large output, prefer `run_in_background: true` and read it with
-`Async action output` + `tail_lines` instead of raising the cap.
+`Async action output` + `tail_lines` instead of raising the cap: a
+background command keeps the LAST 100000 bytes of each stream (a dropped
+start is marked with a leading `(truncated)...`).
 
 ## Examples
 
@@ -542,7 +575,7 @@ The blocking form of this tool (default) is bounded only by the
                 },
                 "max_output_bytes": {
                     "type": "integer",
-                    "description": "Optional cap (in bytes) for stdout and stderr returned in the response. Each stream is truncated independently and flagged via stdout_truncated / stderr_truncated. Defaults to 100000. Ignored when run_in_background is true.",
+                    "description": "Optional cap (in bytes) for stdout and stderr returned in the response. Each stream is truncated independently and flagged via stdout_truncated / stderr_truncated. Defaults to 100000. Ignored when run_in_background is true: background output keeps the last 100000 bytes of each stream.",
                     "minimum": 1
                 }
             },
@@ -795,6 +828,53 @@ mod tests {
             still_running_after_grace(&pid_file).await,
             "a backgrounded process must survive its command's normal exit"
         );
+    }
+
+    /// A background command's long output keeps its END, so `tail_lines`
+    /// returns the real last lines; short output is untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn task_body_keeps_the_end_of_long_output() {
+        let mut ctx = ToolContext::default_for_tool("Bash");
+        ctx.background.progress = Some(Arc::default());
+        let long = BashTool::new()
+            .execute_with_context(json!({"command": "seq 1 50000"}), &ctx)
+            .await
+            .unwrap();
+        let stdout = long["stdout"].as_str().unwrap();
+        assert_eq!(long["stdout_truncated"], true);
+        assert!(stdout.starts_with("(truncated)..."), "{}", &stdout[..40]);
+        assert!(
+            stdout.ends_with("49999\n50000\n"),
+            "{}",
+            &stdout[stdout.len() - 20..]
+        );
+        assert!(stdout.len() <= DEFAULT_MAX_OUTPUT_BYTES + "(truncated)...".len());
+        let last = crate::tools::builtin::async_control::common::apply_tail_lines(&long, 2);
+        assert_eq!(last["stdout"], "49999\n50000");
+
+        let short = BashTool::new()
+            .execute_with_context(json!({"command": "echo hi; echo oops >&2"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(short["stdout"], "hi\n");
+        assert_eq!(short["stderr"], "oops\n");
+        assert_eq!(short["stdout_truncated"], false);
+    }
+
+    #[test]
+    fn tail_text_skips_a_split_character() {
+        let tail = StreamTail {
+            // The second byte of "é" (0xC3 0xA9) followed by "b".
+            bytes: vec![0xA9, b'b'],
+            dropped: true,
+        };
+        assert_eq!(tail_text(&tail), ("(truncated)...b".to_string(), true));
+        let whole = StreamTail {
+            bytes: "é".as_bytes().to_vec(),
+            dropped: false,
+        };
+        assert_eq!(tail_text(&whole), ("é".to_string(), false));
     }
 
     #[tokio::test]
