@@ -1506,6 +1506,55 @@ mod tests {
         assert!(err.to_string().contains("target"), "{err}");
     }
 
+    /// Each action's argument errors name exactly what is missing or
+    /// malformed.
+    #[tokio::test]
+    async fn malformed_arguments_name_the_problem() {
+        let cache = create_test_cache();
+        let tool = SessionTool::new(cache.as_shared());
+        for (params, expected) in [
+            (
+                json!({"action": "copy", "path": "test-session"}),
+                "\"target\" is a required property",
+            ),
+            (
+                json!({"action": "move", "path": "test-session"}),
+                "\"target\" is a required property",
+            ),
+            (
+                json!({"action": "copy", "path": "test-session", "target": "a//b"}),
+                "'target' is not a valid slug path",
+            ),
+            (
+                json!({"action": "copy", "path": "test-session", "target": "solo"}),
+                "must include a parent path and a slug segment",
+            ),
+            (
+                json!({"action": "find"}),
+                "\"query\" is a required property",
+            ),
+            (
+                json!({"action": "find", "query": "x", "peer": "nobody"}),
+                "Invalid peer 'nobody'",
+            ),
+            (
+                json!({"action": "read_page", "path": "test-session"}),
+                "\"page\" is a required property",
+            ),
+            (
+                json!({"action": "search_pages", "path": "test-session"}),
+                "\"query\" is a required property",
+            ),
+        ] {
+            let err = tool
+                .execute(params.clone())
+                .await
+                .expect_err(&params.to_string())
+                .to_string();
+            assert!(err.contains(expected), "{params}: {err}");
+        }
+    }
+
     #[tokio::test]
     async fn test_session_status_invalid_timezone_errors() {
         let cache = create_test_cache();
