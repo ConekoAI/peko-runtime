@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tool review fixes (2026-10-10)
+
+- Fix orphaned processes: stopping or timing out `Bash`, a Skill
+  dynamic-context command, or a `Workflow` script killed only the direct
+  child, leaving anything it started running. A timed-out Skill command was
+  not killed at all, and a timed-out Workflow whose script had started a child
+  hung until that child exited. Each now runs as its own process group (unix)
+  that is killed on stop, timeout, or drop; a command that exits on its own
+  leaves processes it deliberately backgrounded running.
+- Fix `ChannelRead` forward paging repeating the previous page's last event:
+  the store's `since` checkpoint is an inclusive line offset, and the tool
+  promised strictly newer events. Its tests now run on a real `ChannelStore`
+  (the in-memory fake ignored `since` and never ran the store's tail read or
+  search); the `ChannelPort::peek` docs now describe the inclusive offset.
+- Fix `Glob` counting matching directories in `total_matched` / `truncated`
+  when `include_dirs` is off.
+- Cover Session argument errors, every ModelList capability filter, Write's
+  mode/encoding rejection, and Skill's refusal of non-bash fenced blocks.
+
 ### Built-in tool coverage, round 4 (2026-10-09)
 
 - Fix unbounded background-task progress: the 64 KiB cap on a task's live
