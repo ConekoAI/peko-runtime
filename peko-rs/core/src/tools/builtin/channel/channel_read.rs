@@ -442,6 +442,22 @@ mod tests {
         assert_eq!(page["has_more"], false);
     }
 
+    /// `limit` is clamped to 1..=1000 events.
+    #[tokio::test]
+    async fn limit_is_clamped_to_one_through_a_thousand() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        for i in 0..1005 {
+            fx.post(&alice, &format!("m{i}")).await;
+        }
+        let page = fx.read(json!({ "limit": 0 })).await;
+        assert_eq!(texts(&page), ["m1004"]);
+        let page = fx.read(json!({ "limit": 5000 })).await;
+        assert_eq!(page["events"].as_array().unwrap().len(), 1000);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(texts(&page).last().map(String::as_str), Some("m1004"));
+    }
+
     #[tokio::test]
     async fn missing_channel_and_non_member_are_soft_errors() {
         let fx = Fixture::new().await;

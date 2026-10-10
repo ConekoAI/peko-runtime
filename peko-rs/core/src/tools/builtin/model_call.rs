@@ -678,6 +678,18 @@ mod tests {
         Arc<std::sync::Mutex<Vec<RecordedHttp>>>,
         tokio::task::JoinHandle<()>,
     ) {
+        serve_status("200 OK", response_body).await
+    }
+
+    /// [`serve_json`] answering with `status` (e.g. `"500 Internal Server Error"`).
+    async fn serve_status(
+        status: &'static str,
+        response_body: String,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<std::sync::Mutex<Vec<RecordedHttp>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -736,7 +748,7 @@ mod tests {
                         body,
                     });
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     response_body.len(),
                     response_body
                 );
@@ -1021,6 +1033,63 @@ mod tests {
         assert_eq!(snap.input_tokens, 1200);
         let cost = snap.cost_usd.unwrap_or(0.0);
         assert!((cost - 0.0024).abs() < 1e-12, "cost fold: {cost}");
+    }
+
+    /// A failing judgment endpoint is an error naming the problem: an HTTP
+    /// failure carries at most a 500-char excerpt of the body; malformed
+    /// replies say what is wrong. Nothing is charged.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn judgment_endpoint_failures_are_reported_and_not_charged() {
+        let questions = json!({"go": {"type": "boolean", "instructions": "Proceed?"}});
+        for (status, body, expected) in [
+            (
+                "500 Internal Server Error",
+                "x".repeat(2000),
+                "returned HTTP 500",
+            ),
+            ("200 OK", "not json".to_string(), "is not valid JSON"),
+            (
+                "200 OK",
+                json!({"verdict": true}).to_string(),
+                "missing the `answers` object",
+            ),
+        ] {
+            let (addr, _received, _server) = serve_status(status, body).await;
+            let resolver = judgment_resolver(judgment_entry(addr, None)).await;
+            let temp = tempfile::tempdir().expect("tempdir");
+            let manager = manager_with_principal(
+                &temp,
+                "caller",
+                Some("jev"),
+                Some(generous_quota()),
+                resolver,
+            )
+            .await;
+            let error = ModelCallTool::new(Arc::downgrade(&manager))
+                .execute_with_context(
+                    json!({"state": "s", "questions": questions}),
+                    &ctx_for("caller"),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{status}: {error}");
+            if status.starts_with("500") {
+                let excerpt = error.rsplit(": ").next().unwrap();
+                assert_eq!(excerpt.len(), 500, "{error}");
+            }
+            let snap = manager
+                .get_by_name("caller")
+                .await
+                .expect("principal")
+                .quota_meter
+                .snapshot();
+            assert_eq!(
+                snap.input_tokens, 0,
+                "{status}: a failed call is not charged"
+            );
+        }
     }
 
     /// A keyless entry (`requires_key: false`, no `credential_id`) sends
