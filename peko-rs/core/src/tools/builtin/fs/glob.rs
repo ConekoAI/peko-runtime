@@ -207,10 +207,11 @@ impl GlobTool {
             let metadata = entry.metadata().await?;
             let is_dir = metadata.is_dir();
 
-            // Check if this entry matches the pattern
-            let is_match = Self::glob_match(&name_str, pattern);
-
-            if is_match {
+            // A directory counts as a match only when directories are
+            // returned, so `total_matched` / `truncated` describe the
+            // entries the caller can actually get.
+            let counts = Self::glob_match(&name_str, pattern) && (include_dirs || !is_dir);
+            if counts {
                 *matched += 1;
                 if entries.len() < limit {
                     let relative_path = entry_path
@@ -218,8 +219,7 @@ impl GlobTool {
                         .unwrap_or(&entry_path)
                         .to_string_lossy()
                         .to_string();
-
-                    let entry_json = serde_json::json!({
+                    entries.push(serde_json::json!({
                         "name": name_str.to_string(),
                         "path": relative_path,
                         "type": if is_dir { "dir" } else { "file" },
@@ -229,45 +229,23 @@ impl GlobTool {
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
                             .map(|dt| dt.map(|d| d.to_rfc3339()).unwrap_or_default()),
-                    });
-
-                    if is_dir {
-                        if include_dirs {
-                            entries.push(entry_json);
-                        }
-                        // Recurse into subdirectories for patterns like "**/*.rs"
-                        if pattern.starts_with("**") {
-                            Box::pin(self.collect_matches(
-                                search_root,
-                                &entry_path,
-                                pattern,
-                                include_hidden,
-                                include_dirs,
-                                limit,
-                                entries,
-                                matched,
-                            ))
-                            .await?;
-                        }
-                    } else {
-                        entries.push(entry_json);
-                    }
+                    }));
                 }
-            } else if is_dir {
-                // Recurse into subdirectories for patterns like "**/*.rs"
-                if pattern.starts_with("**") {
-                    Box::pin(self.collect_matches(
-                        search_root,
-                        &entry_path,
-                        pattern,
-                        include_hidden,
-                        include_dirs,
-                        limit,
-                        entries,
-                        matched,
-                    ))
-                    .await?;
-                }
+            }
+            // Recurse into every subdirectory for patterns like "**/*.rs",
+            // matching or not, so matches past the limit are still counted.
+            if is_dir && pattern.starts_with("**") {
+                Box::pin(self.collect_matches(
+                    search_root,
+                    &entry_path,
+                    pattern,
+                    include_hidden,
+                    include_dirs,
+                    limit,
+                    entries,
+                    matched,
+                ))
+                .await?;
             }
         }
 
@@ -475,6 +453,40 @@ mod tests {
 
         let entries = result["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 3);
+    }
+
+    /// A directory that itself matches a `**` pattern is searched too, and
+    /// counts as a match only when directories are returned.
+    #[tokio::test]
+    async fn test_glob_recurses_into_matching_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        fs::create_dir_all(temp_dir.path().join("a/tests"))
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("a/tests/test_x.rs"), "")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("test_y.rs"), "")
+            .await
+            .unwrap();
+
+        let files = tool.execute(json!({"pattern": "**/test*"})).await.unwrap();
+        let paths: Vec<_> = files["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap().replace('\\', "/"))
+            .collect();
+        assert_eq!(paths, ["a/tests/test_x.rs", "test_y.rs"], "{files}");
+        assert_eq!(files["total_matched"], 2, "{files}");
+
+        let with_dirs = tool
+            .execute(json!({"pattern": "**/test*", "include_dirs": true}))
+            .await
+            .unwrap();
+        assert_eq!(with_dirs["returned"], 3, "{with_dirs}");
+        assert_eq!(with_dirs["total_matched"], 3, "{with_dirs}");
     }
 
     #[tokio::test]

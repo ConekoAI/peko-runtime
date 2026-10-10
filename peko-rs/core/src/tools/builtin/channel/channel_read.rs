@@ -221,11 +221,18 @@ impl Tool for ChannelReadTool {
         } else {
             match &since {
                 Some(s) => {
-                    let items = self
+                    // The store's checkpoint is an inclusive line offset;
+                    // `since` names the last event the caller has seen,
+                    // so its own line is dropped to return strictly newer
+                    // events (a fed-back `next_cursor` must not repeat).
+                    let items: Vec<_> = self
                         .port
                         .peek_with_ids(&channel_id, &Checkpoint(s.clone()))
                         .await
-                        .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?;
+                        .map_err(|e| anyhow::anyhow!("ChannelRead peek: {e}"))?
+                        .into_iter()
+                        .filter(|(id, _)| id != s)
+                        .collect();
                     let has_more = items.len() > limit;
                     let page: Vec<_> = items.into_iter().take(limit).collect();
                     let next_cursor = page.last().map(|(id, _)| id.clone());
@@ -296,526 +303,260 @@ impl Tool for ChannelReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_channel::{ChannelError, ChannelEvent};
-    use peko_protocol::channel::ChannelId as ProtoChannelId;
+    use peko_channel::{ChannelConfig, ChannelStore, CreateOpts, PostMsg};
     use peko_subject::{PrincipalId, Subject};
     use serde_json::json;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use tokio::sync::Mutex as AsyncMutex;
 
-    /// In-memory `ChannelPort` for unit tests. Local to this tool's
-    /// tests so the tool can be tested without depending on the
-    /// engine's mock fixture (PR-5a deleted `engine::channel_responder`).
-    #[derive(Default)]
-    struct TestChannelPort {
-        events: Mutex<HashMap<ChannelId, Vec<ChannelEvent>>>,
-        members: AsyncMutex<HashMap<ChannelId, Vec<Subject>>>,
-        /// Recorded `(channel, session_key, mark)` for
-        /// `advance_read_mark` calls — lets tests assert the read path
-        /// advances the session's digest position.
-        advanced: AsyncMutex<Vec<(ChannelId, String, String)>>,
+    /// A real file-backed channel store holding one channel created by
+    /// alice, with bob (a user) invited.
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        store: Arc<ChannelStore>,
+        tool: ChannelReadTool,
+        alice: PrincipalId,
+        channel: ChannelId,
     }
 
-    #[async_trait]
-    impl ChannelPort for TestChannelPort {
-        async fn create(
-            &self,
-            _creator: &PrincipalId,
-            _opts: peko_channel::CreateOpts,
-        ) -> peko_channel::Result<ChannelId> {
-            Err(ChannelError::Adapter(
-                "create not implemented in test".into(),
-            ))
-        }
-
-        async fn invite(
-            &self,
-            _channel: &ChannelId,
-            _inviter: &PrincipalId,
-            _invitee: &Subject,
-        ) -> peko_channel::Result<()> {
-            Ok(())
-        }
-
-        async fn post(
-            &self,
-            _channel: &ChannelId,
-            _sender: &Subject,
-            _msg: peko_channel::PostMsg,
-        ) -> peko_channel::Result<String> {
-            Err(ChannelError::Adapter("post not implemented in test".into()))
-        }
-
-        async fn peek(
-            &self,
-            channel: &ChannelId,
-            since: &Checkpoint,
-        ) -> peko_channel::Result<Vec<ChannelEvent>> {
-            let events = self.events.lock().unwrap();
-            let all = events.get(channel).cloned().unwrap_or_default();
-            // Trim everything at-or-before `since`. For the test fixture
-            // we don't have real opaque cursor comparison, so we use a
-            // crude approach: if `since` is empty, return everything.
-            if since.0.is_empty() {
-                Ok(all)
-            } else {
-                Ok(all)
+    impl Fixture {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(ChannelStore::new(ChannelConfig {
+                runtime_dir: dir.path().to_path_buf(),
+                shared_dir: None,
+            }));
+            let alice = PrincipalId::generate();
+            let channel = store
+                .create(
+                    &alice,
+                    CreateOpts {
+                        name: "team".into(),
+                        ..CreateOpts::default()
+                    },
+                )
+                .await
+                .unwrap();
+            store
+                .invite(&channel, &alice, &Subject::User("bob".into()))
+                .await
+                .unwrap();
+            Self {
+                tool: ChannelReadTool::new(store.clone()),
+                _dir: dir,
+                store,
+                alice,
+                channel,
             }
         }
 
-        async fn peek_with_ids(
-            &self,
-            channel: &ChannelId,
-            since: &Checkpoint,
-        ) -> peko_channel::Result<Vec<(String, ChannelEvent)>> {
-            let events = self.peek(channel, since).await?;
-            // Test fixture: assign line numbers by event index; the
-            // subscription loop only needs strictly-increasing ids.
-            Ok(events
-                .into_iter()
-                .enumerate()
-                .map(|(i, ev)| ((i + 1).to_string(), ev))
-                .collect())
-        }
-
-        async fn leave(
-            &self,
-            _channel: &ChannelId,
-            _principal: &PrincipalId,
-        ) -> peko_channel::Result<()> {
-            Ok(())
-        }
-
-        async fn list_members(&self, channel: &ChannelId) -> peko_channel::Result<Vec<Subject>> {
-            let g = self.members.lock().await;
-            Ok(g.get(channel).cloned().unwrap_or_default())
-        }
-
-        async fn list_for_principal(
-            &self,
-            _principal: &PrincipalId,
-        ) -> peko_channel::Result<Vec<ChannelId>> {
-            Ok(Vec::new())
-        }
-
-        /// Recording fake: the tool's read path must advance the
-        /// session's digest mark; the store-backed impl persists it.
-        async fn advance_read_mark(
-            &self,
-            channel: &ChannelId,
-            session_key: &str,
-            mark: String,
-        ) -> peko_channel::Result<()> {
-            self.advanced
-                .lock()
+        async fn post(&self, author: &Subject, text: &str) -> String {
+            self.store
+                .post(&self.channel, author, PostMsg::root(text))
                 .await
-                .push((channel.clone(), session_key.to_string(), mark));
-            Ok(())
+                .unwrap()
         }
 
-        async fn pin_to_shared(
-            &self,
-            _channel: &ChannelId,
-        ) -> peko_channel::Result<std::path::PathBuf> {
-            Err(ChannelError::Adapter(
-                "pin_to_shared not implemented in test".into(),
-            ))
+        fn ctx(&self, session: Option<&str>) -> ToolContext {
+            let ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+                .with_principal_id(self.alice.0.clone());
+            match session {
+                Some(s) => ctx.with_session_id(s),
+                None => ctx,
+            }
+        }
+
+        async fn read(&self, mut params: serde_json::Value) -> serde_json::Value {
+            params["channel"] = json!(self.channel.as_str());
+            self.tool
+                .execute_with_context(params, &self.ctx(None))
+                .await
+                .unwrap()
         }
     }
 
-    fn ctx_with(principal: PrincipalId) -> ToolContext {
-        ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
-            .with_principal_id(principal.0)
+    fn texts(page: &serde_json::Value) -> Vec<String> {
+        page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| match e["kind"].as_str().unwrap() {
+                "posted" => e["text"].as_str().unwrap().to_string(),
+                other => format!("<{other}>"),
+            })
+            .collect()
     }
 
-    fn chan_id() -> ChannelId {
-        ProtoChannelId::generate()
-    }
-
+    /// Without a cursor the newest `limit` events come back; `next_cursor`
+    /// pages backward through `before` until the channel's start.
     #[tokio::test]
-    async fn read_returns_events_for_existing_channel() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
+    async fn tail_read_pages_backward_to_the_start() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let first = fx.post(&alice, "first").await;
+        fx.post(&alice, "second").await;
+
+        let page = fx.read(json!({ "limit": 2 })).await;
+        assert_eq!(texts(&page), ["first", "second"]);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["next_cursor"], first.as_str());
+        assert_eq!(
+            page["events"][0]["id"],
+            first.as_str(),
+            "events carry their ids"
+        );
+
+        let mut seen = Vec::new();
+        let mut before = page["next_cursor"].clone();
+        while !before.is_null() {
+            let older = fx.read(json!({ "limit": 1, "before": before })).await;
+            seen.extend(texts(&older));
+            before = older["next_cursor"].clone();
         }
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![ChannelEvent::Created {
-                    channel: channel.clone(),
-                    creator: alice.0.clone(),
-                    name: "team".into(),
-                    at: "2026-08-05T12:00:00Z".into(),
-                }],
-            );
-        }
-
-        let tool = ChannelReadTool::new(port);
-        let got = tool
-            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
-            .await
-            .unwrap();
-        let arr = got["events"].as_array().expect("events array");
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["kind"], "created");
-        // Every event carries its line-number id for cursors/threading.
-        assert_eq!(arr[0]["id"], "1");
-        assert_eq!(got["has_more"], false);
-        assert_eq!(got["next_cursor"], serde_json::Value::Null);
-    }
-
-    #[tokio::test]
-    async fn read_respects_since_checkpoint_and_limit() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        // 3 events.
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![
-                    ChannelEvent::Created {
-                        channel: channel.clone(),
-                        creator: alice.0.clone(),
-                        name: "team".into(),
-                        at: "2026-08-05T12:00:00Z".into(),
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "first".into(),
-                        at: "2026-08-05T12:00:30Z".into(),
-                        via: None,
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "second".into(),
-                        at: "2026-08-05T12:01:00Z".into(),
-                        via: None,
-                    },
-                ],
-            );
-        }
-
-        let tool = ChannelReadTool::new(port);
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "since": "node_abc", "limit": 2 }),
-                &ctx_with(alice),
-            )
-            .await
-            .unwrap();
-        let arr = got["events"].as_array().expect("events array");
-        // TestChannelPort doesn't actually filter by `since`, so the
-        // `limit` cap is the only truncation we exercise here. The
-        // production `ChannelStore` does the real filtering.
-        assert_eq!(arr.len(), 2, "limit should truncate to 2 events");
-        // Forward read: has_more = more newer events exist beyond the
-        // page; next_cursor = the page's last id, fed back as `since`.
-        assert_eq!(got["has_more"], true);
-        assert_eq!(got["next_cursor"], "2");
-    }
-
-    #[tokio::test]
-    async fn read_without_since_returns_newest_page_with_backward_cursor() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![
-                    ChannelEvent::Created {
-                        channel: channel.clone(),
-                        creator: alice.0.clone(),
-                        name: "team".into(),
-                        at: "2026-08-05T12:00:00Z".into(),
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "first".into(),
-                        at: "2026-08-05T12:00:30Z".into(),
-                        via: None,
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "second".into(),
-                        at: "2026-08-05T12:01:00Z".into(),
-                        via: None,
-                    },
-                ],
-            );
-        }
-
-        let tool = ChannelReadTool::new(port);
-        // No cursor: tail read — the NEWEST `limit` events, not the
-        // oldest.
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "limit": 2 }),
-                &ctx_with(alice.clone()),
-            )
-            .await
-            .unwrap();
-        let arr = got["events"].as_array().expect("events array");
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["text"], "first");
-        assert_eq!(arr[1]["text"], "second");
-        assert_eq!(got["has_more"], true);
-        // Backward paging cursor: the page's oldest id, fed back as
-        // `before`.
-        assert_eq!(got["next_cursor"], "2");
-
-        // Page back: `before` = the oldest id just seen.
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "limit": 2, "before": "2" }),
-                &ctx_with(alice),
-            )
-            .await
-            .unwrap();
-        let arr = got["events"].as_array().expect("events array");
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["kind"], "created");
-        assert_eq!(got["has_more"], false);
-    }
-
-    #[tokio::test]
-    async fn read_soft_errors_on_unknown_channel() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelReadTool::new(port);
-
-        // Use a syntactically valid channel id (matches
-        // `ChannelId::parse`'s prefix + 8-base36-char rule) but which
-        // isn't in the port's member/event maps. The fixture returns
-        // an empty member list, so we hit the soft-error branch.
-        let got = tool
-            .execute_with_context(json!({ "channel": "chan_zzzzzzzz" }), &ctx_with(alice))
-            .await
-            .unwrap();
-        assert_eq!(got["error"], "caller is not a member of this channel");
-        assert_eq!(got["channel"], "chan_zzzzzzzz");
-    }
-
-    #[tokio::test]
-    async fn read_soft_errors_on_non_member() {
-        // Channel exists + alice is not a member → soft error, not Err.
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        let bob = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&bob)]);
-        }
-        let tool = ChannelReadTool::new(port);
-
-        let got = tool
-            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
-            .await
-            .unwrap();
-        assert_eq!(got["error"], "caller is not a member of this channel");
-    }
-
-    #[tokio::test]
-    async fn read_rejects_invalid_channel_id() {
-        let port = Arc::new(TestChannelPort::default());
-        let alice = PrincipalId::generate();
-        let tool = ChannelReadTool::new(port);
-
-        let res = tool
-            .execute_with_context(json!({ "channel": "not-a-chan-id" }), &ctx_with(alice))
-            .await;
-        assert!(res.is_err(), "invalid channel id must propagate as Err");
-    }
-
-    #[tokio::test]
-    async fn search_mode_filters_by_text_and_author() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: "user:bob".into(),
-                        parent: None,
-                        text: "deploy the release".into(),
-                        at: "2026-08-05T12:00:30Z".into(),
-                        via: None,
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "release notes drafted".into(),
-                        at: "2026-08-05T12:01:00Z".into(),
-                        via: None,
-                    },
-                ],
-            );
-        }
-
-        let tool = ChannelReadTool::new(port);
-        // Text query (case-insensitive): both posts match "release".
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "query": "RELEASE" }),
-                &ctx_with(alice.clone()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(got["events"].as_array().unwrap().len(), 2);
-
-        // Author + text combined narrow to one.
-        let got = tool
-            .execute_with_context(
-                json!({ "channel": channel.as_str(), "query": "release", "author": "user:bob" }),
-                &ctx_with(alice),
-            )
-            .await
-            .unwrap();
-        let arr = got["events"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["text"], "deploy the release");
-        assert_eq!(arr[0]["id"], "1", "the match carries its line id");
-    }
-
-    #[tokio::test]
-    async fn read_requires_principal_context() {
-        let port = Arc::new(TestChannelPort::default());
-        let tool = ChannelReadTool::new(port);
-        // Bare `execute` — no principal context.
-        let res = tool.execute(json!({ "channel": "chan_a1b2c3d4" })).await;
+        assert_eq!(
+            seen.last().map(String::as_str),
+            Some("<created>"),
+            "{seen:?}"
+        );
         assert!(
-            res.is_err(),
-            "bare execute must surface principal-missing error"
+            !seen.iter().any(|t| t == "first" || t == "second"),
+            "{seen:?}"
         );
     }
 
-    /// The read path advances the session's digest read mark to the
-    /// newest returned line id (2026-09-12 digest work).
+    /// `since` returns only events strictly after the cursor, oldest first,
+    /// and `next_cursor` continues the forward walk.
     #[tokio::test]
-    async fn read_advances_session_read_mark() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![
-                    ChannelEvent::Created {
-                        channel: channel.clone(),
-                        creator: alice.0.clone(),
-                        name: "team".into(),
-                        at: "2026-08-05T12:00:00Z".into(),
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: "user:bob".into(),
-                        parent: None,
-                        text: "one".into(),
-                        at: "2026-08-05T12:00:30Z".into(),
-                        via: None,
-                    },
-                    ChannelEvent::Posted {
-                        channel: channel.clone(),
-                        author: alice.0.clone(),
-                        parent: None,
-                        text: "two".into(),
-                        at: "2026-08-05T12:01:00Z".into(),
-                        via: None,
-                    },
-                ],
-            );
-        }
+    async fn since_walks_forward_from_the_cursor() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let first = fx.post(&alice, "first").await;
+        let second = fx.post(&alice, "second").await;
+        fx.post(&alice, "third").await;
 
-        let tool = ChannelReadTool::new(port.clone());
-        let ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
-            .with_principal_id(alice.0.clone())
-            .with_session_id("sess-xyz");
-        let got = tool
-            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(got["events"].as_array().unwrap().len(), 3);
+        let page = fx.read(json!({ "since": first, "limit": 1 })).await;
+        assert_eq!(texts(&page), ["second"]);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["next_cursor"], second.as_str());
 
-        let advanced = port.advanced.lock().await;
-        assert_eq!(advanced.len(), 1, "one advance for the successful read");
-        assert_eq!(advanced[0].1, "sess-xyz");
-        assert_eq!(advanced[0].2, "3", "mark = newest returned line id");
+        let page = fx.read(json!({ "since": second })).await;
+        assert_eq!(texts(&page), ["third"]);
+        assert_eq!(page["has_more"], false);
     }
 
-    /// Without a session id on the context, no mark is advanced
-    /// (fakes/standalone callers stay no-ops through the trait default).
     #[tokio::test]
-    async fn read_without_session_does_not_advance_mark() {
-        let port = Arc::new(TestChannelPort::default());
-        let channel = chan_id();
-        let alice = PrincipalId::generate();
-        {
-            let mut members = port.members.lock().await;
-            members.insert(channel.clone(), vec![Subject::from(&alice)]);
-        }
-        {
-            let mut events = port.events.lock().unwrap();
-            events.insert(
-                channel.clone(),
-                vec![ChannelEvent::Posted {
-                    channel: channel.clone(),
-                    author: alice.0.clone(),
-                    parent: None,
-                    text: "one".into(),
-                    at: "2026-08-05T12:00:30Z".into(),
-                    via: None,
-                }],
-            );
-        }
-
-        let tool = ChannelReadTool::new(port.clone());
-        let got = tool
-            .execute_with_context(json!({ "channel": channel.as_str() }), &ctx_with(alice))
+    async fn missing_channel_and_non_member_are_soft_errors() {
+        let fx = Fixture::new().await;
+        let got = fx
+            .tool
+            .execute_with_context(json!({ "channel": "chan_zzzzzzzz" }), &fx.ctx(None))
             .await
             .unwrap();
-        assert_eq!(got["events"].as_array().unwrap().len(), 1);
-        assert!(
-            port.advanced.lock().await.is_empty(),
-            "no session id ⇒ no mark advance"
+        assert_eq!(got["error"], "channel not found");
+        assert_eq!(got["channel"], "chan_zzzzzzzz");
+
+        let outsider = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_principal_id(PrincipalId::generate().0);
+        let got = fx
+            .tool
+            .execute_with_context(json!({ "channel": fx.channel.as_str() }), &outsider)
+            .await
+            .unwrap();
+        assert_eq!(got["error"], "caller is not a member of this channel");
+    }
+
+    #[tokio::test]
+    async fn malformed_calls_are_rejected() {
+        let fx = Fixture::new().await;
+        for params in [json!({}), json!({ "channel": "not-a-chan-id" })] {
+            assert!(
+                fx.tool
+                    .execute_with_context(params.clone(), &fx.ctx(None))
+                    .await
+                    .is_err(),
+                "{params}"
+            );
+        }
+        let no_principal = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME);
+        let error = fx
+            .tool
+            .execute_with_context(json!({ "channel": fx.channel.as_str() }), &no_principal)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("principal context"), "{error}");
+        assert!(fx
+            .tool
+            .execute(json!({ "channel": fx.channel.as_str() }))
+            .await
+            .is_err());
+    }
+
+    /// Search mode matches text case-insensitively and narrows by author.
+    #[tokio::test]
+    async fn search_filters_by_text_and_author() {
+        let fx = Fixture::new().await;
+        let bob = Subject::User("bob".into());
+        let bobs = fx.post(&bob, "deploy the release").await;
+        fx.post(&Subject::from(&fx.alice), "release notes drafted")
+            .await;
+        fx.post(&bob, "unrelated").await;
+
+        let got = fx.read(json!({ "query": "RELEASE" })).await;
+        let mut found = texts(&got);
+        found.sort();
+        assert_eq!(found, ["deploy the release", "release notes drafted"]);
+
+        let got = fx
+            .read(json!({ "query": "release", "author": "user:bob" }))
+            .await;
+        assert_eq!(texts(&got), ["deploy the release"]);
+        assert_eq!(
+            got["events"][0]["id"],
+            bobs.as_str(),
+            "the match carries its id"
+        );
+    }
+
+    /// Reading advances the session's digest read mark to the newest
+    /// returned line; paging backward never rewinds it, and a read without
+    /// a session leaves marks alone.
+    #[tokio::test]
+    async fn reads_advance_the_session_read_mark_monotonically() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let first = fx.post(&alice, "one").await;
+        let newest = fx.post(&alice, "two").await;
+
+        fx.tool
+            .execute_with_context(json!({ "channel": fx.channel.as_str() }), &fx.ctx(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.store.read_mark(&fx.channel, "sess-xyz").await.unwrap(),
+            None
+        );
+
+        fx.tool
+            .execute_with_context(
+                json!({ "channel": fx.channel.as_str() }),
+                &fx.ctx(Some("sess-xyz")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.store.read_mark(&fx.channel, "sess-xyz").await.unwrap(),
+            Some(newest.clone())
+        );
+
+        fx.tool
+            .execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "before": newest, "limit": 1 }),
+                &fx.ctx(Some("sess-xyz")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.store.read_mark(&fx.channel, "sess-xyz").await.unwrap(),
+            Some(newest),
+            "a backward page (ending at {first}) must not rewind the mark"
         );
     }
 }

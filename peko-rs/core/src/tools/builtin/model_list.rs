@@ -428,6 +428,49 @@ mod tests {
         assert_eq!(out["entries"][0]["id"], "priced");
     }
 
+    /// Every capability filter keeps only entries whose spec declares the
+    /// capability; an entry with no spec matches none of them.
+    #[tokio::test]
+    async fn capability_filters_keep_only_entries_that_declare_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("models.toml");
+        let entries: BTreeMap<_, _> = [
+            entry("rich", "Rich", Some(vision_spec()), None),
+            entry("plain", "Plain", Some(text_only_spec()), None),
+            entry("unspecced", "Unspecced", None, None),
+        ]
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
+        std::fs::write(
+            &path,
+            toml::to_string(&ModelCatalogFile {
+                version: "1".to_string(),
+                entries,
+            })
+            .expect("serialize"),
+        )
+        .expect("write");
+        let cat = ModelCatalog::load_or_init(&path).await.expect("load");
+        let tool = ModelListTool::new(Arc::downgrade(&cat));
+
+        for filter in ["vision", "tools", "thinking", "priced", "json_mode"] {
+            let out = tool
+                .execute(json!({ "filter": filter }))
+                .await
+                .expect("execute");
+            let ids: Vec<_> = out["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["id"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(ids, ["rich"], "filter {filter}");
+        }
+        let all = tool.execute(json!({})).await.expect("execute");
+        assert_eq!(all["count"], 3);
+    }
+
     #[tokio::test]
     async fn model_list_contains_matches_note() {
         let cat = catalog_with_entry(entry(

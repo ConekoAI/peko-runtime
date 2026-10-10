@@ -316,12 +316,11 @@ impl Tool for WorkflowTool {
             .current_dir(&workspace)
             .env_clear()
             .envs(&env)
-            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        // Timeout, abort, and a dropped call kill the script and every
+        // process it started.
+        let (mut child, tree) = crate::tools::builtin::process::spawn_in_own_group(&mut command)
             .map_err(|e| anyhow!("Workflow: failed to spawn python3 for '{path}': {e}"))?;
 
         let mut stdout_pipe = child.stdout.take();
@@ -361,8 +360,10 @@ impl Tool for WorkflowTool {
         };
 
         if matches!(outcome, Outcome::TimedOut | Outcome::Aborted) {
-            let _ = child.kill().await;
+            drop(tree);
             let _ = child.wait().await;
+        } else {
+            tree.disarm();
         }
 
         let (stdout_tail, stdout_truncated) = stdout_task.await.unwrap_or_default();
@@ -1357,8 +1358,9 @@ print("argv:" + ",".join(sys.argv[1:]))
         );
     }
 
-    /// A runaway script is killed at the timeout; partial output and
-    /// `timed_out` come back as data.
+    /// A runaway script is killed at the timeout together with any
+    /// process it started; partial output and `timed_out` come back as
+    /// data.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn timeout_kills_runaway_script() {
@@ -1367,16 +1369,24 @@ print("argv:" + ",".join(sys.argv[1:]))
             return;
         }
         let fx = fixture("runner").await;
+        let pid_file = fx.workspace.join("child.pid");
         write_workflow(
             &fx.workspace,
             "hang.py",
-            "import time\nprint('start', flush=True)\ntime.sleep(30)\n",
+            &format!(
+                "import subprocess, sys, time\n\
+                 child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n\
+                 open({:?}, 'w').write(str(child.pid))\n\
+                 print('start', flush=True)\n\
+                 time.sleep(30)\n",
+                pid_file.display().to_string()
+            ),
         );
         let started = std::time::Instant::now();
         let out = fx
             .tool
             .execute_with_context(
-                json!({"path": "hang.py", "timeout_ms": 300}),
+                json!({"path": "hang.py", "timeout_ms": 2000}),
                 &ctx_for("runner", None),
             )
             .await
@@ -1388,6 +1398,11 @@ print("argv:" + ",".join(sys.argv[1:]))
         assert!(
             elapsed < std::time::Duration::from_secs(10),
             "kill should be prompt, took {elapsed:?}"
+        );
+        #[cfg(unix)]
+        assert!(
+            !crate::tools::builtin::process::tests::still_running_after_grace(&pid_file).await,
+            "the script's child outlived the timeout"
         );
     }
 

@@ -12,6 +12,7 @@
 //! into the task's live buffer. Poll with the Async family (output, status,
 //! stop, list); blocking calls are bounded only by `timeout`.
 
+use crate::tools::builtin::process::spawn_in_own_group;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -126,12 +127,8 @@ impl BashTool {
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
-        // Kill the child when the output future is dropped (timeout /
-        // abort / executor shutdown) instead of letting it run detached.
-        // The blocking path's early returns rely on this to actually reap
-        // the subprocess.
-        cmd.kill_on_drop(true);
-
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
@@ -141,7 +138,11 @@ impl BashTool {
         // `pending` and the select behaves as a 2-way race.
         let mut abort_rx = ctx.map(ToolContext::abort_signal);
 
-        let output_fut = cmd.output();
+        // Timeout, abort, and a dropped call (executor shutdown) all return
+        // early and drop `tree`, killing everything the command started.
+        let (child, tree) =
+            spawn_in_own_group(&mut cmd).context("Failed to execute Bash command")?;
+        let output_fut = child.wait_with_output();
         tokio::pin!(output_fut);
 
         let output = match timeout_ms {
@@ -151,9 +152,6 @@ impl BashTool {
                 tokio::select! {
                     res = &mut output_fut => res.context("Failed to execute Bash command")?,
                     () = &mut timeout_sleep => {
-                        // Dropping `output_fut` here lets Tokio reap and
-                        // kill the spawned child; we surface the timeout
-                        // to the caller and bail without formatting.
                         return Err(anyhow::anyhow!("Bash command timed out after {ms} ms"));
                     }
                     () = wait_for_abort(&mut abort_rx) => {
@@ -168,6 +166,7 @@ impl BashTool {
                 }
             },
         };
+        tree.disarm();
 
         Self::format_output(&output, max_output_bytes)
     }
@@ -230,16 +229,16 @@ impl BashTool {
 
         let mut cmd = Command::new(SHELL);
         cmd.arg(SHELL_ARG).arg(command);
-        // Kill the child when this future is dropped (executor timeout /
-        // executor shutdown) instead of letting it run detached.
-        cmd.kill_on_drop(true);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        let mut child = cmd.spawn().context("Failed to execute Bash command")?;
+        // Stop (abort), the task timeout, and executor shutdown drop `tree`,
+        // killing everything the command started.
+        let (mut child, tree) =
+            spawn_in_own_group(&mut cmd).context("Failed to execute Bash command")?;
         let mut stdout_pipe = child.stdout.take().context("stdout not captured")?;
         let mut stderr_pipe = child.stderr.take().context("stderr not captured")?;
 
@@ -292,6 +291,7 @@ impl BashTool {
         let (status, stdout_bytes, stderr_bytes) = tokio::select! {
             res = child.wait() => {
                 let status = res.context("Failed to execute Bash command")?;
+                tree.disarm();
                 let stdout_bytes = stdout_task
                     .await
                     .unwrap_or_default();
@@ -303,7 +303,7 @@ impl BashTool {
             () = async {
                 let _ = abort_rx.changed().await;
             } => {
-                let _ = child.kill().await;
+                drop(tree);
                 let _ = child.wait().await;
                 return Err(anyhow::anyhow!("Bash command aborted"));
             }
@@ -727,6 +727,73 @@ mod tests {
             buf.ends_with("LAST\n"),
             "newest output kept: {:?}",
             &buf[buf.len() - 10..]
+        );
+    }
+
+    /// Stopping, or timing out, a command kills everything it started,
+    /// not just the shell.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_and_timeout_kill_the_whole_process_tree() {
+        use crate::tools::builtin::process::tests::{
+            long_lived_child, still_running_after_grace, wait_for_pid_file,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        for (case, background, stop) in [
+            ("foreground stop", false, true),
+            ("foreground timeout", false, false),
+            ("background task stop", true, true),
+        ] {
+            let pid_file = dir.path().join(format!("{}.pid", case.replace(' ', "_")));
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let mut ctx = ToolContext::default_for_tool("Bash").with_abort_signal(rx);
+            if background {
+                ctx.background.progress = Some(Arc::default());
+            }
+            let mut params = json!({ "command": long_lived_child(&pid_file) });
+            if !stop {
+                params["timeout"] = json!(500);
+            }
+            let call =
+                tokio::spawn(
+                    async move { BashTool::new().execute_with_context(params, &ctx).await },
+                );
+            wait_for_pid_file(&pid_file).await;
+            if stop {
+                tx.send(true).unwrap();
+            }
+            let result = call.await.unwrap();
+            assert!(result.is_err(), "{case}: {result:?}");
+            assert!(
+                !still_running_after_grace(&pid_file).await,
+                "{case}: the command's child outlived the call"
+            );
+        }
+    }
+
+    /// A command that exits on its own leaves processes it deliberately
+    /// backgrounded running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normal_exit_leaves_deliberate_background_processes() {
+        use crate::tools::builtin::process::tests::still_running_after_grace;
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("server.pid");
+        let command = format!(
+            "sleep 30 > /dev/null 2>&1 & echo $! > '{}'",
+            pid_file.display()
+        );
+        let result = BashTool::new()
+            .execute_with_context(
+                json!({ "command": command }),
+                &ToolContext::default_for_tool("Bash"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert!(
+            still_running_after_grace(&pid_file).await,
+            "a backgrounded process must survive its command's normal exit"
         );
     }
 

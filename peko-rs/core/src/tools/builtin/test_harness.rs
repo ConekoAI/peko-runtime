@@ -536,6 +536,15 @@ mod tests {
             .await
             .err("content");
         assert!(!harness.workspace().join("x.txt").exists());
+        for bad in [json!({"mode": "truncate"}), json!({"encoding": "hex"})] {
+            let mut params = json!({"file_path": "x.txt", "content": "c"});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(bad.as_object().unwrap().clone());
+            harness.call("Write", params).await.err("Invalid arguments");
+        }
+        assert!(!harness.workspace().join("x.txt").exists());
         harness
             .call("Cron", json!({"action":"create", "message":"m"}))
             .await

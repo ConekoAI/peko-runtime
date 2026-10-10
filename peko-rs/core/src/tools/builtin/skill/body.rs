@@ -38,9 +38,9 @@ struct ShellOutput {
 /// Run a shell command, blocking, with a per-call timeout and
 /// per-stream output cap. The command runs in `working_dir`.
 ///
-/// On timeout, the child process is killed (via tokio's process drop
-/// semantics); no partial stdout is captured. The caller surfaces
-/// this via a `command timed out after N ms` stderr line.
+/// On timeout, the command and everything it started are killed; no
+/// partial stdout is captured. The caller surfaces this via a `command
+/// timed out after N ms` stderr line.
 async fn run_shell_blocking(
     command: &str,
     working_dir: &Path,
@@ -48,23 +48,32 @@ async fn run_shell_blocking(
     max_output_bytes: usize,
 ) -> Result<ShellOutput> {
     let mut cmd = shell_command(command);
-    cmd.current_dir(working_dir);
+    cmd.current_dir(working_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let (child, tree) = crate::tools::builtin::process::spawn_in_own_group(&mut cmd)
+        .map_err(|e| anyhow::anyhow!("failed to execute shell: {e}"))?;
 
-    let output =
-        match tokio::time::timeout(tokio::time::Duration::from_millis(timeout_ms), cmd.output())
-            .await
-        {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => return Err(anyhow::anyhow!("failed to execute shell: {e}")),
-            Err(_) => {
-                return Ok(ShellOutput {
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    exit_code: -1,
-                    timed_out: true,
-                });
-            }
-        };
+    let output = match tokio::time::timeout(
+        tokio::time::Duration::from_millis(timeout_ms),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => {
+            tree.disarm();
+            o
+        }
+        Ok(Err(e)) => return Err(anyhow::anyhow!("failed to execute shell: {e}")),
+        Err(_) => {
+            return Ok(ShellOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: -1,
+                timed_out: true,
+            });
+        }
+    };
 
     let stdout = normalize_crlf(&truncate_bytes(&output.stdout, max_output_bytes));
     let stderr = normalize_crlf(&truncate_bytes(&output.stderr, max_output_bytes));
@@ -416,6 +425,43 @@ mod tests {
 
     fn tmp_workspace() -> tempfile::TempDir {
         tempfile::TempDir::new().unwrap()
+    }
+
+    /// A timed-out command is killed together with everything it started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_command_is_killed_with_its_children() {
+        use crate::tools::builtin::process::tests::{long_lived_child, still_running_after_grace};
+        let ws = tmp_workspace();
+        let pid_file = ws.path().join("child.pid");
+        let out = run_shell_blocking(&long_lived_child(&pid_file), ws.path(), 500, 1024)
+            .await
+            .unwrap();
+        assert!(out.timed_out);
+        assert!(
+            !still_running_after_grace(&pid_file).await,
+            "the timed-out command's child outlived it"
+        );
+    }
+
+    #[tokio::test]
+    async fn fenced_blocks_for_other_shells_are_refused_not_run() {
+        let ws = tmp_workspace();
+        let marker = ws.path().join("ran");
+        let frontmatter = SkillFrontmatter {
+            shell: Some("zsh".to_string()),
+            ..empty_frontmatter()
+        };
+        let body = format!("```!\ntouch '{}'\n```", marker.display());
+        let out = preprocess_dynamic_context(&body, &frontmatter, ws.path())
+            .await
+            .unwrap();
+        assert!(
+            out.starts_with("[shell blocked: shell \"zsh\" not supported, only \"bash\"]"),
+            "{out}"
+        );
+        assert!(out.contains("touch"), "the original fence is kept: {out}");
+        assert!(!marker.exists(), "a blocked fence must not run");
     }
 
     // ---- truncate_bytes ----

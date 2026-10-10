@@ -7,6 +7,7 @@ pub mod fs;
 pub mod messaging;
 pub mod paths;
 pub mod plan;
+mod process;
 pub mod session;
 pub mod skill;
 pub mod tasks;

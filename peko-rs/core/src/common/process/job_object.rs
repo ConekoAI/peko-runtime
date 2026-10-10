@@ -46,8 +46,8 @@ impl JobObject {
     pub fn new() -> anyhow::Result<Self> {
         use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectBasicLimitInformation, SetInformationJobObject,
-            JOBOBJECT_BASIC_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
 
         unsafe {
@@ -56,16 +56,16 @@ impl JobObject {
                 anyhow::bail!("CreateJobObjectW failed: {}", GetLastError());
             }
 
-            let mut info = JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                ..std::mem::zeroed()
-            };
+            // Kill-on-close is only accepted through the EXTENDED limit
+            // structure; setting it via the basic one fails.
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 
             let result = SetInformationJobObject(
                 handle,
-                JobObjectBasicLimitInformation,
+                JobObjectExtendedLimitInformation,
                 std::ptr::addr_of_mut!(info).cast(),
-                u32::try_from(std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>())
+                u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
                     .unwrap_or(u32::MAX),
             );
 
@@ -126,6 +126,37 @@ impl JobObject {
         Ok(())
     }
 
+    /// Close the job WITHOUT killing its members: clear the kill-on-close
+    /// limit first, so processes still in the job outlive the handle.
+    ///
+    /// This is a no-op on non-Windows platforms.
+    #[cfg(windows)]
+    pub fn release(self) {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        };
+        unsafe {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if SetInformationJobObject(
+                self.handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of_mut!(info).cast(),
+                u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                    .unwrap_or(u32::MAX),
+            ) == 0
+            {
+                // Leaking the handle beats killing processes the caller
+                // meant to keep.
+                std::mem::forget(self);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self)]
+    pub fn release(self) {}
+
     /// Close the job handle explicitly.
     ///
     /// This is a no-op on non-Windows platforms.
@@ -149,11 +180,10 @@ impl Drop for JobObject {
 mod tests {
     use super::*;
 
+    /// Creating a kill-on-close job must succeed: a silent failure here
+    /// leaves every "kill the tree" caller killing only the direct child.
     #[test]
     fn test_job_object_creation() {
-        // On Windows this calls CreateJobObjectW.  It may fail if the test
-        // runner itself is already in a job object (e.g. under CI or a
-        // debugger), so we only assert that it does not panic.
-        let _ = JobObject::new();
+        JobObject::new().expect("kill-on-close job object");
     }
 }

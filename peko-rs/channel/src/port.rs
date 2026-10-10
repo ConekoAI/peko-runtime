@@ -93,8 +93,11 @@ pub trait ChannelPort: Send + Sync + 'static {
     }
 
     /// Walk the channel's event log starting from `since`, returning
-    /// every event keyed at a strictly later `TaskId`. An empty
-    /// `Checkpoint` (default) returns the entire log.
+    /// every event from that line on. The checkpoint is an inclusive
+    /// line offset ("skip the first N lines"): the event AT `since` is
+    /// returned, so callers holding the last id they saw drop it to get
+    /// strictly newer events. An empty `Checkpoint` (default) returns
+    /// the entire log.
     ///
     /// Prefer [`Self::peek_tail`] for the canonical chat read ("the
     /// newest N messages") — this method always scans from the start

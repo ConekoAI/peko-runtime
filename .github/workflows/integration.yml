@@ -177,6 +177,8 @@ jobs:
               # respectively. Bulk tool impls (including skill/body.rs) stay
               # at the F4-lifted path; this filter entry remains valid.
               - 'peko-rs/core/src/tools/builtin/skill/body.rs'
+              # Process-group cleanup for shell tools (unix-gated killpg).
+              - 'peko-rs/core/src/tools/builtin/process.rs'
               # Phase 0.Z-D: tests/common/cli.rs → peko-rs/core/tests/common/cli.rs
               - 'peko-rs/core/tests/common/cli.rs'
 
