@@ -1758,6 +1758,94 @@ async fn compact_happy_path_runs_session_without_trigger_requirement() {
     );
 }
 
+/// The Agent tool over the production runtime adapter (as `install_run`
+/// registers it): `new` spawns a child that runs on the executor's
+/// provider and returns its output; `compact` continues an existing
+/// session. Agent's own unit tests use a fake runtime.
+#[tokio::test]
+async fn agent_tool_runs_new_and_compact_through_the_production_runtime() {
+    use crate::agents::subagent_runtime_impl::SubagentExecutorRuntime;
+    use crate::tools::builtin::messaging::AgentTool;
+    use peko_tools_core::Tool;
+
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    create_linked_session(&session_manager, &agent_name, "root-sess", None, "user").await;
+    create_linked_session(
+        &session_manager,
+        &agent_name,
+        "branch-a",
+        Some("root-sess"),
+        "branch",
+    )
+    .await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(workspace.path().join("roles")).unwrap();
+    std::fs::write(
+        workspace.path().join("roles/primary.md"),
+        "---\ndescription: \"worker\"\n---\n\nYou are a worker.\n",
+    )
+    .unwrap();
+
+    let (provider, mock) = mock_provider();
+    mock.queue_text("child finished");
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager.clone(),
+        agent_name,
+        peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
+    )
+    .with_provider(provider)
+    .with_principal_workspace(workspace.path().to_path_buf());
+    let tool = AgentTool::new(Arc::new(SubagentExecutorRuntime::new(Arc::new(executor))));
+    let ctx = peko_tools_core::ToolContext::for_hook_run("run", "call", "Agent")
+        .with_session_id(sid("root-sess"))
+        .with_workspace(workspace.path().to_string_lossy());
+
+    let spawned = tool
+        .execute_with_context(
+            serde_json::json!({
+                "action": "new", "path": "worker", "prompt": "do the work", "role": "primary"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(spawned["success"], true, "{spawned}");
+    assert_eq!(spawned["output"], "child finished", "{spawned}");
+    assert_eq!(spawned["role"], "primary", "{spawned}");
+    let system: String = mock.recorded_requests()[0]
+        .messages
+        .iter()
+        .filter(|m| m.role == peko_message::MessageRole::System)
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            peko_message::ContentBlock::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        system.contains("You are a worker."),
+        "the child runs the resolved role prompt: {system}"
+    );
+
+    mock.queue_text("continued after compaction");
+    let compacted = tool
+        .execute_with_context(
+            serde_json::json!({
+                "action": "compact", "path": "sess:/branch-a", "prompt": "carry on", "role": "primary"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(compacted["success"], true, "{compacted}");
+    assert_eq!(
+        compacted["output"], "continued after compaction",
+        "{compacted}"
+    );
+}
+
 #[tokio::test]
 async fn validate_context_parent_resolves_path() {
     let (session_manager, registry, agent_name) = create_test_components().await;

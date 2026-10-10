@@ -32,7 +32,6 @@ use crate::tools::builtin::messaging::{
     SpawnAuditEvent, SpawnRequest, SubagentRunView, SubagentRuntime,
 };
 use anyhow::Context;
-use peko_session::SpawnCleanupPolicy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -255,7 +254,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         };
 
         // Translate the root's `SubagentRunView` to the built-in's.
-        Ok(project_run_view(view))
+        Ok(view)
     }
 
     /// `Agent` tool `action = "compact"` (2026-09-05 — replaces the
@@ -286,7 +285,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
                 parent_cancel,
             )
             .await?;
-        Ok(project_run_view(view))
+        Ok(view)
     }
 
     /// `Agent` tool `action = "branch"` (ADR-053): copy a session's
@@ -320,7 +319,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
                 parent_cancel,
             )
             .await?;
-        Ok(project_run_view(view))
+        Ok(view)
     }
 
     fn principal_id(&self) -> String {
@@ -400,30 +399,6 @@ fn build_root_execution_config(
         conversation_channel: None,
         conversation_peer: None,
         role_prompt,
-    }
-}
-
-/// Translate the root's `SubagentRunView` to the built-in's. The
-/// struct fields are identical by design; this projection keeps the
-/// port boundary explicit so changes in either side surface as a
-/// compile error. Shared by `execute_and_wait` and
-/// `compact_and_execute`.
-fn project_run_view(view: crate::agents::subagent_types::SubagentRunView) -> SubagentRunView {
-    SubagentRunView {
-        run_id: view.run_id,
-        child_session_key: view.child_session_key,
-        parent_session_key: view.parent_session_key,
-        task: view.task,
-        status: view.status,
-        started_at: view.started_at,
-        completed_at: view.completed_at,
-        cleanup: match view.cleanup {
-            peko_session::types::SpawnCleanupPolicy::Keep => SpawnCleanupPolicy::Keep,
-            peko_session::types::SpawnCleanupPolicy::Delete => SpawnCleanupPolicy::Delete,
-        },
-        label: view.label,
-        result: view.result,
-        depth: view.depth,
     }
 }
 

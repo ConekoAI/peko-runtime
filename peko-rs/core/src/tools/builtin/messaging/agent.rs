@@ -1243,6 +1243,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         Ok(crate::tools::builtin::messaging::dto::SubagentRunView {
             run_id: "test-run".into(),
             child_session_key: "test-child".into(),
+            child_session_id: None,
             parent_session_key: request.parent_session_key.clone(),
             task: request.prompt.clone(),
             status: peko_tools_core::AsyncTaskStatus::Completed {
@@ -1279,6 +1280,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         Ok(crate::tools::builtin::messaging::dto::SubagentRunView {
             run_id: "test-compact-run".into(),
             child_session_key: target.to_string(),
+            child_session_id: None,
             parent_session_key: caller_session_key.to_string(),
             task: prompt.to_string(),
             status: peko_tools_core::AsyncTaskStatus::Completed {
@@ -1328,6 +1330,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         Ok(crate::tools::builtin::messaging::dto::SubagentRunView {
             run_id: "test-branch-run".into(),
             child_session_key: target.to_string(),
+            child_session_id: None,
             parent_session_key: caller_session_key.to_string(),
             task: prompt.to_string(),
             status: peko_tools_core::AsyncTaskStatus::Completed {
