@@ -2,8 +2,6 @@
 
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use crate::extensions::framework::registry::SimpleRegistry;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,20 +48,7 @@ pub struct SubagentMetadata {
     pub subagent_result: Option<SubagentResult>,
 }
 
-/// Result of a subagent run
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubagentResult {
-    /// Final status
-    pub status: AsyncTaskStatus,
-    /// Output content (if successful)
-    pub output: Option<String>,
-    /// Error message (if failed)
-    pub error: Option<String>,
-    /// Token usage (input, output, total)
-    pub token_usage: Option<(usize, usize, usize)>,
-    /// Completion timestamp
-    pub completed_at: chrono::DateTime<chrono::Utc>,
-}
+pub use crate::tools::builtin::messaging::SubagentResult;
 
 // ================================================================================
 // AsyncTaskEntry
@@ -206,34 +191,6 @@ impl AsyncTaskEntry {
         self.result = Some(result);
     }
 
-    /// Append to the task's live progress buffer (§4.1).
-    ///
-    /// The buffer is capped: once it exceeds [`PROGRESS_BUFFER_MAX_BYTES`]
-    /// the oldest bytes are dropped, so a chatty tool cannot grow it
-    /// without bound (the same discipline the review's P2-3 applies to
-    /// task results). A caller-shared `Arc` means the executing closure
-    /// and this entry observe the same bytes.
-    pub fn append_progress(&self, chunk: &str) {
-        if let Some(buf) = self.progress.as_ref() {
-            let mut guard = buf
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.push_str(chunk);
-            let len = guard.len();
-            if len > PROGRESS_BUFFER_MAX_BYTES {
-                // Keep the tail: recent output is what matters when a
-                // caller inspects a long-running task.
-                let drain = len - PROGRESS_BUFFER_MAX_BYTES;
-                // Advance to a UTF-8 char boundary so we never split one.
-                let mut start = drain;
-                while start < len && !guard.is_char_boundary(start) {
-                    start += 1;
-                }
-                guard.drain(..start);
-            }
-        }
-    }
-
     /// Snapshot the progress buffer, trimmed to `max_bytes` from the tail.
     /// Returns `None` when the task has no progress buffer or nothing has
     /// been appended yet.
@@ -246,16 +203,7 @@ impl AsyncTaskEntry {
         if guard.is_empty() {
             return None;
         }
-        let s = if guard.len() <= max_bytes {
-            guard.as_str()
-        } else {
-            let mut start = guard.len() - max_bytes;
-            while start < guard.len() && !guard.is_char_boundary(start) {
-                start += 1;
-            }
-            &guard[start..]
-        };
-        Some(s.to_string())
+        Some(peko_tools_core::background::tail(&guard, max_bytes).to_string())
     }
 
     /// Whether the terminal outcome has already been delivered.
@@ -320,11 +268,6 @@ impl AsyncTaskEntry {
 // AsyncTaskRegistry
 // ================================================================================
 
-/// Cap on a task's live progress buffer (§4.1). Once exceeded, the
-/// oldest bytes are dropped so a chatty tool cannot grow the buffer
-/// without bound.
-const PROGRESS_BUFFER_MAX_BYTES: usize = 64 * 1024;
-
 /// Cap on the partial-output preview surfaced through the completion
 /// event and `Async action output` — the agent gets a window into what the task
 /// produced, not the whole thing (the full tail stays in the task file
@@ -371,54 +314,10 @@ impl AsyncTaskRegistry {
         }
     }
 
-    /// Wait for a task to complete with a timeout
-    pub async fn wait_for_completion(
-        &self,
-        task_id: &AsyncTaskId,
-        timeout: Duration,
-    ) -> anyhow::Result<WaitResult> {
-        // Fast path: check if already completed
-        if let Some(entry) = self.tasks.get(task_id) {
-            if entry.status.is_terminal() {
-                return Ok(Self::status_to_wait_result(&entry.status));
-            }
-        }
-
-        // Polling-based wait
-        let start = tokio::time::Instant::now();
-        loop {
-            // Check if completed
-            if let Some(entry) = self.tasks.get(task_id) {
-                if entry.status.is_terminal() {
-                    return Ok(Self::status_to_wait_result(&entry.status));
-                }
-            } else {
-                return Err(anyhow::anyhow!("Task {task_id} not found in registry"));
-            }
-
-            // Check timeout
-            if start.elapsed() >= timeout {
-                return Ok(WaitResult::Timeout);
-            }
-
-            // Wait for either notification or poll interval
-            let remaining = timeout.saturating_sub(start.elapsed());
-            let poll_interval = Duration::from_millis(50).min(remaining);
-
-            tokio::time::sleep(poll_interval).await;
-        }
-    }
-
     /// Check if a task exists and return its current status
     #[must_use]
     pub fn check_status(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskStatus> {
         self.tasks.get(task_id).map(|e| e.status.clone())
-    }
-
-    /// Check if any tasks are still non-terminal
-    #[must_use]
-    pub fn has_pending_tasks(&self) -> bool {
-        self.tasks.values().any(|e| !e.status.is_terminal())
     }
 
     /// Convert status to wait result
@@ -494,27 +393,6 @@ impl AsyncTaskRegistry {
             .collect()
     }
 
-    /// Count active (non-terminal) subagents for a parent session.
-    #[must_use]
-    pub fn count_active_subagents_for_parent(&self, parent_session_key: &str) -> usize {
-        self.tasks
-            .values()
-            .filter(|e| e.parent_session_key == parent_session_key)
-            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
-            .filter(|e| !e.status.is_terminal())
-            .count()
-    }
-
-    /// Count total subagents for a parent session.
-    #[must_use]
-    pub fn count_subagents_for_parent(&self, parent_session_key: &str) -> usize {
-        self.tasks
-            .values()
-            .filter(|e| e.parent_session_key == parent_session_key)
-            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
-            .count()
-    }
-
     /// Whether a non-terminal subagent run is currently registered for
     /// the given child session (id or overlay key). The unified
     /// registry is the active-run source of truth for subagent runs —
@@ -530,15 +408,6 @@ impl AsyncTaskRegistry {
                     }
                     _ => false,
                 }
-        })
-    }
-
-    /// Get subagent-specific result data (if any).
-    #[must_use]
-    pub fn get_subagent_result(&self, task_id: &AsyncTaskId) -> Option<SubagentResult> {
-        self.tasks.get(task_id).and_then(|e| match &e.metadata {
-            TaskMetadata::Subagent(m) => m.subagent_result.clone(),
-            _ => None,
         })
     }
 
@@ -558,69 +427,6 @@ impl AsyncTaskRegistry {
             }
             None => CancelResult::NotFound,
         }
-    }
-}
-
-/// A generic, serializable view of any async task entry.
-///
-/// This is NOT stored — it is constructed on demand from the unified
-/// registry's `AsyncTaskEntry`. It works for ALL task types regardless
-/// of `TaskMetadata` variant.
-#[derive(Debug, Clone, Serialize)]
-pub struct TaskView {
-    pub task_id: String,
-    pub tool_name: String,
-    pub status: AsyncTaskStatus,
-    pub parent_session_key: String,
-    pub created_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub result: Option<Value>,
-    pub label: Option<String>,
-    pub metadata_type: String,
-    /// Tail of the task's live progress buffer, for tasks that are still
-    /// running (§4.1). `None` for terminal tasks — by then the outcome
-    /// itself carries whatever partial output was captured.
-    pub partial_output: Option<String>,
-}
-
-impl TaskView {
-    /// Project an `AsyncTaskEntry` into a universal `TaskView`.
-    #[must_use]
-    pub fn from_entry(entry: &AsyncTaskEntry) -> Self {
-        let metadata_type = match &entry.metadata {
-            TaskMetadata::None => "none",
-            TaskMetadata::Subagent(_) => "subagent",
-        };
-
-        Self {
-            task_id: entry.task_id.clone(),
-            tool_name: entry.tool_name.clone(),
-            status: entry.status.clone(),
-            parent_session_key: entry.parent_session_key.clone(),
-            created_at: entry.created_at,
-            completed_at: entry.completed_at,
-            result: entry.result.clone(),
-            label: entry.config.label.clone(),
-            metadata_type: metadata_type.to_string(),
-            partial_output: if entry.status.is_terminal() {
-                None
-            } else {
-                entry.partial_output(PARTIAL_OUTPUT_PREVIEW_BYTES)
-            },
-        }
-    }
-
-    /// Get duration of the task
-    #[must_use]
-    pub fn duration(&self) -> Option<chrono::Duration> {
-        let end = self.completed_at.unwrap_or_else(Utc::now);
-        Some(end.signed_duration_since(self.created_at))
-    }
-
-    /// Check if status is terminal
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        self.status.is_terminal()
     }
 }
 

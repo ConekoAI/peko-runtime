@@ -411,15 +411,6 @@ impl AsyncExecutionRouter {
             }
         }
     }
-
-    /// Wait for all async tasks to complete
-    ///
-    /// For `LocalAsyncTransport`, this waits until all tasks reach a terminal
-    /// state or the timeout expires.
-    pub async fn wait_for_all_tasks(&self, timeout: std::time::Duration) {
-        // Local transport: poll the executor directly.
-        tokio::time::sleep(timeout).await;
-    }
 }
 
 /// Context for tool execution

@@ -32,8 +32,6 @@
 //! `crate::agents::subagent_error::SpawnError`, and
 //! `crate::agents::subagent_types::SubagentRunView` paths keep working.
 
-use serde::{Deserialize, Serialize};
-
 // ─── SpawnError (re-exported from src/agents/subagent_error.rs) ───
 //
 // B3 (correctness, 2026-08-22): the dto mirror was deleted — the
@@ -81,10 +79,10 @@ impl Default for ExecutionConfig {
     }
 }
 
-// ─── SubagentResult (lifted from src/async_exec/executor/registry.rs)
+// ─── SubagentResult
 
 /// Result of a subagent run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SubagentResult {
     /// Final status
     pub status: peko_tools_core::AsyncTaskStatus,

@@ -286,12 +286,6 @@ impl ToolingRuntime {
         self.tool_bag_installed.store(true, AtomicOrdering::Release);
     }
 
-    /// Wait for async tasks to complete (delegates to the
-    /// dispatcher's router).
-    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
-        self.dispatcher.router().wait_for_all_tasks(timeout).await;
-    }
-
     /// Register a prompt-section provider. Registration order +
     /// `priority` (desc) set the aggregation order within a section.
     pub fn register_prompt_section(&self, provider: Arc<dyn PromptSectionProvider>) {
@@ -811,10 +805,13 @@ mod tests {
             "run"
         );
         done.notify_one();
-        shared
-            .wait_for_async_tasks(std::time::Duration::from_secs(5))
-            .await;
-        assert!(shared.execution_binding(&principal, "caller").is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while shared.execution_binding(&principal, "caller").is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("binding released once the detached tool completes");
     }
 
     #[tokio::test]

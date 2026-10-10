@@ -27,6 +27,34 @@ pub trait BackgroundSpawner: Send + Sync {
     async fn spawn(&self, request: BackgroundSpawn, ctx: &ToolContext) -> anyhow::Result<String>;
 }
 
+/// Cap on a task's live progress buffer. Once exceeded, the oldest bytes
+/// are dropped: recent output is what matters when a caller inspects a
+/// long-running task, and a chatty tool must not grow the buffer for its
+/// whole lifetime.
+pub const PROGRESS_MAX_BYTES: usize = 64 * 1024;
+
+/// Append `chunk` to a task's progress buffer, keeping only the last
+/// [`PROGRESS_MAX_BYTES`]. Task bodies write progress through this.
+pub fn append_progress(progress: &Mutex<String>, chunk: &str) {
+    let mut buf = progress
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    buf.push_str(chunk);
+    let keep = tail(&buf, PROGRESS_MAX_BYTES).len();
+    let drop = buf.len() - keep;
+    buf.drain(..drop);
+}
+
+/// The last `max_bytes` of `s` or fewer, never splitting a character.
+#[must_use]
+pub fn tail(s: &str, max_bytes: usize) -> &str {
+    let mut start = s.len().saturating_sub(max_bytes);
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
 /// Background hooks for one tool call.
 #[derive(Clone, Default)]
 pub struct BackgroundContext {
@@ -43,5 +71,38 @@ impl BackgroundContext {
     #[must_use]
     pub fn is_task_body(&self) -> bool {
         self.progress.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_never_splits_a_character() {
+        assert_eq!(tail("hello", 10), "hello");
+        assert_eq!(tail("hello", 3), "llo");
+        assert_eq!(tail("hello", 0), "");
+        // "é" is two bytes: a cut inside it moves forward past it.
+        assert_eq!(tail("aéb", 2), "b");
+        assert_eq!(tail("aéb", 3), "éb");
+    }
+
+    #[test]
+    fn progress_keeps_only_the_most_recent_bytes() {
+        let progress = Mutex::new(String::new());
+        let chunk = "x".repeat(8192);
+        for _ in 0..20 {
+            append_progress(&progress, &chunk);
+        }
+        append_progress(&progress, "END");
+        let buf = progress.lock().unwrap();
+        assert_eq!(buf.len(), PROGRESS_MAX_BYTES);
+        assert!(buf.ends_with("xEND"));
+
+        drop(buf);
+        append_progress(&progress, &"é".repeat(PROGRESS_MAX_BYTES));
+        let buf = progress.lock().unwrap();
+        assert!(buf.len() <= PROGRESS_MAX_BYTES && buf.chars().all(|c| c == 'é'));
     }
 }

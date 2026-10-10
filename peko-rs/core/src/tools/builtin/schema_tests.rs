@@ -15,7 +15,14 @@ fn tools() -> Vec<Arc<dyn Tool>> {
             workspace: "workspace".into(),
             cron: Arc::new(peko_cron::testing::FileCronRuntime::new("cron")),
             channels: Arc::new(peko_channel::NoopChannelPort),
-            async_runtime: Arc::new(crate::async_exec::executor::TestAsyncRuntime::new()),
+            async_runtime: Arc::new(crate::async_exec::executor::AsyncExecutorRuntime::new(
+                Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+                    crate::async_exec::executor::standalone_inbox_registry(),
+                )),
+                Weak::new(),
+                None,
+                peko_subject::PrincipalId::system().clone(),
+            )),
             models: Weak::new(),
         },
         &Fakes::default(),

@@ -1,76 +1,16 @@
-//! Per-session inbox and the cross-boundary sink traits.
+//! Per-session inbox of completion events and steering messages.
 //!
-//! ## Why traits?
-//!
-//! Before Phase 8, `AsyncExecutor` held a concrete
-//! `Arc<crate::session::InboxRegistry>`. After moving the executor
-//! into `peko-extension-host`, the host crate would have had to
-//! depend on root `session::*` — a forbidden direction (the host is
-//! a leaf; the root is the facade).
-//!
-//! Instead, the host defines:
-//!
-//! - [`SessionInboxSink`] — the minimum surface `AsyncExecutor`
-//!   needs: push an [`InboxItem`] synchronously. `SessionInbox`
-//!   implements this trait.
-//! - [`InboxSinkProvider`] — keyed lookup of an
-//!   `Arc<dyn SessionInboxSink>`. The host ships a default
-//!   [`InboxSinkRegistry`] implementation; the root's richer
-//!   `crate::session::InboxRegistry` also implements this trait so
-//!   the daemon can wire the executor against its session-scoped
-//!   state without any cycle.
-//!
-//! The root's `InboxRegistry` keeps its `try_acquire_run` /
-//! `peek_run_held` API for daemon-side run-permit bookkeeping; only
-//! the `get_or_create`-style lookup is funnelled through
-//! `InboxSinkProvider`.
-//!
-//! ## Phase F2 foldback
-//!
-//! `CompletionEvent`, `SteeringMessage`, and `InboxItem` moved to
-//! `peko_session::completion_event` so the engine can reach
-//! them without depending on root (which would cycle). The concrete
-//! `SessionInbox` impl below uses those data types; conversions to
-//! the API's `AsyncInboxItem` envelopes happen at the
-//! `AsyncInboxLike` trait impl boundary.
+//! [`SessionInbox`] implements `peko_session::AsyncInboxLike`, so the
+//! daemon's `peko_session::InboxRegistry` holds it as
+//! `Arc<dyn AsyncInboxLike>` and the agentic loop drains it at each
+//! iteration. `CompletionEvent`, `SteeringMessage`, and `InboxItem` live
+//! in `peko_session::completion_event`; conversion to the loop's
+//! `AsyncInboxItem` envelopes happens at the trait impl boundary.
 
 use peko_session::{AsyncInboxItem, AsyncInboxLike, CompletionEvent, InboxItem, SteeringMessage};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify}; // `Mutex` is used by `InboxSinkRegistry` only; `SessionInbox` uses `std::sync::Mutex`.
-
-/// Minimum surface `AsyncExecutor` needs from a per-session inbox.
-///
-/// `AsyncExecutor::execute_inner` pushes a completion event (or a
-/// steering message) into the inbox from a spawned task. Pushing is
-/// synchronous — the underlying type may spawn a fallback task to
-/// acquire the lock, but the trait call itself does not need to be
-/// `async`.
-///
-/// Implementors must be `Send + Sync` so the executor can hold
-/// `Arc<dyn SessionInboxSink>` across `.await` points.
-pub trait SessionInboxSink: Send + Sync + 'static {
-    /// Push an item into the inbox.
-    fn push(&self, item: InboxItem);
-}
-
-/// Provider of per-session inboxes keyed by an opaque session id.
-///
-/// The executor's `InboxSinkProvider` is normally the daemon's
-/// shared `crate::session::InboxRegistry` (root crate), but the
-/// host also ships [`InboxSinkRegistry`] for standalone / test use.
-#[async_trait::async_trait]
-pub trait InboxSinkProvider: Send + Sync + 'static {
-    /// Look up (or create) the inbox for `session_key` and return a
-    /// clonable sink. Two calls with the same key must return sinks
-    /// that share underlying state.
-    async fn get_or_create_sink(&self, session_key: &str) -> Arc<dyn SessionInboxSink>;
-}
-
-// =============================================================================
-// Concrete session inbox — used by both `InboxSinkRegistry` and (via trait impl)
-// by the root's `crate::session::InboxRegistry`.
-// =============================================================================
+use tokio::sync::Notify;
 
 /// Per-session FIFO of [`InboxItem`]s waiting to be injected at the
 /// next agentic loop iteration.
@@ -169,17 +109,6 @@ impl SessionInbox {
         out
     }
 
-    /// Snapshot of pending steering messages.
-    pub async fn pending_steering(&self) -> Vec<SteeringMessage> {
-        self.lock()
-            .iter()
-            .filter_map(|i| match i {
-                InboxItem::Steering(m) => Some(m.clone()),
-                InboxItem::Completion(_) => None,
-            })
-            .collect()
-    }
-
     /// Number of pending steering messages (for client UX / metrics).
     pub async fn steering_len(&self) -> usize {
         self.lock()
@@ -204,12 +133,6 @@ impl SessionInbox {
 
     pub async fn is_empty(&self) -> bool {
         self.lock().is_empty()
-    }
-}
-
-impl SessionInboxSink for SessionInbox {
-    fn push(&self, item: InboxItem) {
-        SessionInbox::push(self, item);
     }
 }
 
@@ -268,64 +191,6 @@ impl AsyncInboxLike for SessionInbox {
 
     async fn len(&self) -> usize {
         SessionInbox::len(self).await
-    }
-}
-
-/// Default [`InboxSinkProvider`] implementation. Owns a `HashMap` of
-/// per-key inboxes and creates a fresh [`SessionInbox`] on first
-/// lookup.
-#[derive(Debug, Default)]
-pub struct InboxSinkRegistry {
-    inner: Arc<Mutex<HashMap<String, Arc<SessionInbox>>>>,
-}
-
-impl Clone for InboxSinkRegistry {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl InboxSinkRegistry {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Look up or create the [`SessionInbox`] for `key`. Returns the
-    /// concrete inbox type so callers (e.g. tests) can drain it
-    /// without trait-object downcasting.
-    pub async fn get_or_create(&self, key: &str) -> Arc<SessionInbox> {
-        let mut guard = self.inner.lock().await;
-        guard
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(SessionInbox::new()))
-            .clone()
-    }
-
-    pub async fn len(&self) -> usize {
-        self.inner.lock().await.len()
-    }
-
-    pub async fn is_empty(&self) -> bool {
-        self.inner.lock().await.is_empty()
-    }
-
-    /// Direct lookup (no create). Used by tests / observability.
-    pub async fn peek(&self, key: &str) -> Option<Arc<SessionInbox>> {
-        self.inner.lock().await.get(key).cloned()
-    }
-}
-
-#[async_trait::async_trait]
-impl InboxSinkProvider for InboxSinkRegistry {
-    async fn get_or_create_sink(&self, session_key: &str) -> Arc<dyn SessionInboxSink> {
-        let mut guard = self.inner.lock().await;
-        guard
-            .entry(session_key.to_string())
-            .or_insert_with(|| Arc::new(SessionInbox::new()))
-            .clone()
     }
 }
 
@@ -398,24 +263,5 @@ mod tests {
         inbox.push(s);
         assert!(inbox.cancel_steering(id).await);
         assert!(!inbox.cancel_steering(id).await);
-    }
-
-    #[tokio::test]
-    async fn sink_registry_creates_once() {
-        let reg = InboxSinkRegistry::new();
-        // First lookup creates; second lookup (via either the
-        // inherent method or the trait method) returns the same
-        // shared inbox.
-        let a = reg.get_or_create("s1").await;
-        let b = reg.get_or_create("s1").await;
-        assert!(Arc::ptr_eq(&a, &b));
-        assert_eq!(reg.len().await, 1);
-        // Sink lookup also returns an inbox backed by the same
-        // underlying `SessionInbox` — we verify by checking that a
-        // push through the sink lands in `a`'s drain.
-        let sink = reg.get_or_create_sink("s1").await;
-        sink.push(InboxItem::Steering(SteeringMessage::new("hi")));
-        let items = a.drain_all().await;
-        assert_eq!(items.len(), 1);
     }
 }
