@@ -21,6 +21,13 @@ All notable changes to Peko.
 - Mutation testing (`cargo-mutants`) over the Cron tool: cover schedule
   display, every duration unit, and next-run computation for each schedule
   kind, including passed one-shot and idle jobs.
+- Mutation testing over Async, Bash, Channel, fs, Agent and ModelCall: cover
+  Read's exact byte budget, Bash's default cwd / `timeout: 0` / signal exit
+  code / background output at exactly the cap, ChannelSend accepting only the
+  target's reply (local and remote), ModelCall forwarding `temperature` and
+  `max_tokens`, and more. The mock provider records the `ChatOptions` it was
+  called with. (Skill, Session, Workflow, Plan, Task and ModelList are not yet
+  mutation-tested.)
 
 ### Bounded tool output (2026-10-10)
 
