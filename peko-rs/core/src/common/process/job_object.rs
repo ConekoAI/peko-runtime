@@ -126,6 +126,37 @@ impl JobObject {
         Ok(())
     }
 
+    /// Close the job WITHOUT killing its members: clear the kill-on-close
+    /// limit first, so processes still in the job outlive the handle.
+    ///
+    /// This is a no-op on non-Windows platforms.
+    #[cfg(windows)]
+    pub fn release(self) {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicLimitInformation, SetInformationJobObject,
+            JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        };
+        unsafe {
+            let mut info: JOBOBJECT_BASIC_LIMIT_INFORMATION = std::mem::zeroed();
+            if SetInformationJobObject(
+                self.handle,
+                JobObjectBasicLimitInformation,
+                std::ptr::addr_of_mut!(info).cast(),
+                u32::try_from(std::mem::size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>())
+                    .unwrap_or(u32::MAX),
+            ) == 0
+            {
+                // Leaking the handle beats killing processes the caller
+                // meant to keep.
+                std::mem::forget(self);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self)]
+    pub fn release(self) {}
+
     /// Close the job handle explicitly.
     ///
     /// This is a no-op on non-Windows platforms.

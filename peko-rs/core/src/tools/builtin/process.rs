@@ -7,7 +7,9 @@
 //! or is dropped. A command that exits on its own disarms the guard, so
 //! processes it deliberately backgrounded survive.
 //!
-//! On Windows only the direct child is killed (`kill_on_drop`).
+//! On unix the command leads its own process group; on Windows it is
+//! assigned to a kill-on-close Job Object right after spawn (a process the
+//! command starts in that first instant can escape the job).
 
 use tokio::process::{Child, Command};
 
@@ -18,7 +20,16 @@ pub(crate) fn spawn_in_own_group(cmd: &mut Command) -> std::io::Result<(Child, K
     #[cfg(unix)]
     cmd.process_group(0);
     let child = cmd.spawn()?;
-    let guard = KillTreeOnDrop { group: child.id() };
+    #[cfg(windows)]
+    let job = crate::common::process::JobObject::new()
+        .and_then(|job| job.assign_process(&child).map(|()| job))
+        .map_err(|e| tracing::warn!("shell tool: no job object for the child tree: {e}"))
+        .ok();
+    let guard = KillTreeOnDrop {
+        group: child.id(),
+        #[cfg(windows)]
+        job,
+    };
     Ok((child, guard))
 }
 
@@ -27,12 +38,19 @@ pub(crate) fn spawn_in_own_group(cmd: &mut Command) -> std::io::Result<(Child, K
 pub(crate) struct KillTreeOnDrop {
     #[cfg_attr(not(unix), allow(dead_code))]
     group: Option<u32>,
+    /// Closing the job (on drop) kills every process in it.
+    #[cfg(windows)]
+    job: Option<crate::common::process::JobObject>,
 }
 
 impl KillTreeOnDrop {
     /// The command exited on its own: leave any processes it started.
     pub(crate) fn disarm(mut self) {
         self.group = None;
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            job.release();
+        }
     }
 }
 
