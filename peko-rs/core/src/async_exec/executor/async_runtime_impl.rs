@@ -129,7 +129,7 @@ impl AsyncExecutorRuntime {
                 .for_principal(self.principal_id.0.clone())
                 .with_session_id(session_key.clone());
         if let Some(caller) = caller {
-            context.workspace = caller.workspace.clone();
+            context.workspace = caller.workspace.clone().filter(|w| !w.is_empty());
             context.agent_id = caller.agent_id.clone();
             context.principal_name = caller.principal_name.clone();
         }

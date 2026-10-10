@@ -573,7 +573,7 @@ impl AsyncExecutor {
                                 result: ToolResult::success(value.clone()),
                             },
                             TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
-                                error: e.to_string(),
+                                error: format!("{e:#}"),
                             },
                             TaskOutcome::Timeout(secs) => AsyncTaskStatus::TimedOut {
                                 error: format!("Task timed out after {secs}s"),

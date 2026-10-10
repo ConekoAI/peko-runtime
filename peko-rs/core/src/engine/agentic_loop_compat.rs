@@ -1796,6 +1796,110 @@ mod tests {
     //   3. Run one iteration; the loop drains the queue at start.
     //   4. Assert the synthetic user message arrived at the mock LLM.
     // ===================================================================
+    /// Run a turn through the production loop builder in which the model
+    /// starts a background command (via `first_call`), waits with a
+    /// foreground command, then answers. Returns the third LLM request's
+    /// messages, which should carry the background task's completion.
+    async fn background_completion_scenario(
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Vec<peko_message::LlmMessage> {
+        use peko_providers::core::ProviderRuntimeOptions;
+
+        peko_identity::init_test_env();
+        let tooling = test_tooling().await;
+        let temp_dir = TempDir::new().unwrap();
+        let adapter = MockAdapter::new();
+        let provider = Arc::new(
+            Provider::new(
+                AnyAdapter::Mock(adapter.clone()),
+                "mock_key",
+                ProviderRuntimeOptions {
+                    default_model_id: "mock-model".to_string(),
+                    timeout_seconds: 60,
+                    max_retries: 0,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        adapter.queue_tool_call("start-bg", tool, args);
+        adapter.queue_tool_call("wait", "Bash", serde_json::json!({"command": "sleep 1"}));
+        adapter.queue_text("saw the result");
+
+        let agent = Arc::new(
+            Agent::new_for_test(
+                test_agent_config("bg-completion-agent"),
+                temp_dir.path(),
+                tooling,
+            )
+            .await
+            .unwrap(),
+        );
+        let session = test_session("bg-completion-agent", temp_dir.path()).await;
+        let session_id = session.id().await;
+        let loop_ = agent
+            .build_agentic_loop(
+                agent.clone(),
+                provider,
+                Some(session_id),
+                None,
+                None,
+                Arc::new(peko_quota::QuotaMeter::unlimited()),
+            )
+            .await
+            .unwrap();
+        let result = loop_
+            .run_with_resume(
+                "Start the background job",
+                Vec::new(),
+                |_| {},
+                &session,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+
+        let requests = adapter.recorded_requests();
+        assert_eq!(requests.len(), 3, "start, wait, answer");
+        requests[2].messages.clone()
+    }
+
+    /// A background command's completion reaches the model on its next
+    /// turn, whichever entry point started it.
+    #[tokio::test]
+    #[serial_test::serial(core)]
+    async fn background_completion_reaches_the_next_llm_turn() {
+        for (tool, args) in [
+            (
+                "Bash",
+                serde_json::json!({"command": "echo bg-$((40+2))", "run_in_background": true}),
+            ),
+            (
+                "Async",
+                serde_json::json!({
+                    "action": "spawn",
+                    "tool": "Bash",
+                    "params": {"command": "echo bg-$((40+2))"}
+                }),
+            ),
+        ] {
+            // The command prints `bg-42`, which appears nowhere in the
+            // request except the delivered result.
+            let messages = background_completion_scenario(tool, args).await;
+            let delivered = messages.iter().find(|m| {
+                matches!(m.role, peko_message::MessageRole::User)
+                    && format!("{:?}", m.content).contains("Async task results")
+            });
+            let delivered = format!("{delivered:?}");
+            assert!(
+                delivered.contains("bg-42"),
+                "{tool}: the completion must reach the next turn: {messages:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_e2e_async_completion_reaches_llm_real() {
