@@ -14,6 +14,10 @@ All notable changes to Peko.
   or in a kill-on-close Job Object (Windows), killed on stop, timeout, or
   drop; a command that exits on its own leaves processes it deliberately
   backgrounded running.
+- Fix Windows Job Objects never getting kill-on-close: `JobObject::new` set
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` through the basic limit structure,
+  which Windows rejects, so creation always failed and callers (shell tools,
+  managed runtime processes) fell back to killing only the direct child.
 - Fix `ChannelRead` forward paging repeating the previous page's last event:
   the store's `since` checkpoint is an inclusive line offset, and the tool
   promised strictly newer events. Its tests now run on a real `ChannelStore`
