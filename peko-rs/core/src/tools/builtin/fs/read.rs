@@ -15,6 +15,16 @@ use tokio::fs;
 
 use peko_tools_core::Tool;
 
+/// Lines returned when `limit` is omitted.
+pub const DEFAULT_LINE_LIMIT: usize = 2000;
+
+/// Cap on the returned text (and on a binary file's size). Larger reads
+/// come back `truncated` with a `next_offset` to continue from.
+pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
+
+/// Marker appended to a single line too long for the content budget.
+const LINE_CUT_MARKER: &str = "...(line truncated)";
+
 /// `Read` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadArgs {
@@ -94,7 +104,17 @@ impl ReadTool {
             .with_context(|| format!("Failed to read file: {}", resolved.display()))?;
 
         // Determine encoding and process content
-        let (content_str, encoding_used, is_binary) = if encoding == Some("base64") {
+        let binary_requested = encoding == Some("base64");
+        let is_utf8 = !binary_requested && std::str::from_utf8(&content).is_ok();
+        if !is_utf8 && content.len() > MAX_CONTENT_BYTES {
+            return Err(anyhow::anyhow!(
+                "{} is a {}-byte binary file, over Read's {MAX_CONTENT_BYTES}-byte limit for \
+                 binary content; inspect it with Bash (e.g. `xxd FILE | head`, `head -c N FILE`)",
+                resolved.display(),
+                content.len()
+            ));
+        }
+        let (content_str, encoding_used, is_binary) = if binary_requested {
             // Explicitly requested base64
             (base64_encode(&content), "base64", true)
         } else {
@@ -112,6 +132,11 @@ impl ReadTool {
         // formatted in `cat -n` style: each line is prefixed with its
         // 1-indexed line number and a tab, so the model can see line numbers
         // inline with the content (matching Claude Code's Read behavior).
+        //
+        // Output is bounded: at most `limit` lines (DEFAULT_LINE_LIMIT when
+        // omitted) and MAX_CONTENT_BYTES of text, cut at a line boundary. A
+        // bounded read reports `truncated` and the `next_offset` to pass back.
+        let mut truncated = false;
         let (final_content, total_lines, start_line, end_line) =
             if is_binary || encoding_used == "base64" {
                 // For binary, line range doesn't apply
@@ -121,22 +146,39 @@ impl ReadTool {
                 let total = lines.len();
 
                 let start = offset.map_or(0, |o| o.saturating_sub(1));
-                let end = limit.map_or(total, |n| (start + n).min(total));
+                let end = (start + limit.unwrap_or(DEFAULT_LINE_LIMIT)).min(total);
 
-                let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
-
-                let numbered = selected
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| format!("{}\t{}", start + i + 1, line))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let mut numbered = String::new();
+                let mut last = start;
+                for (i, line) in lines.get(start..end).unwrap_or(&[]).iter().enumerate() {
+                    let entry = format!("{}\t{}", start + i + 1, line);
+                    let sep = usize::from(!numbered.is_empty());
+                    if numbered.len() + sep + entry.len() > MAX_CONTENT_BYTES {
+                        if numbered.is_empty() {
+                            // One line alone exceeds the budget: cut it.
+                            let budget = MAX_CONTENT_BYTES - LINE_CUT_MARKER.len();
+                            numbered = format!(
+                                "{}{LINE_CUT_MARKER}",
+                                &entry[..floor_char_boundary(&entry, budget)]
+                            );
+                            last = start + i + 1;
+                        }
+                        truncated = true;
+                        break;
+                    }
+                    if sep == 1 {
+                        numbered.push('\n');
+                    }
+                    numbered.push_str(&entry);
+                    last = start + i + 1;
+                }
+                truncated |= last < total && limit.is_none();
 
                 (
                     numbered,
                     Some(total),
                     Some(start + 1), // Convert back to 1-indexed
-                    Some(end),
+                    Some(last),
                 )
             };
 
@@ -153,6 +195,10 @@ impl ReadTool {
             obj.insert("total_lines".to_string(), total.into());
             obj.insert("start_line".to_string(), start.into());
             obj.insert("end_line".to_string(), end.into());
+            obj.insert("truncated".to_string(), truncated.into());
+            if truncated {
+                obj.insert("next_offset".to_string(), (end + 1).into());
+            }
         }
 
         Ok(result)
@@ -163,6 +209,15 @@ impl Default for ReadTool {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The largest char boundary in `s` at or below `index`.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    let mut i = index.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -195,15 +250,23 @@ Path to the file. Can be relative to workspace or absolute.
 Starting line number (1-indexed). If omitted, starts from beginning.
 
 ### limit (optional)
-Maximum number of lines to read. If omitted, reads to end of file.
+Maximum number of lines to read. Defaults to 2000.
 
 ### encoding (optional)
 - "utf8" (default): Read as text, content returned in `cat -n` format
 - "base64": Force base64 encoding for binary data
 
+## Output limits
+
+A read returns at most `limit` lines (2000 when omitted) and at most 256 KiB
+of text, cut at a line boundary. When lines remain beyond that, the response
+has `truncated: true` and `next_offset` — pass it as `offset` to continue.
+A single line longer than 256 KiB is cut and ends with `...(line truncated)`.
+Binary files over 256 KiB are refused; inspect them with Bash (`xxd`, `head -c`).
+
 ## Examples
 
-Read entire file:
+Read a file (first 2000 lines):
 ```json
 {"file_path": "src/main.rs"}
 ```
@@ -235,7 +298,7 @@ Read binary file:
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read",
+                    "description": "Maximum number of lines to read (default 2000). Output is also capped at 256 KiB; a bounded read returns truncated: true and next_offset",
                     "minimum": 1
                 },
                 "encoding": {
@@ -271,6 +334,125 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    fn lines(n: usize, width: usize) -> String {
+        use std::fmt::Write as _;
+        (1..=n).fold(String::new(), |mut out, i| {
+            let _ = writeln!(out, "{i:0width$}");
+            out
+        })
+    }
+
+    /// Without `limit`, a read stops at DEFAULT_LINE_LIMIT and points at
+    /// the next line; continuing from there returns the rest.
+    #[tokio::test]
+    async fn omitted_limit_returns_the_first_2000_lines_then_pages() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("log.txt"), lines(2500, 4))
+            .await
+            .unwrap();
+
+        let first = tool.execute(json!({"file_path": "log.txt"})).await.unwrap();
+        assert_eq!(first["end_line"], 2000);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["next_offset"], 2001);
+        assert_eq!(first["total_lines"], 2500);
+
+        let rest = tool
+            .execute(json!({"file_path": "log.txt", "offset": 2001}))
+            .await
+            .unwrap();
+        assert_eq!(rest["start_line"], 2001);
+        assert_eq!(rest["end_line"], 2500);
+        assert_eq!(rest["truncated"], false);
+        assert!(rest.get("next_offset").is_none());
+
+        // An explicit smaller limit is the caller's choice, not truncation.
+        let some = tool
+            .execute(json!({"file_path": "log.txt", "limit": 10}))
+            .await
+            .unwrap();
+        assert_eq!(some["end_line"], 10);
+        assert_eq!(some["truncated"], false);
+    }
+
+    /// Text is capped at MAX_CONTENT_BYTES at a line boundary; following
+    /// `next_offset` returns every line exactly once.
+    #[tokio::test]
+    async fn byte_cap_pages_through_every_line_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("wide.txt"), lines(3000, 200))
+            .await
+            .unwrap();
+
+        let mut offset = 1;
+        let mut seen = 0;
+        loop {
+            let page = tool
+                .execute(json!({"file_path": "wide.txt", "offset": offset, "limit": 3000}))
+                .await
+                .unwrap();
+            let content = page["content"].as_str().unwrap();
+            assert!(content.len() <= MAX_CONTENT_BYTES, "{}", content.len());
+            for (i, line) in content.lines().enumerate() {
+                let (number, text) = line.split_once('\t').unwrap();
+                assert_eq!(number.parse::<usize>().unwrap(), offset + i);
+                assert_eq!(text.len(), 200, "whole lines only");
+            }
+            seen += content.lines().count();
+            if page["truncated"] == false {
+                break;
+            }
+            offset = page["next_offset"].as_u64().unwrap() as usize;
+        }
+        assert_eq!(seen, 3000);
+    }
+
+    #[tokio::test]
+    async fn a_line_longer_than_the_cap_is_cut_and_marked() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        let long = "é".repeat(MAX_CONTENT_BYTES);
+        fs::write(temp_dir.path().join("min.js"), format!("{long}\nnext\n"))
+            .await
+            .unwrap();
+
+        let page = tool.execute(json!({"file_path": "min.js"})).await.unwrap();
+        let content = page["content"].as_str().unwrap();
+        assert!(content.len() <= MAX_CONTENT_BYTES);
+        assert!(content.ends_with(LINE_CUT_MARKER));
+        assert_eq!(page["truncated"], true);
+        assert_eq!(page["next_offset"], 2);
+    }
+
+    #[tokio::test]
+    async fn large_binary_files_are_refused_small_ones_read() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        fs::write(
+            temp_dir.path().join("big.bin"),
+            vec![0xFFu8; MAX_CONTENT_BYTES + 1],
+        )
+        .await
+        .unwrap();
+        fs::write(temp_dir.path().join("small.bin"), vec![0xFFu8; 16])
+            .await
+            .unwrap();
+
+        let error = tool
+            .execute(json!({"file_path": "big.bin"}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("binary file"), "{error}");
+        assert!(error.to_string().contains("Bash"), "{error}");
+        let small = tool
+            .execute(json!({"file_path": "small.bin"}))
+            .await
+            .unwrap();
+        assert_eq!(small["encoding"], "base64");
+    }
 
     #[tokio::test]
     async fn test_read_file_basic() {

@@ -86,7 +86,7 @@ Read text with inline line numbers, or binary content as base64.
 | `limit` | integer | no | ≥ 1 |
 | `encoding` | utf8 \| base64 | no | — |
 
-Offset is 1-based. Omitting limit reads through EOF. Encoding defaults to utf8; binary content is detected automatically. There is no PDF pages selector.
+Offset is 1-based. Limit defaults to 2000 lines, and returned text is capped at 256 KiB (cut at a line boundary; a single longer line is cut and marked). A bounded read returns `truncated: true` and `next_offset`. Encoding defaults to utf8; binary content is detected automatically, and binary files over 256 KiB are refused. There is no PDF pages selector.
 
 ### Write
 
@@ -171,7 +171,7 @@ Execute shell commands, synchronously or in the background.
 | `timeout` | integer | no | ≥ 1 |
 | `max_output_bytes` | integer | no | ≥ 1 |
 
-timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode. Background execution returns an async receipt; it runs through the caller principal's Async runtime exactly like `Async action=spawn tool=Bash`, and `timeout` bounds the task.
+timeout is milliseconds. max_output_bytes defaults to 100000 per stream and is ignored in background mode, where each stream keeps its last 100000 bytes (a dropped start is marked `(truncated)...`). Background execution returns an async receipt; it runs through the caller principal's Async runtime exactly like `Async action=spawn tool=Bash`, and `timeout` bounds the task.
 
 ## Agents, roles, and skills
 
