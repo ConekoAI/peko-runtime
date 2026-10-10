@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Built-in tools tested against production backends (2026-10-10)
+
+- Cover the daemon's cron backend (`DaemonCronAdapter`, previously untested at
+  every tier) behind the real `Cron` tool: owner resolution across principals'
+  schedule files, cross-principal isolation for every action, history of a
+  removed one-shot job, and the no-engine / unloaded-owner errors.
+- Run Task tests on the production todo storage instead of an in-memory fake;
+  the tool now uses `peko_session`'s `Todo` / `TodoStatus` directly.
+- Drive the Agent tool through its production runtime adapter with a real
+  executor (`new` and `compact`); the duplicate `SubagentRunView` and its
+  no-op projection are collapsed into one type.
+
 ### Built-in tool review fixes (2026-10-10)
 
 - Fix orphaned processes: stopping or timing out `Bash`, a Skill

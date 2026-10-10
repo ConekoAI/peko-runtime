@@ -99,14 +99,20 @@ pub struct SubagentResult {
 // ─── SubagentRunView (lifted from src/agents/subagent_types.rs) ────
 
 /// A read-only view of an async task entry, projected into the
-/// subagent domain model.
-///
-/// The `from_entry` projection method stayed in root because it
-/// references `AsyncTaskEntry` / `TaskMetadata` — root-only types.
+/// subagent domain model. Constructed on demand by
+/// `SubagentRunView::from_entry` (`agents::subagent_types`).
 #[derive(Debug, Clone)]
 pub struct SubagentRunView {
     pub run_id: String,
     pub child_session_key: String,
+    /// The child's durable session id (UUID) — the form `session list`
+    /// shows, Agent's `action = "resume"` consumes, and the metadata-
+    /// chain diagnostic reads. `None` for legacy runs registered before
+    /// this field existed. Spawn-registered runs store the overlay key
+    /// in `child_session_key`; callers that need to chain a follow-up
+    /// spawn against the same child should use THIS field as the new
+    /// `parent_session_key`, not `child_session_key`.
+    pub child_session_id: Option<String>,
     pub parent_session_key: String,
     pub task: String,
     pub status: peko_tools_core::AsyncTaskStatus,

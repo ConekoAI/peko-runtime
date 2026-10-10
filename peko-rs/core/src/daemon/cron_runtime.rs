@@ -240,3 +240,256 @@ impl CronRuntime for DaemonCronAdapter {
         }
     }
 }
+
+/// The daemon's cron backend behind the real `Cron` tool: two loaded
+/// principals, each with its own schedule file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tool_runtime::ToolRuntime;
+    use crate::principal::config::Exposure;
+    use crate::principal::{
+        DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, Principal, PrincipalConfig,
+    };
+    use peko_cron::{CronRun, CronTool};
+    use peko_tools_core::{Tool, ToolContext};
+    use serde_json::{json, Value};
+    use std::path::Path;
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        resolver: PathResolver,
+        adapter: Arc<DaemonCronAdapter>,
+        tool: CronTool,
+        alice: Arc<Principal>,
+        bob: Arc<Principal>,
+    }
+
+    async fn create_principal(
+        manager: &PrincipalManager,
+        root: &Path,
+        name: &str,
+    ) -> Arc<Principal> {
+        let roles = root.join("principals").join(name).join("roles");
+        tokio::fs::create_dir_all(&roles).await.unwrap();
+        tokio::fs::write(
+            roles.join("primary.md"),
+            "---\ndescription: \"t\"\n---\n\nTest.\n",
+        )
+        .await
+        .unwrap();
+        manager
+            .create(PrincipalConfig {
+                name: name.to_string(),
+                id: None,
+                did: None,
+                owner: peko_subject::Subject::User("owner".into()),
+                identity: Default::default(),
+                intent: Default::default(),
+                governance: Default::default(),
+                memory: Default::default(),
+                routing: Default::default(),
+                exposure: Exposure::Private,
+                status: None,
+                boot_state: None,
+                permissions: Vec::new(),
+                preferred_model_id: Some("mock".to_string()),
+                quota: None,
+                children: Default::default(),
+            })
+            .await
+            .unwrap()
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let resolver = PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            );
+            let tool_runtime = ToolRuntime::with_workspace(resolver.clone(), tmp.path())
+                .await
+                .unwrap();
+            let (llm, _adapter) = peko_providers::LlmResolver::mock(
+                peko_providers::MockAdapter::new(),
+                &tmp.path().join("models.toml"),
+            )
+            .await;
+            let manager = Arc::new(
+                PrincipalManager::with_path_resolver(
+                    resolver.clone(),
+                    Arc::new(DefaultPrincipalMemoryFactory),
+                    Arc::new(DefaultPrincipalRouterFactory),
+                    crate::async_exec::executor::standalone_inbox_registry(),
+                )
+                .with_tooling(tool_runtime.tooling().clone())
+                .with_resolver(llm),
+            );
+            let alice = create_principal(&manager, tmp.path(), "alice").await;
+            let bob = create_principal(&manager, tmp.path(), "bob").await;
+            let adapter = Arc::new(DaemonCronAdapter::new(resolver.clone(), manager));
+            Self {
+                tool: CronTool::with_runtime(adapter.clone()),
+                adapter,
+                resolver,
+                alice,
+                bob,
+                _tmp: tmp,
+            }
+        }
+
+        async fn call(&self, who: &Principal, params: Value) -> anyhow::Result<Value> {
+            let ctx = ToolContext::for_hook_run("run", "call", "Cron")
+                .with_principal_id(who.id.0.clone())
+                .with_session_id("session-1");
+            self.tool.execute_with_context(params, &ctx).await
+        }
+
+        async fn scheduler(&self, who: &Principal) -> CronScheduler {
+            CronScheduler::new(self.resolver.cron_schedule(&who.name().await)).unwrap()
+        }
+
+        async fn create(&self, who: &Principal, label: &str, schedule: Value) -> String {
+            let mut params = json!({ "action": "create", "label": label, "message": "ping" });
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(schedule.as_object().unwrap().clone());
+            let created = self
+                .call(who, params.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{params}: {e}"));
+            created["job_id"].as_str().unwrap().to_string()
+        }
+    }
+
+    /// Jobs land in, and are read from, their owner's schedule file only.
+    #[tokio::test]
+    async fn each_principal_manages_jobs_in_its_own_schedule() {
+        let fx = Fixture::new().await;
+        let id = fx
+            .create(&fx.alice, "standup", json!({ "interval_ms": 600_000 }))
+            .await;
+        assert!(fx
+            .scheduler(&fx.alice)
+            .await
+            .get_job(&id)
+            .unwrap()
+            .is_some());
+        assert!(fx.scheduler(&fx.bob).await.get_job(&id).unwrap().is_none());
+
+        let mine = fx
+            .call(&fx.alice, json!({ "action": "list" }))
+            .await
+            .unwrap();
+        assert!(mine.to_string().contains(&id), "{mine}");
+        let theirs = fx.call(&fx.bob, json!({ "action": "list" })).await.unwrap();
+        assert!(!theirs.to_string().contains(&id), "{theirs}");
+
+        fx.call(
+            &fx.alice,
+            json!({ "action": "update", "id": id, "enabled": false }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !fx.scheduler(&fx.alice)
+                .await
+                .get_job(&id)
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
+
+        fx.call(&fx.alice, json!({ "action": "delete", "label": "standup" }))
+            .await
+            .unwrap();
+        assert!(fx
+            .scheduler(&fx.alice)
+            .await
+            .get_job(&id)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Another principal cannot reach a job by id or label through any
+    /// action; the job is left untouched.
+    #[tokio::test]
+    async fn other_principals_cannot_reach_a_job() {
+        let fx = Fixture::new().await;
+        let id = fx
+            .create(&fx.alice, "private", json!({ "interval_ms": 600_000 }))
+            .await;
+        for target in [json!({ "id": id }), json!({ "label": "private" })] {
+            for action in ["delete", "update", "trigger", "history"] {
+                let mut params = target.clone();
+                params["action"] = json!(action);
+                params["enabled"] = json!(false);
+                let error = fx
+                    .call(&fx.bob, params.clone())
+                    .await
+                    .expect_err(&params.to_string());
+                assert!(error.to_string().contains("not found"), "{params}: {error}");
+            }
+        }
+        let job = fx.scheduler(&fx.alice).await.get_job(&id).unwrap().unwrap();
+        assert!(job.enabled, "bob's update must not apply");
+    }
+
+    /// A one-shot job that fired and was removed keeps its history
+    /// readable by its owner, and only its owner.
+    #[tokio::test]
+    async fn history_of_a_removed_one_shot_job_stays_with_its_owner() {
+        let fx = Fixture::new().await;
+        let id = fx.create(&fx.alice, "once", json!({ "delay": "5m" })).await;
+        let scheduler = fx.scheduler(&fx.alice).await;
+        let now = chrono::Utc::now();
+        scheduler
+            .record_run(&CronRun {
+                id: "run_1".into(),
+                job_id: id.clone(),
+                started_at: now,
+                finished_at: Some(now),
+                status: "success".into(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        scheduler.delete_job(&id).unwrap();
+
+        let history = fx
+            .call(&fx.alice, json!({ "action": "history", "id": id }))
+            .await
+            .unwrap();
+        assert!(history.to_string().contains("run_1"), "{history}");
+        let error = fx
+            .call(&fx.bob, json!({ "action": "history", "id": id }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not found"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn trigger_without_an_engine_and_unloaded_owners_are_errors() {
+        let fx = Fixture::new().await;
+        let id = fx
+            .create(&fx.alice, "manual", json!({ "interval_ms": 600_000 }))
+            .await;
+        let error = fx
+            .call(&fx.alice, json!({ "action": "trigger", "id": id }))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("cron engine not available"),
+            "{error}"
+        );
+
+        let mut job = fx.scheduler(&fx.alice).await.get_job(&id).unwrap().unwrap();
+        job.id = "ghost-job".into();
+        job.principal_id = PrincipalId("did:peko:not-loaded".into());
+        let error = fx.adapter.add_job(job).await.unwrap_err();
+        assert!(error.to_string().contains("is not loaded"), "{error}");
+    }
+}

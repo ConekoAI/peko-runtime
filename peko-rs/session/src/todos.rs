@@ -240,6 +240,29 @@ mod tests {
     use std::str::FromStr;
     use tempfile::TempDir;
 
+    /// The wire shape the Task tool returns to the LLM.
+    #[test]
+    fn todo_wire_shape() {
+        let todo = Todo {
+            task_id: "todo:abc123".into(),
+            subject: "Fix bug".into(),
+            description: None,
+            active_form: Some("Fixing bug".into()),
+            status: TodoStatus::InProgress,
+            owner: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_value(&todo).unwrap();
+        assert_eq!(json["taskId"], "todo:abc123");
+        assert_eq!(json["activeForm"], "Fixing bug");
+        assert_eq!(json["status"], "in_progress");
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("description") && !obj.contains_key("owner"));
+        let back: Todo = serde_json::from_value(json).unwrap();
+        assert_eq!(back.status, TodoStatus::InProgress);
+    }
+
     #[tokio::test]
     async fn test_create_and_get_todo() {
         let temp = TempDir::new().unwrap();

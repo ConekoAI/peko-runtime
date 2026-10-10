@@ -9,11 +9,8 @@
 //! file-lock semantics, and atomic-rename write strategy continue to
 //! apply.
 //!
-//! Phase 7 lifted the actual `TodoStorage` into `peko-session`. The
-//! adapter constructs `crate::tools::builtin::tasks::Todo` from the
-//! `peko_session::Todo` returned by storage field-by-field; the two
-//! structs are structurally identical so this is a direct copy of
-//! every field.
+//! The tool's `Todo` / `TodoStatus` are `peko_session`'s, so the adapter
+//! passes storage records through unchanged.
 
 use std::sync::Arc;
 
@@ -37,35 +34,6 @@ impl TodoStorageRuntime {
     }
 }
 
-fn to_port_status(s: peko_session::TodoStatus) -> TodoStatus {
-    match s {
-        peko_session::TodoStatus::Pending => TodoStatus::Pending,
-        peko_session::TodoStatus::InProgress => TodoStatus::InProgress,
-        peko_session::TodoStatus::Completed => TodoStatus::Completed,
-    }
-}
-
-fn to_storage_status(s: TodoStatus) -> peko_session::TodoStatus {
-    match s {
-        TodoStatus::Pending => peko_session::TodoStatus::Pending,
-        TodoStatus::InProgress => peko_session::TodoStatus::InProgress,
-        TodoStatus::Completed => peko_session::TodoStatus::Completed,
-    }
-}
-
-fn to_port_todo(t: peko_session::Todo) -> Todo {
-    Todo {
-        task_id: t.task_id,
-        subject: t.subject,
-        description: t.description,
-        active_form: t.active_form,
-        status: to_port_status(t.status),
-        owner: t.owner,
-        created_at: t.created_at,
-        updated_at: t.updated_at,
-    }
-}
-
 #[async_trait]
 impl TodoRuntime for TodoStorageRuntime {
     async fn create_todo(
@@ -75,16 +43,13 @@ impl TodoRuntime for TodoStorageRuntime {
         description: Option<String>,
         active_form: Option<String>,
     ) -> anyhow::Result<Todo> {
-        let todo = self
-            .storage
+        self.storage
             .create_todo(session_key, subject, description, active_form)
-            .await?;
-        Ok(to_port_todo(todo))
+            .await
     }
 
     async fn get_todo(&self, session_key: &str, task_id: &str) -> anyhow::Result<Option<Todo>> {
-        let todo = self.storage.get_todo(session_key, task_id).await?;
-        Ok(todo.map(to_port_todo))
+        self.storage.get_todo(session_key, task_id).await
     }
 
     async fn list_todos(
@@ -92,9 +57,7 @@ impl TodoRuntime for TodoStorageRuntime {
         session_key: &str,
         status_filter: Option<TodoStatus>,
     ) -> anyhow::Result<Vec<Todo>> {
-        let filter = status_filter.map(to_storage_status);
-        let todos = self.storage.list_todos(session_key, filter).await?;
-        Ok(todos.into_iter().map(to_port_todo).collect())
+        self.storage.list_todos(session_key, status_filter).await
     }
 
     async fn update_todo(
@@ -104,11 +67,8 @@ impl TodoRuntime for TodoStorageRuntime {
         status: Option<TodoStatus>,
         owner: Option<String>,
     ) -> anyhow::Result<Option<Todo>> {
-        let status = status.map(to_storage_status);
-        let todo = self
-            .storage
+        self.storage
             .update_todo(session_key, task_id, status, owner)
-            .await?;
-        Ok(todo.map(to_port_todo))
+            .await
     }
 }

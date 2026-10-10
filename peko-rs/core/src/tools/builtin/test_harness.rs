@@ -16,8 +16,15 @@
 //! | real `ChannelStore` | ChannelRead, ChannelSend (local branches) |
 //! | real `CronScheduler` files (`peko_cron::testing`) | Cron |
 //! | real `ModelCatalog` file | ModelList |
-//! | in-memory fakes | Task, Plan, Agent, Session |
+//! | real `TodoStorage` / `PlanStorage` in a tempdir | Task, Plan |
+//! | in-memory fakes | Agent, Session |
 //! | unbound — fail closed without a `PrincipalManager` | ModelCall, Workflow |
+//!
+//! The faked and unbound tools are covered against production elsewhere:
+//! Agent in `agents/tests` (real executor), Session by
+//! `SessionManagerRuntime`'s tests, ModelCall/Workflow in their modules
+//! (real `PrincipalManager`), and the daemon's cron backend in
+//! `daemon/cron_runtime.rs`.
 //!
 //! Add behavior tests next to the tool they cover; use this harness when a
 //! test needs dispatch semantics, more than one tool, or a production

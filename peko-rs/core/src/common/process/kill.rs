@@ -124,10 +124,8 @@ pub async fn graceful_shutdown(
     match timeout(kill_timeout, child.wait()).await {
         Ok(Ok(status)) => {
             debug!("Process[{}] exited gracefully: {:?}", pid, status);
-            // Explicitly close the job handle so the OS cleans up any
-            // surviving descendants (should be a no-op if already exited).
-            // drop(job) is a no-op: JobObject has no Drop impl.
-            // The handle is released on process exit.
+            // `job` drops on return: on Windows closing its handle kills
+            // any surviving descendants (kill-on-close).
             Ok(())
         }
         Ok(Err(e)) => {
@@ -137,8 +135,7 @@ pub async fn graceful_shutdown(
             // then wait for the child handle to resolve.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            // drop(job) is a no-op: JobObject has no Drop impl.
-            // The handle is released on process exit.
+            // `job` drops on return, killing any surviving descendants.
             Ok(())
         }
         Err(_) => {
@@ -151,8 +148,7 @@ pub async fn graceful_shutdown(
             // then wait for the child handle to resolve.
             tokio::time::sleep(Duration::from_millis(300)).await;
             let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            // drop(job) is a no-op: JobObject has no Drop impl.
-            // The handle is released on process exit.
+            // `job` drops on return, killing any surviving descendants.
             Ok(())
         }
     }

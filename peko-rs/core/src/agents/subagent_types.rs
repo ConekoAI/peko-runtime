@@ -4,37 +4,10 @@
 //! `AsyncTaskEntry` data model. No registry storage uses these types
 //! directly — they are read-only projections constructed on demand.
 
-use crate::async_exec::executor::{AsyncTaskEntry, AsyncTaskStatus, SubagentResult, TaskMetadata};
-use chrono::{DateTime, Utc};
-use peko_session::types::SpawnCleanupPolicy;
+use crate::async_exec::executor::{AsyncTaskEntry, TaskMetadata};
+use chrono::Utc;
 
-/// A read-only view of an async task entry, projected into the
-/// subagent domain model.
-///
-/// This is NOT stored anywhere — it is constructed on demand from
-/// the unified registry's `AsyncTaskEntry`.
-#[derive(Debug, Clone)]
-pub struct SubagentRunView {
-    pub run_id: String,
-    pub child_session_key: String,
-    /// The child's durable session id (UUID) — the form `session list`
-    /// shows, Agent's `action = "resume"` consumes, and the metadata-
-    /// chain diagnostic reads. `None` for legacy runs registered before
-    /// this field existed. Spawn-registered runs store the overlay key
-    /// in `child_session_key`; callers that need to chain a follow-up
-    /// spawn against the same child should use THIS field as the new
-    /// `parent_session_key`, not `child_session_key`.
-    pub child_session_id: Option<String>,
-    pub parent_session_key: String,
-    pub task: String,
-    pub status: AsyncTaskStatus,
-    pub started_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub cleanup: SpawnCleanupPolicy,
-    pub label: Option<String>,
-    pub result: Option<SubagentResult>,
-    pub depth: u32,
-}
+pub use crate::tools::builtin::messaging::SubagentRunView;
 
 impl SubagentRunView {
     /// Project an `AsyncTaskEntry` into a `SubagentRunView`.
