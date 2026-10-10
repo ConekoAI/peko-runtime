@@ -29,6 +29,46 @@ fn tools() -> Vec<Arc<dyn Tool>> {
     )
 }
 
+/// Which tools may run alongside others in one LLM response (the engine's
+/// parallel gate). Tools that write shared state — files, processes,
+/// channels, todos, plans, cron schedules — must run alone.
+#[test]
+fn parallel_safety_matches_each_tools_side_effects() {
+    let expected: HashMap<&str, bool> = [
+        ("Read", true),
+        ("Glob", true),
+        ("Grep", true),
+        ("Write", false),
+        ("Edit", false),
+        ("Bash", false),
+        ("Workflow", false),
+        ("ChannelSend", false),
+        ("ChannelRead", true),
+        ("Task", false),
+        ("Plan", false),
+        ("Cron", false),
+        ("Async", true),
+        ("Agent", true),
+        ("Session", true),
+        ("Skill", true),
+        ("RoleCatalog", true),
+        ("ModelList", true),
+        ("ModelCall", true),
+    ]
+    .into_iter()
+    .collect();
+    let tools = tools();
+    assert_eq!(tools.len(), expected.len());
+    for tool in tools {
+        assert_eq!(
+            tool.parallelizable(),
+            expected[tool.name()],
+            "{} parallel safety changed",
+            tool.name()
+        );
+    }
+}
+
 #[test]
 fn inventory_matches_implementations_and_schemas_compile() {
     let implementations = tools();
