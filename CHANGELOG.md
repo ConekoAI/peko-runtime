@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Bounded tool output (2026-10-10)
+
+- Fix background `Bash` keeping the start of long output: the result held the
+  first 100 KB of each stream, so `Async output` + `tail_lines` (the workflow
+  Bash's description recommends for large output) returned lines from the
+  middle and the end of a long build or test run was lost; the readers also
+  held every byte in memory until exit. Each stream now keeps its newest
+  100 KB while the command runs, marked `(truncated)...` when the start was
+  dropped.
+- Bound `Read`: `limit` defaults to 2000 lines and returned text is capped at
+  256 KiB at a line boundary, with `truncated` / `next_offset` to continue; a
+  single longer line is cut and marked; binary files over 256 KiB are refused
+  with a pointer to Bash. Nothing in the engine or dispatcher caps tool
+  results, so an unbounded read could flood the context.
+- Cover ModelCall judgment-endpoint failures (HTTP error excerpt, malformed
+  replies, no charge) and ChannelRead's 1..1000 `limit` clamp.
+
 ### Built-in tools tested against production backends (2026-10-10)
 
 - Cover the daemon's cron backend (`DaemonCronAdapter`, previously untested at
