@@ -649,6 +649,55 @@ mod tests {
         assert!(response["stdout"].as_str().unwrap().trim() == "3");
     }
 
+    /// Without a `cwd`, a command runs in the tool's configured workspace.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn commands_default_to_the_configured_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = BashTool::new().with_workspace(temp_dir.path());
+        let out = tool.execute(json!({"command": "pwd -P"})).await.unwrap();
+        assert_eq!(
+            out["stdout"].as_str().unwrap().trim(),
+            temp_dir.path().canonicalize().unwrap().to_str().unwrap()
+        );
+    }
+
+    /// `timeout: 0` means no timeout, not an instant one; a command killed
+    /// by a signal reports exit code -1.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn zero_timeout_runs_and_signal_deaths_report_minus_one() {
+        let out = BashTool::new()
+            .execute(json!({"command": "echo ran", "timeout": 0}))
+            .await
+            .unwrap();
+        assert_eq!(out["stdout"], "ran\n");
+        let killed = BashTool::new()
+            .execute(json!({"command": "kill -9 $$"}))
+            .await
+            .unwrap();
+        assert_eq!(killed["exit_code"], -1);
+        assert_eq!(killed["success"], false);
+    }
+
+    /// Background output of exactly the cap is complete, not truncated.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn task_body_output_at_exactly_the_cap_is_not_truncated() {
+        let mut ctx = ToolContext::default_for_tool("Bash");
+        ctx.background.progress = Some(Arc::default());
+        let command = format!("head -c {DEFAULT_MAX_OUTPUT_BYTES} /dev/zero | tr '\\0' a");
+        let out = BashTool::new()
+            .execute_with_context(json!({"command": command}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            out["stdout"].as_str().unwrap().len(),
+            DEFAULT_MAX_OUTPUT_BYTES
+        );
+        assert_eq!(out["stdout_truncated"], false);
+    }
+
     #[tokio::test]
     async fn test_bash_with_cwd() {
         let temp_dir = TempDir::new().unwrap();
@@ -932,9 +981,8 @@ mod tests {
         let s = "éééé"; // 8 bytes
         let (out, truncated) = truncate_with_marker(s, 3);
         assert!(truncated);
-        // 3 lands inside the first 2-byte char; we should cut at 0 or 2.
-        assert!(out.starts_with("é") || out.starts_with(""));
-        assert!(out.ends_with("...(truncated)"));
+        // 3 lands inside the second byte of the second "é": cut back to 2.
+        assert_eq!(out, "é...(truncated)");
     }
 
     /// Pre-armed abort signal — subscribe first, then abort, then

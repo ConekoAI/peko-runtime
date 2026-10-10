@@ -299,6 +299,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
+    async fn encoding_defaults_to_utf8() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = WriteTool::new().with_workspace(temp_dir.path());
+        let out = tool
+            .execute(json!({"file_path": "a.txt", "content": "hi"}))
+            .await
+            .unwrap();
+        assert_eq!(out["encoding"], "utf8");
+    }
+
+    #[tokio::test]
     async fn test_write_file_default_overwrite() {
         // Default mode is `overwrite` for Claude Code parity — Write
         // replaces the destination's contents by default. The reported

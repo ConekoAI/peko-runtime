@@ -45,6 +45,8 @@ pub struct RecordedRequest {
     pub messages: Vec<LlmMessage>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
+    /// The options the caller passed (temperature, max_tokens, ...).
+    pub options: ChatOptions,
 }
 
 impl Default for MockAdapter {
@@ -248,12 +250,14 @@ impl MockAdapter {
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         stream: bool,
+        options: &ChatOptions,
     ) {
         if let Ok(mut r) = self.recorded_requests.lock() {
             r.push(RecordedRequest {
                 messages: messages.to_vec(),
                 tools: tools.map_or_else(Vec::new, |t| t.to_vec()),
                 stream,
+                options: options.clone(),
             });
         }
     }
@@ -264,9 +268,9 @@ impl MockAdapter {
         model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
-        _options: &ChatOptions,
+        options: &ChatOptions,
     ) -> Result<ChatResponse> {
-        self.record_request(messages, tools, false);
+        self.record_request(messages, tools, false, options);
         match self.pop_chat_response() {
             Some(MockResponse::Success(mut response)) => {
                 response.model = model_id.to_string();
@@ -321,9 +325,9 @@ impl MockAdapter {
         _model_id: &str,
         messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
-        _options: &ChatOptions,
+        options: &ChatOptions,
     ) -> Result<Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>> {
-        self.record_request(messages, tools, true);
+        self.record_request(messages, tools, true, options);
         let events = match self.pop_stream_response() {
             Some(MockResponse::Stream(events)) => events,
             Some(MockResponse::Success(response)) => {

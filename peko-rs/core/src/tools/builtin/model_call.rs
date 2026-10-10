@@ -842,7 +842,7 @@ mod tests {
         let tool = ModelCallTool::new(Arc::downgrade(&manager));
         let out = tool
             .execute_with_context(
-                json!({"prompt": "Say hi", "system": "Be brief."}),
+                json!({"prompt": "Say hi", "system": "Be brief.", "temperature": 0.25, "max_tokens": 64}),
                 &ctx_for("caller"),
             )
             .await
@@ -860,6 +860,8 @@ mod tests {
         assert_eq!(recorded[0].messages.len(), 2);
         assert!(matches!(recorded[0].messages[0].role, MessageRole::System));
         assert!(matches!(recorded[0].messages[1].role, MessageRole::User));
+        assert_eq!(recorded[0].options.temperature, Some(0.25));
+        assert_eq!(recorded[0].options.max_tokens, Some(64));
 
         // The calling principal's meter was charged server-side.
         let meter = &manager
@@ -1216,14 +1218,66 @@ mod tests {
     #[tokio::test]
     async fn judgment_rejects_completion_only_params() {
         let tool = ModelCallTool::new(Weak::new());
+        for (param, value) in [
+            ("temperature", json!(0.5)),
+            ("max_tokens", json!(10)),
+            ("system", json!("be terse")),
+        ] {
+            let mut params = json!({"state": "x", "questions": {"q": {"type": "boolean"}}});
+            params[param] = value;
+            let err = tool
+                .execute_with_context(params, &ctx_for("caller"))
+                .await
+                .expect_err(param);
+            assert!(
+                format!("{err:#}").contains("only apply to completion mode"),
+                "{param}: {err:#}"
+            );
+        }
         let err = tool
-            .execute_with_context(
-                json!({"state": "x", "questions": {"q": {"type": "boolean"}}, "temperature": 0.5}),
-                &ctx_for("caller"),
-            )
+            .execute_with_context(json!({"state": "x", "questions": {}}), &ctx_for("caller"))
             .await
-            .expect_err("temperature in judgment mode must error");
-        assert!(format!("{err:#}").contains("only apply to completion mode"));
+            .expect_err("empty questions");
+        assert!(
+            format!("{err:#}").contains("non-empty object map"),
+            "{err:#}"
+        );
+    }
+
+    /// A projected cost exactly at `cost_per_call_max` is allowed.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn completion_at_exactly_the_cost_ceiling_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = MockAdapter::new();
+        adapter.queue_text("within budget");
+        let (resolver, _adapter) =
+            LlmResolver::mock(adapter, temp.path().join("models.toml")).await;
+        let pricing = PricingHint {
+            input_per_million: Some(100.0),
+            output_per_million: Some(100.0),
+        };
+        let mut entry = resolver.catalog().get("mock").await.expect("mock entry");
+        entry.spec = Some(ModelSpec {
+            pricing: Some(pricing.clone()),
+            ..ModelSpec::default()
+        });
+        resolver
+            .catalog()
+            .upsert(entry)
+            .await
+            .expect("upsert pricing");
+        let quota = QuotaConfig {
+            cost_per_call_max: Some(estimate_spawn_cost_usd(&pricing)),
+            ..generous_quota()
+        };
+        let manager =
+            manager_with_principal(&temp, "caller", Some("mock"), Some(quota), resolver).await;
+        let out = ModelCallTool::new(Arc::downgrade(&manager))
+            .execute_with_context(json!({"prompt": "hi"}), &ctx_for("caller"))
+            .await
+            .expect("at the ceiling is allowed");
+        assert_eq!(out["text"], "within budget");
     }
 
     /// Unknown model ids fail resolution with a clear error.

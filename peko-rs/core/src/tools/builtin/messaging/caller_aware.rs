@@ -86,3 +86,62 @@ impl Tool for CallerAwareAgentTool {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::principal::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory};
+    use serde_json::json;
+
+    fn new_args() -> Value {
+        json!({"action": "new", "path": "worker", "prompt": "go", "role": "primary"})
+    }
+
+    /// The daemon fallback needs a calling principal: no context, or a
+    /// blank principal name, is refused before any principal lookup; a
+    /// named caller is looked up.
+    #[tokio::test]
+    async fn requires_a_named_calling_principal() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                dir.path().join("config"),
+                dir.path().join("data"),
+                dir.path().join("cache"),
+            ),
+            Arc::new(DefaultPrincipalMemoryFactory),
+            Arc::new(DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        ));
+        let tool = CallerAwareAgentTool::new(
+            Arc::downgrade(&manager),
+            Arc::new(peko_observability::Observability::new("test")),
+        );
+
+        let error = tool.execute(new_args()).await.unwrap_err();
+        assert!(
+            error.to_string().contains("calling-principal context"),
+            "{error}"
+        );
+
+        let ctx = |name: &str| {
+            ToolContext::for_hook_run("run", "call", "Agent").with_principal_name(name)
+        };
+        let error = tool
+            .execute_with_context(new_args(), &ctx("   "))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("calling-principal context"),
+            "{error}"
+        );
+        let error = tool
+            .execute_with_context(new_args(), &ctx("alice"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown principal 'alice'"),
+            "{error}"
+        );
+    }
+}

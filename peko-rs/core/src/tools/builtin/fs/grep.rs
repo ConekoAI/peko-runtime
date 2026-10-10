@@ -716,6 +716,46 @@ mod tests {
             .collect()
     }
 
+    /// Matches come back ordered by file, then line, and the limit holds
+    /// across files.
+    #[tokio::test]
+    async fn matches_order_by_file_then_line_and_limit_spans_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("a.txt"), "x\nx\nhit a3\nhit a4\n")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("b.txt"), "hit b1\nhit b2\nhit b3\n")
+            .await
+            .unwrap();
+
+        let all = tool.execute(json!({"pattern": "hit"})).await.unwrap();
+        let entries = parse_ripgrep_output(all["output"].as_str().unwrap());
+        let order: Vec<_> = entries
+            .iter()
+            .map(|(path, line, _)| (path.rsplit('/').next().unwrap().to_string(), *line))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("a.txt".into(), 3),
+                ("a.txt".into(), 4),
+                ("b.txt".into(), 1),
+                ("b.txt".into(), 2),
+                ("b.txt".into(), 3)
+            ]
+        );
+
+        let limited = tool
+            .execute(json!({"pattern": "hit", "limit": 3}))
+            .await
+            .unwrap();
+        assert_eq!(
+            parse_ripgrep_output(limited["output"].as_str().unwrap()).len(),
+            3
+        );
+    }
+
     #[tokio::test]
     async fn test_grep_single_file() {
         let temp_dir = TempDir::new().unwrap();
