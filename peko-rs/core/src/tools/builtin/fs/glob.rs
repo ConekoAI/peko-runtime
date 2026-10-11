@@ -2,12 +2,11 @@
 //!
 //! Granular directory listing with pattern matching support.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use glob::Pattern as GlobPattern;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::fs;
 
 use peko_tools_core::Tool;
 
@@ -16,14 +15,16 @@ use peko_tools_core::Tool;
 pub struct GlobArgs {
     /// Pattern to match (glob syntax, e.g., "src/**/*.rs")
     pub pattern: String,
-    /// Working directory for relative patterns. Named `path` to match
-    /// Claude Code's Glob; relative paths resolve against the agent's
-    /// workspace, absolute paths are used as-is.
+    /// Working directory for relative patterns; relative paths resolve
+    /// against the agent's workspace, absolute paths are used as-is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Include hidden files (starting with .)
     #[serde(default)]
     pub include_hidden: bool,
+    /// Include files excluded by .gitignore / .ignore
+    #[serde(default)]
+    pub include_ignored: bool,
     /// Include directories in results
     #[serde(default)]
     pub include_dirs: bool,
@@ -83,51 +84,44 @@ impl GlobTool {
         pattern: &str,
         path: Option<&str>,
         include_hidden: bool,
+        include_ignored: bool,
         include_dirs: bool,
         limit: usize,
     ) -> Result<serde_json::Value> {
         let base_dir = self.resolve_directory(path);
 
-        // Parse pattern - handle "**" specially
-        let (search_root, glob_pattern) = if pattern.contains("**") {
-            // For patterns with **, find the directory before **
-            let parts: Vec<&str> = pattern.split("**").collect();
-            let prefix = parts[0];
-            let rest = if parts.len() > 1 { parts[1] } else { "" };
-
-            // Get the directory part before **
-            let root_part = if prefix.is_empty() {
-                base_dir.clone()
-            } else {
-                let prefix_path = PathBuf::from(prefix.trim_end_matches(['/', '\\']));
-                base_dir.join(prefix_path)
-            };
-
-            // The pattern to match is ** followed by the rest
-            let match_pattern = if rest.is_empty() || rest == "/" || rest == "\\" {
-                "**".to_string()
-            } else {
-                format!("**{rest}")
-            };
-
-            (root_part, match_pattern)
-        } else {
-            // Simple pattern without **
-            let pattern_path = PathBuf::from(pattern);
-            let parent = pattern_path
-                .parent()
-                .map(|p| {
-                    if p.as_os_str().is_empty() {
-                        PathBuf::from(".")
-                    } else {
-                        p.to_path_buf()
-                    }
-                })
-                .unwrap_or_else(|| PathBuf::from("."));
-            let file_name = pattern_path
-                .file_name()
-                .map_or_else(|| "*".to_string(), |s| s.to_string_lossy().to_string());
-            (base_dir.join(parent), file_name)
+        // A pattern with `**` searches recursively from the directory before
+        // its first `**`, matching the rest against each entry's path below
+        // that directory (`**/tests/*.py` matches `a/tests/x.py`). Without
+        // `**`, the last segment matches names in one directory.
+        let (search_root, match_pattern, recursive) = match pattern.find("**") {
+            Some(index) => {
+                let prefix = pattern[..index].trim_end_matches(['/', '\\']);
+                let root = if prefix.is_empty() {
+                    base_dir.clone()
+                } else {
+                    base_dir.join(prefix)
+                };
+                (root, pattern[index..].to_string(), true)
+            }
+            None => {
+                let pattern_path = PathBuf::from(pattern);
+                let parent = pattern_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+                let file_name = pattern_path
+                    .file_name()
+                    .map_or_else(|| "*".to_string(), |s| s.to_string_lossy().to_string());
+                (base_dir.join(parent), file_name, false)
+            }
+        };
+        let matcher = GlobPattern::new(&match_pattern)
+            .map_err(|e| anyhow::anyhow!("Invalid glob pattern '{pattern}': {e}"))?;
+        let options = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: true,
+            require_literal_leading_dot: false,
         };
 
         // Ensure search root exists
@@ -138,29 +132,67 @@ impl GlobTool {
             ));
         }
 
-        // Collect matching entries
-        let mut entries = Vec::new();
-        let mut matched = 0usize;
-
-        self.collect_matches(
-            &search_root,
-            &search_root,
-            &glob_pattern,
+        let found = super::walk(
+            search_root.clone(),
+            if recursive { None } else { Some(1) },
             include_hidden,
-            include_dirs,
-            limit,
-            &mut entries,
-            &mut matched,
+            include_ignored,
         )
         .await?;
 
-        // Sort entries by path for consistent output
-        entries.sort_by(|a, b| {
-            a["path"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["path"].as_str().unwrap_or(""))
-        });
+        let mut entries = Vec::new();
+        let mut matched = 0usize;
+        for found in found {
+            let is_dir = found.metadata.is_dir();
+            // Patterns match below the search root; results name paths
+            // from the base directory, so they can be passed to Read as-is.
+            let below_root = found
+                .path
+                .strip_prefix(&search_root)
+                .unwrap_or(&found.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let relative_path = found
+                .path
+                .strip_prefix(&base_dir)
+                .unwrap_or(&found.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let relative_path = relative_path
+                .strip_prefix("./")
+                .unwrap_or(&relative_path)
+                .to_string();
+            let name = found
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let hit = if recursive {
+                matcher.matches_with(&below_root, options)
+            } else {
+                matcher.matches(&name)
+            };
+            // A directory counts as a match only when directories are
+            // returned, so `total_matched` / `truncated` describe the
+            // entries the caller can actually get.
+            if !hit || (is_dir && !include_dirs) {
+                continue;
+            }
+            matched += 1;
+            if entries.len() < limit {
+                entries.push(serde_json::json!({
+                    "name": name,
+                    "path": relative_path,
+                    "type": if is_dir { "dir" } else { "file" },
+                    "size_bytes": if is_dir { None } else { Some(found.metadata.len()) },
+                    "modified_at": found.metadata.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
+                        .map(|dt| dt.map(|d| d.to_rfc3339()).unwrap_or_default()),
+                }));
+            }
+        }
 
         let truncated = matched > limit;
 
@@ -172,100 +204,6 @@ impl GlobTool {
             "returned": entries.len(),
             "truncated": truncated,
         }))
-    }
-
-    /// Recursively collect matching entries
-    async fn collect_matches(
-        &self,
-        search_root: &PathBuf,
-        current_dir: &PathBuf,
-        pattern: &str,
-        include_hidden: bool,
-        include_dirs: bool,
-        limit: usize,
-        entries: &mut Vec<serde_json::Value>,
-        matched: &mut usize,
-    ) -> Result<()> {
-        if entries.len() >= limit {
-            return Ok(());
-        }
-
-        let mut dir = fs::read_dir(current_dir)
-            .await
-            .with_context(|| format!("Failed to read directory: {}", current_dir.display()))?;
-
-        while let Some(entry) = dir.next_entry().await? {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            // Skip hidden files unless requested
-            if !include_hidden && name_str.starts_with('.') {
-                continue;
-            }
-
-            let entry_path = entry.path();
-            let metadata = entry.metadata().await?;
-            let is_dir = metadata.is_dir();
-
-            // A directory counts as a match only when directories are
-            // returned, so `total_matched` / `truncated` describe the
-            // entries the caller can actually get.
-            let counts = Self::glob_match(&name_str, pattern) && (include_dirs || !is_dir);
-            if counts {
-                *matched += 1;
-                if entries.len() < limit {
-                    let relative_path = entry_path
-                        .strip_prefix(search_root)
-                        .unwrap_or(&entry_path)
-                        .to_string_lossy()
-                        .to_string();
-                    entries.push(serde_json::json!({
-                        "name": name_str.to_string(),
-                        "path": relative_path,
-                        "type": if is_dir { "dir" } else { "file" },
-                        "size_bytes": if is_dir { None } else { Some(metadata.len()) },
-                        "modified_at": metadata.modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| chrono::DateTime::from_timestamp(d.as_secs() as i64, 0))
-                            .map(|dt| dt.map(|d| d.to_rfc3339()).unwrap_or_default()),
-                    }));
-                }
-            }
-            // Recurse into every subdirectory for patterns like "**/*.rs",
-            // matching or not, so matches past the limit are still counted.
-            if is_dir && pattern.starts_with("**") {
-                Box::pin(self.collect_matches(
-                    search_root,
-                    &entry_path,
-                    pattern,
-                    include_hidden,
-                    include_dirs,
-                    limit,
-                    entries,
-                    matched,
-                ))
-                .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Simple glob pattern matching
-    fn glob_match(name: &str, pattern: &str) -> bool {
-        // Handle **/ prefix (recursive match)
-        if let Some(rest) = pattern.strip_prefix("**/") {
-            // Match any path depth
-            return Self::simple_glob_match(name, rest);
-        }
-
-        Self::simple_glob_match(name, pattern)
-    }
-
-    /// Simple glob matching using the glob crate
-    fn simple_glob_match(name: &str, pattern: &str) -> bool {
-        GlobPattern::new(pattern).is_ok_and(|p: GlobPattern| p.matches(name))
     }
 }
 
@@ -282,54 +220,20 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Find files and directories matching a glob pattern.
+        r#"Find files (and optionally directories) by glob pattern. Use Grep to search contents and Read to read files.
 
-Use when: Exploring project structure, finding files by pattern, listing directory contents.
-Don't use when: You need file contents (use Read) or content search (use Grep).
+Patterns: `*` and `?` match within one path segment; `**` matches any number of directories. Without `**`, the pattern lists one directory: `*.toml` (the workspace root), `src/*.rs`. With `**`, the search is recursive from the directory before the first `**`, and the rest matches each path below it: `**/*.rs`, `src/**/*.rs`, `**/tests/*.py`.
 
-## Glob Pattern Syntax
+`path` sets the directory patterns are relative to (default: the workspace). Like ripgrep, the search skips hidden names (`include_hidden` to include) and anything excluded by `.gitignore` / `.ignore` files (`include_ignored` to include), so build output and dependencies stay out of results.
 
-- `*` - Match any sequence of characters (except path separator)
-- `?` - Match any single character
-- `**` - Match any sequence of directories recursively
+Returns `{entries, total_matched, returned, truncated}` in path order; each entry has `path` (relative to `path` / the workspace, ready for Read), `name`, `type`, `size_bytes`, and `modified_at`. `limit` defaults to 1000.
 
-## Parameters
-
-### pattern (required)
-Glob pattern to match. Examples:
-- `*.rs` - All Rust files in current directory
-- `src/**/*.rs` - All Rust files under src/ recursively
-- `*.toml` - All TOML files
-- `test_*.py` - Python test files
-
-### path (optional)
-Working directory for relative patterns. Defaults to workspace root.
-
-### include_hidden (optional)
-Include hidden files (starting with .). Default: false.
-
-### include_dirs (optional)
-Include directories in results. Default: false.
-
-### limit (optional)
-Maximum number of results. Default: 1000.
-
-## Examples
-
-List all Rust files:
+Examples:
 ```json
 {"pattern": "src/**/*.rs"}
-```
-
-List configuration files including hidden:
-```json
-{"pattern": "*.toml", "include_hidden": true}
-```
-
-Find test files:
-```json
 {"pattern": "**/test_*.py"}
+{"pattern": "*.toml", "include_hidden": true}
+{"pattern": "**/*.log", "include_ignored": true}
 ```"#
             .to_string()
     }
@@ -349,6 +253,11 @@ Find test files:
                 "include_hidden": {
                     "type": "boolean",
                     "description": "Include hidden files (starting with .)",
+                    "default": false
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Include files excluded by .gitignore / .ignore",
                     "default": false
                 },
                 "include_dirs": {
@@ -376,6 +285,7 @@ Find test files:
             &args.pattern,
             args.path.as_deref(),
             args.include_hidden,
+            args.include_ignored,
             args.include_dirs,
             args.limit,
         )
@@ -398,6 +308,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::fs;
 
     #[tokio::test]
     async fn test_glob_simple_pattern() {
@@ -509,6 +420,101 @@ mod tests {
         assert_eq!(over["truncated"], true, "{over}");
     }
 
+    fn touch(root: &std::path::Path, relative: &str, contents: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn paths(result: &serde_json::Value) -> Vec<String> {
+        result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// After `**`, the pattern matches each path below the search root, so
+    /// a directory segment narrows the match; every `**` counts.
+    #[tokio::test]
+    async fn recursive_patterns_match_paths_below_the_root() {
+        let temp_dir = TempDir::new().unwrap();
+        for file in [
+            "tests/a.py",
+            "pkg/tests/b.py",
+            "pkg/tests/deep/c.py",
+            "pkg/src/d.py",
+            "a/b/c/e.rs",
+            "a/x/f.rs",
+        ] {
+            touch(temp_dir.path(), file, "");
+        }
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        let result = tool
+            .execute(json!({"pattern": "**/tests/*.py"}))
+            .await
+            .unwrap();
+        assert_eq!(paths(&result), ["pkg/tests/b.py", "tests/a.py"]);
+        let result = tool
+            .execute(json!({"pattern": "a/**/b/**/*.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            paths(&result),
+            ["a/b/c/e.rs"],
+            "paths start at the base directory"
+        );
+        let result = tool
+            .execute(json!({"pattern": "**/b/**/*.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(paths(&result), ["a/b/c/e.rs"]);
+        let error = tool
+            .execute(json!({"pattern": "**/[.py"}))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Invalid glob pattern"),
+            "{error}"
+        );
+    }
+
+    /// Files excluded by .gitignore / .ignore stay out of results — in or
+    /// out of a git repository — unless `include_ignored` asks for them.
+    #[tokio::test]
+    async fn ignored_files_are_skipped_unless_requested() {
+        let temp_dir = TempDir::new().unwrap();
+        touch(temp_dir.path(), ".gitignore", "target/\n*.log\n");
+        touch(temp_dir.path(), "sub/.ignore", "generated.rs\n");
+        for file in [
+            "src/main.rs",
+            "target/debug/build.rs",
+            "app.log",
+            "sub/generated.rs",
+            "sub/kept.rs",
+        ] {
+            touch(temp_dir.path(), file, "");
+        }
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        let result = tool.execute(json!({"pattern": "**/*"})).await.unwrap();
+        assert_eq!(paths(&result), ["src/main.rs", "sub/kept.rs"]);
+        let result = tool
+            .execute(json!({"pattern": "**/*", "include_ignored": true}))
+            .await
+            .unwrap();
+        assert_eq!(
+            paths(&result),
+            [
+                "app.log",
+                "src/main.rs",
+                "sub/generated.rs",
+                "sub/kept.rs",
+                "target/debug/build.rs"
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn test_glob_include_hidden() {
         let temp_dir = TempDir::new().unwrap();
@@ -600,27 +606,6 @@ mod tests {
             result.get("directory").is_none(),
             "old `directory` field should be gone"
         );
-    }
-
-    #[test]
-    fn test_glob_match_simple() {
-        assert!(GlobTool::simple_glob_match("test.rs", "*.rs"));
-        assert!(GlobTool::simple_glob_match("file.txt", "*.txt"));
-        assert!(!GlobTool::simple_glob_match("test.rs", "*.txt"));
-    }
-
-    #[test]
-    fn test_glob_match_question() {
-        assert!(GlobTool::simple_glob_match("test.rs", "tes?.rs"));
-        assert!(GlobTool::simple_glob_match("file1.txt", "file?.txt"));
-        assert!(!GlobTool::simple_glob_match("file10.txt", "file?.txt"));
-    }
-
-    #[test]
-    fn test_glob_match_star() {
-        assert!(GlobTool::simple_glob_match("test.rs", "*.rs"));
-        assert!(GlobTool::simple_glob_match("my_test_file.rs", "*.rs"));
-        assert!(GlobTool::simple_glob_match("test.rs", "test.*"));
     }
 
     #[tokio::test]

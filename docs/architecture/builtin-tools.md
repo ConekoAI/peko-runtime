@@ -148,10 +148,11 @@ Find files and optionally directories by glob pattern.
 | `pattern` | string | yes | — |
 | `path` | string | no | — |
 | `include_hidden` | boolean | no | default false |
+| `include_ignored` | boolean | no | default false |
 | `include_dirs` | boolean | no | default false |
 | `limit` | integer | no | default 1000, ≥ 1, ≤ 10000 |
 
-path defaults to the calling workspace. An explicit path overrides workspace injection.
+path defaults to the calling workspace. An explicit path overrides workspace injection. A pattern with `**` searches from the directory before its first `**` and matches the remainder against each path below it (`**/tests/*.py`); without `**`, the last segment matches names in one directory. Results are in path order with paths relative to the base directory. Like ripgrep, hidden names and files excluded by `.gitignore` / `.ignore` (and git's exclude/global lists) are skipped — in or out of a git repository — unless include_hidden / include_ignored.
 
 ### Grep
 
@@ -171,9 +172,10 @@ Regex search with context, filename-only, or count output.
 | `context` | integer | no | ≥ 0, ≤ 10 |
 | `case_insensitive` | boolean | no | default false |
 | `include_hidden` | boolean | no | default false |
+| `include_ignored` | boolean | no | default false |
 | `output_mode` | content \| files_with_matches \| count | no | default "content" |
 
-context overrides context_before/context_after. Content/context controls apply only to content mode. Output is a plain-text string with accompanying JSON metadata.
+context overrides context_before/context_after. Content/context controls apply only to content mode. Output is a plain-text string with accompanying JSON metadata; paths inside the workspace are relative to it. Files are walked in path order; hidden names and files excluded by `.gitignore` / `.ignore` are skipped unless include_hidden / include_ignored.
 
 ### Bash
 
@@ -618,11 +620,11 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | `timezone` | string | no | — |
 | `idle_ms` | integer | no | — |
 
-Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults to the machine's IANA zone (recorded on the job; UTC if it cannot be determined). idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
 
 #### list
 
-List the calling principal’s scheduled jobs.
+List the calling principal’s scheduled jobs. Each entry reports its schedule in create's fields (`at`, `interval_ms`, `cron` + `timezone`, or `idle_ms`) and its `message` or `tool` + `params`.
 
 [Implementation](../../peko-rs/cron/src/tools/list.rs)
 

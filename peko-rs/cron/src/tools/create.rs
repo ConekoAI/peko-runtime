@@ -195,7 +195,7 @@ impl Tool for CronCreateAction {
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "Timezone for the cron expression (default: UTC)"
+                    "description": "IANA timezone for the cron expression, e.g. 'Europe/Berlin' (default: this machine's local zone)"
                 },
                 "idle_ms": {
                     "type": "integer",

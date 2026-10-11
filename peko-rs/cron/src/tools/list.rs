@@ -29,7 +29,7 @@ impl Tool for CronListAction {
     }
 
     fn description(&self) -> String {
-        "List scheduled jobs stored by the daemon.".to_string()
+        "List your scheduled jobs. Each entry has `job_id`, `label`, `schedule` (in the fields create takes: at, interval_ms, cron + timezone, or idle_ms), `message` or `tool` + `params`, `status` (active/disabled), `next_run_at` (UTC), and `run_count`.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

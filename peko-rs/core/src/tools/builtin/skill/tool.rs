@@ -121,7 +121,7 @@ Dynamic context (Claude-style):
   - `allowed-tools: ["git *", "pwd", ...]` — glob allowlist. Empty list = all commands allowed. Glob is anchored to the full trimmed command.
 
 Returns:
-- { name, body } — the skill's body with dynamic context resolved, then arguments substituted.
+- { name, dir, body } — the skill's body with dynamic context resolved, then arguments substituted. `dir` is the skill's directory: files the body mentions (scripts, references) are relative to it. Dynamic-context commands run in the workspace.
 - An unknown name, or an unreadable or invalid skill file, is a tool error (an unknown name lists the available skills)."#
             .to_string()
     }
@@ -214,8 +214,16 @@ Returns:
 
         let rendered = substitute_args(&body, &frontmatter.arguments, &args);
 
+        // Files a skill mentions (scripts, references) live beside its
+        // SKILL.md; the caller needs the directory to open them.
+        let dir = entry
+            .path
+            .parent()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default();
         Ok(json!({
             "name": frontmatter.name,
+            "dir": dir,
             "body": rendered,
         }))
     }
@@ -504,6 +512,12 @@ mod tests {
             .unwrap();
         assert_eq!(result["name"], "fix");
         assert_eq!(result["body"], "body");
+        // The directory holding SKILL.md, so files the body names resolve.
+        let dir = std::path::PathBuf::from(result["dir"].as_str().unwrap());
+        assert_eq!(
+            dir.canonicalize().unwrap(),
+            tmp.path().join("fix").canonicalize().unwrap()
+        );
     }
 
     #[tokio::test]

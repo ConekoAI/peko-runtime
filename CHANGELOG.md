@@ -4,6 +4,43 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Tool function review (2026-10-11)
+
+- Fix every foreground tool call being capped at five minutes: the
+  dispatcher returned a "still running" receipt after 300 s, but the
+  detached task carried the same 300 s hard timeout and died almost at
+  once, and Agent runs were cancelled at 300 s. A foreground call now
+  waits up to 10 minutes, then keeps running with no time limit; the
+  receipt explains how to poll, and the completion is delivered to the
+  calling session (waking it when idle). Background work — Async spawn,
+  background Bash, cron tool jobs, Workflow, Agent runs — has no default
+  limit. Workflow run tokens are revoked when the run ends.
+- Argument errors name the problem for the action the agent chose
+  (missing field, a field the action does not take plus the ones it does,
+  an either/or group, a forbidden combination, an unknown action) instead
+  of "not valid under any of the schemas listed in the 'oneOf' keyword".
+- Calls that could not do what was asked — unknown todo/plan/node id,
+  unknown skill, missing channel or non-member, a failed ChannelSend,
+  Agent refusals — are tool errors, not successes carrying an `error`.
+- The wire catalog states each field's schema once (multi-action variants
+  keep only their discriminator and constraints): ~95.6K -> ~56K
+  characters. Descriptions were corrected where they disagreed with the
+  code (Session copy + Agent resume, Agent's resume example, Grep's regex
+  limits and `include` semantics, Bash exit codes) and stripped of
+  internal type names.
+- Consistent names: ChannelSend returns the message `id` (not `task_id`);
+  receipts use `tool_name`; Async output's wait is `timeout_ms`;
+  RoleCatalog returns `roles`; Agent `page_limit: 0` clears the cap.
+- Glob and Grep skip files excluded by `.gitignore` / `.ignore` (in or out
+  of a git repo; `include_ignored` to include) and walk in path order.
+  Glob now matches `**` patterns against paths (`**/tests/*.py` used to
+  match nothing) and returns paths relative to the base directory, ready
+  for Read; Grep reports workspace-relative paths.
+- Skill returns its directory so files the body mentions can be opened.
+  Cron expressions without a timezone use the machine's zone (recorded on
+  the job), and Cron list shows each job's schedule and message.
+- Unit tests no longer write task files into the user's data directory.
+
 ### SessionCache removed (2026-10-11)
 
 - Delete `SessionCache`, an 803-line in-memory `SessionRuntime` that only
