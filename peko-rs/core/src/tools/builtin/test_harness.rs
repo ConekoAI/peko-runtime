@@ -17,12 +17,12 @@
 //! | real `CronScheduler` files (`peko_cron::testing`) | Cron |
 //! | real `ModelCatalog` file | ModelList |
 //! | real `TodoStorage` / `PlanStorage` in a tempdir | Task, Plan |
-//! | in-memory fakes | Agent, Session |
+//! | real `SessionManagerRuntime` over a tempdir store | Session |
+//! | in-memory fakes | Agent |
 //! | unbound — fail closed without a `PrincipalManager` | ModelCall, Workflow |
 //!
 //! The faked and unbound tools are covered against production elsewhere:
-//! Agent in `agents/tests` (real executor), Session by
-//! `SessionManagerRuntime`'s tests, ModelCall/Workflow in their modules
+//! Agent in `agents/tests` (real executor), ModelCall/Workflow in their modules
 //! (real `PrincipalManager`), and the daemon's cron backend in
 //! `daemon/cron_runtime.rs`.
 //!
@@ -128,6 +128,23 @@ pub(crate) struct Backends {
     pub channels: Arc<dyn ChannelPort>,
     pub async_runtime: SharedAsyncRuntime,
     pub models: Weak<peko_providers::catalog::ModelCatalog>,
+    pub sessions: SharedSessionRuntime,
+}
+
+/// The production Session backend over a session store in `dir`.
+pub(crate) fn session_runtime(dir: PathBuf) -> SharedSessionRuntime {
+    let manager = peko_session::manager::SessionManager::new()
+        .with_sessions_dir_internal(dir)
+        .with_agent_name("harness");
+    Arc::new(
+        crate::session::session_runtime_impl::SessionManagerRuntime::new(
+            Arc::new(tokio::sync::RwLock::new(manager)),
+            Arc::new(tokio::sync::RwLock::new(Some(SESSION.to_string()))),
+            "harness".to_string(),
+            None,
+            None,
+        ),
+    )
 }
 
 /// Every built-in tool, one per wire name, wired to `backends` and `fakes`.
@@ -140,7 +157,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(EditTool::new().with_workspace(workspace.clone())),
         Arc::new(GlobTool::new().with_workspace(workspace.clone())),
         Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-        Arc::new(SessionTool::new(Arc::new(SessionCache::new(SESSION)))),
+        Arc::new(SessionTool::new(backends.sessions.clone())),
         Arc::new(AgentTool::new(fakes.subagents.clone())),
         Arc::new(AgentCatalogTool::from_workspace(workspace.clone())),
         Arc::new(SkillTool::new(Arc::new(
@@ -238,6 +255,7 @@ impl ToolHarness {
             channels: channels.clone(),
             async_runtime,
             models: Arc::downgrade(&models),
+            sessions: session_runtime(root.path().join("sessions")),
         };
         // As `install_async` does: the principal's Async runtime is also the
         // background spawner for its calls (Bash `run_in_background`).

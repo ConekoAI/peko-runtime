@@ -43,7 +43,7 @@
 //!
 //! `new` / `resume` / `compact` stay off this tool — they drive the
 //! LLM and live on the Agent tool instead. Speaks to the
-//! [`SessionRuntime`] port.
+//! [`SessionRuntime`](super::SessionRuntime) port.
 
 use async_trait::async_trait;
 use peko_tools_core::traits::Tool;
@@ -698,41 +698,36 @@ impl Tool for SessionTool {
 
 #[cfg(test)]
 mod tests {
+    //! The Session tool over the production `SessionManagerRuntime` and a
+    //! real tempdir session store (`session_runtime_impl::test_support`).
+    //! Tree used by most tests (`tree_harness`):
+    //! `root:user:alice` (`sess:/`) ── `spawn1` (`sess:/a`) ── `child1` (`sess:/a/b`)
+    //!                                └── `spawn2` (`sess:/c`)
     use super::*;
-    use crate::tools::builtin::session::{
-        HistoryMessage, SessionCache, SessionInfo, SessionStatusResult, UsageStats,
-    };
-    use serde_json::json;
-    use std::sync::Arc;
+    use crate::session::session_runtime_impl::test_support::{sid, tree_harness, Harness};
+    use peko_subject::Subject;
+    use serde_json::{json, Value};
 
-    /// F5 (2026-08-11 field test, Addendum 3) + round 7 (2026-08-13):
-    /// the model was anchoring on the legacy 3 actions (`status` /
-    /// `list` / `history`) and refused to call the lifecycle
-    /// operations. The history: WS4 demoted all 6 lifecycle
-    /// operations; round 7 restored the storage-only three
-    /// (`branch` / `archive` / `unarchive`), bringing the surface to
-    /// 9 actions; `move` (reparent) brought it to 10. Sprint 7
-    /// Commit F (2026-08-21) trimmed to 7 bash-aligned verbs
-    /// (`status` / `list` / `history` / `find` / `copy` / `move` /
-    /// `remove`) — `rename` folded into `move` (title/slug without
-    /// new_parent), `archive` / `unarchive` dropped (sessions are
-    /// monotonically visible until `remove`), `search` → `find`,
-    /// `branch` → `copy`, `delete` → `remove`. ADR-051 (2026-09-05)
-    /// added 3 read actions for the compaction-page archive
-    /// (`list_pages` / `read_page` / `search_pages`), bringing the
-    /// surface to 10. Pin the description here so any future edit
-    /// that drops one of the 10 action names fails the test —
-    /// defense-in-depth against the "register without surfacing in
-    /// description" omission pattern (F5).
-    #[test]
-    fn description_names_all_10_actions() {
-        let cache = SessionCache::new("test");
-        let tool = SessionTool::new(Arc::new(cache).as_shared());
-        let desc = tool.description();
+    async fn tool_over(h: &Harness) -> SessionTool {
+        SessionTool::new(h.runtime.clone())
+    }
 
-        // The 10 actions, in the order they appear in `SessionAction`.
-        // If `SessionAction` ever grows, bump this list in lockstep.
-        let expected_actions = [
+    fn ids(list: &Value, key: &str, field: &str) -> Vec<String> {
+        list[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s[field].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// F5 (2026-08-11 field test) through ADR-051: the model anchored on
+    /// a few legacy actions and refused the rest, so the description must
+    /// name all 10, lead with the count, and not bullet retired verbs.
+    #[tokio::test]
+    async fn description_names_all_10_actions() {
+        let desc = tool_over(&Harness::new().await).await.description();
+        for action in [
             "status",
             "list",
             "history",
@@ -743,850 +738,26 @@ mod tests {
             "list_pages",
             "read_page",
             "search_pages",
-        ];
-        assert_eq!(
-            expected_actions.len(),
-            10,
-            "test bug: expected_actions must have 10 entries"
-        );
-
-        for action in expected_actions {
-            assert!(
-                desc.contains(action),
-                "session description must name the `{action}` action (F5: model anchored on \
-                 legacy 3 and refused lifecycle ops; description must surface every action)"
-            );
+        ] {
+            assert!(desc.contains(action), "description must name `{action}`");
         }
-
-        // Lead-with-count: the description must advertise the action
-        // count up front so the model sees all 10 before any
-        // per-action bullet (defeats primacy bias on the legacy 3).
         assert!(
             desc.contains("10 operations") || desc.contains("10 actions") || desc.contains("10 op"),
-            "session description must lead with the action count (F5: defeats primacy bias)"
+            "description must lead with the action count"
         );
-
-        // The retired verbs MUST NOT appear as standalone per-action
-        // bullets (the format is `<verb>: ...` — the same shape the
-        // model anchors on). We only flag the dangerous prefix
-        // pattern, not the prose, because the description legitimately
-        // mentions the old verbs in sentences like "rename it in
-        // place" or "delete a session" to disambiguate. A naive
-        // substring check on those words would falsely fail.
         for retired in ["rename", "delete", "branch", "archive", "unarchive"] {
-            let bullet_prefix = format!("- {retired}:");
             assert!(
-                !desc.contains(&bullet_prefix),
-                "session description must not list `{retired}` as a per-action bullet \
-                 (Sprint 7 Commit F retired it; the new 7 actions are status/list/history/find/copy/move/remove)"
+                !desc.contains(&format!("- {retired}:")),
+                "`{retired}` must not be a per-action bullet"
             );
         }
     }
 
-    fn create_test_cache() -> Arc<SessionCache> {
-        let cache = SessionCache::new("main");
-
-        let session = SessionInfo {
-            session_id: "abc123".to_string(),
-            agent_name: Some("test-agent".to_string()),
-            title: Some("Test Session".to_string()),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            message_count: 10,
-            peer_type: Some("user".to_string()),
-            peer_id: Some("alice".to_string()),
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-
-        let history = vec![
-            HistoryMessage {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-                tool_calls: None,
-                tool_results: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-            },
-            HistoryMessage {
-                role: "assistant".to_string(),
-                content: "Hi there!".to_string(),
-                tool_calls: None,
-                tool_results: None,
-                timestamp: "2024-01-01T00:00:01Z".to_string(),
-            },
-        ];
-
-        let status = SessionStatusResult {
-            session_id: "abc123".to_string(),
-            path: String::new(),
-            agent_name: "test-agent".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
-            timestamp: "2024-01-01 02:00:00 UTC".to_string(),
-            message_count: 10,
-            usage: UsageStats {
-                cumulative_input_tokens: 100,
-                cumulative_output_tokens: 50,
-                last_total_tokens: 1500,
-                current_prompt_tokens: Some(120),
-                cache_read_tokens: Some(80),
-                cache_creation_tokens: Some(20),
-                reasoning_tokens: None,
-                model_context_limit: Some(128_000),
-                cache_read_total: 0,
-                cache_creation_total: 0,
-                cache_hit_rate: None,
-            },
-            quota: None,
-            current_run_iterations: 0,
-            peer_type: Some("user".to_string()),
-            peer_id: Some("alice".to_string()),
-            title: Some("Test Session".to_string()),
-            parent_session: Some("main".to_string()),
-        };
-
-        cache.add_session("test-session".to_string(), session, history, status);
-        Arc::new(cache)
-    }
-
+    /// A single schema default would misrepresent the per-action handler
+    /// defaults; they're advertised per variant and in the description.
     #[tokio::test]
-    async fn test_session_list() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "list", "limit": 10}))
-            .await
-            .unwrap();
-
-        assert_eq!(result["total"], 1);
-        assert_eq!(result["sessions"][0]["session_id"], "abc123");
-    }
-
-    #[tokio::test]
-    async fn test_session_list_and_find_accept_subtree_path_scope() {
-        let cache = Arc::new(SessionCache::new("main"));
-        // Tree: p ── c1 ── g1, plus unrelated o1 — paths as `list`
-        // would surface them to the model.
-        let scoped_info = |key: &str, path: &str| SessionInfo {
-            session_id: key.to_string(),
-            agent_name: Some("agent".to_string()),
-            title: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            message_count: 1,
-            peer_type: None,
-            peer_id: None,
-            run_active: false,
-            slug: None,
-            path: path.to_string(),
-        };
-        let needle_msg = |text: &str| {
-            vec![HistoryMessage {
-                role: "user".to_string(),
-                content: text.to_string(),
-                tool_calls: None,
-                tool_results: None,
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-            }]
-        };
-        let empty_status = SessionStatusResult {
-            session_id: String::new(),
-            path: String::new(),
-            agent_name: "agent".to_string(),
-            created_at: String::new(),
-            last_activity: String::new(),
-            timestamp_utc: String::new(),
-            timestamp: String::new(),
-            message_count: 0,
-            usage: UsageStats {
-                cumulative_input_tokens: 0,
-                cumulative_output_tokens: 0,
-                last_total_tokens: 0,
-                current_prompt_tokens: None,
-                cache_read_tokens: None,
-                cache_creation_tokens: None,
-                reasoning_tokens: None,
-                model_context_limit: None,
-                cache_read_total: 0,
-                cache_creation_total: 0,
-                cache_hit_rate: None,
-            },
-            quota: None,
-            current_run_iterations: 0,
-            peer_type: None,
-            peer_id: None,
-            title: None,
-            parent_session: None,
-        };
-        cache.add_session(
-            "p".to_string(),
-            scoped_info("p", "sess:/p"),
-            needle_msg("needle in p"),
-            empty_status.clone(),
-        );
-        cache.add_session(
-            "g1".to_string(),
-            scoped_info("g1", "sess:/p/c1/g1"),
-            needle_msg("needle in g1"),
-            empty_status.clone(),
-        );
-        cache.add_session(
-            "o1".to_string(),
-            scoped_info("o1", "sess:/o1"),
-            needle_msg("needle in o1"),
-            empty_status,
-        );
-        let tool = SessionTool::new(cache.as_shared());
-
-        // `list` scoped to the subtree: p + g1, never o1.
-        let result = tool
-            .execute(json!({"action": "list", "path": "sess:/p"}))
-            .await
-            .unwrap();
-        assert_eq!(result["total"], 2);
-        let keys: Vec<&str> = result["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["session_id"].as_str().unwrap())
-            .collect();
-        assert!(keys.contains(&"p"));
-        assert!(keys.contains(&"g1"));
-        assert!(!keys.contains(&"o1"));
-
-        // `find` honors the same scope.
-        let result = tool
-            .execute(json!({"action": "find", "query": "needle", "path": "sess:/p"}))
-            .await
-            .unwrap();
-        assert_eq!(result["total"], 2);
-        let ids: Vec<&str> = result["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|h| h["session_id"].as_str().unwrap())
-            .collect();
-        assert!(ids.contains(&"p"));
-        assert!(ids.contains(&"g1"));
-        assert!(!ids.contains(&"o1"));
-        // Every hit carries the addressable path to follow up with.
-        let paths: Vec<&str> = result["hits"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|h| h["path"].as_str().unwrap())
-            .collect();
-        assert!(paths.contains(&"sess:/p"));
-        assert!(paths.contains(&"sess:/p/c1/g1"));
-
-        // Malformed scope paths fail at the tool boundary (early-fail,
-        // same shape as the other actions' `path` validation).
-        let err = tool
-            .execute(json!({"action": "list", "path": "/p//c1"}))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not a valid slug path"), "{err}");
-        let err = tool
-            .execute(json!({"action": "find", "query": "x", "path": "a//b"}))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not a valid slug path"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_session_history() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "history", "path": "test-session", "limit": 10}))
-            .await
-            .unwrap();
-
-        assert_eq!(result["total_messages"], 2);
-        assert_eq!(result["messages"][0]["role"], "user");
-        assert_eq!(result["messages"][0]["content"], "Hello");
-    }
-
-    #[tokio::test]
-    async fn test_session_status() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "status", "path": "test-session"}))
-            .await
-            .unwrap();
-
-        assert_eq!(result["session_id"], "abc123");
-        assert_eq!(result["usage"]["last_total_tokens"], 1500);
-        assert_eq!(result["usage"]["model_context_limit"], 128_000);
-        assert_eq!(result["peer_type"], "user");
-        assert_eq!(result["peer_id"], "alice");
-    }
-
-    #[tokio::test]
-    async fn test_session_status_defaults_to_current() {
-        let cache = SessionCache::new("current-session");
-
-        let status = SessionStatusResult {
-            session_id: "current123".to_string(),
-            path: String::new(),
-            agent_name: "main".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
-            timestamp: "2024-01-01 02:00:00 UTC".to_string(),
-            message_count: 5,
-            usage: UsageStats {
-                cumulative_input_tokens: 50,
-                cumulative_output_tokens: 25,
-                last_total_tokens: 800,
-                current_prompt_tokens: Some(60),
-                cache_read_tokens: None,
-                cache_creation_tokens: None,
-                reasoning_tokens: None,
-                model_context_limit: None,
-                cache_read_total: 0,
-                cache_creation_total: 0,
-                cache_hit_rate: None,
-            },
-            quota: None,
-            current_run_iterations: 0,
-            peer_type: None,
-            peer_id: None,
-            title: None,
-            parent_session: None,
-        };
-
-        let session = SessionInfo {
-            session_id: "current123".to_string(),
-            agent_name: Some("main".to_string()),
-            title: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            message_count: 5,
-            peer_type: None,
-            peer_id: None,
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-
-        cache.add_session("current-session".to_string(), session, vec![], status);
-
-        let tool = SessionTool::new(Arc::new(cache).as_shared());
-
-        let result = tool.execute(json!({"action": "status"})).await.unwrap();
-
-        assert_eq!(result["session_id"], "current123");
-    }
-
-    #[tokio::test]
-    async fn test_session_move_page_limit_sets_retention() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        // Setting a cap echoes it (the cache double never prunes).
-        let result = tool
-            .execute(json!({
-                "action": "move",
-                "path": "test-session",
-                "title": "T",
-                "page_limit": 5,
-            }))
-            .await
-            .unwrap();
-        assert_eq!(result["page_limit"], 5);
-        assert_eq!(result["pages_pruned"], 0);
-
-        // 0 resets to unlimited (null on the wire).
-        let result = tool
-            .execute(json!({
-                "action": "move",
-                "path": "test-session",
-                "page_limit": 0,
-            }))
-            .await
-            .unwrap();
-        assert_eq!(result["page_limit"], serde_json::Value::Null);
-
-        // Out-of-range caps are a validation error.
-        let err = tool
-            .execute(json!({
-                "action": "move",
-                "path": "test-session",
-                "page_limit": 10001,
-            }))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("10000"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_session_list_empty() {
-        let cache = Arc::new(SessionCache::new("main"));
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(result["total"], 0);
-    }
-
-    #[tokio::test]
-    async fn test_session_history_not_found() {
-        let cache = Arc::new(SessionCache::new("main"));
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "history", "path": "missing"}))
-            .await
-            .unwrap();
-
-        assert_eq!(result["total_messages"], 0);
-    }
-
-    #[tokio::test]
-    async fn test_session_status_not_found_errors() {
-        let cache = Arc::new(SessionCache::new("main"));
-        let tool = SessionTool::new(cache.as_shared());
-
-        // The old fabricated zeroed status is gone: an unknown session
-        // must surface the runtime's real error.
-        let err = tool
-            .execute(json!({"action": "status", "path": "missing"}))
-            .await
-            .expect_err("status on an unknown session must error, not fabricate");
-        assert!(err.to_string().contains("missing"), "{err}");
-    }
-
-    /// Helper: build a registry pre-loaded with three sessions spanning
-    /// two peers (`user:alice`, `user:bob`) and two agents
-    /// (`test-agent`, `other-agent`).
-    fn cross_peer_cache() -> Arc<SessionCache> {
-        let cache = SessionCache::new("main");
-
-        let alice_main = SessionInfo {
-            session_id: "alice-1".to_string(),
-            agent_name: Some("test-agent".to_string()),
-            title: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            message_count: 5,
-            peer_type: Some("user".to_string()),
-            peer_id: Some("alice".to_string()),
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-        let alice_other = SessionInfo {
-            session_id: "alice-2".to_string(),
-            agent_name: Some("other-agent".to_string()),
-            title: None,
-            created_at: "2024-01-02T00:00:00Z".to_string(),
-            last_activity: "2024-01-02T01:00:00Z".to_string(),
-            message_count: 3,
-            peer_type: Some("user".to_string()),
-            peer_id: Some("alice".to_string()),
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-        let bob_main = SessionInfo {
-            session_id: "bob-1".to_string(),
-            agent_name: Some("test-agent".to_string()),
-            title: None,
-            created_at: "2024-01-03T00:00:00Z".to_string(),
-            last_activity: "2024-01-03T01:00:00Z".to_string(),
-            message_count: 7,
-            peer_type: Some("user".to_string()),
-            peer_id: Some("bob".to_string()),
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-
-        cache.add_session(
-            "alice-1".to_string(),
-            alice_main,
-            vec![],
-            dummy_status("alice-1"),
-        );
-        cache.add_session(
-            "alice-2".to_string(),
-            alice_other,
-            vec![],
-            dummy_status("alice-2"),
-        );
-        cache.add_session("bob-1".to_string(), bob_main, vec![], dummy_status("bob-1"));
-        Arc::new(cache)
-    }
-
-    fn dummy_status(session_id: &str) -> SessionStatusResult {
-        SessionStatusResult {
-            session_id: session_id.to_string(),
-            path: String::new(),
-            agent_name: "any".to_string(),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            timestamp_utc: String::new(),
-            timestamp: String::new(),
-            message_count: 0,
-            usage: UsageStats {
-                cumulative_input_tokens: 0,
-                cumulative_output_tokens: 0,
-                last_total_tokens: 0,
-                current_prompt_tokens: None,
-                cache_read_tokens: None,
-                cache_creation_tokens: None,
-                reasoning_tokens: None,
-                model_context_limit: None,
-                cache_read_total: 0,
-                cache_creation_total: 0,
-                cache_hit_rate: None,
-            },
-            quota: None,
-            current_run_iterations: 0,
-            peer_type: None,
-            peer_id: None,
-            title: None,
-            parent_session: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_session_list_peer_filter_returns_only_that_peer() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let result = tool
-            .execute(json!({"action": "list", "peer": "user:alice"}))
-            .await
-            .unwrap();
-
-        let ids: Vec<&str> = result["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["session_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(result["total"], 2);
-        assert!(ids.contains(&"alice-1"));
-        assert!(ids.contains(&"alice-2"));
-        assert!(!ids.contains(&"bob-1"));
-    }
-
-    #[tokio::test]
-    async fn test_session_list_peer_unknown_returns_empty() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let result = tool
-            .execute(json!({"action": "list", "peer": "user:nobody"}))
-            .await
-            .unwrap();
-
-        assert_eq!(result["total"], 0);
-        assert!(result["sessions"].as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_session_list_agent_name_filter() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let result = tool
-            .execute(json!({"action": "list", "agent_name": "test-agent"}))
-            .await
-            .unwrap();
-
-        let ids: Vec<&str> = result["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["session_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(result["total"], 2);
-        assert!(ids.contains(&"alice-1"));
-        assert!(ids.contains(&"bob-1"));
-        assert!(!ids.contains(&"alice-2"));
-    }
-
-    #[tokio::test]
-    async fn test_session_list_rejects_removed_kinds_param() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let error = tool
-            .execute(json!({"action":"list", "peer":"user:alice", "kinds":["spawned"]}))
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("kinds"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn test_session_list_invalid_peer_returns_structured_error() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let err = tool
-            .execute(json!({"action": "list", "peer": "not-a-valid-peer"}))
-            .await
-            .expect_err("invalid peer must surface an error");
-        assert!(err.to_string().contains("Invalid peer"));
-    }
-
-    #[tokio::test]
-    async fn test_session_info_surfaces_peer_fields() {
-        let tool = SessionTool::new(cross_peer_cache().as_shared());
-        let result = tool
-            .execute(json!({"action": "list", "peer": "user:alice"}))
-            .await
-            .unwrap();
-
-        for s in result["sessions"].as_array().unwrap() {
-            assert_eq!(s["peer_type"], "user");
-            assert_eq!(s["peer_id"], "alice");
-        }
-    }
-
-    // ====================================================================================
-    // Tests: mutation actions (find/copy/move/remove). `new` /
-    // `resume` / `compact` stay refused on this tool — they drive
-    // the LLM and live on the Agent tool.
-    // ====================================================================================
-
-    #[tokio::test]
-    async fn test_session_find_happy_path_and_missing_query() {
-        let cache = SessionCache::new("main");
-        let session = SessionInfo {
-            session_id: "s1".to_string(),
-            agent_name: Some("main".to_string()),
-            title: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            last_activity: "2024-01-01T01:00:00Z".to_string(),
-            message_count: 1,
-            peer_type: None,
-            peer_id: None,
-            run_active: false,
-            slug: None,
-            path: String::new(),
-        };
-        let history = vec![HistoryMessage {
-            role: "user".to_string(),
-            content: "deploy the frambulator on friday".to_string(),
-            tool_calls: None,
-            tool_results: None,
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-        }];
-        cache.add_session("s1".to_string(), session, history, dummy_status("s1"));
-        let tool = SessionTool::new(Arc::new(cache).as_shared());
-
-        let result = tool
-            .execute(json!({"action": "find", "query": "FRAMBULATOR"}))
-            .await
-            .unwrap();
-        assert_eq!(result["total"], 1);
-        assert_eq!(result["hits"][0]["session_id"], "s1");
-        assert_eq!(result["hits"][0]["role"], "user");
-        assert!(result["hits"][0]["snippet"]
-            .as_str()
-            .unwrap()
-            .contains("frambulator"));
-
-        let err = tool
-            .execute(json!({"action": "find"}))
-            .await
-            .expect_err("find without query must error");
-        assert!(err.to_string().contains("query"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_session_remove_happy_and_missing_key() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({"action": "remove", "path": "test-session"}))
-            .await
-            .unwrap();
-        assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
-        assert_eq!(result["deleted"][0], "test-session");
-
-        // Gone from the list.
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["total"], 0);
-
-        let err = tool
-            .execute(json!({"action": "remove"}))
-            .await
-            .expect_err("remove without path must error");
-        assert!(err.to_string().contains("path"), "{err}");
-    }
-
-    /// The LLM-driving actions (`new` / `resume` / `compact`) and the
-    /// Sprint 7 Commit F-retired actions (`search` / `rename` /
-    /// `delete` / `branch` / `archive` / `unarchive`) must all be
-    /// rejected by the schema validation on this tool — they live on
-    /// the Agent tool or were retired, respectively.
-    #[tokio::test]
-    async fn test_demoted_actions_rejected_with_clear_validation_error() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        for demoted in [
-            // Agent-tool-only (drive the LLM).
-            "new",
-            "resume",
-            "compact",
-            // Sprint 7 Commit F retired (bash-aligned verb replaced them).
-            "search",
-            "rename",
-            "delete",
-            "branch",
-            "archive",
-            "unarchive",
-        ] {
-            let exec_err = tool
-                .execute(json!({"action": demoted}))
-                .await
-                .expect_err(&format!(
-                    "demoted action `{demoted}` must error, not silently route"
-                ));
-            assert!(
-                exec_err.to_string().contains("Invalid action"),
-                "demoted `{demoted}` should fail with Invalid action, got: {exec_err}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_session_copy_creates_stored_copy_not_running() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({
-                "action": "copy",
-                "path": "test-session",
-                "target": "test-session/fork",
-                "title": "fork",
-            }))
-            .await
-            .unwrap();
-        let new_id = result["new_session_id"].as_str().unwrap();
-        assert_eq!(result["parent_session_id"], "test-session");
-        assert_ne!(new_id, "test-session");
-        // The outcome echoes the copy's addressable path.
-        assert_eq!(result["new_path"], "sess:/test-session-branch-1");
-
-        // The copy is stored (listed) but NOT running, and carries the
-        // copy label.
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        let copy = list["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|s| s["session_id"] == new_id)
-            .expect("copy must appear in list");
-        assert_eq!(copy["run_active"], false);
-        assert_eq!(copy["title"], "fork");
-
-        // History is copied over.
-        let history = tool
-            .execute(json!({"action": "history", "path": new_id}))
-            .await
-            .unwrap();
-        assert_eq!(history["total_messages"], 2);
-
-        // Copy without path must error.
-        let err = tool
-            .execute(json!({"action": "copy", "target": "x/y"}))
-            .await
-            .expect_err("copy without path must error");
-        assert!(err.to_string().contains("path"), "{err}");
-
-        // Copy without target must error.
-        let err = tool
-            .execute(json!({"action": "copy", "path": "test-session"}))
-            .await
-            .expect_err("copy without target must error");
-        assert!(err.to_string().contains("target"), "{err}");
-    }
-
-    /// Each action's argument errors name exactly what is missing or
-    /// malformed.
-    #[tokio::test]
-    async fn malformed_arguments_name_the_problem() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-        for (params, expected) in [
-            (
-                json!({"action": "copy", "path": "test-session"}),
-                "\"target\" is a required property",
-            ),
-            (
-                json!({"action": "move", "path": "test-session"}),
-                "\"target\" is a required property",
-            ),
-            (
-                json!({"action": "copy", "path": "test-session", "target": "a//b"}),
-                "'target' is not a valid slug path",
-            ),
-            (
-                json!({"action": "copy", "path": "test-session", "target": "solo"}),
-                "must include a parent path and a slug segment",
-            ),
-            (
-                json!({"action": "find"}),
-                "\"query\" is a required property",
-            ),
-            (
-                json!({"action": "find", "query": "x", "peer": "nobody"}),
-                "Invalid peer 'nobody'",
-            ),
-            (
-                json!({"action": "read_page", "path": "test-session"}),
-                "\"page\" is a required property",
-            ),
-            (
-                json!({"action": "search_pages", "path": "test-session"}),
-                "\"query\" is a required property",
-            ),
-        ] {
-            let err = tool
-                .execute(params.clone())
-                .await
-                .expect_err(&params.to_string())
-                .to_string();
-            assert!(err.contains(expected), "{params}: {err}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_session_status_invalid_timezone_errors() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let err = tool
-            .execute(json!({
-                "action": "status",
-                "path": "test-session",
-                "timezone": "Not/AZone"
-            }))
-            .await
-            .expect_err("invalid timezone must error, not fall back to local");
-        assert!(err.to_string().contains("not a valid IANA tz"), "{err}");
-
-        // A valid IANA tz still works.
-        tool.execute(json!({
-            "action": "status",
-            "path": "test-session",
-            "timezone": "UTC"
-        }))
-        .await
-        .unwrap();
-    }
-
-    /// A single schema default would misrepresent the per-action
-    /// handler defaults. Advertise them in the variants and description.
-    #[test]
-    fn limit_schema_describes_per_action_defaults() {
-        let cache = SessionCache::new("test");
-        let tool = SessionTool::new(Arc::new(cache).as_shared());
-        let schema = tool.parameters();
+    async fn limit_schema_describes_per_action_defaults() {
+        let schema = tool_over(&Harness::new().await).await.parameters();
         assert!(schema["properties"]["limit"].get("default").is_none());
         let description = schema["properties"]["limit"]["description"]
             .as_str()
@@ -1611,362 +782,526 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_move_reparent_happy_and_unknown_session() {
-        let cache = create_test_cache();
-        cache.add_session(
-            "parent-s".to_string(),
-            SessionInfo {
-                session_id: "parent-s".to_string(),
-                agent_name: Some("test-agent".to_string()),
-                title: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                last_activity: "2024-01-01T01:00:00Z".to_string(),
-                message_count: 0,
-                peer_type: None,
-                peer_id: None,
-                run_active: false,
-                slug: None,
-                path: String::new(),
-            },
-            vec![],
-            dummy_status("parent-s"),
-        );
-        let tool = SessionTool::new(cache.as_shared());
-
-        let result = tool
-            .execute(json!({
-                "action": "move",
-                "path": "test-session",
-                "target": "parent-s/task-b",
-            }))
+    async fn list_shows_every_session_with_its_path() {
+        let h = tree_harness("root:user:alice").await;
+        let list = tool_over(&h)
+            .await
+            .execute(json!({"action": "list"}))
             .await
             .unwrap();
-        assert_eq!(result["modified"], true);
+        assert_eq!(list["total"], 4, "{list}");
+        let paths = ids(&list, "sessions", "path");
+        for path in ["sess:/", "sess:/a", "sess:/a/b", "sess:/c"] {
+            assert!(paths.contains(&path.to_string()), "{path}: {paths:?}");
+        }
+        assert!(ids(&list, "sessions", "session_id").contains(&sid("spawn1")));
 
-        // The reparent is visible on status.
+        let empty = Harness::new().await;
+        let list = tool_over(&empty)
+            .await
+            .execute(json!({"action": "list"}))
+            .await
+            .unwrap();
+        assert_eq!(list["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn list_and_find_accept_a_subtree_path_scope() {
+        let h = tree_harness("root:user:alice").await;
+        for id in ["root:user:alice", "spawn1", "child1", "spawn2"] {
+            h.add_user_message(id, &format!("needle in {id}")).await;
+        }
+        let tool = tool_over(&h).await;
+
+        let list = tool
+            .execute(json!({"action": "list", "path": "sess:/a"}))
+            .await
+            .unwrap();
+        let mut paths = ids(&list, "sessions", "path");
+        paths.sort();
+        assert_eq!(paths, ["sess:/a", "sess:/a/b"]);
+
+        let found = tool
+            .execute(json!({"action": "find", "query": "needle", "path": "sess:/a"}))
+            .await
+            .unwrap();
+        let mut hit_paths = ids(&found, "hits", "path");
+        hit_paths.sort();
+        assert_eq!(hit_paths, ["sess:/a", "sess:/a/b"], "{found}");
+
+        for params in [
+            json!({"action": "list", "path": "/p//c1"}),
+            json!({"action": "find", "query": "x", "path": "a//b"}),
+        ] {
+            let err = tool.execute(params).await.unwrap_err();
+            assert!(err.to_string().contains("not a valid slug path"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn history_returns_the_sessions_messages() {
+        let h = tree_harness("root:user:alice").await;
+        h.add_user_message("spawn1", "Hello").await;
+        let tool = tool_over(&h).await;
+        let history = tool
+            .execute(json!({"action": "history", "path": "sess:/a", "limit": 10}))
+            .await
+            .unwrap();
+        assert_eq!(history["total_messages"], 1, "{history}");
+        assert_eq!(history["messages"][0]["role"], "user");
+        assert_eq!(history["messages"][0]["content"], "Hello");
+    }
+
+    /// Unknown sessions are errors on every read, never a fabricated empty
+    /// or zeroed record.
+    #[tokio::test]
+    async fn unknown_sessions_are_errors() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        for action in ["status", "history"] {
+            let err = tool
+                .execute(json!({"action": action, "path": "sess:/missing"}))
+                .await
+                .expect_err(action);
+            assert!(err.to_string().contains("missing"), "{action}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn status_reports_the_session_and_defaults_to_the_current_one() {
+        let h = tree_harness("spawn1").await;
+        h.add_user_message("spawn1", "hi").await;
+        let tool = tool_over(&h).await;
+
         let status = tool
-            .execute(json!({"action": "status", "path": "test-session"}))
+            .execute(json!({"action": "status", "path": "sess:/c"}))
             .await
             .unwrap();
-        assert_eq!(status["parent_session"], "parent-s");
+        assert_eq!(status["session_id"], sid("spawn2"));
+        assert_eq!(status["peer_type"], "user");
+        assert_eq!(status["peer_id"], "alice");
 
-        // path is always required.
-        let err = tool
-            .execute(json!({"action": "move", "target": "parent-s/x"}))
-            .await
-            .expect_err("move without path must error");
-        assert!(err.to_string().contains("path"), "{err}");
-
-        // Unknown endpoints error.
-        let err = tool
-            .execute(json!({
-                "action": "move",
-                "path": "missing",
-                "target": "parent-s/x",
-            }))
-            .await
-            .expect_err("move of an unknown session must error");
-        assert!(err.to_string().contains("missing"), "{err}");
+        // (Counters such as `message_count` come from the session index,
+        // whose per-controller cache can trail another writer by ~30s.)
+        let current = tool.execute(json!({"action": "status"})).await.unwrap();
+        assert_eq!(current["session_id"], sid("spawn1"));
+        assert_eq!(current["path"], "sess:/a");
     }
 
-    /// Sprint 7 Commit F: `move` with `target` set to
-    /// `<current_parent>/<new_slug>` is the bash `mv` rename-in-place
-    /// case. Pre-merge this was the `rename` action; Commit F subsumed
-    /// it, Commit H unified the addressing under `target`.
     #[tokio::test]
-    async fn test_session_move_rename_in_place_with_slug_title_both() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        // Slug only — rename in place at the root (test-session has
-        // no recorded parent in the cache).
-        tool.execute(json!({"action": "move", "path": "test-session", "target": "/task-b"}))
+    async fn status_validates_the_timezone() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        let err = tool
+            .execute(json!({"action": "status", "path": "sess:/a", "timezone": "Not/AZone"}))
+            .await
+            .expect_err("invalid timezone must error, not fall back to local");
+        assert!(err.to_string().contains("not a valid IANA tz"), "{err}");
+        tool.execute(json!({"action": "status", "path": "sess:/a", "timezone": "UTC"}))
             .await
             .unwrap();
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["slug"], "task-b");
-        // Title untouched by a slug-only rename.
-        assert_eq!(list["sessions"][0]["title"], "Test Session");
-
-        // Title only (slug survives) — target must be present even
-        // when only the display label changes.
-        tool.execute(
-            json!({"action": "move", "path": "test-session", "target": "/task-b", "title": "New Title"}),
-        )
-        .await
-        .unwrap();
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["title"], "New Title");
-        assert_eq!(list["sessions"][0]["slug"], "task-b");
-
-        // Both at once — different slug, new title.
-        tool.execute(
-            json!({"action": "move", "path": "test-session", "target": "/s2", "title": "T"}),
-        )
-        .await
-        .unwrap();
-        let list = tool.execute(json!({"action": "list"})).await.unwrap();
-        assert_eq!(list["sessions"][0]["title"], "T");
-        assert_eq!(list["sessions"][0]["slug"], "s2");
     }
 
-    /// `move` with NOTHING (no target, no title) is a no-op — refuse
-    /// it explicitly so the model can't accidentally call move with
-    /// all default params and get a false success.
-    #[tokio::test]
-    async fn test_session_move_all_none_params_errors() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
-
-        let err = tool
-            .execute(json!({"action": "move", "path": "test-session"}))
-            .await
-            .expect_err("move with no target/title must error");
-        assert!(err.to_string().contains("target"), "{err}");
-        assert!(err.to_string().contains("title"), "{err}");
+    /// Sessions from two peers and two agents.
+    async fn cross_peer_harness() -> Harness {
+        let h = Harness::new().await;
+        let alice = || Subject::User("alice".to_string());
+        h.create_as("alice-1", None, alice(), "test-agent").await;
+        h.create_as("alice-2", None, alice(), "other-agent").await;
+        h.create_as(
+            "bob-1",
+            None,
+            Subject::User("bob".to_string()),
+            "test-agent",
+        )
+        .await;
+        h.set_current("alice-1").await;
+        h
     }
 
-    /// Sprint 7 Commit G: tool-layer `validate_path` mirrors
-    /// `AgentArgs::validate_action_args`. Raw session ids (with the
-    /// reserved `:` that legacy ids carry) and malformed slug paths
-    /// are rejected with a structured error at the tool boundary,
-    /// before the runtime touches state.
     #[tokio::test]
-    async fn test_session_path_validation_at_tool_boundary() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
+    async fn list_filters_by_peer_and_agent() {
+        let h = cross_peer_harness().await;
+        let tool = tool_over(&h).await;
 
-        // Legacy raw session id shape (contains `:` which slugs forbid).
-        let err = tool
-            .execute(json!({
-                "action": "copy",
-                "target": "sess:/destination",
-                "path": "root:user:alice",
-            }))
+        let alice = tool
+            .execute(json!({"action": "list", "peer": "user:alice"}))
             .await
-            .expect_err("raw session id shape must error at the boundary");
-        assert!(err.to_string().contains("path"), "{err}");
-        assert!(err.to_string().contains("slug"), "{err}");
+            .unwrap();
+        let mut got = ids(&alice, "sessions", "session_id");
+        got.sort();
+        let mut want = vec![sid("alice-1"), sid("alice-2")];
+        want.sort();
+        assert_eq!(got, want, "{alice}");
+        for s in alice["sessions"].as_array().unwrap() {
+            assert_eq!(s["peer_type"], "user");
+            assert_eq!(s["peer_id"], "alice");
+        }
 
-        // Empty path.
-        let err = tool
-            .execute(json!({"action": "copy", "target": "sess:/destination", "path": ""}))
+        let nobody = tool
+            .execute(json!({"action": "list", "peer": "user:nobody"}))
             .await
-            .expect_err("empty path must error");
-        assert!(err.to_string().contains("path"), "{err}");
+            .unwrap();
+        assert_eq!(nobody["total"], 0);
 
-        // Bare `/` (no segments) is refused (validate_path says supply
-        // at least one segment).
-        let err = tool
-            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/"}))
+        let agent = tool
+            .execute(json!({"action": "list", "agent_name": "test-agent"}))
             .await
-            .expect_err("bare '/' path must error");
-        assert!(err.to_string().contains("path"), "{err}");
+            .unwrap();
+        let mut got = ids(&agent, "sessions", "session_id");
+        got.sort();
+        let mut want = vec![sid("alice-1"), sid("bob-1")];
+        want.sort();
+        assert_eq!(got, want, "{agent}");
+    }
 
-        // Empty segment (`/a//b`).
+    #[tokio::test]
+    async fn list_rejects_removed_params_and_invalid_peers() {
+        let h = cross_peer_harness().await;
+        let tool = tool_over(&h).await;
         let err = tool
-            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/a//b"}))
+            .execute(json!({"action":"list", "peer":"user:alice", "kinds":["spawned"]}))
             .await
-            .expect_err("empty segment path must error");
-        assert!(err.to_string().contains("segment"), "{err}");
-
-        // Leading/trailing whitespace in a segment.
+            .unwrap_err();
+        assert!(err.to_string().contains("kinds"), "{err}");
         let err = tool
-            .execute(json!({"action": "copy", "target": "sess:/destination", "path": "/ a/b"}))
+            .execute(json!({"action": "list", "peer": "not-a-valid-peer"}))
             .await
-            .expect_err("whitespace in segment must error");
-        assert!(err.to_string().contains("whitespace"), "{err}");
+            .unwrap_err();
+        assert!(err.to_string().contains("Invalid peer"), "{err}");
+    }
 
-        // Valid slug path passes through to the runtime (success on a
-        // known slug is not required here — we just need the
-        // validator to let it through, which we check by ensuring
-        // the error message does NOT mention path validation).
-        let res = tool
-            .execute(json!({"action": "copy", "path": "test-session"}))
+    #[tokio::test]
+    async fn find_matches_message_text_case_insensitively() {
+        let h = tree_harness("root:user:alice").await;
+        h.add_user_message("spawn2", "deploy the frambulator on friday")
             .await;
-        // Either success (slug exists in cache) or a runtime-level
-        // error — but never a "path is not a valid slug path" error.
-        if let Err(e) = res {
+        let tool = tool_over(&h).await;
+        let found = tool
+            .execute(json!({"action": "find", "query": "FRAMBULATOR"}))
+            .await
+            .unwrap();
+        assert_eq!(found["total"], 1, "{found}");
+        assert_eq!(found["hits"][0]["session_id"], sid("spawn2"));
+        assert_eq!(found["hits"][0]["role"], "user");
+        assert!(found["hits"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("frambulator"));
+        let err = tool.execute(json!({"action": "find"})).await.unwrap_err();
+        assert!(err.to_string().contains("query"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_the_session() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        let removed = tool
+            .execute(json!({"action": "remove", "path": "sess:/c"}))
+            .await
+            .unwrap();
+        assert_eq!(removed["deleted"], json!([sid("spawn2")]), "{removed}");
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert!(!ids(&list, "sessions", "session_id").contains(&sid("spawn2")));
+        let err = tool.execute(json!({"action": "remove"})).await.unwrap_err();
+        assert!(err.to_string().contains("path"), "{err}");
+    }
+
+    /// LLM-driving actions live on the Agent tool and Sprint 7 retired
+    /// the old verbs; both fail validation here.
+    #[tokio::test]
+    async fn demoted_actions_are_rejected() {
+        let h = Harness::new().await;
+        let tool = tool_over(&h).await;
+        for demoted in [
+            "new",
+            "resume",
+            "compact",
+            "search",
+            "rename",
+            "delete",
+            "branch",
+            "archive",
+            "unarchive",
+        ] {
+            let err = tool.execute(json!({"action": demoted})).await.unwrap_err();
             assert!(
-                !e.to_string().contains("is not a valid slug path"),
-                "valid slug path should pass tool-layer validation, got: {e}"
+                err.to_string().contains("Invalid action"),
+                "{demoted}: {err}"
             );
         }
     }
 
-    /// `target` is also a slug path — same shape rules as `path`.
-    /// Validate at the tool boundary.
     #[tokio::test]
-    async fn test_session_move_target_validates_at_tool_boundary() {
-        let cache = create_test_cache();
-        let tool = SessionTool::new(cache.as_shared());
+    async fn copy_stores_a_titled_copy_with_the_history_and_does_not_run_it() {
+        let h = tree_harness("root:user:alice").await;
+        h.add_user_message("spawn1", "Hello").await;
+        h.add_user_message("spawn1", "Again").await;
+        let tool = tool_over(&h).await;
 
-        let err = tool
+        let copied = tool
             .execute(json!({
-                "action": "move",
-                "path": "test-session",
-                "target": "root:user:bob/x",
+                "action": "copy", "path": "sess:/a", "target": "sess:/a/fork", "title": "fork"
             }))
             .await
-            .expect_err("raw-id target must error at the boundary");
-        assert!(err.to_string().contains("target"), "{err}");
-        assert!(err.to_string().contains("slug"), "{err}");
-    }
+            .unwrap();
+        assert_eq!(copied["new_path"], "sess:/a/fork", "{copied}");
+        let new_id = copied["new_session_id"].as_str().unwrap().to_string();
+        assert_ne!(new_id, sid("spawn1"));
 
-    // ====================================================================================
-    // Tests: ADR-051 compaction-page actions (list_pages / read_page /
-    // search_pages). Backed by `SessionCache::add_events` — the page
-    // primitives are pure scans over the raw event list.
-    // ====================================================================================
-
-    fn page_event_user(text: &str) -> peko_session::SessionEvent {
-        peko_session::SessionEvent::MessageV2(peko_session::SessionMessage::user(
-            text,
-            peko_session::MessageSource::User,
-        ))
-    }
-
-    fn page_event_assistant(text: &str) -> peko_session::SessionEvent {
-        peko_session::SessionEvent::MessageV2(peko_session::SessionMessage::assistant_text(
-            text,
-            "test",
-            "test-model",
-        ))
-    }
-
-    fn page_event_boundary(n: usize) -> peko_session::SessionEvent {
-        peko_session::SessionEvent::System(peko_session::SystemEvent {
-            envelope: peko_session::EventEnvelope {
-                id: format!("compact_{n}"),
-                ts: chrono::Utc::now(),
-            },
-            event: "compaction".to_string(),
-            detail: json!({
-                "summary": format!("summary {n}"),
-                "messages_compacted": n,
-                "compaction_number": n,
-            }),
-        })
-    }
-
-    /// Cache seeded with a two-page session: page 1 (archived by
-    /// compaction #1) + the live page.
-    fn page_test_cache() -> Arc<SessionCache> {
-        let cache = SessionCache::new("s1");
-        cache.add_events(
-            "s1",
-            vec![
-                page_event_user("archived question about frambulators"),
-                page_event_assistant("archived answer"),
-                page_event_boundary(1),
-                page_event_user("live question"),
-            ],
-        );
-        Arc::new(cache)
+        let list = tool.execute(json!({"action": "list"})).await.unwrap();
+        let copy = list["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["session_id"] == new_id.as_str())
+            .expect("copy is listed");
+        assert_eq!(copy["run_active"], false);
+        assert_eq!(copy["title"], "fork");
+        let history = tool
+            .execute(json!({"action": "history", "path": "sess:/a/fork"}))
+            .await
+            .unwrap();
+        assert_eq!(history["total_messages"], 2, "{history}");
     }
 
     #[tokio::test]
-    async fn test_session_list_pages() {
-        let tool = SessionTool::new(page_test_cache().as_shared());
+    async fn move_reparents_renames_and_retitles() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
 
-        let result = tool
-            .execute(json!({"action": "list_pages", "path": "s1"}))
+        let moved = tool
+            .execute(json!({"action": "move", "path": "sess:/c", "target": "sess:/a/task-b"}))
             .await
             .unwrap();
+        assert_eq!(moved["modified"], true, "{moved}");
+        let status = tool
+            .execute(json!({"action": "status", "path": "sess:/a/task-b"}))
+            .await
+            .unwrap();
+        assert_eq!(status["parent_session"], sid("spawn1"), "{status}");
 
-        assert_eq!(result["total"], 2);
-        assert_eq!(result["pages"][0]["page_number"], 1);
-        assert_eq!(result["pages"][0]["compaction_number"], 1);
-        assert_eq!(result["pages"][0]["boundary_event_id"], "compact_1");
+        // Rename in place, then retitle without changing the slug.
+        tool.execute(json!({"action": "move", "path": "sess:/a/task-b", "target": "sess:/a/s2"}))
+            .await
+            .unwrap();
+        tool.execute(json!({
+            "action": "move", "path": "sess:/a/s2", "target": "sess:/a/s2", "title": "New Title"
+        }))
+        .await
+        .unwrap();
+        let status = tool
+            .execute(json!({"action": "status", "path": "sess:/a/s2"}))
+            .await
+            .unwrap();
+        assert_eq!(status["title"], "New Title", "{status}");
+
+        let err = tool
+            .execute(json!({"action": "move", "path": "sess:/missing", "target": "sess:/a/x"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("missing"), "{err}");
+        let err = tool
+            .execute(json!({"action": "move", "target": "sess:/a/x"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("path"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn move_page_limit_sets_retention() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        let result = tool
+            .execute(json!({"action": "move", "path": "sess:/a", "title": "T", "page_limit": 5}))
+            .await
+            .unwrap();
+        assert_eq!(result["page_limit"], 5);
+        assert_eq!(result["pages_pruned"], 0);
+        let result = tool
+            .execute(json!({"action": "move", "path": "sess:/a", "page_limit": 0}))
+            .await
+            .unwrap();
+        assert_eq!(result["page_limit"], Value::Null);
+        let err = tool
+            .execute(json!({"action": "move", "path": "sess:/a", "page_limit": 10001}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("10000"), "{err}");
+    }
+
+    /// `move` with no target, title, or retention would be a silent no-op.
+    #[tokio::test]
+    async fn move_with_nothing_to_change_errors() {
+        let h = tree_harness("root:user:alice").await;
+        let err = tool_over(&h)
+            .await
+            .execute(json!({"action": "move", "path": "sess:/a"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("target"), "{err}");
+        assert!(err.to_string().contains("title"), "{err}");
+    }
+
+    /// Each action's argument errors name exactly what is missing or
+    /// malformed.
+    #[tokio::test]
+    async fn malformed_arguments_name_the_problem() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        for (params, expected) in [
+            (
+                json!({"action": "copy", "path": "sess:/a"}),
+                "\"target\" is a required property",
+            ),
+            (
+                json!({"action": "move", "path": "sess:/a"}),
+                "\"target\" is a required property",
+            ),
+            (json!({"action": "copy", "target": "sess:/x/y"}), "path"),
+            (
+                json!({"action": "copy", "path": "sess:/a", "target": "a//b"}),
+                "'target' is not a valid slug path",
+            ),
+            (
+                json!({"action": "copy", "path": "sess:/a", "target": "solo"}),
+                "must include a parent path and a slug segment",
+            ),
+            (
+                json!({"action": "move", "path": "sess:/a", "target": "root:user:bob/x"}),
+                "target",
+            ),
+            (
+                json!({"action": "find"}),
+                "\"query\" is a required property",
+            ),
+            (
+                json!({"action": "find", "query": "x", "peer": "nobody"}),
+                "Invalid peer 'nobody'",
+            ),
+            (
+                json!({"action": "read_page", "path": "sess:/a"}),
+                "\"page\" is a required property",
+            ),
+            (
+                json!({"action": "search_pages", "path": "sess:/a"}),
+                "\"query\" is a required property",
+            ),
+        ] {
+            let err = tool
+                .execute(params.clone())
+                .await
+                .expect_err(&params.to_string())
+                .to_string();
+            assert!(err.contains(expected), "{params}: {err}");
+        }
+    }
+
+    /// Malformed `path`s are refused at the tool boundary, before the
+    /// runtime touches state.
+    #[tokio::test]
+    async fn paths_are_validated_at_the_tool_boundary() {
+        let h = tree_harness("root:user:alice").await;
+        let tool = tool_over(&h).await;
+        for (path, expected) in [
+            ("root:user:alice", "slug"),
+            ("", "path"),
+            ("/", "path"),
+            ("/a//b", "segment"),
+            ("/ a/b", "whitespace"),
+        ] {
+            let err = tool
+                .execute(json!({"action": "copy", "target": "sess:/destination", "path": path}))
+                .await
+                .expect_err(path);
+            assert!(err.to_string().contains(expected), "{path:?}: {err}");
+        }
+    }
+
+    /// Two pages: page 1 archived by a compaction, then the live page.
+    async fn paged_harness() -> Harness {
+        let h = tree_harness("spawn1").await;
+        h.add_user_message("spawn1", "archived question about frambulators")
+            .await;
+        h.add_compaction("spawn1").await;
+        h.add_user_message("spawn1", "live question").await;
+        h
+    }
+
+    #[tokio::test]
+    async fn list_pages_numbers_archived_and_live_pages() {
+        let h = paged_harness().await;
+        let pages = tool_over(&h)
+            .await
+            .execute(json!({"action": "list_pages", "path": "sess:/a"}))
+            .await
+            .unwrap();
+        assert_eq!(pages["total"], 2, "{pages}");
+        assert_eq!(pages["pages"][0]["page_number"], 1);
+        assert_eq!(pages["pages"][0]["compaction_number"], 1);
         assert_eq!(
-            result["pages"][0]["title"],
+            pages["pages"][0]["title"],
             "archived question about frambulators"
         );
-        // Live page is last and carries no terminating boundary info.
-        assert_eq!(result["pages"][1]["page_number"], 2);
-        assert!(result["pages"][1]["compaction_number"].is_null());
+        assert_eq!(pages["pages"][1]["page_number"], 2);
+        assert!(pages["pages"][1]["compaction_number"].is_null());
     }
 
     #[tokio::test]
-    async fn test_session_read_page() {
-        let tool = SessionTool::new(page_test_cache().as_shared());
-
-        let result = tool
-            .execute(json!({"action": "read_page", "path": "s1", "page": 1}))
+    async fn read_page_renders_one_page_and_explains_unknown_ones() {
+        let h = paged_harness().await;
+        let tool = tool_over(&h).await;
+        let page = tool
+            .execute(json!({"action": "read_page", "path": "sess:/a", "page": 1}))
             .await
             .unwrap();
-        let content = result["content"].as_str().unwrap();
+        let content = page["content"].as_str().unwrap();
         assert!(
             content.contains("user: archived question about frambulators"),
             "{content}"
         );
-        assert!(content.contains("assistant: archived answer"), "{content}");
-        assert!(!content.contains("live question"), "page 1 only");
-
-        // Missing `page` param is a structured error.
-        let err = tool
-            .execute(json!({"action": "read_page", "path": "s1"}))
-            .await
-            .expect_err("read_page without page must error");
-        assert!(err.to_string().contains("page"), "{err}");
-
-        // Unknown page renders an explanatory body, not a hard error.
-        let result = tool
-            .execute(json!({"action": "read_page", "path": "s1", "page": 9}))
+        assert!(!content.contains("live question"), "page 1 only: {content}");
+        let missing = tool
+            .execute(json!({"action": "read_page", "path": "sess:/a", "page": 9}))
             .await
             .unwrap();
-        assert!(result["content"]
+        assert!(missing["content"]
             .as_str()
             .unwrap()
             .contains("Page 9 does not exist"));
     }
 
     #[tokio::test]
-    async fn test_session_search_pages() {
-        let tool = SessionTool::new(page_test_cache().as_shared());
-
-        let result = tool
-            .execute(json!({"action": "search_pages", "path": "s1", "query": "QUESTION"}))
+    async fn search_pages_finds_hits_across_pages_and_caps_them() {
+        let h = paged_harness().await;
+        let tool = tool_over(&h).await;
+        let hits = tool
+            .execute(json!({"action": "search_pages", "path": "sess:/a", "query": "QUESTION"}))
             .await
             .unwrap();
-        assert_eq!(result["total"], 2);
-        assert_eq!(result["hits"][0]["page_number"], 1, "archived page hit");
-        assert_eq!(result["hits"][1]["page_number"], 2, "live page hit");
-        assert!(result["hits"][0]["snippet"]
-            .as_str()
-            .unwrap()
-            .contains("question"));
-
-        // max_results caps the hits.
-        let result = tool
-            .execute(json!({"action": "search_pages", "path": "s1", "query": "question", "max_results": 1}))
+        assert_eq!(hits["total"], 2, "{hits}");
+        assert_eq!(hits["hits"][0]["page_number"], 1);
+        assert_eq!(hits["hits"][1]["page_number"], 2);
+        let capped = tool
+            .execute(json!({
+                "action": "search_pages", "path": "sess:/a", "query": "question", "max_results": 1
+            }))
             .await
             .unwrap();
-        assert_eq!(result["total"], 1);
-
-        let err = tool
-            .execute(json!({"action": "search_pages", "path": "s1"}))
-            .await
-            .expect_err("search_pages without query must error");
-        assert!(err.to_string().contains("query"), "{err}");
+        assert_eq!(capped["total"], 1);
     }
 
-    /// The page actions default `path` to the current session, like
-    /// `status` / `history`.
+    /// The page actions default `path` to the current session.
     #[tokio::test]
-    async fn test_session_page_actions_default_to_current_session() {
-        let cache = SessionCache::new("s1");
-        cache.add_events("s1", vec![page_event_user("hello from current")]);
-        let tool = SessionTool::new(Arc::new(cache).as_shared());
-
-        let result = tool.execute(json!({"action": "list_pages"})).await.unwrap();
-        assert_eq!(result["path"], "s1");
-        assert_eq!(result["total"], 1);
-
-        let result = tool
-            .execute(json!({"action": "search_pages", "query": "hello"}))
+    async fn page_actions_default_to_the_current_session() {
+        let h = paged_harness().await;
+        let tool = tool_over(&h).await;
+        let pages = tool.execute(json!({"action": "list_pages"})).await.unwrap();
+        assert_eq!(pages["total"], 2, "{pages}");
+        let hits = tool
+            .execute(json!({"action": "search_pages", "query": "live"}))
             .await
             .unwrap();
-        assert_eq!(result["total"], 1);
+        assert_eq!(hits["total"], 1, "{hits}");
     }
 }

@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### SessionCache removed (2026-10-11)
+
+- Delete `SessionCache`, an 803-line in-memory `SessionRuntime` that only
+  tests used (it shipped in production and reimplemented copy / move / delete
+  / page behavior without the real backend's guards). The Session tool's tests
+  and the dispatcher harness now run on the production `SessionManagerRuntime`
+  over a tempdir store, sharing `session_runtime_impl::test_support`. The move
+  exposed behavior the fake had masked: the tests had addressed sessions by
+  raw keys the real runtime refuses, and `history` of a missing session
+  returned zero messages where production errors.
+
 ### Mutation testing of the remaining tools (2026-10-11)
 
 - Fix a prompt-catalog entry dropped for space vanishing silently: the

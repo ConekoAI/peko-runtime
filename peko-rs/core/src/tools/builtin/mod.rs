@@ -35,7 +35,7 @@ pub use model_list::{ModelListTool, MODEL_LIST_TOOL_NAME};
 pub use plan::PlanTool;
 pub use role_catalog::AgentCatalogTool;
 pub use session::caller_aware::CallerAwareSessionTool;
-pub use session::{SessionCache, SessionInfo, SessionTool, SharedSessionRuntime};
+pub use session::{SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskTool, Todo, TodoStatus};
 pub use workflow::{
