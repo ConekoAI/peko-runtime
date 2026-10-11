@@ -22,8 +22,8 @@
 //! `delete_session` / `move_session`). The model-facing `compact`
 //! affordance lives on the Agent tool (SubagentRuntime path).
 //! Production wiring uses the `SessionManagerRuntime` adapter in
-//! `src/session/session_runtime_impl.rs`; tests construct a
-//! [`SessionCache`] (in this module, an in-memory implementation).
+//! `src/session/session_runtime_impl.rs`; the tool's tests run on it too,
+//! over a tempdir store (`session_runtime_impl::test_support`).
 //!
 //! Note on `SessionRuntime` method names vs. tool-action names:
 //! the runtime methods are storage verbs (`copy_session`,
@@ -43,11 +43,9 @@
 //! `branch_session` shape (which derived the slug from the source)
 //! is gone — the caller picks the destination slug explicitly.
 
-pub mod cache;
 pub mod caller_aware;
 pub mod tool;
 
-pub use cache::SessionCache;
 pub use caller_aware::CallerAwareSessionTool;
 pub use tool::SessionTool;
 
@@ -377,12 +375,9 @@ pub struct DeleteOutcome {
 
 /// Runtime port the `SessionTool` uses to talk to session storage.
 ///
-/// The production wiring implements this with `SessionManagerRuntime`
-/// (root's `src/session/session_runtime_impl.rs`) which wraps the
-/// shared `Arc<RwLock<SessionManager>>`. Tests and placeholder paths
-/// (CLI/test harnesses that don't have a real `SessionManager`) use
-/// [`SessionCache`], an in-memory implementation provided in this
-/// crate.
+/// Implemented by `SessionManagerRuntime`
+/// (`src/session/session_runtime_impl.rs`), which wraps the shared
+/// `Arc<RwLock<SessionManager>>`; tests run it over a tempdir store.
 #[async_trait::async_trait]
 pub trait SessionRuntime: Send + Sync {
     /// List available sessions, optionally filtered.

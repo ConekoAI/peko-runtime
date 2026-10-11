@@ -1216,35 +1216,36 @@ fn llm_message_to_history(msg: &LlmMessage, include_tools: bool) -> Option<Histo
     })
 }
 
+/// Test fixtures over a real tempdir `SessionManager`, shared by this
+/// module's tests and the Session tool's.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use peko_session::SessionCreateOptions;
-    use peko_tools_core::Tool;
     use tempfile::TempDir;
 
     /// Sprint 6: convert a test-fixture literal (e.g. "spawn1") to
     /// the v5-derived UUID form the runtime stores in
     /// `SessionMetadata.session_id` and returns over the wire.
-    fn sid(literal: &str) -> String {
+    pub(crate) fn sid(literal: &str) -> String {
         peko_session::SessionId::from(literal).to_string()
     }
 
     /// Tempdir-backed harness: real `SessionManager`, real
     /// `InboxRegistry` (standalone factory), caller's current session
     /// settable per test.
-    struct Harness {
-        runtime: Arc<SessionManagerRuntime>,
-        manager: Arc<tokio::sync::RwLock<SessionManager>>,
-        current: Arc<tokio::sync::RwLock<Option<String>>>,
-        registry: Arc<InboxRegistry>,
+    pub(crate) struct Harness {
+        pub(crate) runtime: Arc<SessionManagerRuntime>,
+        pub(crate) manager: Arc<tokio::sync::RwLock<SessionManager>>,
+        pub(crate) current: Arc<tokio::sync::RwLock<Option<String>>>,
+        pub(crate) registry: Arc<InboxRegistry>,
         /// Held only to keep the tempdir alive for the harness's
         /// lifetime (the manager reads/writes under it).
-        _temp: TempDir,
+        pub(crate) _temp: TempDir,
     }
 
     impl Harness {
-        async fn new() -> Self {
+        pub(crate) async fn new() -> Self {
             let temp = TempDir::new().unwrap();
             let manager = SessionManager::new()
                 .with_sessions_dir_internal(temp.path())
@@ -1269,15 +1270,26 @@ mod tests {
             }
         }
 
-        async fn set_current(&self, id: &str) {
+        pub(crate) async fn set_current(&self, id: &str) {
             // Sprint 6: convert the literal to its v5-derived UUID
             // form so it matches the canonical id stored in
             // `SessionMetadata.session_id`.
             *self.current.write().await = Some(peko_session::SessionId::from(id).to_string());
         }
 
-        async fn create(&self, id: &str, parent: Option<&str>) {
-            let peer = Subject::User("alice".to_string());
+        pub(crate) async fn create(&self, id: &str, parent: Option<&str>) {
+            self.create_as(id, parent, Subject::User("alice".to_string()), "test-agent")
+                .await;
+        }
+
+        /// Create a session for a specific peer and agent.
+        pub(crate) async fn create_as(
+            &self,
+            id: &str,
+            parent: Option<&str>,
+            peer: Subject,
+            agent: &str,
+        ) {
             let mut options = SessionCreateOptions::new().with_session_id(id);
             if let Some(parent) = parent {
                 options = options.with_parent(parent);
@@ -1285,12 +1297,12 @@ mod tests {
             self.manager
                 .write()
                 .await
-                .create_session("test-agent", &peer, options)
+                .create_session(agent, &peer, options)
                 .await
                 .unwrap();
         }
 
-        async fn add_user_message(&self, id: &str, text: &str) {
+        pub(crate) async fn add_user_message(&self, id: &str, text: &str) {
             // Sprint 6: convert the literal to its v5-derived UUID
             // form so it matches the canonical id stored in
             // `SessionMetadata.session_id`.
@@ -1307,7 +1319,12 @@ mod tests {
         /// Append an assistant message carrying a provider usage
         /// stamp (the per-iteration record the cache-window and
         /// current-run-iteration scans aggregate).
-        async fn add_assistant_with_usage(&self, id: &str, text: &str, usage: TokenUsage) {
+        pub(crate) async fn add_assistant_with_usage(
+            &self,
+            id: &str,
+            text: &str,
+            usage: TokenUsage,
+        ) {
             let id = peko_session::SessionId::from(id).to_string();
             let mut manager = self.manager.write().await;
             let handle = manager
@@ -1320,7 +1337,7 @@ mod tests {
 
         /// Append a user-role message with an explicit source tag
         /// (e.g. `Hook` for `<runtime-context>` injections).
-        async fn add_user_with_source(
+        pub(crate) async fn add_user_with_source(
             &self,
             id: &str,
             text: &str,
@@ -1339,7 +1356,7 @@ mod tests {
         /// Append a compaction boundary event directly to the
         /// session JSONL (the durable marker the cache window
         /// stops at).
-        async fn add_compaction(&self, id: &str) {
+        pub(crate) async fn add_compaction(&self, id: &str) {
             let id = peko_session::SessionId::from(id).to_string();
             let sessions_dir = self
                 .manager
@@ -1350,6 +1367,23 @@ mod tests {
                 .expect("sessions dir set");
             SessionStorage::new(sessions_dir)
                 .append_compaction(&id, None, "summary", 1, 100, 10, 1, None)
+                .await
+                .unwrap();
+        }
+    }
+
+    impl Harness {
+        /// Set a session's slug directly through the manager (the raw
+        /// write path; uniqueness is enforced by the controller).
+        pub(crate) async fn set_slug(&self, id: &str, slug: &str) {
+            // Sprint 6: convert the literal to its v5-derived UUID
+            // form so it matches the canonical id stored in
+            // `SessionMetadata.session_id`.
+            let id = peko_session::SessionId::from(id).to_string();
+            self.manager
+                .read()
+                .await
+                .set_session_slug(&id, Some(slug.to_string()))
                 .await
                 .unwrap();
         }
@@ -1370,7 +1404,7 @@ mod tests {
     /// so every child carries a slug from the start. Tests that want
     /// to exercise raw-id paths should construct their own tree with
     /// `Harness::create` directly.
-    async fn tree_harness(current: &str) -> Harness {
+    pub(crate) async fn tree_harness(current: &str) -> Harness {
         let h = Harness::new().await;
         h.create("root:user:alice", None).await;
         h.create("spawn1", Some(sid("root:user:alice").as_str()))
@@ -1384,6 +1418,13 @@ mod tests {
         h.set_current(current).await;
         h
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+    use peko_tools_core::Tool;
 
     #[tokio::test]
     async fn session_tool_applies_integral_json_limits_instead_of_defaulting() {
@@ -2019,23 +2060,6 @@ mod tests {
     }
 
     // ─── Slugs + path addressing (Phase 1b) ─────────────────────────
-
-    impl Harness {
-        /// Set a session's slug directly through the manager (the raw
-        /// write path; uniqueness is enforced by the controller).
-        async fn set_slug(&self, id: &str, slug: &str) {
-            // Sprint 6: convert the literal to its v5-derived UUID
-            // form so it matches the canonical id stored in
-            // `SessionMetadata.session_id`.
-            let id = peko_session::SessionId::from(id).to_string();
-            self.manager
-                .read()
-                .await
-                .set_session_slug(&id, Some(slug.to_string()))
-                .await
-                .unwrap();
-        }
-    }
 
     /// Tree with slugs: root:user:alice ── spawn1 ("a") ── child1 ("b")
     ///                                 └──── spawn2 ("c")

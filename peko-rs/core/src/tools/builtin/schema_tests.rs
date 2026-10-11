@@ -24,6 +24,7 @@ fn tools() -> Vec<Arc<dyn Tool>> {
                 peko_subject::PrincipalId::system().clone(),
             )),
             models: Weak::new(),
+            sessions: super::test_harness::session_runtime("sessions".into()),
         },
         &Fakes::default(),
     )
