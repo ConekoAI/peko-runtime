@@ -305,6 +305,8 @@ Post to a channel/group, ask a peer principal and await a reply, or send the ori
 
 channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
 
+A principal:<did> request waits for the reply with no deadline of its own, like any tool call: past the dispatcher's 10-minute foreground wait it detaches and the reply reaches the caller's session when it lands. The target's channel responder drives the turn with the same driver as `peko send` (no time limit, stoppable with `peko stop`) and answers every request on the DM channel — a failed turn as a `⚠ Run failed:` reply, which the caller reports as a tool error.
+
 ### ChannelRead
 
 Read or search channel events with backward/forward pagination.

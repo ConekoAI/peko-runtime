@@ -40,6 +40,18 @@ All notable changes to Peko.
   Cron expressions without a timezone use the machine's zone (recorded on
   the job), and Cron list shows each job's schedule and message.
 - Unit tests no longer write task files into the user's data directory.
+- Turns a channel post starts — another principal's post on a DM channel,
+  a user's post in a group channel — now run through the same driver as
+  `peko send` (`PeerChildTurns::drive_turn_streaming`): no time limit
+  (they were killed at 300 s and nothing was posted), the session's
+  conversation context, and a stop handle so `peko stop` reaches them.
+  On DM channels the responder answers every request: a failed turn as a
+  `⚠ Run failed:` reply, an empty answer or a hand-off to a running turn
+  as a short note. Group channels stay log-only.
+- `ChannelSend` to a principal waits for the reply like any tool call
+  instead of giving up after 60 s: past the 10-minute foreground wait it
+  returns a receipt and the reply is delivered to the session; a failed
+  target turn is a tool error; aborting the call ends the wait.
 
 ### SessionCache removed (2026-10-11)
 

@@ -33,6 +33,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use crate::principal::peer_dm::RUN_FAILED_PREFIX;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_auth::Subject;
@@ -314,6 +316,7 @@ impl ChannelSendTool {
         target_did: &str,
         message: &str,
         via: Option<String>,
+        abort: tokio::sync::watch::Receiver<bool>,
     ) -> Result<serde_json::Value> {
         let Some(target) = ctx.principal_manager.find_by_did(target_did).await else {
             return Ok(self.error_value(
@@ -433,6 +436,7 @@ impl ChannelSendTool {
             &mut rx,
             &line,
             ctx.response_timeout,
+            abort,
             move |ev| match ev {
                 ChannelEvent::Posted {
                     parent: Some(_),
@@ -445,16 +449,19 @@ impl ChannelSendTool {
         )
         .await;
 
-        let Some(text) = reply else {
-            return Ok(self.error_value(
-                "principal",
-                &format!(
-                    "local ChannelSend timed out after {:?} waiting for the reply (target did={}, channel={})",
-                    ctx.response_timeout,
-                    target_did,
-                    target_channel.as_str()
-                ),
-            ));
+        let text = match reply {
+            Ok(text) => text,
+            Err(end) => {
+                return Ok(self.error_value(
+                    "principal",
+                    &format!(
+                        "local ChannelSend {} waiting for the reply (target did={}, channel={})",
+                        end.describe(),
+                        target_did,
+                        target_channel.as_str()
+                    ),
+                ));
+            }
         };
 
         // 4. Mirror the reply onto the caller's own DM channel so
@@ -479,6 +486,12 @@ impl ChannelSendTool {
             );
         }
 
+        if let Some(reason) = text.strip_prefix(RUN_FAILED_PREFIX) {
+            return Ok(self.error_value(
+                "principal",
+                &format!("the target principal could not answer: {reason}"),
+            ));
+        }
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
             response: text,
@@ -494,6 +507,7 @@ impl ChannelSendTool {
     /// Runs entirely on the CALLER's DM channel for the peer: invite
     /// the target's runtime on first contact, root-post the message,
     /// and await the mirrored reply on the channel broadcast.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_remote(
         &self,
         ctx: &CrossRuntimeA2aCtx,
@@ -502,6 +516,7 @@ impl ChannelSendTool {
         message: &str,
         resolution: &AgentResolution,
         via: Option<String>,
+        abort: tokio::sync::watch::Receiver<bool>,
     ) -> Result<serde_json::Value> {
         let await_lock = self.await_lock(target_did);
         let _guard = await_lock.lock().await;
@@ -603,6 +618,7 @@ impl ChannelSendTool {
             &mut rx,
             &line,
             ctx.response_timeout,
+            abort,
             move |ev| match ev {
                 ChannelEvent::Posted {
                     parent: Some(_),
@@ -622,7 +638,14 @@ impl ChannelSendTool {
         .await;
 
         match reply {
-            Some(text) => Ok(serde_json::to_value(ChannelSendResult {
+            Ok(text) if text.starts_with(RUN_FAILED_PREFIX) => Ok(self.error_value(
+                "principal",
+                &format!(
+                    "the target principal could not answer: {}",
+                    &text[RUN_FAILED_PREFIX.len()..]
+                ),
+            )),
+            Ok(text) => Ok(serde_json::to_value(ChannelSendResult {
                 success: true,
                 response: text,
                 task_id: String::new(),
@@ -631,11 +654,11 @@ impl ChannelSendTool {
                 channel: format!("principal:{target_did}"),
                 error: None,
             })?),
-            None => Ok(self.error_value(
+            Err(end) => Ok(self.error_value(
                 "principal",
                 &format!(
-                    "remote ChannelSend timed out after {:?} (target runtime_id={}, channel={})",
-                    ctx.response_timeout,
+                    "remote ChannelSend {} (target runtime_id={}, channel={})",
+                    end.describe(),
                     resolution.runtime_id,
                     channel.as_str()
                 ),
@@ -667,45 +690,92 @@ async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String>
         .then(|| peko_session::path::compute_path(&metas, session_id))
 }
 
+/// Why [`await_reply`] stopped without a reply.
+#[derive(Debug)]
+enum AwaitEnd {
+    /// The configured wait (tests only) elapsed.
+    TimedOut(Duration),
+    /// The call was aborted (stopped run, `Async stop`).
+    Aborted,
+    /// The channel broadcast closed or could not be read.
+    Closed,
+}
+
+impl AwaitEnd {
+    fn describe(&self) -> String {
+        match self {
+            Self::TimedOut(after) => format!("timed out after {after:?}"),
+            Self::Aborted => "was stopped".to_string(),
+            Self::Closed => "lost the channel".to_string(),
+        }
+    }
+}
+
 /// Await the first channel event strictly after `after_line` that
 /// `matches` accepts, returning its text. Wakes on the channel's
 /// per-channel broadcast (subscription must precede the post that
 /// prompts the reply) and re-reads via `peek_with_ids` on every wake —
 /// so a `Lagged` receiver self-repairs, and a reply that landed
-/// between post and first wake is still seen. `None` on timeout or a
-/// closed broadcast.
+/// between post and first wake is still seen.
+///
+/// Like any tool call, the wait has no deadline of its own (`timeout`
+/// is `None` outside tests): the dispatcher detaches a call that runs
+/// past its foreground wait, and the reply is delivered to the caller's
+/// session when it arrives. The responder answers every request — a
+/// failure as a `RUN_FAILED_PREFIX` reply — so the wait ends with the
+/// target's turn; aborting the call ends it sooner.
 async fn await_reply(
     port: &Arc<crate::tunnel::TunnelChannelPort>,
     channel: &peko_channel::ChannelId,
     rx: &mut tokio::sync::broadcast::Receiver<ChannelEvent>,
     after_line: &str,
-    timeout: Duration,
+    timeout: Option<Duration>,
+    mut abort: tokio::sync::watch::Receiver<bool>,
     matches: impl Fn(&ChannelEvent) -> Option<String>,
-) -> Option<String> {
+) -> std::result::Result<String, AwaitEnd> {
     let since = Checkpoint(after_line.to_string());
-    let sleep = tokio::time::sleep(timeout);
-    tokio::pin!(sleep);
+    let deadline = async {
+        match timeout {
+            Some(after) => {
+                tokio::time::sleep(after).await;
+                after
+            }
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(deadline);
     loop {
+        if *abort.borrow() {
+            return Err(AwaitEnd::Aborted);
+        }
         match port.peek_with_ids(channel, &since).await {
             Ok(events) => {
                 for (_id, ev) in events {
                     if let Some(text) = matches(&ev) {
-                        return Some(text);
+                        return Ok(text);
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!(channel = %channel, "ChannelSend: reply peek failed: {e}");
-                return None;
+                return Err(AwaitEnd::Closed);
             }
         }
         tokio::select! {
-            () = &mut sleep => return None,
+            after = &mut deadline => return Err(AwaitEnd::TimedOut(after)),
+            changed = abort.changed() => {
+                // A dropped sender means nobody can abort any more.
+                if changed.is_err() {
+                    abort = tokio::sync::watch::channel(false).1;
+                }
+            }
             recv = rx.recv() => {
                 match recv {
                     // Any append (or a lag gap) → loop and re-peek.
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return Err(AwaitEnd::Closed);
+                    }
                 }
             }
         }
@@ -723,7 +793,7 @@ impl Tool for ChannelSendTool {
 Post a message to a peko channel. The `channel` id selects the branch:
 
 - `chan_<8 base36>` (Bare) — plain fire-and-forget post. The channel id must match one the calling principal is a member of.
-- `principal:<did>` (Principal) — send a message to another Principal and RECEIVE its reply. The conversation lives on the pair's standing DM channel (continuity is automatic — there is no session to name).
+- `principal:<did>` (Principal) — send a message to another Principal and RECEIVE its reply. The conversation lives on the pair's standing DM channel (continuity is automatic — there is no session to name). The call waits for the reply like any tool call: if the other principal is still working after 10 minutes, you get a receipt with a `task_id` and the reply is delivered to your session when it arrives. If its turn fails, the call fails with the reason.
 - `user:<id>` (User) — deliver a fire-and-forget NOTE to that user's conversational session. The note appears in their next turn. Users do NOT reply synchronously; do not wait for an answer. You may only message the user who started this conversation.
 - `group:<slug>` (Group) — plain fire-and-forget post to a group channel.
 
@@ -945,7 +1015,7 @@ impl ChannelSendTool {
         &self,
         channel_id: &ProtoChannelId,
         text: &str,
-        _ctx: &peko_tools_core::exec::ToolContext,
+        ctx: &peko_tools_core::exec::ToolContext,
         via: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
@@ -1007,8 +1077,15 @@ impl ChannelSendTool {
             ));
         }
         if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            self.execute_local(cross_runtime, &caller, target_principal_did, text, via)
-                .await
+            self.execute_local(
+                cross_runtime,
+                &caller,
+                target_principal_did,
+                text,
+                via,
+                ctx.abort_signal(),
+            )
+            .await
         } else {
             self.execute_remote(
                 cross_runtime,
@@ -1017,6 +1094,7 @@ impl ChannelSendTool {
                 text,
                 &resolution,
                 via,
+                ctx.abort_signal(),
             )
             .await
         }

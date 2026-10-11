@@ -244,6 +244,12 @@ pub(crate) async fn post_peer_dm_inbound(
     Ok(())
 }
 
+/// Prefix of the reply a principal posts when its turn on a DM channel
+/// failed. The ingress paths and the channel responder both post it, so
+/// a peer awaiting the reply (`ChannelSend`'s principal branch) can tell
+/// a failure from an answer.
+pub(crate) const RUN_FAILED_PREFIX: &str = "⚠ Run failed: ";
+
 /// Phase 11: post the principal's reply back to the DM channel
 /// (plain `post` — author = `principal.id`, e.g. `prin_<uuid>`).
 ///

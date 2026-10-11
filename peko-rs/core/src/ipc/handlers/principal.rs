@@ -2071,7 +2071,7 @@ async fn run_principal_send(
     let interrupt_acked = Arc::new(tokio::sync::Notify::new());
     let run_handle = StreamingRunHandle {
         principal_name: name.clone(),
-        peer: peer.clone(),
+        peer: Some(peer.clone()),
         cancel: cancel.clone(),
         interrupt_acked: Arc::clone(&interrupt_acked),
     };
@@ -2180,7 +2180,10 @@ async fn run_principal_send(
                         channel_port.as_ref(),
                         &principal,
                         dm_channel.as_ref(),
-                        &format!("⚠ Run failed: connection lost mid-run ({e})"),
+                        &format!(
+                        "{}connection lost mid-run ({e})",
+                        crate::principal::peer_dm::RUN_FAILED_PREFIX
+                    ),
                     )
                     .await;
                     let done = ResponsePacket::Done {
@@ -2292,7 +2295,10 @@ async fn run_principal_send(
                     channel_port.as_ref(),
                     &principal,
                     dm_channel.as_ref(),
-                    &format!("⚠ Run failed: connection lost mid-run ({e})"),
+                    &format!(
+                        "{}connection lost mid-run ({e})",
+                        crate::principal::peer_dm::RUN_FAILED_PREFIX
+                    ),
                 )
                 .await;
                 let done = ResponsePacket::Done {
@@ -2480,7 +2486,7 @@ async fn run_principal_send(
                     channel_port.as_ref(),
                     &principal,
                     dm_channel.as_ref(),
-                    &format!("⚠ Run failed: {message}"),
+                    &format!("{}{message}", crate::principal::peer_dm::RUN_FAILED_PREFIX),
                 )
                 .await;
             }
@@ -2653,7 +2659,7 @@ async fn run_steering_successor(
         let cancel = tokio_util::sync::CancellationToken::new();
         let run_handle = StreamingRunHandle {
             principal_name: principal.name().await,
-            peer: peer.clone(),
+            peer: Some(peer.clone()),
             cancel: cancel.clone(),
             interrupt_acked: Arc::new(tokio::sync::Notify::new()),
         };
@@ -2713,7 +2719,7 @@ async fn run_steering_successor(
                 channel_port.as_ref(),
                 principal,
                 dm_channel.as_ref(),
-                &format!("⚠ Run failed: {msg}"),
+                &format!("{}{msg}", crate::principal::peer_dm::RUN_FAILED_PREFIX),
             )
             .await;
             let error = ResponsePacket::Error {

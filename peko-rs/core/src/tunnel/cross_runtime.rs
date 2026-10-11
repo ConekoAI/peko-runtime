@@ -64,10 +64,12 @@ pub struct CrossRuntimeA2aCtx {
     /// `local().list_remote_members` (first-contact detection).
     pub channel_port: Arc<TunnelChannelPort>,
 
-    /// How long to wait for the peer's reply post on the DM channel
-    /// before surfacing a timeout error to the calling agent.
-    /// Production default is 60s; tests use sub-second values.
-    pub response_timeout: Duration,
+    /// An optional limit on the wait for the peer's reply post. `None`
+    /// (production) waits like any tool call: the dispatcher detaches a
+    /// long call and delivers the reply when it lands, and the peer's
+    /// responder answers every request (failures included). Tests set
+    /// sub-second limits.
+    pub response_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for CrossRuntimeA2aCtx {

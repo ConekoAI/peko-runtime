@@ -10,14 +10,15 @@
 //!
 //! ## Design decisions
 //!
-//! - **Turn driving: the subagent resume path.** Turns are driven by
-//!   [`SubagentResumeDriver`], a thin wrapper over
-//!   `SubagentExecutor::resume_and_execute` — the same path the `Agent`
-//!   tool's `resume` action uses. Bound sessions are expected to be
-//!   spawned sessions (standing children carry `trigger="spawn"`), which
-//!   is exactly what the resume guards require; the session's prior
-//!   history loads from its JSONL, so the child continues with full
-//!   context. The alternative — a `PrincipalManager`-based receive path
+//! - **Turn driving: the ingress turn driver.** Turns are driven by
+//!   [`PeerTurnDriver`] over `PeerChildTurns::drive_turn_streaming` —
+//!   the same call every ingress path (`peko send`, Hub, A2A) makes, so
+//!   a post's turn is the same turn whichever side drives it: no time
+//!   limit, the session's conversation context, and a stop handle in
+//!   the daemon's streaming-run registry (`peko stop`). Bound sessions
+//!   are standing children (`trigger="spawn"`), which is what the
+//!   resume guards require; the session's prior history loads from its
+//!   JSONL, so the child continues with full context. The alternative — a `PrincipalManager`-based receive path
 //!   — was rejected: `receive`/`receive_trunk` land turns in root
 //!   sessions (`root:{peer}` / `root:self`) and run the *root* agent
 //!   prompt, neither of which fits "wake the bound child session".
@@ -97,28 +98,32 @@
 //!   ingress path uses. The running loop drains steering as user-role
 //!   input at its next iteration boundary, whichever path drives that
 //!   run, so the post reaches the agent with the live turn's own
-//!   delivery semantics — and gets NO threaded channel reply from the
-//!   responder. Leftover watch: steering pushed during the active
+//!   delivery semantics; on the DM tier the responder answers the post
+//!   with a short threaded note saying so (a waiting `ChannelSend`
+//!   caller gets a reply), and the running turn answers separately.
+//!   Leftover watch: steering pushed during the active
 //!   run's FINAL iteration would sit undrained forever (the IPC
 //!   path's "Gap-2" race), so the responder — still holding
 //!   `turn_lock`, preserving per-channel ordering — polls until the
-//!   session's run ends (bounded by the driver's turn timeout +
-//!   `COMPLETION_WAIT_MARGIN_SECS` + slack), then atomically drains
+//!   session's run ends (no deadline — runs have no time limit; a
+//!   stop ends them), then atomically drains
 //!   the inbox and drives one successor turn per leftover message,
 //!   posting each reply as a ROOT post (the original event
 //!   correlation is lost once converted to steering, so there is
 //!   nothing to thread onto; principal-authored root posts are
 //!   self-suppressed by `response_trigger`, so this is loop-safe).
 //!   An empty drain means the active run consumed the steering
-//!   itself — the common case — and nothing more happens; a wait
-//!   timeout leaves the steering queued for a future run (no
-//!   infinite retry). IPC-queued and collision-queued steering share
+//!   itself — the common case — and nothing more happens. IPC-queued and collision-queued steering share
 //!   the inbox; the atomic `drain_all` means whoever drains it
 //!   drives the turn — no double-driving.
-//! - **Failure policy: log-only.** A failed resolution or turn logs a
-//!   warning and posts NOTHING — a broken binding must never error-spam
-//!   a channel its other members read. (The trunk/cron paths follow the
-//!   same log-only idiom.)
+//! - **Failure policy: answered on the DM tier, log-only on the group
+//!   tier.** Every post that wakes a DM-bound session is another
+//!   principal's request, and a `ChannelSend` caller may be waiting on
+//!   the threaded reply, so a failed resolution or turn is answered
+//!   with a `RUN_FAILED_PREFIX` reply (the same notice the ingress
+//!   paths post) and an empty answer with a short note. Group channels
+//!   keep the log-only skip — a broken wake must never error-spam a
+//!   channel many members read.
 //! - **Restart semantics.** Subscriber cursors are persisted (Phase 0)
 //!   and loaded at spawn; a daemon restart does not re-fire channel
 //!   history through the responder. Delivery is still at-most-once
@@ -151,8 +156,7 @@
 //! child session (`/group-<slug>`, provisioned via
 //! [`crate::principal::peer_children::ensure_group_child`] — the
 //! peer-DM child mechanism keyed on the channel instead of a peer),
-//! driven by the same [`SubagentResumeDriver`] machinery as the DM
-//! path. The responder posts the turn's final text back to the channel
+//! driven by the same [`PeerTurnDriver`] as the DM path. The responder posts the turn's final text back to the channel
 //! as the principal, threaded onto the triggering post — the agent
 //! does NOT need the `ChannelSend` tool for the reply (mirroring the
 //! DM responder, which also posts the reply itself). The turn input is
@@ -197,21 +201,20 @@ use peko_session::manager::SessionManager;
 use peko_session::SteeringMessage;
 use peko_subject::{PrincipalId, Subject};
 
-use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::async_exec::executor::registry::TaskMetadata;
-use crate::async_exec::executor::AsyncTaskStatus;
+use crate::daemon::state::StreamingRunHandle;
+use crate::principal::child_turns::PeerChildTurns;
 use crate::principal::manager::PrincipalManager;
+use crate::principal::peer_dm::RUN_FAILED_PREFIX;
 use crate::principal::Principal;
 use crate::session::ownership::is_run_active_error;
 
-/// Extra slack on top of the turn's own timeout when waiting for a
-/// bound-session run to reach a terminal registry state.
-const COMPLETION_WAIT_MARGIN_SECS: u64 = 30;
-
-/// Poll interval for the run-completion wait. Mirrors the 50ms poll in
-/// `AsyncTaskRegistry::wait_for_completion` (which we deliberately do
-/// NOT use — see [`SubagentResumeDriver::drive_turn`]).
+/// Poll interval while the collision watch waits for another path's
+/// run on the bound session to end.
 const COMPLETION_POLL_MS: u64 = 50;
+
+/// The daemon's in-flight streaming-run registry (`AppState::streaming_runs`),
+/// keyed by session id; `PrincipalStop` cancels runs through it.
+pub(crate) type StreamingRuns = Arc<std::sync::Mutex<HashMap<String, StreamingRunHandle>>>;
 
 // ---------------------------------------------------------------------------
 // Turn-driver + binding-resolver seams
@@ -220,16 +223,14 @@ const COMPLETION_POLL_MS: u64 = 50;
 /// Drives one LLM turn in an existing session of the principal's tree
 /// and returns the final response text. Trait seam so the responder's
 /// decision logic is unit-testable without a provider; the production
-/// impl is [`SubagentResumeDriver`].
+/// impl is [`PeerTurnDriver`].
 ///
-/// The three collision-seam methods (`steering_inbox`,
-/// `has_active_run`, `active_run_wait_bound`) support the run-active
-/// collision path: when `drive_turn` refuses with `err_run_active`,
-/// the responder converts the post to queued steering via
-/// [`Self::steering_inbox`], polls [`Self::has_active_run`] until the
-/// in-flight run ends (bounded by [`Self::active_run_wait_bound`]),
-/// and drives successor turns for whatever steering was left
-/// undrained. They ride this trait (rather than extra fields on
+/// The two collision-seam methods (`steering_inbox`, `has_active_run`)
+/// support the run-active collision path: when `drive_turn` refuses
+/// with `err_run_active`, the responder converts the post to queued
+/// steering via [`Self::steering_inbox`], polls
+/// [`Self::has_active_run`] until the in-flight run ends, and drives
+/// successor turns for whatever steering was left undrained. They ride this trait (rather than extra fields on
 /// `ResponderInner`) because `ResponderInner` already holds the driver
 /// and the probe must stay stubbable in tests. The defaults disable
 /// the collision path entirely (the wake keeps the log-only skip).
@@ -253,16 +254,6 @@ pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
     async fn has_active_run(&self, session_id: &str) -> bool {
         let _ = session_id;
         false
-    }
-
-    /// Upper bound for the post-collision leftover watch: how long the
-    /// in-flight run may still take. Mirrors `drive_turn`'s own
-    /// completion wait (`ExecutionConfig::timeout_seconds` +
-    /// [`COMPLETION_WAIT_MARGIN_SECS`]) plus a small slack.
-    fn active_run_wait_bound(&self) -> Duration {
-        Duration::from_secs(
-            ExecutionConfig::default().timeout_seconds + COMPLETION_WAIT_MARGIN_SECS + 5,
-        )
     }
 }
 
@@ -317,6 +308,13 @@ struct ResponderInner {
     /// queues behind the in-flight turn instead of double-running the
     /// bound session.
     turn_lock: tokio::sync::Mutex<()>,
+    /// DM tier: every triggering post is another principal's request,
+    /// and a `ChannelSend` caller may be waiting on the threaded reply,
+    /// so the responder always answers it — a failure as a
+    /// [`RUN_FAILED_PREFIX`] reply, an empty answer or a hand-off to a
+    /// running turn as a short note. Group tier keeps failures log-only
+    /// so a broken wake never spams a multi-party channel.
+    answers_requests: bool,
 }
 
 impl PassiveBindingResponder {
@@ -349,6 +347,7 @@ impl PassiveBindingResponder {
                 driver,
                 resolved_session: tokio::sync::OnceCell::new(),
                 turn_lock: tokio::sync::Mutex::new(()),
+                answers_requests: true,
             }),
         }
     }
@@ -390,8 +389,9 @@ impl PassiveBindingResponder {
 impl ResponderInner {
     /// One full passive-binding cycle for `text`: resolve the binding
     /// (cached), drive the turn (serialized per channel), post the
-    /// reply threaded onto the triggering event (`event_id`). All
-    /// failures are log-only — see the module docs.
+    /// reply threaded onto the triggering event (`event_id`). Failures
+    /// are answered on the DM tier and log-only on the group tier (see
+    /// [`ResponderInner::answers_requests`]).
     async fn run_turn(&self, event_id: String, text: String) {
         let _turn_guard = self.turn_lock.lock().await;
 
@@ -407,6 +407,11 @@ impl ResponderInner {
                     binding = %self.binding,
                     "channel binding: resolution failed (will retry on next event): {e:#}"
                 );
+                self.answer(
+                    &event_id,
+                    &format!("{RUN_FAILED_PREFIX}the bound session could not be resolved: {e:#}"),
+                )
+                .await;
                 return;
             }
         };
@@ -418,8 +423,10 @@ impl ResponderInner {
                     debug!(
                         channel = %self.channel,
                         session = %session_id,
-                        "channel binding: turn produced an empty reply; posting nothing"
+                        "channel binding: turn produced an empty reply"
                     );
+                    self.answer(&event_id, "(the turn finished without a reply)")
+                        .await;
                     return;
                 }
                 // Phase 12a: the reply is threaded onto the triggering
@@ -449,15 +456,40 @@ impl ResponderInner {
                 // and the module docs' "Run-active collision" bullet.
                 // Every other failure keeps the log-only skip.
                 if is_run_active_error(&e) {
+                    self.answer(
+                        &event_id,
+                        "(handed to the turn already running in this session; \
+                         its answer follows separately)",
+                    )
+                    .await;
                     self.handle_busy_collision(&session_id, &text).await;
                 } else {
                     warn!(
                         channel = %self.channel,
                         session = %session_id,
-                        "channel binding: turn failed (posting nothing): {e:#}"
+                        "channel binding: turn failed: {e:#}"
                     );
+                    self.answer(&event_id, &format!("{RUN_FAILED_PREFIX}{e:#}"))
+                        .await;
                 }
             }
+        }
+    }
+
+    /// DM tier only: post `text` threaded onto the triggering event, so a
+    /// requester waiting on the reply gets one. No-op on the group tier.
+    async fn answer(&self, event_id: &str, text: &str) {
+        if !self.answers_requests {
+            return;
+        }
+        let mut msg = PostMsg::reply(event_id.to_string(), text);
+        msg.via = self.via.clone();
+        if let Err(e) = self
+            .port
+            .post(&self.channel, &Subject::from(&self.principal), msg)
+            .await
+        {
+            warn!(channel = %self.channel, "channel binding: answer post failed: {e}");
         }
     }
 
@@ -479,9 +511,9 @@ impl ResponderInner {
     /// there is nothing to thread onto. Principal-authored root posts
     /// are self-suppressed by `response_trigger`, so this is
     /// loop-safe. An empty drain means the active run consumed the
-    /// steering itself (the common case) and nothing more happens; a
-    /// wait timeout leaves the steering queued for a future run (no
-    /// infinite retry).
+    /// steering itself (the common case) and nothing more happens. The
+    /// watch has no deadline: runs have no time limit, and stopping the
+    /// active run (`peko stop`, `Async stop`) ends it.
     async fn handle_busy_collision(&self, session_id: &str, text: &str) {
         let Some(inbox_registry) = self.driver.steering_inbox() else {
             warn!(
@@ -506,22 +538,8 @@ impl ResponderInner {
             "channel binding: run-active collision converted to queued steering"
         );
 
-        // Leftover watch: poll until the in-flight run ends, bounded
-        // by the driver's turn-timeout-derived bound.
-        let deadline = tokio::time::Instant::now() + self.driver.active_run_wait_bound();
-        loop {
-            if !self.driver.has_active_run(session_id).await {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                warn!(
-                    channel = %self.channel,
-                    session = %session_id,
-                    "channel binding: active run outlasted the collision watch; \
-                     steering stays queued for a future run"
-                );
-                return;
-            }
+        // Leftover watch: poll until the in-flight run ends.
+        while self.driver.has_active_run(session_id).await {
             tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
         }
 
@@ -687,6 +705,7 @@ impl GroupWakeResponder {
                 driver,
                 resolved_session: tokio::sync::OnceCell::new(),
                 turn_lock: tokio::sync::Mutex::new(()),
+                answers_requests: false,
             }),
         }
     }
@@ -827,116 +846,120 @@ impl BindingResolver for GroupChildResolver {
 }
 
 // ---------------------------------------------------------------------------
-// SubagentResumeDriver (production)
+// PeerTurnDriver (production)
 // ---------------------------------------------------------------------------
 
-/// Production [`BoundTurnDriver`]: drives the turn through
-/// `SubagentExecutor::resume_and_execute` — the same machinery the
-/// `Agent` tool's `resume` action uses — then waits for the run to
-/// reach a terminal registry state and extracts the final text.
-///
-/// The parent session key is the principal's trunk (`root:self`,
-/// Phase 7): a base-session caller, so the ownership guards admit any
-/// session in the principal's tree (and while the trunk is dangling,
-/// the subtree check still admits its own children — exactly where
-/// standing children live).
-pub(crate) struct SubagentResumeDriver {
-    executor: SubagentExecutor,
-    parent_session_key: String,
+/// Production [`BoundTurnDriver`]: the same turn driver every ingress
+/// path uses ([`PeerChildTurns::drive_turn_streaming`]), so a turn a
+/// channel post starts gets exactly what a `peko send` turn gets — no
+/// time limit, the session's conversation context (peer + DM channel),
+/// and a cancellation token registered in the daemon's streaming-run
+/// registry, so `peko stop` stops it like any other turn.
+pub(crate) struct PeerTurnDriver {
+    turns: Arc<PeerChildTurns>,
+    /// `None` outside the daemon (tests): turns run without a stop
+    /// handle.
+    runs: Option<StreamingRuns>,
+    principal_name: String,
 }
 
-impl SubagentResumeDriver {
-    pub(crate) fn new(executor: SubagentExecutor, parent_session_key: String) -> Self {
+impl PeerTurnDriver {
+    pub(crate) fn new(
+        turns: Arc<PeerChildTurns>,
+        runs: Option<StreamingRuns>,
+        principal_name: String,
+    ) -> Self {
         Self {
-            executor,
-            parent_session_key,
+            turns,
+            runs,
+            principal_name,
+        }
+    }
+}
+
+/// Removes this turn's entry from the streaming-run registry when the
+/// turn ends — only if the entry is still this turn's (identified by
+/// its `interrupt_acked` handle), never another run's.
+struct RunRegistration {
+    runs: StreamingRuns,
+    session_id: String,
+    marker: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for RunRegistration {
+    fn drop(&mut self) {
+        let mut runs = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if runs
+            .get(&self.session_id)
+            .is_some_and(|h| Arc::ptr_eq(&h.interrupt_acked, &self.marker))
+        {
+            runs.remove(&self.session_id);
         }
     }
 }
 
 #[async_trait]
-impl BoundTurnDriver for SubagentResumeDriver {
+impl BoundTurnDriver for PeerTurnDriver {
     async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
-        // No completion announcement: the reply goes to the CHANNEL,
-        // not the parent session's inbox. Conversation mode (no
-        // subagent framing, prior history loaded, shared run admission).
-        // A channel-driven turn is part of the peer's ongoing conversation,
-        // same as the streaming ingress path.
-        // Everything else defaults (cleanup: Keep — bound sessions
-        // outlive their runs; timeout 300s).
-        let config = ExecutionConfig {
-            conversation: true,
-            ..ExecutionConfig::default()
-        };
-        let wait_timeout =
-            Duration::from_secs(config.timeout_seconds + COMPLETION_WAIT_MARGIN_SECS);
-
-        let run_id = self
-            .executor
-            .resume_and_execute(message, session_id, &self.parent_session_key, config, None)
-            .await?;
-
-        // Poll for a terminal state with SHORT-LIVED read guards. The
-        // registry's own `wait_for_completion` holds its read guard
-        // across the whole wait, which would block the completing
-        // task's write-guard status update and deadlock until timeout —
-        // so we re-acquire per poll instead.
-        let registry = Arc::clone(self.executor.registry());
-        let deadline = tokio::time::Instant::now() + wait_timeout;
-        loop {
-            let status = registry.read().await.check_status(&run_id);
-            match status {
-                Some(AsyncTaskStatus::Completed { .. }) => {
-                    let output = {
-                        let guard = registry.read().await;
-                        guard.get(&run_id).and_then(|entry| match &entry.metadata {
-                            TaskMetadata::Subagent(meta) => {
-                                meta.subagent_result.as_ref().and_then(|r| r.output.clone())
-                            }
-                            _ => None,
-                        })
-                    };
-                    return output.ok_or_else(|| {
-                        anyhow::anyhow!("bound-session run {run_id} completed without output")
-                    });
-                }
-                Some(AsyncTaskStatus::Failed { error }) => {
-                    return Err(anyhow::anyhow!("bound-session turn failed: {error}"));
-                }
-                Some(AsyncTaskStatus::Cancelled) => {
-                    return Err(anyhow::anyhow!("bound-session run {run_id} was cancelled"));
-                }
-                Some(_) => {
-                    if tokio::time::Instant::now() >= deadline {
-                        return Err(anyhow::anyhow!(
-                            "bound-session run {run_id} timed out after {wait_timeout:?}"
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_millis(COMPLETION_POLL_MS)).await;
-                }
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "bound-session run {run_id} vanished from the registry"
-                    ));
-                }
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Register a stop handle unless another run already holds the
+        // session's entry (that run's preflight refusal follows below).
+        let _registration = self.runs.as_ref().and_then(|runs| {
+            let marker = Arc::new(tokio::sync::Notify::new());
+            let mut guard = runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if guard.contains_key(session_id) {
+                return None;
             }
+            guard.insert(
+                session_id.to_string(),
+                StreamingRunHandle {
+                    principal_name: self.principal_name.clone(),
+                    peer: None,
+                    cancel: cancel.clone(),
+                    interrupt_acked: Arc::clone(&marker),
+                },
+            );
+            Some(RunRegistration {
+                runs: Arc::clone(runs),
+                session_id: session_id.to_string(),
+                marker,
+            })
+        });
+        let outcome = self
+            .turns
+            .drive_turn_streaming(
+                session_id,
+                message,
+                Arc::new(|_event| {}),
+                Some(cancel.clone()),
+                None,
+            )
+            .await;
+        match outcome {
+            Ok(outcome) => Ok(outcome.final_text),
+            Err(_) if cancel.is_cancelled() => Err(anyhow::anyhow!("stopped by user")),
+            Err(e) => Err(e),
         }
     }
 
-    /// The daemon-shared steering inbox the executor was bound to at
-    /// construction (`PeerChildTurns::build` passes the principal
-    /// manager's registry), so collision-queued steering lands in the
-    /// same inbox the running loop drains.
+    /// The daemon-shared steering inbox the turns drain, so
+    /// collision-queued steering lands in the inbox the running loop
+    /// drains.
     fn steering_inbox(&self) -> Option<Arc<peko_session::InboxRegistry>> {
-        self.executor.inbox_registry()
+        self.turns.executor().inbox_registry()
     }
 
-    /// The same registry check `resume_and_execute`'s preflight
-    /// refuses on, keyed by the same canonical child session id the
-    /// responder resolved (resolution is the identity for an
-    /// already-canonical id, so the keys cannot drift).
+    /// The same registry check the turn's preflight refuses on.
     async fn has_active_run(&self, session_id: &str) -> bool {
-        self.executor.has_active_run_for_child(session_id).await
+        self.turns
+            .executor()
+            .has_active_run_for_child(session_id)
+            .await
     }
 }
 
@@ -1012,7 +1035,7 @@ pub(crate) fn select_responder(
 /// hooks ([`Self::ensure_subscriber`], called from `ChannelHost`'s
 /// `channel_created` / `ensure_invitee_subscriber` impls on `AppState`).
 ///
-/// Also owns the per-principal [`SubagentResumeDriver`] cache — driver
+/// Also owns the per-principal [`PeerTurnDriver`] cache — driver
 /// construction resolves the principal's provider, so it happens once
 /// per principal (first bound channel), not once per message.
 ///
@@ -1038,12 +1061,15 @@ pub(crate) struct ChannelBindingSupervisor {
         HashMap<
             PrincipalId,
             (
-                Arc<SubagentResumeDriver>,
+                Arc<PeerTurnDriver>,
                 Arc<SessionStoreBindingResolver>,
                 Arc<GroupChildResolver>,
             ),
         >,
     >,
+    /// The daemon's streaming-run registry, so responder turns are
+    /// stoppable like ingress turns. `None` outside the daemon.
+    streaming_runs: Option<StreamingRuns>,
 }
 
 impl ChannelBindingSupervisor {
@@ -1064,7 +1090,16 @@ impl ChannelBindingSupervisor {
             observability,
             spawned: std::sync::Mutex::new(HashSet::new()),
             drivers: tokio::sync::RwLock::new(HashMap::new()),
+            streaming_runs: None,
         }
+    }
+
+    /// Register responder turns in the daemon's streaming-run registry
+    /// (`AppState::streaming_runs`) so `peko stop` reaches them.
+    #[must_use]
+    pub(crate) fn with_streaming_runs(mut self, runs: StreamingRuns) -> Self {
+        self.streaming_runs = Some(runs);
+        self
     }
 
     /// Boot path: spawn one subscriber per (loaded principal × channel
@@ -1231,7 +1266,7 @@ impl ChannelBindingSupervisor {
         &self,
         principal: &Arc<Principal>,
     ) -> Option<(
-        Arc<SubagentResumeDriver>,
+        Arc<PeerTurnDriver>,
         Arc<SessionStoreBindingResolver>,
         Arc<GroupChildResolver>,
     )> {
@@ -1277,9 +1312,12 @@ impl ChannelBindingSupervisor {
         };
 
         let owner_root = turns.parent_session_key().to_string();
-        let turn_driver = Arc::new(SubagentResumeDriver::new(
-            turns.executor().clone(),
-            owner_root.clone(),
+        let principal_name = principal.config.read().await.name.clone();
+        let turns = Arc::new(turns);
+        let turn_driver = Arc::new(PeerTurnDriver::new(
+            Arc::clone(&turns),
+            self.streaming_runs.clone(),
+            principal_name,
         ));
         let binding_resolver = Arc::new(SessionStoreBindingResolver::new(
             Arc::clone(turns.session_manager()),
@@ -2117,19 +2155,33 @@ mod tests {
             .peek(&channel, &peko_channel::Checkpoint::default())
             .await
             .unwrap();
+        // Only the hand-off note, threaded onto the post — no successor
+        // reply.
+        let own: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted {
+                    author,
+                    parent,
+                    text,
+                    ..
+                } if *author == principal.to_string() => Some((parent.clone(), text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(own.len(), 1, "{events:?}");
+        assert_eq!(own[0].0.as_deref(), Some(line.as_str()));
         assert!(
-            !events
-                .iter()
-                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
-                if *author == principal.to_string())),
-            "nothing may be posted when the steering was already drained; got {events:?}"
+            own[0].1.contains("handed to the turn already running"),
+            "{own:?}"
         );
     }
 
-    /// A non-run-active driver failure keeps the log-only skip: no
-    /// steering is queued, no successor turn, no posts.
+    /// A non-run-active driver failure on the DM tier is answered with a
+    /// threaded failure reply (a waiting `ChannelSend` caller must not
+    /// hang); no steering is queued and no successor turn runs.
     #[tokio::test(flavor = "multi_thread")]
-    async fn non_run_active_error_stays_log_only() {
+    async fn non_run_active_error_is_answered_with_a_failure_reply() {
         let driver = CollisionStubDriver::new("unused", anyhow::anyhow!("provider exploded"));
         let calls = Arc::clone(&driver.calls);
         let inbox_registry = Arc::clone(&driver.inbox);
@@ -2174,12 +2226,25 @@ mod tests {
             .peek(&channel, &peko_channel::Checkpoint::default())
             .await
             .unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
-                if *author == principal.to_string())),
-            "a non-collision failure posts nothing; got {events:?}"
+        let own: Vec<_> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted {
+                    author,
+                    parent,
+                    text,
+                    ..
+                } if *author == principal.to_string() => Some((parent.clone(), text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            own,
+            [(
+                Some(line.clone()),
+                format!("{RUN_FAILED_PREFIX}provider exploded")
+            )],
+            "{events:?}"
         );
     }
 
@@ -2483,6 +2548,65 @@ mod tests {
         );
     }
 
+    /// A failed group-wake turn stays log-only: a broken wake must not
+    /// post errors into a channel many members read.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_wake_failure_posts_nothing() {
+        let (store, _tmp) = test_store("group-fail");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store
+            .invite(&channel, &principal, &Subject::User("alice".to_string()))
+            .await
+            .unwrap();
+        let driver = CollisionStubDriver::new("unused", anyhow::anyhow!("provider exploded"));
+        let calls = Arc::clone(&driver.calls);
+        let responder = GroupWakeResponder::new(
+            channel.clone(),
+            principal.clone(),
+            port,
+            Arc::new(StubResolver {
+                id: "session-1".into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
+            Arc::new(driver),
+        );
+        let line = store
+            .post(
+                &channel,
+                &Subject::User("alice".to_string()),
+                PostMsg::root("hello group"),
+            )
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                &line,
+                posted("user:alice", "hello group"),
+            ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let events = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+                if *author == principal.to_string())),
+            "a group failure posts nothing; got {events:?}"
+        );
+    }
+
     /// A principal-authored root post on the group channel drives NO
     /// turn — the D4 loop-safety invariant end-to-end (the group
     /// responder's own reply must not retrigger it either; that case
@@ -2624,62 +2748,81 @@ mod tests {
         assert!(err.to_string().contains("user-a"), "{err}");
     }
 
-    // -- SubagentResumeDriver (real resume path, no provider) ---------------
+    // -- PeerTurnDriver (real ingress turn path, no provider) ---------------
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn driver_runs_a_real_turn_in_the_bound_session() {
-        let (manager, _tmp) = store_with_standing_child().await;
-        // Unique agent name per test (mirrors the subagent integration
+    fn peer_turn_driver(
+        manager: Arc<RwLock<SessionManager>>,
+        runs: Option<StreamingRuns>,
+    ) -> PeerTurnDriver {
+        // Unique agent name per driver (mirrors the subagent integration
         // tests' counter pattern).
         static CTR: AtomicUsize = AtomicUsize::new(0);
         let agent_name = format!(
             "channel-binding-test-{}",
             CTR.fetch_add(1, Ordering::Relaxed)
         );
-        let executor = SubagentExecutor::new(
+        let executor = crate::agents::subagent_executor::SubagentExecutor::new(
             Arc::clone(&manager),
             &agent_name,
             PrincipalId::generate(),
             crate::tools::runtime::ToolingRuntime::standalone(),
         );
-        let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
+        let turns = PeerChildTurns::from_parts(executor, manager, sid("root:user:alice"));
+        PeerTurnDriver::new(Arc::new(turns), runs, "self".to_string())
+    }
+
+    /// The responder's turn is the ingress turn: it runs in the bound
+    /// session with the channel's message, and its stop handle is
+    /// registered for the turn and removed after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn driver_runs_a_real_turn_in_the_bound_session() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        let runs: StreamingRuns = Arc::default();
+        let driver = peer_turn_driver(manager, Some(Arc::clone(&runs)));
 
         // No provider configured: the resume path short-circuits to
-        // its stub completion text (which embeds the task message) and
-        // never appends to the child session. The assertion therefore
-        // pins guard passage + turn execution + output extraction
-        // through the registry wait — the message text flowing into
-        // the turn — rather than session writes (those only happen
-        // once a real provider drives the loop).
+        // its stub completion text (which embeds the task message). The
+        // assertion pins guard passage + turn execution + output
+        // extraction — the message text flowing into the turn.
         let reply = driver
             .drive_turn(&sid("child-1"), "hello from the channel")
             .await
             .unwrap();
         assert!(
-            reply.contains("no provider configured"),
-            "unexpected reply: {reply}"
-        );
-        assert!(
             reply.contains("hello from the channel"),
             "the channel message must reach the turn body: {reply}"
         );
+        assert!(runs.lock().unwrap().is_empty(), "stop handle removed");
+    }
+
+    /// Another run's stop handle is neither replaced nor removed by a
+    /// responder turn on the same session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn driver_leaves_another_runs_stop_handle_alone() {
+        let (manager, _tmp) = store_with_standing_child().await;
+        let runs: StreamingRuns = Arc::default();
+        let theirs = tokio_util::sync::CancellationToken::new();
+        runs.lock().unwrap().insert(
+            sid("child-1"),
+            StreamingRunHandle {
+                principal_name: "self".into(),
+                peer: None,
+                cancel: theirs.clone(),
+                interrupt_acked: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+        let driver = peer_turn_driver(manager, Some(Arc::clone(&runs)));
+        let _ = driver.drive_turn(&sid("child-1"), "hi").await;
+        let runs = runs.lock().unwrap();
+        let kept = runs.get(&sid("child-1")).expect("their entry survives");
+        theirs.cancel();
+        assert!(kept.cancel.is_cancelled(), "still their token");
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn driver_surfaces_guard_refusals_as_errors() {
         let (manager, _tmp) = store_with_standing_child().await;
-        static CTR2: AtomicUsize = AtomicUsize::new(0);
-        let agent_name = format!(
-            "channel-binding-test-guard-{}",
-            CTR2.fetch_add(1, Ordering::Relaxed)
-        );
-        let executor = SubagentExecutor::new(
-            Arc::clone(&manager),
-            &agent_name,
-            PrincipalId::generate(),
-            crate::tools::runtime::ToolingRuntime::standalone(),
-        );
-        let driver = SubagentResumeDriver::new(executor, sid("root:user:alice"));
+        let driver = peer_turn_driver(manager, None);
 
         // The root session itself is not a spawned session — the
         // resume guard refuses it (bound sessions must be spawned).

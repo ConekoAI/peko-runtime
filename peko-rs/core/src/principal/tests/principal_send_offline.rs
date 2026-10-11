@@ -237,6 +237,12 @@ impl Fixture {
     /// Connect the cross-runtime context; the installed tool picks it up
     /// on its next call without re-registration.
     fn connect(&self, response_timeout: Duration) {
+        self.connect_with(Some(response_timeout));
+    }
+
+    /// Like [`Self::connect`]; `None` waits for the reply with no
+    /// deadline, as production does.
+    fn connect_with(&self, response_timeout: Option<Duration>) {
         let runtime_id = "did:key:test-runtime".to_string();
         self.tooling
             .services()
@@ -285,7 +291,7 @@ impl Fixture {
                 caller_runtime_id: CALLER_RUNTIME.into(),
                 principal_manager: self.manager.clone(),
                 channel_port: Arc::new(self.tunnel_port.clone()),
-                response_timeout,
+                response_timeout: Some(response_timeout),
             }));
         rx
     }
@@ -343,6 +349,17 @@ impl Fixture {
     /// `delay`, authored by the target. Replies are produced in arrival
     /// order, one at a time.
     async fn spawn_responder(&self, delay: Duration) -> tokio::task::JoinHandle<()> {
+        self.spawn_responder_answering(delay, |text| format!("pong: {text}"))
+            .await
+    }
+
+    /// A stand-in for the target's channel responder that answers every
+    /// root post from the caller with `answer(text)`, threaded onto it.
+    async fn spawn_responder_answering(
+        &self,
+        delay: Duration,
+        answer: fn(&str) -> String,
+    ) -> tokio::task::JoinHandle<()> {
         let channel = self.target_channel().await;
         let port = self.channel_port.clone();
         let caller_raw = self.caller.id.0.clone();
@@ -373,13 +390,9 @@ impl Fixture {
                     port.post(&channel, &caller, PostMsg::reply(id.clone(), "decoy"))
                         .await
                         .unwrap();
-                    port.post(
-                        &channel,
-                        &target,
-                        PostMsg::reply(id, format!("pong: {text}")),
-                    )
-                    .await
-                    .unwrap();
+                    port.post(&channel, &target, PostMsg::reply(id, answer(&text)))
+                        .await
+                        .unwrap();
                     answered += 1;
                 }
             }
@@ -463,6 +476,63 @@ async fn same_runtime_reply_is_returned_and_mirrored_to_the_callers_log() {
         "reply is parented on the outbound root"
     );
     assert_eq!(rows[1].2, "pong: ping");
+}
+
+/// The target's responder answers a failed turn with a run-failed
+/// reply; the caller turns it into a tool error naming the cause.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn a_failed_target_turn_is_a_tool_error() {
+    let fx = Fixture::new().await;
+    fx.connect_with(None);
+    let responder = fx
+        .spawn_responder_answering(Duration::ZERO, |_| {
+            format!(
+                "{}provider exploded",
+                crate::principal::peer_dm::RUN_FAILED_PREFIX
+            )
+        })
+        .await;
+    let result = fx.send("ping").await;
+    responder.abort();
+    assert_eq!(result["success"], false, "{result}");
+    let error = result["error"].as_str().unwrap();
+    assert!(
+        error.contains("the target principal could not answer: provider exploded"),
+        "{error}"
+    );
+}
+
+/// Without a deadline the call waits like any tool call — here for a
+/// target that never answers — and ends when the call is aborted.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn an_unanswered_request_waits_until_the_call_is_aborted() {
+    let fx = Fixture::new().await;
+    fx.connect_with(None);
+    let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
+    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
+        .with_principal_id(fx.caller.id.0.clone())
+        .with_abort_signal(abort_rx);
+    let call = fx.tool.execute_with_context(
+        serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "ping"}),
+        &ctx,
+    );
+    tokio::pin!(call);
+    // Nothing answers and nothing times the call out.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), &mut call)
+            .await
+            .is_err(),
+        "no deadline: the call is still waiting"
+    );
+    abort_tx.send(true).unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(5), call)
+        .await
+        .expect("abort ends the wait")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("was stopped"), "{error}");
 }
 
 /// Every root post a call makes carries the calling session's slug path
