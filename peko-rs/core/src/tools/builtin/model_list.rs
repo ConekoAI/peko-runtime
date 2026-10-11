@@ -471,6 +471,39 @@ mod tests {
         assert_eq!(all["count"], 3);
     }
 
+    /// Each entry reports its spec; a needle that matches nothing returns
+    /// nothing; one known price (input or output) makes an entry priced.
+    #[tokio::test]
+    async fn entries_report_their_spec_and_filters_exclude_non_matches() {
+        let input_only = ModelSpec {
+            pricing: Some(PricingHint {
+                input_per_million: Some(1.0),
+                output_per_million: None,
+            }),
+            ..text_only_spec()
+        };
+        let cat = catalog_with_entry(entry("cheap", "Cheap", Some(input_only), None)).await;
+        let tool = ModelListTool::new(Arc::downgrade(&cat));
+
+        let all = tool.execute(json!({})).await.expect("execute");
+        let spec = &all["entries"][0]["spec"];
+        assert_eq!(spec["tool_support"], "none", "{all}");
+        assert_eq!(spec["thinking"], "disabled");
+        assert_eq!(spec["image_input"], false);
+        assert_eq!(spec["pricing"]["input_per_million"], 1.0);
+
+        let priced = tool
+            .execute(json!({"filter": "priced"}))
+            .await
+            .expect("execute");
+        assert_eq!(priced["count"], 1, "input price alone counts: {priced}");
+        let none = tool
+            .execute(json!({"contains": "zzz"}))
+            .await
+            .expect("execute");
+        assert_eq!(none["count"], 0, "{none}");
+    }
+
     #[tokio::test]
     async fn model_list_contains_matches_note() {
         let cat = catalog_with_entry(entry(
