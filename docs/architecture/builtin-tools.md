@@ -12,6 +12,16 @@ no tool allowlist or capability filter. Principal bindings select workspace and
 service dependencies; ownership, peer permissions, and channel membership
 control access to resources.
 
+The wire catalog states each field's schema once: in a multi-action tool's
+`oneOf` variants, a field whose constraints match the top-level field is sent as
+`{}` (`ToolMetadata::to_tool_definition`), so the model sees the same accepted
+calls in far fewer tokens. The dispatcher validates against the full schema and
+explains a failure for the action the caller chose — a missing field, a field the
+action does not take (with the ones it does), an either/or group, or an unknown
+action. A call that cannot do what was asked (unknown id, missing channel,
+unknown skill, refused run) is a tool error, never a success carrying an
+`error` field.
+
 ## Naming
 
 Built-in wire names are exact PascalCase names: `Session`, `ModelList`,

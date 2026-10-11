@@ -27,8 +27,8 @@ impl Tool for PlanListAction {
     fn description(&self) -> String {
         r"List every plan owned by the current principal.
 
-Returns `{ count: N, plans: [ ...PlanRecord ] }`. Plans are sorted
-by created_at ascending (matches PlanStorage::list_for_principal)."
+Returns `{ count, plans }` with every plan, open and closed, oldest
+first. A closed plan has a non-null `closed`."
             .to_string()
     }
 

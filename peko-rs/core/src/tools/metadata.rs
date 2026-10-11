@@ -53,15 +53,67 @@ impl ToolMetadata {
         }
     }
 
-    /// Convert to `ToolDefinition` for LLM API
+    /// Convert to `ToolDefinition` for LLM API. The model sees each field's
+    /// schema once: per-action variants keep only what distinguishes them
+    /// (see [`compact_action_variants`]); validation still uses the full
+    /// [`Self::parameters`].
     #[must_use]
     pub fn to_tool_definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name.clone(),
             description: self.description.clone(),
-            parameters: self.parameters.clone(),
+            parameters: compact_action_variants(&self.parameters),
         }
     }
+}
+
+/// Annotation keywords: they inform the model but never change what a
+/// schema accepts.
+const ANNOTATIONS: [&str; 4] = ["description", "default", "examples", "title"];
+
+/// Shrink a schema whose top-level `oneOf` variants repeat the fields
+/// declared under top-level `properties` (the multi-action tools). A
+/// variant field whose constraints match the top-level field becomes `{}`;
+/// one with its own constraints keeps them without the annotations. The
+/// variants still carry their `action` discriminator, `required`, and
+/// combinators, so the compact schema accepts exactly the same calls.
+#[must_use]
+pub fn compact_action_variants(schema: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    let mut compact = schema.clone();
+    let top = schema.get("properties").and_then(Value::as_object);
+    let Some(variants) = compact.get_mut("oneOf").and_then(Value::as_array_mut) else {
+        return compact;
+    };
+    let constraints = |field: &Value| -> Value {
+        let mut field = field.clone();
+        if let Some(object) = field.as_object_mut() {
+            for key in ANNOTATIONS {
+                object.remove(key);
+            }
+        }
+        field
+    };
+    for variant in variants {
+        let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for (name, field) in properties.iter_mut() {
+            if name == "action" {
+                continue;
+            }
+            let own = constraints(field);
+            let shared = top
+                .and_then(|top| top.get(name))
+                .is_some_and(|top_field| constraints(top_field) == own);
+            *field = if shared {
+                Value::Object(serde_json::Map::new())
+            } else {
+                own
+            };
+        }
+    }
+    compact
 }
 
 #[cfg(test)]
@@ -79,5 +131,47 @@ mod tests {
         assert!(encoded.get("exposure").is_none());
         let decoded: ToolMetadata = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.to_tool_definition().name, "Read");
+    }
+
+    #[test]
+    fn variants_keep_only_what_distinguishes_them() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["get", "list"]},
+                "id": {"type": "string", "description": "A long explanation"},
+                "limit": {"type": "integer", "minimum": 0, "description": "Max"},
+            },
+            "required": ["action"],
+            "oneOf": [
+                {"type": "object", "additionalProperties": false, "required": ["action", "id"],
+                 "properties": {
+                     "action": {"const": "get"},
+                     "id": {"type": "string", "description": "A long explanation"}}},
+                {"type": "object", "additionalProperties": false, "required": ["action"],
+                 "properties": {
+                     "action": {"const": "list"},
+                     "limit": {"type": "integer", "minimum": 1, "description": "Max", "default": 50}}},
+            ]
+        });
+        let compact = compact_action_variants(&schema);
+        assert_eq!(compact["properties"], schema["properties"]);
+        assert_eq!(
+            compact["oneOf"][0]["properties"]["id"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            compact["oneOf"][0]["properties"]["action"],
+            serde_json::json!({"const": "get"})
+        );
+        assert_eq!(
+            compact["oneOf"][1]["properties"]["limit"],
+            serde_json::json!({"type": "integer", "minimum": 1}),
+            "a variant's own constraint survives"
+        );
+        assert_eq!(
+            compact["oneOf"][0]["required"],
+            schema["oneOf"][0]["required"]
+        );
     }
 }

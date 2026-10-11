@@ -59,33 +59,25 @@ pub struct SessionTool {
 
 impl SessionTool {
     pub(crate) fn tool_description() -> String {
-        r"Single tool with **10 operations** for inspecting and managing your persisted sessions (pure storage reads/writes — no LLM involvement). The `action` parameter is REQUIRED and MUST be one of:
+        r"Inspect and manage your principal's stored sessions with 10 actions. Pure storage: no LLM runs here; to run work in a session use the Agent tool.
 
-  status | list | history | find | copy | move | remove | list_pages | read_page | search_pages
+## Addressing
+`path` and `target` are absolute slug paths such as `sess:/user-bob/writer-1` — use the `path` field from `list`. `sess:/` is your trunk (readable, and usable as a list/find scope, but never moved or removed). Raw session ids and relative slugs are refused. Actions that read one session default to your current session when `path` is omitted.
 
-Per-action semantics (the action you choose determines which other params apply):
-- status: one session's metadata + token usage (path optional, defaults to current)
-- list: query sessions (filters: path scopes results to a subtree, peer, agent_name, active_minutes)
-- history: messages of a session (path optional, defaults to current; include_tools)
-- find: case-insensitive text search across session transcripts (query required; optional peer filter; optional path subtree scope)
-- copy: duplicate a session to a destination path (path + target required; optional title). `target` is the full destination slug path — last segment = new slug, before-last = new parent (mirrors bash `cp src dst`). The copy is a fresh session JSON file with its own UUID; the source is unchanged. The copy is NOT running; attach a run to it via the Agent tool's resume action.
-- move: reparent, rename, or update retention (path required, plus at least one of target/title/page_limit). `target` is the full destination slug path — last segment = the new slug at the new parent (mirrors bash `mv src dst`). To rename in place, set `target` to `<current_parent>/<new_slug>`. Subtree moves with the session. `title` changes only the display label. `page_limit` is the FIFO retention cap on closed compaction pages (0 = unlimited; pruning is immediate and irreversible).
-- remove: delete a session (path required; recursive:true also deletes its descendants, children first)
-- list_pages: compaction-page catalog of a session (path optional, defaults to current; page numbers are stable across page_limit rotation — first_available_page names the oldest surviving page). Each compaction archives the preceding transcript as a numbered page; the segment after the newest compaction is the live page. Returns page numbers, token estimates, and title excerpts.
-- read_page: render one page's messages as transcript text (path optional, defaults to current; page required — a page number from list_pages; offset/limit window the rendered lines like Read). Responses are hard-capped per call; a truncation marker tells you the next offset. Use it to audit pre-compaction history after a summary looks wrong.
-- search_pages: case-insensitive substring search across ALL pages of a session including the live one (path optional, defaults to current; query required; max_results optional). Hits are page-tagged — follow up with read_page on the hit's page.
+## Actions
+- status: metadata and token usage of one session (`timezone` formats timestamps).
+- list: sessions, optionally limited to the subtree at `path` and filtered by `peer`, `agent_name`, or `active_minutes`.
+- history: a session's messages (`include_tools`, `limit`).
+- find: case-insensitive text search across transcripts (`query`; optional `peer` and subtree `path`).
+- copy: duplicate `path` to `target` (`<parent path>/<new slug>`, like `cp`). The copy is not running; to work on its context use Agent action `branch` with `source` set to the copy.
+- move: reparent and/or rename with `target` (like `mv`; children move along), change the display `title`, or set `page_limit`, the number of closed compaction pages kept (0 = unlimited; older pages are deleted immediately and permanently).
+- remove: delete a session; `recursive: true` also deletes its descendants.
+- list_pages: the compaction pages of a session. Each compaction archives the transcript before it as a numbered page; numbers never shift when old pages are pruned.
+- read_page: one page as transcript text (`page` from list_pages; `offset` / `limit` window the lines). A cut response says which `offset` continues it.
+- search_pages: case-insensitive search across every page including the live one (`query`, `max_results`); follow a hit with read_page.
 
-Default nodes: the principal is seeded with two ordinary standing sessions at creation — `sess:/tmp` (transient, single-use work sessions: keep throwaway sessions here so the rest of the tree stays clean, and remove them when done) and `sess:/trash` (the holding area for removals: stage sessions slated for deletion with `move` into `sess:/trash`, then purge later with `remove recursive:true`; no auto-clean runs). Both are ordinary sessions — renameable, moveable, and removable like any other (removal is permanent; nothing recreates them).
-
-The trunk's listed address is `sess:/`. Use it for history/status/page reads or as a list/find scope anchored at your tree root. Mutation paths still require a nonempty slug segment.
-
-The `path` parameter is an absolute slug path (`sess:/a/b/c`, anchored at the root of YOUR session tree — each segment is a slug; the `sess:` prefix marks it as a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer via `resolve_reference` (match the Agent tool's behavior). Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`, `path` is an organizational SCOPE: results are limited to the named session and its descendants (e.g. action `list` with path `sess:/agent-b` lists that subtree); omit `path` to span the whole store.
-
-The `target` parameter (used by `copy` / `move`) is the destination slug path. Shape: `<parent>/<new_slug>` where `<parent>` is an absolute slug path (`sess:/a/b/c`) and `<new_slug>` is the per-parent-unique segment (1-64 chars, no `/`, no leading/trailing whitespace). Same addressing as `path`; same refusal of raw session ids and caller-relative slugs. Mirrors bash `cp src dst` / `mv src dst`. Required for `copy`; optional for a `move` that only changes title or retention.
-
-Refusals: the principal's trunk session (`root:self`) is continuous and managed by the engine — remove/move on it are refused (moving UNDER the trunk is allowed). You cannot remove or move the session you are currently running in. Sessions with an active run refuse remove/move. A move whose destination is the session itself or one of its descendants is refused (would create a cycle). Sessions are monotonically visible until `remove` — there is no archive: if you want a session out of the way but not gone, `move` it into `sess:/trash` and purge later.
-
-To RUN work in a session, use the Agent tool instead — its four actions (new / resume / compact / branch) drive the LLM. Session ids are stable: the engine pages oversized transcripts and compacts full context windows automatically. To find subagent sessions, look for entries with `parent_session` set (visible on status)."
+## Refusals
+move and remove refuse your trunk, the session you are running in, and any session with an active run; a move into the session's own subtree is refused. There is no archive: to set a session aside, move it into `sess:/trash` and remove it later. New principals start with two ordinary sessions, `sess:/tmp` for throwaway work and `sess:/trash` for pending removals; nothing recreates them once removed."
             .to_string()
     }
 
@@ -96,83 +88,83 @@ To RUN work in a session, use the Agent tool instead — its four actions (new /
                 "action": {
                     "type": "string",
                     "enum": ["status", "list", "history", "find", "copy", "move", "remove", "list_pages", "read_page", "search_pages"],
-                    "description": "What to do: status/list/history read; find searches text; copy/move/remove manage a session's storage; list_pages/read_page/search_pages retrieve compaction-archived pages. To run work in a session, use the Agent tool (new/resume/compact/branch)."
+                    "description": "status/list/history read sessions; find searches transcripts; copy/move/remove manage storage; list_pages/read_page/search_pages read compaction pages"
                 },
                 "path": {
                     "type": "string",
-                    "description": "Session address: an absolute slug path ('sess:/a/b/c', anchored at the root of your session tree; the `sess:` prefix marks a session address, never a filesystem path). Use the `path` field returned by `list`. Raw session ids and caller-relative slugs are REFUSED at the runtime layer. Required: `copy` / `move` / `remove`. Optional: `status` / `history` / `list_pages` / `read_page` / `search_pages` (defaults to current session). For `list` / `find`: subtree SCOPE — results are limited to the named session and its descendants; omit to span the whole store. Addresses here are always ABSOLUTE; only the Agent tool's `new` / `branch` additionally accept a caller-relative slug segment (they mint a session under yours)."
+                    "description": "Absolute slug path ('sess:/a/b', from list). Required for copy/move/remove; defaults to your session for reads; a subtree scope for list/find"
                 },
                 "target": {
                     "type": "string",
-                    "description": "Destination slug path `<parent>/<new_slug>`. Required for `copy`; optional for `move` when only title or page_limit changes. `<parent>` is an absolute slug path ('sess:/a/b/c'); `<new_slug>` is the per-parent-unique segment (1-64 chars, no '/', no leading/trailing whitespace). For `move`, set target to `<current_parent>/<new_slug>` to rename in place. Mirrors bash cp/mv. Raw session ids and caller-relative slugs are refused."
+                    "description": "Destination '<parent path>/<new slug>' (slug: 1-64 chars, no '/'); for move, '<current parent>/<new slug>' renames in place"
                 },
                 "query": {
                     "type": "string",
-                    "description": "Required for 'find' and 'search_pages': case-insensitive substring to find in transcripts"
+                    "description": "Case-insensitive text to search for"
                 },
                 "page": {
                     "type": "integer",
                     "maximum": usize::MAX,
                     "minimum": 1,
-                    "description": "Required for 'read_page': the 1-based page number from 'list_pages'"
+                    "description": "Page number from list_pages"
                 },
                 "offset": {
                     "type": "integer",
                     "maximum": usize::MAX,
                     "minimum": 0,
                     "default": 0,
-                    "description": "Optional for 'read_page': rendered-line offset to start from (use the offset named by a truncation marker to continue)"
+                    "description": "Line offset to start from (a cut response names the next one)"
                 },
                 "max_results": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": usize::MAX,
                     "default": 20,
-                    "description": "Optional for 'search_pages': cap on returned hits"
+                    "description": "Most hits to return"
                 },
                 "title": {
                     "type": "string",
-                    "description": "Display title (free-form label; does not affect addressing). Optional for `copy` (title of the new copy) and for `move` (new display title)."
+                    "description": "Display label (does not affect the path)"
                 },
                 "page_limit": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 10000,
-                    "description": "Optional for 'move': retention cap on the session's closed compaction pages (FIFO — the oldest page is PERMANENTLY deleted when the cap is exceeded; pruning is immediate). 0 = unlimited. Surviving page numbers never renumber (first_available_page in list_pages tracks the rotation)."
+                    "description": "Closed compaction pages to keep (0 = unlimited); older pages are deleted immediately and permanently"
                 },
                 "recursive": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Optional for 'remove': also delete the session's descendants (children first)"
+                    "description": "Also delete the session's descendants"
                 },
                 "peer": {
                     "type": "string",
-                    "description": "Optional filter for 'list' and 'find': cross-peer lookup, e.g. 'user:alice' or 'public'. When omitted, results span all peers."
+                    "description": "Only sessions with this peer, e.g. 'user:alice' or 'public'"
                 },
                 "agent_name": {
                     "type": "string",
-                    "description": "Optional filter for 'list': single agent template name (the `agent_name` field on list entries)."
+                    "description": "Only sessions of this agent (the agent_name field of list entries)"
                 },
                 "limit": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": usize::MAX,
-                    "description": "Max results: defaults to 50 for list/find, 100 for history, and 200 rendered lines for read_page."
+                    "description": "Most results (list/find 50, history 100, read_page 200 lines by default)"
                 },
                 "active_minutes": {
                     "type": "integer",
                     "minimum": 0,
                     "maximum": u64::MAX / 60_000,
-                    "description": "Optional for 'list': only sessions active in last N minutes"
+                    "description": "Only sessions active in the last N minutes"
                 },
                 "include_tools": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Optional for 'history': include tool calls and results"
+                    "description": "Include tool calls and results"
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "Optional for 'status': timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')"
+                    "description": "IANA timezone for timestamps, e.g. 'America/New_York'"
                 }
             },
         });

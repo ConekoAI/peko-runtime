@@ -292,6 +292,10 @@ fn schemas_accept_valid_calls_and_reject_incomplete_or_conflicting_calls() {
     for (name, args, expected) in cases {
         let validator = jsonschema::validator_for(&schemas[name]).unwrap();
         assert_eq!(validator.is_valid(&args), expected, "{name}: {args}");
+        // The compact wire schema the model sees accepts the same calls.
+        let wire = crate::tools::metadata::compact_action_variants(&schemas[name]);
+        let validator = jsonschema::validator_for(&wire).unwrap();
+        assert_eq!(validator.is_valid(&args), expected, "wire {name}: {args}");
     }
 }
 
@@ -403,7 +407,12 @@ fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
     for (name, args, irrelevant) in cases {
         let tool = tools.iter().find(|tool| tool.name() == name).unwrap();
         let validator = jsonschema::validator_for(&tool.parameters()).unwrap();
+        let wire = jsonschema::validator_for(&crate::tools::metadata::compact_action_variants(
+            &tool.parameters(),
+        ))
+        .unwrap();
         assert!(validator.is_valid(&args), "{name}: {args}");
+        assert!(wire.is_valid(&args), "wire {name}: {args}");
         for field in ["action", irrelevant, "undeclared_field"] {
             let mut invalid = args.clone();
             let schema = tool.parameters();
@@ -420,10 +429,12 @@ fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
                 }
             };
             assert!(!validator.is_valid(&invalid), "{name}: {invalid}");
+            assert!(!wire.is_valid(&invalid), "wire {name}: {invalid}");
         }
         let mut missing = args;
         missing.as_object_mut().unwrap().remove("action");
         assert!(!validator.is_valid(&missing), "{name}: missing action");
+        assert!(!wire.is_valid(&missing), "wire {name}: missing action");
     }
 }
 

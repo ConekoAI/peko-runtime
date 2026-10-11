@@ -62,9 +62,8 @@ impl Tool for ChannelReadTool {
          has_more, next_cursor}: when `has_more` is true, pass `next_cursor` \
          back as `before` (or `since` after a forward read) to continue. \
          Search mode scans backward from `before` (or the tip) and returns \
-         only matching `posted` events. The kind tag matches \
-         peko_protocol::channel::ChannelEvent (created / posted / member_joined / \
-         member_left)."
+         only matching `posted` events (at most 200 per call). Each event's \
+         `kind` is created, posted, member_joined, or member_left."
             .to_string()
     }
 
