@@ -24,12 +24,9 @@ pub struct AsyncTaskReceipt {
 /// Configuration for async tool execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncToolConfig {
-    /// Maximum time to wait for task completion. `None` means no timeout
-    /// (the task runs to completion or until cancelled). Callers that
-    /// omit a timeout get the default `Some(7200)` from
-    /// [`Default::default`] — the timeout only disappears when a caller
-    /// explicitly maps `0`/unlimited semantics to `None`
-    /// (`SubagentExecutor`'s `timeout_seconds == 0`).
+    /// Maximum time to wait for task completion. `None` (the default)
+    /// means no timeout: the task runs to completion or until cancelled.
+    /// Background work is uncapped unless a caller asks for a limit.
     pub timeout_secs: Option<u64>,
     /// Optional millisecond-precision timeout. When set, takes precedence
     /// over `timeout_secs` so callers can request sub-second timeouts
@@ -117,11 +114,9 @@ fn default_deliver_completion() -> bool {
 impl Default for AsyncToolConfig {
     fn default() -> Self {
         Self {
-            // Default async-task lifetime is 2 hours. Callers can override
-            // per call via `timeout_secs` or `timeout_millis`. Cron schedules
-            // and natural agent spawns both inherit this default; both
-            // surfaces override it explicitly when needed.
-            timeout_secs: Some(7200),
+            // Background tasks have no time limit unless a caller sets
+            // `timeout_secs` or `timeout_millis`.
+            timeout_secs: None,
             timeout_millis: None,
             cleanup_after_delivery: true,
             label: None,

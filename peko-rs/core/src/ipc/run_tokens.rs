@@ -14,8 +14,8 @@
 //! Entries are removed lazily on access (no background sweeper): every
 //! `verify` first drops expired entries. The registry dies with the
 //! daemon process — a restart invalidates every outstanding token,
-//! which is the intended semantics (a token outlives its run by at
-//! most the TTL margin).
+//! which is the intended semantics. The runner revokes a token as soon
+//! as its run ends; the TTL only bounds a token whose revoke never ran.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -49,7 +49,8 @@ pub struct RunTokenEntry {
     /// (`workflow:direct`), which keep the dangling fail-closed
     /// behavior. In-memory only — never a wire field.
     pub caller_session_id: Option<String>,
-    /// Absolute expiry (mint time + run timeout + margin).
+    /// Absolute expiry (mint time + run timeout + margin, or the
+    /// uncapped-run lease).
     pub expires_at: DateTime<Utc>,
 }
 
@@ -58,6 +59,10 @@ pub struct RunTokenEntry {
 #[derive(Debug, Default)]
 pub struct RunTokenRegistry {
     inner: Mutex<HashMap<String, RunTokenEntry>>,
+    /// Every entry ever minted, so tests can inspect a token after its
+    /// run revoked it.
+    #[cfg(test)]
+    minted: Mutex<HashMap<String, RunTokenEntry>>,
 }
 
 impl RunTokenRegistry {
@@ -91,11 +96,34 @@ impl RunTokenRegistry {
             expires_at: Utc::now()
                 + chrono::Duration::from_std(ttl).unwrap_or_else(|_| chrono::Duration::hours(1)),
         };
+        #[cfg(test)]
+        self.minted
+            .lock()
+            .expect("run-token registry poisoned")
+            .insert(token.clone(), entry.clone());
         self.inner
             .lock()
             .expect("run-token registry poisoned")
             .insert(token.clone(), entry);
         token
+    }
+
+    /// Invalidate `token` now (its run ended).
+    pub fn revoke(&self, token: &str) {
+        self.inner
+            .lock()
+            .expect("run-token registry poisoned")
+            .remove(token);
+    }
+
+    /// The entry `token` was minted with, even after revocation.
+    #[cfg(test)]
+    pub fn minted_entry(&self, token: &str) -> Option<RunTokenEntry> {
+        self.minted
+            .lock()
+            .expect("run-token registry poisoned")
+            .get(token)
+            .cloned()
     }
 
     /// Look up a token, returning its entry iff it exists and is
@@ -162,6 +190,14 @@ mod tests {
         let a = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
         let b = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn revoked_token_fails_closed() {
+        let registry = RunTokenRegistry::new();
+        let token = registry.mint("p", "agent:p:workflow:x", 0, None, Duration::from_mins(1));
+        registry.revoke(&token);
+        assert!(registry.verify(&token).is_none());
     }
 
     #[test]

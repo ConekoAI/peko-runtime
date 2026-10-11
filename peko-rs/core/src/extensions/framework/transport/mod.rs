@@ -2,7 +2,7 @@
 //!
 //! ## Module layout
 //!
-//! - [`async_router`]: the concrete router (5-minute timeout funnel +
+//! - [`async_router`]: the concrete router (10-minute foreground wait +
 //!   background detach). The `ToolDispatcher`
 //!   (`crate::tools::dispatcher`) routes tool executions through it.
 //! - [`async_transport`]: the in-process transport (`LocalAsyncTransport`)

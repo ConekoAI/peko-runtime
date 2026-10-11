@@ -10,7 +10,9 @@
 //! the caller principal's background spawner — the same path as
 //! `Async action=spawn tool=Bash` — and the task body then streams its output
 //! into the task's live buffer. Poll with the Async family (output, status,
-//! stop, list); blocking calls are bounded only by `timeout`.
+//! stop, list). A blocking call stops at `timeout` (none by default); one
+//! still running after the framework's 10-minute wait detaches to the
+//! background and keeps running.
 
 use crate::tools::builtin::process::spawn_in_own_group;
 use anyhow::{Context, Result};
@@ -541,8 +543,11 @@ To monitor or cancel the backgrounded command, use Async:
 - `Async({{action: "list", status_filter?, tool_filter?}})` — enumerate all
   background tasks owned by the current principal
 
-The blocking form of this tool (default) is bounded only by the
-`timeout` parameter; there is no implicit auto-detach to background.
+A blocking call (the default) runs until it exits or reaches `timeout`
+(no timeout by default). If it is still running after 10 minutes, the call
+returns a receipt with a `task_id` and the command keeps running in the
+background; its result is delivered to your session when it finishes. Use
+the Async actions above to check on it or stop it.
 "#
         )
     }

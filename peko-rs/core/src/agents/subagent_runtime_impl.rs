@@ -273,6 +273,8 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         let _ = agent; // validated tool-side; the run continues the session's own agent
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
             force_compact: true,
+            // Agent tool runs have no time limit.
+            timeout_seconds: 0,
             ..Default::default()
         };
         let view = self
@@ -305,6 +307,8 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         let _ = agent; // validated tool-side; the run uses the resolved role prompt
         let root_config = crate::agents::subagent_executor::ExecutionConfig {
             page_limit,
+            // Agent tool runs have no time limit.
+            timeout_seconds: 0,
             ..Default::default()
         };
         let view = self

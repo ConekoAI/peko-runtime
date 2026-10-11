@@ -2271,8 +2271,14 @@ impl SubagentExecutor {
 
     /// Wait for a registered run to reach a terminal status and
     /// return its final view. Shared by the spawn and resume paths.
+    /// `timeout_secs == 0` waits without a limit.
     async fn wait_for_run(&self, run_id: &str, timeout_secs: u64) -> Result<SubagentRunView> {
         let run_id = run_id.to_string();
+        let timeout_secs = if timeout_secs == 0 {
+            u64::MAX / 2
+        } else {
+            timeout_secs
+        };
         // Wait for completion using the unified registry.
         // IMPORTANT: Do NOT hold the read lock while sleeping, as the background
         // task needs to acquire a write lock to update status. Holding the read

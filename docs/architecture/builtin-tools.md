@@ -47,8 +47,17 @@ completion events go to that session's inbox. Bash `run_in_background` takes
 the same path as `Async action=spawn tool=Bash`: the dispatcher hands every call
 from a principal a background spawner backed by that principal's Async runtime,
 so both register one task in the principal's executor. A background task's body
-runs inline under the task's own timeout and cancellation — it is not subject to
-the foreground tool timeout — and streams live output to `Async output`.
+runs inline under its own optional timeout and cancellation — it is not subject
+to the foreground wait — and streams live output to `Async output`.
+
+A foreground call waits at most 10 minutes. A call still running then detaches:
+the agent receives a receipt (`_async_status: "queued"`, `task_id`,
+`detached_after_secs`, and a `note` on how to follow up), the work keeps running
+with no time limit, and its completion is delivered to the calling session — it
+starts a turn when the session is idle and reaches a running loop at its next
+iteration. Background work has no time limit by default: Async spawn, background
+Bash, cron tool jobs, Workflow, and Agent runs are bounded only by a limit the
+caller sets explicitly.
 Each principal has one task registry, shared by every executor doing its
 work — Async spawn, background Bash, foreground calls detached on timeout,
 subagent runs, and cron tool jobs — so the Async surface reads only the
@@ -346,7 +355,7 @@ Run a saved Python workflow from the principal’s workflows directory.
 | `args` | string[] | no | — |
 | `timeout_ms` | integer | no | — |
 
-path must resolve to a .py file inside workflows/. timeout_ms defaults to 300000 and caps at 3600000; zero/nonpositive values fall back to the default. The process receives runtime identity and can call tools through the workflow SDK. Nesting depth is injected internally from the run token and is absent from the public schema.
+path must resolve to a .py file inside workflows/. timeout_ms is optional; omitted or zero means no limit. The run token is revoked when the run ends. The process receives runtime identity and can call tools through the workflow SDK. Nesting depth is injected internally from the run token and is absent from the public schema.
 
 ## Session todos
 
@@ -521,7 +530,7 @@ Start a tool in the background and return an async receipt.
 | `wake_on_completion` | boolean | no | — |
 | `timeout_secs` | integer \| null | no | ≥ 1 |
 
-params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs defaults to the executor’s 7200-second policy; null/omit selects that default.
+params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs is an optional lifetime limit; null/omit means no limit.
 
 #### output
 
@@ -599,7 +608,7 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | `timezone` | string | no | — |
 | `idle_ms` | integer | no | — |
 
-Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
 
 #### list
 

@@ -3,9 +3,10 @@
 //! Spawns subagent sessions for isolated task execution. Results are
 //! announced back to the parent via the event system.
 //!
-//! Note: Async execution and timeout are handled by the framework-level
-//! `AsyncExecutionRouter` using a constant 5-minute timeout. On timeout,
-//! the work is detached to a background task automatically.
+//! Subagent runs have no time limit. A call still running after the
+//! framework's 10-minute foreground wait (`AsyncExecutionRouter`) is
+//! detached: the run continues and its result reaches the caller's
+//! session when it finishes.
 //!
 //! The tool itself is a thin shell over [`SubagentRuntime`]. Disk I/O
 //! (`PathResolver`, `principal::agent_prompt`), session ownership,
@@ -276,7 +277,7 @@ impl AgentTool {
     pub(crate) fn tool_description() -> String {
         r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), compact a session now and continue it with a prompt (action "compact"), or copy a session's live context into a fresh session and run a prompt there (action "branch").
 
-The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
+Runs have no time limit. If a run is still going after 10 minutes, this call returns a receipt with a `task_id` and the run continues in the background; its result is delivered to your session when it finishes (starting a new turn if you are idle). Check on it sooner with `Async` action `output` or `status`, or cancel it with `Async` action `stop`.
 
 Actions:
 - new (default): Spawn a sub-agent run. Requires prompt + role + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and relative multi-segment paths are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
@@ -307,7 +308,7 @@ Limits:
 - Delegation depth is unrestricted. Idle persisted sessions use no slots.
 
 Examples:
-// Blocking spawn - parent waits for result (auto-detaches on timeout)
+// Blocking spawn - parent waits for result (detaches after 10 minutes)
 {"prompt": "Use Write to create report.txt with a summary", "role": "writer", "path": "writer-1"}
 
 // Persistent worker - continue a previous spawned session with its history
@@ -468,7 +469,9 @@ Examples:
         page_limit: Option<u32>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
-        let timeout_seconds: u64 = 300;
+        // 0 = no time limit: the run continues past the framework's
+        // foreground wait and reports back when done.
+        let timeout_seconds: u64 = 0;
 
         // Resolve the subagent config first so we can audit with
         // the resolved name (and so `audit_spawn` runs even when the
@@ -552,7 +555,6 @@ Examples:
                     "child_session_key": run.child_session_key,
                     "success": success,
                     "role": agent,
-                    "timeout_seconds": timeout_seconds,
                 });
 
                 // Include output or error if available
@@ -996,6 +998,9 @@ struct TestSubagentState {
     /// requests, in order. Tests assert the resume action's
     /// `path` is forwarded onto the spawn request.
     resume_sessions_seen: Vec<Option<String>>,
+    /// Every `(timeout_seconds, config.timeout_seconds)` pair seen in
+    /// `execute_and_wait` requests, in order.
+    timeouts_seen: Vec<(u64, u64)>,
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
@@ -1028,6 +1033,7 @@ impl TestSubagentRuntime {
                 model_overrides_seen: Vec::new(),
                 names_seen: Vec::new(),
                 resume_sessions_seen: Vec::new(),
+                timeouts_seen: Vec::new(),
                 succeed_on_execute: true,
                 compaction_requests: Vec::new(),
                 branch_requests: Vec::new(),
@@ -1083,6 +1089,17 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .names_seen
+            .clone()
+    }
+
+    /// Every `(timeout_seconds, config.timeout_seconds)` pair seen in
+    /// `execute_and_wait` requests.
+    #[must_use]
+    pub fn timeouts_seen(&self) -> Vec<(u64, u64)> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .timeouts_seen
             .clone()
     }
 
@@ -1235,6 +1252,9 @@ impl SubagentRuntime for TestSubagentRuntime {
             state
                 .resume_sessions_seen
                 .push(request.resume_session.clone());
+            state
+                .timeouts_seen
+                .push((request.timeout_seconds, request.config.timeout_seconds));
             state.succeed_on_execute
         };
         if !succeed {
@@ -2220,6 +2240,10 @@ mod tests {
         // The `path` param lands on SpawnRequest.name (the adapter
         // projects it onto the child session's slug).
         assert_eq!(runtime.names_seen(), vec![Some("task-b".to_string())]);
+        // Runs have no time limit (0 = unlimited) and the response
+        // carries no stale timeout figure.
+        assert_eq!(runtime.timeouts_seen(), vec![(0, 0)]);
+        assert!(result.get("timeout_seconds").is_none(), "{result}");
         // For new, resume_session is None.
         assert_eq!(runtime.resume_sessions_seen(), vec![None]);
 

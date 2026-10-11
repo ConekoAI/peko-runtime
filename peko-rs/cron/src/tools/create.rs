@@ -54,8 +54,8 @@ pub struct CronCreateArgs {
     /// when the scheduled run completes (default `false`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
-    /// `SpawnTool`-only. Per-run timeout in seconds. Defaults to the
-    /// executor's `7200s` policy when `None`.
+    /// `SpawnTool`-only. Optional per-run time limit in seconds; `None`
+    /// runs uncapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     /// Human-readable label for the job
@@ -166,7 +166,7 @@ impl Tool for CronCreateAction {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Per-run timeout in seconds. Defaults to the executor's 7200s policy."
+                    "description": "Optional per-run time limit in seconds. Omit for no limit (the default)."
                 },
                 "one_shot": {
                     "type": "boolean",
