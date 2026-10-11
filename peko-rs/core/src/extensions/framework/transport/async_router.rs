@@ -397,26 +397,11 @@ impl AsyncExecutionRouter {
             }
         };
 
-        let mut errors = validator.iter_errors(args);
-        match errors.next() {
-            None => Ok(()),
-            Some(first) => {
-                let mut msg = format!("Invalid arguments for tool '{tool_name}': {first}");
-                // Append the rest of the error chain (cap at 5 to keep
-                // the LLM-facing string bounded). The path is included
-                // so the LLM can locate the offending field.
-                let mut count = 0;
-                for err in errors {
-                    count += 1;
-                    if count >= 5 {
-                        msg.push_str(&format!(" (and {} more)", count));
-                        break;
-                    }
-                    msg.push_str(&format!("; {err}"));
-                }
-                Err(msg)
-            }
+        if validator.is_valid(args) {
+            return Ok(());
         }
+        Err(super::arg_errors::explain(schema, args, tool_name)
+            .unwrap_or_else(|| format!("Invalid arguments for tool '{tool_name}'")))
     }
 }
 

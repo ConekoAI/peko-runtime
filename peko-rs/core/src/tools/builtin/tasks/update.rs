@@ -91,9 +91,7 @@ Returns the updated todo, or an error if it does not exist."
             .map(String::from);
 
         if status.is_none() && owner.is_none() {
-            return Ok(json!({
-                "error": "Task action update requires 'status' or 'owner'"
-            }));
+            anyhow::bail!("Task action update requires 'status' or 'owner'");
         }
 
         match self
@@ -102,7 +100,7 @@ Returns the updated todo, or an error if it does not exist."
             .await?
         {
             Some(todo) => Ok(serde_json::to_value(todo)?),
-            None => Ok(json!({"error": "Todo not found", "taskId": task_id})),
+            None => Err(anyhow::anyhow!("Todo not found: {task_id}")),
         }
     }
 }
@@ -150,9 +148,9 @@ mod tests {
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope"}), &ctx)
             .await
-            .unwrap();
+            .unwrap_err();
         assert_eq!(
-            result["error"],
+            result.to_string(),
             "Task action update requires 'status' or 'owner'"
         );
     }
@@ -189,8 +187,8 @@ mod tests {
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope", "status": "completed"}), &ctx)
             .await
-            .unwrap();
-        assert_eq!(result["error"], "Todo not found");
+            .unwrap_err();
+        assert_eq!(result.to_string(), "Todo not found: todo:nope");
     }
 
     #[tokio::test]

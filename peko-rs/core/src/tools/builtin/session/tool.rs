@@ -1152,11 +1152,11 @@ mod tests {
         for (params, expected) in [
             (
                 json!({"action": "copy", "path": "sess:/a"}),
-                "\"target\" is a required property",
+                "Session action 'copy': missing required 'target'",
             ),
             (
                 json!({"action": "move", "path": "sess:/a"}),
-                "\"target\" is a required property",
+                "needs at least one of: 'target', 'title', 'page_limit'",
             ),
             (json!({"action": "copy", "target": "sess:/x/y"}), "path"),
             (
@@ -1173,7 +1173,7 @@ mod tests {
             ),
             (
                 json!({"action": "find"}),
-                "\"query\" is a required property",
+                "Session action 'find': missing required 'query'",
             ),
             (
                 json!({"action": "find", "query": "x", "peer": "nobody"}),
@@ -1181,11 +1181,15 @@ mod tests {
             ),
             (
                 json!({"action": "read_page", "path": "sess:/a"}),
-                "\"page\" is a required property",
+                "missing required 'page'",
             ),
             (
                 json!({"action": "search_pages", "path": "sess:/a"}),
-                "\"query\" is a required property",
+                "missing required 'query'",
+            ),
+            (
+                json!({"action": "status", "query": "x"}),
+                "'query' is not a parameter here. Accepted fields: action, path, timezone",
             ),
         ] {
             let err = tool

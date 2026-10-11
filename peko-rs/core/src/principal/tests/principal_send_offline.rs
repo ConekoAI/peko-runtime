@@ -300,9 +300,16 @@ impl Fixture {
                 serde_json::json!({"channel": format!("principal:{target_did}"), "text": text}),
                 &ctx,
             )
-            .await
-            .expect("execute_with_context should not throw");
-        serde_json::from_value(result).expect("parse result")
+            .await;
+        match result {
+            Ok(value) => serde_json::from_value(value).expect("parse result"),
+            // A failed send is a tool error; keep its text for assertions.
+            Err(error) => serde_json::from_value(serde_json::json!({
+                "success": false,
+                "error": error.to_string(),
+            }))
+            .expect("failure shape"),
+        }
     }
 
     async fn send(&self, text: &str) -> serde_json::Value {
@@ -315,7 +322,8 @@ impl Fixture {
                 &ctx,
             )
             .await
-            .expect("execute_with_context should not throw")
+            // A failed send is a tool error; keep its text for assertions.
+            .unwrap_or_else(|error| serde_json::json!({"success": false, "error": error.to_string()}))
     }
 
     /// The target's DM channel for the caller, provisioned the way the
@@ -535,32 +543,21 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
 /// refuses before touching any channel.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn caller_not_loaded_on_this_runtime_is_a_structured_error() {
+async fn caller_not_loaded_on_this_runtime_is_an_error() {
     let fx = Fixture::new().await;
     fx.connect(Duration::from_millis(200));
     let ghost = build_channel_send_tool(&fx.tooling, "did:key:zGhostCaller").unwrap();
     let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
         .with_principal_id("ghost");
-    let result: ChannelSendResult = serde_json::from_value(
-        ghost
-            .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
-                &ctx,
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(!result.success);
-    assert!(
-        result
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("caller principal is not loaded"),
-        "{:?}",
-        result.error
-    );
+    let error = ghost
+        .execute_with_context(
+            serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("caller principal is not loaded"), "{error}");
 }
 
 /// Replies carry no correlation id, so the per-target await lock is what
@@ -759,7 +756,7 @@ async fn remote_request_without_a_reply_times_out_cleanly() {
 /// and nothing is sent over the tunnel.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn remote_resolution_failures_are_structured_errors() {
+async fn remote_resolution_failures_are_errors() {
     use crate::tunnel::hub_directory::DirectoryErrorKind;
     use crate::tunnel::hub_directory::ResolvedExposure;
     let fx = Fixture::new().await;

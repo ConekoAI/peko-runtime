@@ -569,7 +569,20 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
+        }
+    }
+
+    /// The tool error for a failed or refused run. Typed refusals carry
+    /// their structured envelope (`error_type`, limits, ...) as the
+    /// message; anything else keeps its cause chain.
+    fn refusal(error: &anyhow::Error) -> anyhow::Error {
+        let typed = error
+            .chain()
+            .any(|source| source.is::<crate::tools::builtin::messaging::dto::SpawnError>());
+        match Self::format_error_response(error) {
+            Ok(envelope) if typed => anyhow::anyhow!("{envelope}"),
+            _ => anyhow::anyhow!("{error:#}"),
         }
     }
 
@@ -736,7 +749,7 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
         }
     }
 
@@ -827,7 +840,7 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
         }
     }
 }

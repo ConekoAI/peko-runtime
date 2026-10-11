@@ -18,5 +18,6 @@
 //! `PreprocessorFn` / `ExecFn` bridge types were deleted — the
 //! `ToolDispatcher` drives the concrete router directly.
 
+pub(crate) mod arg_errors;
 pub mod async_router;
 pub mod async_transport;

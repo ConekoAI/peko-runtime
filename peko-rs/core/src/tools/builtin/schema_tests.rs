@@ -745,3 +745,91 @@ async fn glob_dispatch_uses_the_callers_workspace_and_preserves_explicit_paths()
         assert!(!output.contains(absent), "{output}");
     }
 }
+
+/// A call that breaks a tool's schema is refused with a message naming the
+/// problem for the action the agent chose — a missing field, a field the
+/// action does not take (and the ones it does), an either/or group, or an
+/// unknown action — never a bare "not valid under any of the schemas".
+#[tokio::test]
+async fn argument_errors_name_the_problem_for_the_chosen_action() {
+    let h = super::test_harness::ToolHarness::new().await;
+    for (tool, params, expected) in [
+        (
+            "Task",
+            json!({"action":"get","task_id":"x"}),
+            "Invalid arguments for Task action 'get': 'task_id' is not a parameter here; \
+             missing required 'taskId'. Accepted fields: action, taskId",
+        ),
+        (
+            "Task",
+            json!({"action":"update","taskId":"x","subject":"s"}),
+            "needs at least one of: 'status', 'owner'",
+        ),
+        (
+            "Cron",
+            json!({"action":"create","message":"m","delay":"5m","cron":"* * * * *"}),
+            "'delay' cannot be combined with: 'at', 'interval_ms', 'cron', 'idle_ms'",
+        ),
+        (
+            "Cron",
+            json!({"action":"delete","id":"a","label":"b"}),
+            "give only one of: 'id', 'label'",
+        ),
+        (
+            "Plan",
+            json!({"action":"remove","planId":"p"}),
+            "unknown action \"remove\" — valid actions: create, list, get",
+        ),
+        (
+            "Async",
+            json!({"task_id":"x"}),
+            "missing required 'action' (one of: spawn, output, status, list, stop)",
+        ),
+        (
+            "Agent",
+            json!({"prompt":"x","role":"r"}),
+            "Invalid arguments for Agent action 'new': missing required 'path'",
+        ),
+        (
+            "ModelCall",
+            json!({"prompt":"hi","state":"s"}),
+            "cannot be combined with: 'state', 'questions'",
+        ),
+    ] {
+        let message = h.call(tool, params.clone()).await.err(expected);
+        assert!(!message.contains("oneOf"), "{params}: {message}");
+    }
+}
+
+/// A call that could not do what was asked — unknown id, missing channel,
+/// unknown skill — is a tool error (`is_error` reaches the transcript,
+/// hooks, and audit), never a successful call carrying an `error` field.
+#[tokio::test]
+async fn failed_calls_are_tool_errors() {
+    let h = super::test_harness::ToolHarness::new().await;
+    for (tool, params, expected) in [
+        (
+            "Task",
+            json!({"action":"get","taskId":"todo:nope"}),
+            "Todo not found: todo:nope",
+        ),
+        (
+            "Plan",
+            json!({"action":"get","planId":"plan_nope0000"}),
+            "Plan not found: plan_nope0000",
+        ),
+        ("Skill", json!({"name":"nope"}), "unknown skill 'nope'"),
+        (
+            "ChannelRead",
+            json!({"channel":"chan_zzzzzzzz"}),
+            "channel chan_zzzzzzzz not found",
+        ),
+        (
+            "ChannelSend",
+            json!({"channel":"chan_zzzzzzzz","text":"hi"}),
+            "ChannelSend to chan_zzzzzzzz failed: channel not found",
+        ),
+    ] {
+        h.call(tool, params).await.err(expected);
+    }
+}

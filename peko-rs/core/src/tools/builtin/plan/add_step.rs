@@ -84,11 +84,11 @@ no-op (the existing node is kept), so retries are safe."
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Plan action add_step requires 'step'"))?
             .to_string();
-        let node_id_str_for_error = params
+        let node_id_param = params
             .get("nodeId")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let node_id = resolve_node_id(node_id_str_for_error.as_deref())?;
+        let node_id = resolve_node_id(node_id_param.as_deref())?;
         let depends_on = parse_depends_on(params.get("dependsOn"))?;
         if !depends_on.is_empty() {
             // Nodes are never removed, so a dependency present now stays
@@ -121,16 +121,8 @@ no-op (the existing node is kept), so retries are safe."
             created_at: now,
             updated_at: now,
         };
-        // For the `InvalidNodeId` soft-error branch we want a useful
-        // `id` field on the JSON. Surface the supplied id (or the
-        // auto-assigned one if the user didn't pass one) — either
-        // way the LLM gets back something to key off of.
-        let reported_id = node_id_str_for_error.unwrap_or_else(|| node.node_id.to_string());
         match self.plan_port.add_node(&plan_id, &principal_id, node).await {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
-            Err(peko_plan::PlanError::InvalidNodeId(_)) => Ok(
-                crate::tools::builtin::plan::not_found_error("Node", &reported_id),
-            ),
             Err(e) => Err(anyhow::anyhow!("{e}")),
         }
     }

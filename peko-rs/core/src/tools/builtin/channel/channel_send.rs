@@ -848,7 +848,7 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
         // Sprint 4 dispatch: branch on `kind()` to select the right
         // semantic. The wire form IS the policy — the LLM picks by
         // choosing the prefix.
-        match channel_id.kind() {
+        let result = match channel_id.kind() {
             ProtoChannelKind::Bare | ProtoChannelKind::Group => {
                 self.execute_bare(&channel_id, text, parent, &principal_str, via)
                     .await
@@ -861,7 +861,17 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
                 self.execute_user_branch(&channel_id, text, label, ctx)
                     .await
             }
+        }?;
+        // A send that did not go through is a tool error, not a
+        // successful call carrying `success: false`.
+        if result.get("success") == Some(&serde_json::Value::Bool(false)) {
+            let reason = result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("send failed");
+            anyhow::bail!("ChannelSend to {channel_str} failed: {reason}");
         }
+        Ok(result)
     }
 }
 
@@ -1165,25 +1175,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_member_and_missing_channel_are_soft_errors() {
+    async fn non_member_and_missing_channel_are_errors() {
         let fx = Fixture::new();
         let bobs = fx.channel_of(&PrincipalId::generate(), None).await;
 
         let got = fx
             .send(json!({ "channel": bobs.as_str(), "text": "hi" }))
             .await
-            .unwrap();
-        assert_eq!(got["success"], false);
-        assert_eq!(got["error"], "caller is not a member of this channel");
+            .unwrap_err();
+        assert_eq!(
+            got.to_string(),
+            format!(
+                "ChannelSend to {} failed: caller is not a member of this channel",
+                bobs.as_str()
+            )
+        );
         assert!(fx.posts(&bobs).await.is_empty(), "nothing was posted");
 
         let got = fx
             .send(json!({ "channel": "chan_zzzzzzzz", "text": "hi" }))
             .await
-            .unwrap();
-        assert_eq!(got["success"], false);
-        assert_eq!(got["error"], "channel not found");
-        assert_eq!(got["channel"], "chan_zzzzzzzz");
+            .unwrap_err();
+        assert_eq!(
+            got.to_string(),
+            "ChannelSend to chan_zzzzzzzz failed: channel not found"
+        );
     }
 
     #[tokio::test]
@@ -1257,38 +1273,27 @@ mod tests {
     /// Without the cross-runtime context (no tunnel on this daemon), the
     /// principal branch returns a structured error instead of panicking.
     #[tokio::test]
-    async fn principal_branch_without_cross_runtime_context_is_a_structured_error() {
+    async fn principal_branch_without_cross_runtime_context_is_an_error() {
         let fx = Fixture::new();
         let got = fx
             .send(json!({ "channel": "principal:did:key:zBob", "text": "hi bob" }))
             .await
-            .unwrap();
-        assert_eq!(got["success"], false);
-        assert_eq!(got["kind"], "principal");
-        assert!(
-            got["error"]
-                .as_str()
-                .unwrap()
-                .contains("cross-runtime context"),
-            "{got}"
-        );
+            .unwrap_err()
+            .to_string();
+        assert!(got.contains("cross-runtime context"), "{got}");
     }
 
     /// The user branch requires the global peer messenger. Without it
     /// the tool returns a structured error, not a panic.
     #[tokio::test]
-    async fn user_branch_without_messenger_returns_structured_error() {
+    async fn user_branch_without_messenger_is_an_error() {
         let fx = Fixture::new();
         let got = fx
             .send(json!({ "channel": "user:alice", "text": "hi" }))
             .await
-            .unwrap();
-        assert_eq!(got["success"], false);
-        assert_eq!(got["kind"], "user");
-        assert!(
-            got["error"].as_str().unwrap().contains("peer messenger"),
-            "{got}"
-        );
+            .unwrap_err()
+            .to_string();
+        assert!(got.contains("peer messenger"), "{got}");
     }
 
     /// `kind()` dispatch matches the wire form.

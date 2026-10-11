@@ -56,7 +56,7 @@ impl SkillRuntime for WorkspaceSkillRuntime {
         // single plain path component — anything else (`..`, `a/b`,
         // `a\b`, absolute paths, empty) would resolve outside the
         // skills directory. Invalid names behave like a nonexistent
-        // skill (`unknown_skill` at the tool layer), not a new error
+        // skill (an unknown-skill error at the tool layer), not a new error
         // surface.
         let mut components = std::path::Path::new(name).components();
         if !matches!(

@@ -66,7 +66,7 @@ Returns the todo, or an error if it does not exist."
 
         match self.runtime.get_todo(&session_id, task_id).await? {
             Some(todo) => Ok(serde_json::to_value(todo)?),
-            None => Ok(json!({"error": "Todo not found", "taskId": task_id})),
+            None => Err(anyhow::anyhow!("Todo not found: {task_id}")),
         }
     }
 }
@@ -106,8 +106,8 @@ mod tests {
         let result = tool
             .execute_with_context(json!({"taskId": "todo:nope"}), &ctx)
             .await
-            .unwrap();
-        assert_eq!(result["error"], "Todo not found");
+            .unwrap_err();
+        assert_eq!(result.to_string(), "Todo not found: todo:nope");
     }
 
     #[tokio::test]

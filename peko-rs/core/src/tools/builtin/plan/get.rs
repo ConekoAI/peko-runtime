@@ -30,10 +30,7 @@ impl Tool for PlanGetAction {
 Parameters:
 - planId: string (required)
 
-Returns the full PlanRecord. Soft-errors with
-{ error: 'Plan not found', planId } when the plan does not exist;
-returns a hard Err when the plan exists but belongs to a different
-principal (PrincipalMismatch — a corruption signal)."
+Returns the full plan. An unknown planId is an error."
             .to_string()
     }
 
@@ -71,10 +68,9 @@ principal (PrincipalMismatch — a corruption signal)."
             .await
         {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
-            // Soft-error JSON so the LLM can react — mirrors Task*.
-            Err(peko_plan::PlanError::NotFound) => Ok(
-                crate::tools::builtin::plan::not_found_error("Plan", &plan_id),
-            ),
+            Err(peko_plan::PlanError::NotFound) => {
+                Err(anyhow::anyhow!("Plan not found: {plan_id}"))
+            }
             // Hard errors propagate so the framework surfaces them as
             // `success=false` with the PlanError::Display message.
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -115,16 +111,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_returns_soft_error_for_missing_plan() {
+    async fn get_errors_for_missing_plan() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
         let tool = PlanGetAction::new(port);
         let got = tool
             .execute_with_context(json!({ "planId": "plan_doesnotexist" }), &ctx_with(p))
             .await
-            .unwrap();
-        assert_eq!(got["error"], "Plan not found");
-        assert_eq!(got["id"], "plan_doesnotexist");
+            .unwrap_err();
+        assert_eq!(got.to_string(), "Plan not found: plan_doesnotexist");
     }
 
     #[tokio::test]

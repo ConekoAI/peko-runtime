@@ -122,7 +122,7 @@ Dynamic context (Claude-style):
 
 Returns:
 - { name, body } — the skill's body with dynamic context resolved, then arguments substituted.
-- { error, skill } — structured unknown_skill error. Unreadable or invalid skill files return a tool error."#
+- An unknown name, or an unreadable or invalid skill file, is a tool error (an unknown name lists the available skills)."#
             .to_string()
     }
 
@@ -176,10 +176,15 @@ Returns:
         // ADR-066 P2: presence = executability — a skill resolvable in
         // the workspace is invocable; there is no grant check.
         let Some(entry) = self.runtime.resolve_skill(&name) else {
-            return Ok(json!({
-                "error": "unknown_skill",
-                "skill": name,
-            }));
+            let available = self.runtime.list_skills();
+            anyhow::bail!(
+                "unknown skill '{name}' — available skills: {}",
+                if available.is_empty() {
+                    "none".to_string()
+                } else {
+                    available.join(", ")
+                }
+            );
         };
 
         let content = std::fs::read_to_string(&entry.path).map_err(|e| {
@@ -509,9 +514,11 @@ mod tests {
         let result = tool
             .execute_with_context(json!({ "name": "docker" }), &test_ctx(tmp.path()))
             .await
-            .unwrap();
-        assert_eq!(result["error"], "unknown_skill");
-        assert_eq!(result["skill"], "docker");
+            .unwrap_err();
+        assert_eq!(
+            result.to_string(),
+            "unknown skill 'docker' — available skills: none"
+        );
     }
 
     #[tokio::test]
@@ -665,7 +672,7 @@ mod tests {
         // `Skill {name: "../secret"}` must not escape the workspace
         // skills dir. The workspace runtime
         // refuses any name that is not a single plain path component,
-        // so the tool surfaces `unknown_skill`.
+        // so the tool reports an unknown skill.
         let _id = next_test_id();
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join("skills");
@@ -677,7 +684,10 @@ mod tests {
         let result = tool
             .execute_with_context(json!({ "name": "../secret" }), &test_ctx(tmp.path()))
             .await
-            .unwrap();
-        assert_eq!(result["error"], "unknown_skill");
+            .unwrap_err();
+        assert!(
+            result.to_string().starts_with("unknown skill '../secret'"),
+            "{result}"
+        );
     }
 }

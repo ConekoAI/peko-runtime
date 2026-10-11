@@ -171,12 +171,8 @@ impl Tool for ChannelReadTool {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("ChannelRead requires a principal context"))?;
 
-        // Resolve membership. We surface a soft-error JSON when the
-        // caller isn't a member so the LLM can react, mirroring the
-        // Plan action get `not_found_error` pattern. `ChannelError::NotMember`
-        // is the only "soft" we accept here — adapter-level errors
-        // propagate as hard Err so the framework surfaces them as
-        // `success=false`.
+        // Resolve membership: a missing channel or a non-member caller is
+        // a tool error naming the channel.
         match self.port.list_members(&channel_id).await {
             Ok(members) => {
                 // ADR-049 Phase 1: members are Subject-typed. Compare
@@ -186,17 +182,14 @@ impl Tool for ChannelReadTool {
                     peko_subject::Subject::from(&peko_subject::PrincipalId(principal_str.clone()));
                 let is_member = members.contains(&caller);
                 if !is_member {
-                    return Ok(serde_json::json!({
-                        "error": "caller is not a member of this channel",
-                        "channel": channel_id.as_str(),
-                    }));
+                    anyhow::bail!(
+                        "ChannelRead: you are not a member of channel {}",
+                        channel_id.as_str()
+                    );
                 }
             }
             Err(ChannelError::NotFound(_)) => {
-                return Ok(serde_json::json!({
-                    "error": "channel not found",
-                    "channel": channel_id.as_str(),
-                }));
+                anyhow::bail!("ChannelRead: channel {} not found", channel_id.as_str());
             }
             Err(e) => return Err(anyhow::anyhow!("ChannelRead list_members: {e}")),
         }
@@ -464,15 +457,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_channel_and_non_member_are_soft_errors() {
+    async fn missing_channel_and_non_member_are_errors() {
         let fx = Fixture::new().await;
         let got = fx
             .tool
             .execute_with_context(json!({ "channel": "chan_zzzzzzzz" }), &fx.ctx(None))
             .await
-            .unwrap();
-        assert_eq!(got["error"], "channel not found");
-        assert_eq!(got["channel"], "chan_zzzzzzzz");
+            .unwrap_err();
+        assert_eq!(
+            got.to_string(),
+            "ChannelRead: channel chan_zzzzzzzz not found"
+        );
 
         let outsider = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
             .with_principal_id(PrincipalId::generate().0);
@@ -480,8 +475,11 @@ mod tests {
             .tool
             .execute_with_context(json!({ "channel": fx.channel.as_str() }), &outsider)
             .await
-            .unwrap();
-        assert_eq!(got["error"], "caller is not a member of this channel");
+            .unwrap_err();
+        assert!(
+            got.to_string().contains("you are not a member of channel"),
+            "{got}"
+        );
     }
 
     #[tokio::test]
