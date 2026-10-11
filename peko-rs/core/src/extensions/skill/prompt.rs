@@ -198,29 +198,7 @@ fn scan_skills_dir(skills_dir: &Path, workspace: &str) -> String {
     lines.sort();
 
     let notice = format!("(more skills in {workspace}/skills/ — list the directory to see all)");
-    let mut out = String::new();
-    let mut iter = lines.iter().peekable();
-    while let Some(line) = iter.next() {
-        // Reserve room for the truncation notice whenever more lines
-        // remain, so the total stays under the cap even on overflow.
-        let reserve = if iter.peek().is_some() {
-            notice.len() + 1
-        } else {
-            0
-        };
-        if !out.is_empty() && out.len() + line.len() + 1 + reserve > SKILLS_CATALOG_MAX_BYTES {
-            break;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
-    if iter.peek().is_some() {
-        out.push('\n');
-        out.push_str(&notice);
-    }
-    out
+    crate::tools::prompt_sections::render_capped_lines(&lines, SKILLS_CATALOG_MAX_BYTES, &notice)
 }
 
 #[cfg(test)]

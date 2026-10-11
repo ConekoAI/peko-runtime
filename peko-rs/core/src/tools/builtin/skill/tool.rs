@@ -292,6 +292,17 @@ fn substitute_args(body: &str, named: &[String], args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The highest `$N` placeholder bounds positional substitution; a
+    /// trailing or digit-less `$` is not one (and must not panic).
+    #[test]
+    fn max_positional_index_finds_the_largest_placeholder() {
+        assert_eq!(scan_max_positional_index("$10 and $2"), 10);
+        assert_eq!(scan_max_positional_index("costs $"), 0);
+        assert_eq!(scan_max_positional_index("$ $x"), 0);
+        assert_eq!(scan_max_positional_index("a1 b22"), 0);
+        assert_eq!(scan_max_positional_index("$3$"), 3);
+    }
     use crate::extensions::skill::WorkspaceSkillRuntime;
     use peko_tools_core::ToolContext;
     use std::sync::atomic::{AtomicU64, Ordering};

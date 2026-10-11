@@ -710,29 +710,7 @@ fn scan_workflows_dir(workflows_dir: &Path, workspace: &str) -> String {
 
     let notice =
         format!("(more workflows in {workspace}/workflows/ — list the directory to see all)");
-    let mut out = String::new();
-    let mut iter = lines.iter().peekable();
-    while let Some(line) = iter.next() {
-        // Reserve room for the truncation notice whenever more lines
-        // remain, so the total stays under the cap even on overflow.
-        let reserve = if iter.peek().is_some() {
-            notice.len() + 1
-        } else {
-            0
-        };
-        if !out.is_empty() && out.len() + line.len() + 1 + reserve > WORKFLOWS_CATALOG_MAX_BYTES {
-            break;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(line);
-    }
-    if iter.peek().is_some() {
-        out.push('\n');
-        out.push_str(&notice);
-    }
-    out
+    crate::tools::prompt_sections::render_capped_lines(&lines, WORKFLOWS_CATALOG_MAX_BYTES, &notice)
 }
 
 /// Extract the first text line of a module docstring, if the file opens
@@ -1361,6 +1339,28 @@ print("argv:" + ",".join(sys.argv[1:]))
     /// A runaway script is killed at the timeout together with any
     /// process it started; partial output and `timed_out` come back as
     /// data.
+    /// `timeout_ms: 0` selects the default timeout, not an instant one.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn zero_timeout_uses_the_default() {
+        if !python3_available() {
+            eprintln!("skipping: python3 not on PATH");
+            return;
+        }
+        let fx = fixture("runner").await;
+        write_workflow(&fx.workspace, "quick.py", "print('ok')\n");
+        let out = fx
+            .tool
+            .execute_with_context(
+                json!({"path": "quick.py", "timeout_ms": 0}),
+                &ctx_for("runner", None),
+            )
+            .await
+            .expect("run");
+        assert_eq!(out["timed_out"], false, "got: {out}");
+        assert_eq!(out["success"], true, "got: {out}");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn timeout_kills_runaway_script() {
@@ -1500,6 +1500,10 @@ print("argv:" + ",".join(sys.argv[1:]))
         let token = out["stdout"].as_str().unwrap().trim().to_string();
         let entry = fx.run_tokens.verify(&token).expect("token verifies");
         assert_eq!(entry.caller_session_id, None);
+        assert_eq!(
+            entry.workflow_depth, 1,
+            "a top-level run's callbacks are depth 1"
+        );
     }
 
     // ── Prompt catalog ───────────────────────────────────────────────
@@ -1610,6 +1614,64 @@ print("argv:" + ",".join(sys.argv[1:]))
         );
     }
 
+    /// A workflow dropped for space is never silent: the catalog points at
+    /// the directory even when the line that didn't fit was the last one.
+    #[test]
+    fn a_dropped_last_workflow_still_gets_the_pointer() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("workflows");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "\"\"\"Short.\"\"\"\n").unwrap();
+        let long = "x".repeat(WORKFLOWS_CATALOG_MAX_BYTES);
+        std::fs::write(dir.join("b.py"), format!("\"\"\"{long}\"\"\"\n")).unwrap();
+        let ws = temp.path().to_string_lossy().to_string();
+        let out = scan_workflows_dir(&dir, &ws);
+        assert!(out.starts_with("- a: Short. (workflows/a.py)"), "{out}");
+        assert!(!out.contains("- b"), "{out}");
+        assert!(
+            out.contains("(more workflows in "),
+            "b was dropped silently: {out}"
+        );
+        assert!(out.len() <= WORKFLOWS_CATALOG_MAX_BYTES);
+    }
+
+    /// Stream capture keeps exactly the last OUTPUT_CAP_BYTES; a stream of
+    /// exactly that size is complete.
+    #[tokio::test]
+    async fn read_tail_keeps_exactly_the_last_cap_bytes() {
+        let exact = vec![b'a'; OUTPUT_CAP_BYTES];
+        let (kept, truncated) = read_tail(&mut exact.as_slice(), OUTPUT_CAP_BYTES).await;
+        assert_eq!((kept.len(), truncated), (OUTPUT_CAP_BYTES, false));
+
+        let mut over: Vec<u8> = vec![b'a'; 40 * 1024];
+        over.extend_from_slice(b"END");
+        let (kept, truncated) = read_tail(&mut over.as_slice(), OUTPUT_CAP_BYTES).await;
+        assert!(truncated);
+        assert_eq!(kept.len(), OUTPUT_CAP_BYTES);
+        assert!(kept.ends_with(b"END"));
+    }
+
+    /// The caps match what the model is told: the truncation marker names
+    /// the kept size, and the catalog shares the skills catalog's 8 KB.
+    #[test]
+    fn caps_match_their_stated_sizes() {
+        assert_eq!(OUTPUT_CAP_BYTES % 1024, 0);
+        assert!(
+            TRUNCATION_MARKER.contains(&format!("last {} KiB", OUTPUT_CAP_BYTES / 1024)),
+            "{TRUNCATION_MARKER}"
+        );
+        assert_eq!(WORKFLOWS_CATALOG_MAX_BYTES, 8 * 1024);
+    }
+
+    /// The catalog renders into the `workflows` prompt section.
+    #[test]
+    fn catalog_provider_renders_the_workflows_section() {
+        use crate::tools::prompt_sections::PromptSectionProvider;
+        let handler = WorkspaceWorkflowsPromptHandler::default();
+        assert_eq!(handler.section(), "workflows");
+        assert_eq!(handler.priority(), WORKFLOW_CATALOG_HOOK_PRIORITY);
+    }
+
     #[test]
     fn workflows_catalog_truncates_at_byte_cap() {
         let temp = TempDir::new().unwrap();
@@ -1632,6 +1694,11 @@ print("argv:" + ",".join(sys.argv[1:]))
         );
         assert!(out.contains("(more workflows in "), "got: {out}");
         assert!(out.contains("list the directory to see all"), "got: {out}");
+        assert!(
+            out.len() > WORKFLOWS_CATALOG_MAX_BYTES - 200,
+            "the catalog fills its budget before truncating: {}",
+            out.len()
+        );
         assert!(out.contains("- wf-000:"), "first entry survives: {out}");
     }
 
