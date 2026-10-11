@@ -444,6 +444,46 @@ mod tests {
         );
     }
 
+    /// A blocked inline command is replaced by its marker and the text
+    /// around it passes through intact.
+    #[tokio::test]
+    async fn blocked_inline_commands_keep_the_surrounding_text() {
+        let ws = tmp_workspace();
+        let zsh = SkillFrontmatter {
+            shell: Some("zsh".to_string()),
+            ..empty_frontmatter()
+        };
+        let out = preprocess_dynamic_context("A !`echo hi` B", &zsh, ws.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            "A [shell blocked: shell \"zsh\" not supported, only \"bash\"]!`echo hi` B"
+        );
+        let git_only = SkillFrontmatter {
+            allowed_tools: vec!["git *".to_string()],
+            ..empty_frontmatter()
+        };
+        let out = preprocess_dynamic_context("A !`echo hi` B", &git_only, ws.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            "A [shell blocked: command not in allowed-tools]!`echo hi` B"
+        );
+    }
+
+    /// A command killed by a signal reports exit code -1.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn signal_killed_inline_command_reports_exit_minus_one() {
+        let ws = tmp_workspace();
+        let out = preprocess_dynamic_context("!`kill -9 $$`", &empty_frontmatter(), ws.path())
+            .await
+            .unwrap();
+        assert_eq!(out, "stderr: exit code -1");
+    }
+
     #[tokio::test]
     async fn fenced_blocks_for_other_shells_are_refused_not_run() {
         let ws = tmp_workspace();

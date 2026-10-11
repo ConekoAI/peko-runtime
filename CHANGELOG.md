@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Mutation testing of the remaining tools (2026-10-11)
+
+- Fix a prompt-catalog entry dropped for space vanishing silently: the
+  workflows and skills catalogs (8 KB each) added their "more in <dir>/ — list
+  the directory" pointer only when lines remained after the cutoff, so a last
+  line that didn't fit disappeared with no hint. Both now share
+  `tools::prompt_sections::render_capped_lines`, which always marks a drop.
+- Mutation testing (`cargo-mutants`) of Workflow, Skill, Session, Plan, Task,
+  ModelList, RoleCatalog, `process.rs` and `paths.rs`; with the earlier rounds
+  this covers all 19 built-in tools. New tests close the gaps it found:
+  Workflow's exact 16 KiB stream tail, `timeout_ms: 0`, run-token depth, and
+  stated cap sizes; Skill's blocked inline commands, signal exit code, and
+  positional-placeholder scan (a trailing `$`); ModelList's spec output,
+  single-price `priced` filter, and non-matching `contains`. Plan, Session
+  (tool and caller resolution) and Task had no surviving mutants.
+
 ### Tool contracts: loop-level and mutation testing (2026-10-10)
 
 - Fix background commands failing in runs without a workspace: an empty
