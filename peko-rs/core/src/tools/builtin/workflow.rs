@@ -1651,6 +1651,18 @@ print("argv:" + ",".join(sys.argv[1:]))
         assert!(kept.ends_with(b"END"));
     }
 
+    /// The caps match what the model is told: the truncation marker names
+    /// the kept size, and the catalog shares the skills catalog's 8 KB.
+    #[test]
+    fn caps_match_their_stated_sizes() {
+        assert_eq!(OUTPUT_CAP_BYTES % 1024, 0);
+        assert!(
+            TRUNCATION_MARKER.contains(&format!("last {} KiB", OUTPUT_CAP_BYTES / 1024)),
+            "{TRUNCATION_MARKER}"
+        );
+        assert_eq!(WORKFLOWS_CATALOG_MAX_BYTES, 8 * 1024);
+    }
+
     /// The catalog renders into the `workflows` prompt section.
     #[test]
     fn catalog_provider_renders_the_workflows_section() {
