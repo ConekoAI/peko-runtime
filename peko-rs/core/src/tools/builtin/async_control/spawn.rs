@@ -161,7 +161,7 @@ impl AsyncSpawnAction {
         Ok(json!({
             "task_id": receipt.task_id,
             "status": "running",
-            "tool": tool_name,
+            "tool_name": tool_name,
         }))
     }
 }

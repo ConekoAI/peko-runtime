@@ -1171,9 +1171,9 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "<no result data>".to_string());
             // In-band failure: the tool executed without a transport
-            // error, but its payload reports failure — the standard
-            // `ChannelSendResult` (`"success": false` + `"error"`) and
-            // the Agent tool's error envelope (`"error": "…"`). Record
+            // error, but its payload reports failure (`"success": false`
+            // or a non-empty `"error"`) — built-ins fail as tool errors,
+            // but MCP and workspace tools may still answer this way. Record
             // the run as failed so the history, the `cron.result` audit
             // event, and the consecutive-failure retry budget reflect
             // what actually happened instead of accumulating green

@@ -145,9 +145,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         ));
     }
     if let Some(limit) = args.page_limit {
-        if limit == 0 || limit > 10_000 {
+        if limit > 10_000 {
             return Err(anyhow::anyhow!(
-                "'page_limit' must be between 1 and 10000 (omit for unlimited)"
+                "'page_limit' must be between 0 (unlimited) and 10000"
             ));
         }
     }
@@ -342,9 +342,9 @@ A call is refused when the target is your own session or an ancestor, already ha
                 },
                 "page_limit": {
                     "type": "integer",
-                    "minimum": 1,
+                    "minimum": 0,
                     "maximum": 10000,
-                    "description": "new/branch: keep at most this many closed compaction pages; older pages are deleted permanently. Omit to keep the current setting (unlimited for a new session)"
+                    "description": "new/branch: keep at most this many closed compaction pages (0 = unlimited); older pages are deleted permanently. Omit to keep the current setting (unlimited for a new session)"
                 }
             },
         });
@@ -1410,12 +1410,8 @@ mod tests {
                 "'page_limit' is only valid",
             ),
             (
-                ok(serde_json::json!({ "path": "a", "page_limit": 0 })),
-                "between 1 and 10000",
-            ),
-            (
                 ok(serde_json::json!({ "path": "a", "page_limit": 10_001 })),
-                "between 1 and 10000",
+                "between 0 (unlimited) and 10000",
             ),
             (
                 serde_json::json!({ "path": "a", "role": "primary" }),
@@ -1919,6 +1915,7 @@ mod tests {
     async fn test_page_limit_param_scope_and_range() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.set_session_id("caller:sess");
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         let tool = AgentTool::new(runtime as SharedSubagentRuntime);
 
         // `page_limit` is refused on actions that don't create/rewrite
@@ -1935,18 +1932,16 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("page_limit"), "{err}");
 
-        // 0 is meaningless at creation (unlimited = omit) — refused.
-        let err = tool
-            .execute(serde_json::json!({
-                "action": "new",
-                "path": "task-a",
-                "prompt": "p",
-                "role": "writer",
-                "page_limit": 0,
-            }))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("minimum of 1"), "{err}");
+        // 0 clears the cap (unlimited) — accepted.
+        tool.execute(serde_json::json!({
+            "action": "new",
+            "path": "task-a",
+            "prompt": "p",
+            "role": "writer",
+            "page_limit": 0,
+        }))
+        .await
+        .expect("page_limit 0 means unlimited");
 
         // Above the hard cap — refused.
         let err = tool

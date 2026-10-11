@@ -209,9 +209,9 @@ Run work in a new, resumed, compacted, or branched session.
 | `model` | string | no | — |
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
-| `page_limit` | integer | no | ≥ 1, ≤ 10000 |
+| `page_limit` | integer | no | ≥ 0, ≤ 10000 |
 
-All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 ### RoleCatalog
 
@@ -223,7 +223,7 @@ Discover role templates available in the principal.
 |---|---|---|---|
 | — | — | — | No parameters |
 
-Returns {total, agents}. Entries expose id, name, description, and enabled; use an enabled entry’s id as Agent.role.
+Returns {total, roles}. Each role exposes id, name, and description; use its id as Agent.role.
 
 ### Skill
 
@@ -301,7 +301,7 @@ Post to a channel/group, ask a peer principal and await a reply, or send the ori
 | `parent` | string | no | — |
 | `label` | string | no | — |
 
-channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
+channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
 
 ### ChannelRead
 
@@ -552,10 +552,10 @@ Fetch output, optionally waiting for completion.
 |---|---|---|---|
 | `task_id` | string | yes | — |
 | `block` | boolean | no | default false |
-| `timeout` | integer | no | ≥ 0 |
+| `timeout_ms` | integer | no | ≥ 0 |
 | `tail_lines` | integer | no | default 0, ≥ 0 |
 
-block defaults false. With block=true, timeout defaults to 300000 milliseconds. tail_lines=0 returns full output; positive values select the last N lines.
+block defaults false. With block=true, timeout_ms (the wait, not a limit on the task) defaults to 300000. tail_lines=0 returns full output; positive values select the last N lines.
 
 #### status
 

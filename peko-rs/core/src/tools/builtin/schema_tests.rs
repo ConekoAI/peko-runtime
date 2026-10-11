@@ -478,7 +478,7 @@ fn agent_and_session_runtime_validation_matches_the_advertised_action_schemas() 
                 "model" => action != Some("compact") && !call[field].is_null(),
                 "page_limit" => {
                     matches!(action, None | Some("new" | "branch"))
-                        && call[field].as_f64() == Some(1.0)
+                        && matches!(call[field].to_string().as_str(), "0" | "1" | "1.0")
                 }
                 _ => false,
             };

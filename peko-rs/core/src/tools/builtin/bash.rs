@@ -206,7 +206,7 @@ impl BashTool {
         Ok(json!({
             "task_id": task_id,
             "status": "running",
-            "tool": "Bash",
+            "tool_name": "Bash",
         }))
     }
 

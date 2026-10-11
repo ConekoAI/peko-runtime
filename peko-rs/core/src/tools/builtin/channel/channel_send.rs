@@ -88,9 +88,10 @@ pub struct ChannelSendArgs {
 
 /// Result of a `ChannelSend` execution. The principal branch (RPC)
 /// populates `response` with the awaited reply; the bare / group
-/// branches populate `task_id` with the line number assigned in the
-/// channel's JSONL; the user branch populates `response` with a
-/// delivery confirmation.
+/// branches populate `task_id` (wire name `id`, the same event id
+/// ChannelRead reports) with the line number assigned in the channel's
+/// JSONL; the user branch populates `response` with a delivery
+/// confirmation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSendResult {
     pub success: bool,
@@ -99,8 +100,9 @@ pub struct ChannelSendResult {
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub response: String,
     /// Bare / Group only: the line number the post was assigned in
-    /// the channel's JSONL log. Empty on principal / user branches.
-    #[serde(skip_serializing_if = "String::is_empty", default)]
+    /// the channel's JSONL log — its event `id`. Empty on principal /
+    /// user branches.
+    #[serde(rename = "id", skip_serializing_if = "String::is_empty", default)]
     pub task_id: String,
     /// Principal branch only: the caller's standing child session
     /// for the peer. Empty on bare / group / user branches.
@@ -741,13 +743,13 @@ Every post you make carries a `via` attribution with your session path (e.g. `/u
 {
   "channel": "chan_a1b2c3d4 | principal:did:peko:… | user:<id> | group:<slug>",
   "text":    "Please review this code for bugs",
-  "parent":  "<TaskId> (Bare / Group branch only)",
+  "parent":  "<event id> (Bare / Group branch only)",
   "label":   "<note label> (User branch only)"
 }
 ```
 
 ## Response
-Bare / Group: `{ "success": true, "task_id": "<line>", "channel": "<wire form>" }`.
+Bare / Group: `{ "success": true, "id": "<event id>", "channel": "<wire form>" }` — the same `id` ChannelRead reports, usable as `parent`.
 Principal:    `{ "success": true, "kind": "principal", "response": "<the principal's reply>", "session_id": "…", "channel": "principal:<did>" }`.
 User:         `{ "success": true, "kind": "user", "response": "Delivered as a note …" }` — no reply follows."#
             .to_string()
@@ -767,7 +769,7 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
                 },
                 "parent": {
                     "type": "string",
-                    "description": "Bare / Group branch only: TaskId of the message being replied to; omit to post a root message."
+                    "description": "Bare / Group branch only: id of the message being replied to (an event id from ChannelRead or a previous send); omit to post a root message."
                 },
                 "label": {
                     "type": "string",
@@ -1146,8 +1148,8 @@ mod tests {
         assert_eq!(first["kind"], "bare");
         assert_eq!(first["channel"], channel.as_str());
         let (a, b) = (
-            first["task_id"].as_str().unwrap().parse::<u64>().unwrap(),
-            second["task_id"].as_str().unwrap().parse::<u64>().unwrap(),
+            first["id"].as_str().unwrap().parse::<u64>().unwrap(),
+            second["id"].as_str().unwrap().parse::<u64>().unwrap(),
         );
         assert!(b > a, "task ids must advance: {a} then {b}");
         assert_eq!(
@@ -1164,7 +1166,7 @@ mod tests {
             .send(json!({ "channel": channel.as_str(), "text": "root" }))
             .await
             .unwrap();
-        let root_id = root["task_id"].as_str().unwrap().to_string();
+        let root_id = root["id"].as_str().unwrap().to_string();
         fx.send(json!({ "channel": channel.as_str(), "text": "reply", "parent": root_id }))
             .await
             .unwrap();

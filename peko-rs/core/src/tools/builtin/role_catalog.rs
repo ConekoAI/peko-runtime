@@ -33,9 +33,8 @@ impl Tool for AgentCatalogTool {
     fn description(&self) -> String {
         r"List the role templates available in this Principal.
 
-Returns `{ total, agents }`; each entry has `id`, `name`,
-`description`, and `enabled`. Pass an enabled entry's `id` as the
-`Agent` tool's `role` argument."
+Returns `{ total, roles }`; each role has `id`, `name`, and
+`description`. Pass a role's `id` as the `Agent` tool's `role`."
             .to_string()
     }
 
@@ -54,20 +53,19 @@ Returns `{ total, agents }`; each entry has `id`, `name`,
         })
         .await?;
         roles.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
-        // Presence = availability (ADR-066): every discovered role is enabled.
-        let agents: Vec<serde_json::Value> = roles
+        // Presence = availability (ADR-066): every discovered role is usable.
+        let roles: Vec<serde_json::Value> = roles
             .into_iter()
             .map(|role| {
                 json!({
                     "id": role.manifest.id,
                     "name": role.manifest.name,
                     "description": role.manifest.description,
-                    "enabled": true,
                 })
             })
             .collect();
 
-        Ok(json!({ "total": agents.len(), "agents": agents }))
+        Ok(json!({ "total": roles.len(), "roles": roles }))
     }
 }
 
@@ -95,10 +93,10 @@ mod tests {
         let result = tool.execute(json!({})).await.unwrap();
         assert_eq!(result["total"], 2);
         assert_eq!(
-            result["agents"],
+            result["roles"],
             json!([
-                {"id":"reviewer", "name":"Reviewer", "description":"Reviews drafts", "enabled":true},
-                {"id":"writer", "name":"Writer", "description":"Drafts prose", "enabled":true},
+                {"id":"reviewer", "name":"Reviewer", "description":"Reviews drafts"},
+                {"id":"writer", "name":"Writer", "description":"Drafts prose"},
             ])
         );
     }
@@ -109,7 +107,7 @@ mod tests {
         let tool = AgentCatalogTool::from_workspace(workspace.path().to_path_buf());
         assert_eq!(
             tool.execute(json!({})).await.unwrap(),
-            json!({"total":0, "agents":[]})
+            json!({"total":0, "roles":[]})
         );
     }
 
@@ -127,6 +125,6 @@ mod tests {
         std::fs::write(roles.join("planner.md"), role("Planner", "Plans work")).unwrap();
         let result = tool.execute(json!({})).await.unwrap();
         assert_eq!(result["total"], 1);
-        assert_eq!(result["agents"][0]["id"], "planner");
+        assert_eq!(result["roles"][0]["id"], "planner");
     }
 }

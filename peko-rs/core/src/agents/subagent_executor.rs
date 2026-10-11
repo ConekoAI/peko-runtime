@@ -97,7 +97,8 @@ pub struct ExecutionConfig {
     /// `stamp_spawn_parent_linkage` patches).
     pub slug: Option<String>,
     /// Retention cap on the session's closed compaction pages
-    /// (ADR-051 FIFO page limit, Agent tool `page_limit` param).
+    /// (ADR-051 FIFO page limit, Agent tool `page_limit` param;
+    /// `Some(0)` clears the cap, `None` leaves it unchanged).
     /// `None` = unlimited. Applied by `spawn_and_execute` /
     /// `branch_and_execute` to the session they create or reseed.
     pub page_limit: Option<u32>,
@@ -916,8 +917,9 @@ impl SubagentExecutor {
         if let Some(limit) = config.page_limit {
             let pruned = {
                 let mut manager = self.session_manager.write().await;
+                // 0 = unlimited (clears the cap).
                 manager
-                    .set_page_limit(&child_session_id, Some(limit))
+                    .set_page_limit(&child_session_id, (limit > 0).then_some(limit))
                     .await?;
                 manager.enforce_page_limit(&child_session_id).await?
             };
@@ -1763,8 +1765,9 @@ impl SubagentExecutor {
         if let Some(limit) = config.page_limit {
             let pruned = {
                 let mut manager = self.session_manager.write().await;
+                // 0 = unlimited (clears the cap).
                 manager
-                    .set_page_limit(&child_session_id, Some(limit))
+                    .set_page_limit(&child_session_id, (limit > 0).then_some(limit))
                     .await?;
                 manager.enforce_page_limit(&child_session_id).await?
             };

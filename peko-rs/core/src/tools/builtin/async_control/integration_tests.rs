@@ -127,7 +127,10 @@ mod tests {
             receipt["status"], "running",
             "receipt status runs while dispatched"
         );
-        assert_eq!(receipt["tool"], "stub_tool", "receipt echoes the tool name");
+        assert_eq!(
+            receipt["tool_name"], "stub_tool",
+            "receipt echoes the tool name"
+        );
         let task_id = receipt["task_id"].as_str().expect("task_id is a string");
         assert!(
             task_id.starts_with("stub_tool:"),

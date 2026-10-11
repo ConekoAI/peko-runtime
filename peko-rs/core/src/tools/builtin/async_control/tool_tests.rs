@@ -116,7 +116,7 @@ async fn timeout_secs_bounds_the_task_lifetime() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":10000}),
+        json!({"block":true, "timeout_ms":10000}),
     )
     .await;
     assert_eq!(out["is_terminal"], true, "{out}");
@@ -136,7 +136,7 @@ async fn running_tasks_report_partial_output_and_stop_is_idempotent() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":100}),
+        json!({"block":true, "timeout_ms":100}),
     )
     .await;
     assert_eq!(
@@ -229,7 +229,7 @@ async fn spawning_an_unknown_tool_fails_the_task() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":5000}),
+        json!({"block":true, "timeout_ms":5000}),
     )
     .await;
     assert_eq!(out["is_terminal"], true, "{out}");
@@ -382,7 +382,7 @@ async fn background_bash_timeout_bounds_the_task() {
         &harness,
         "output",
         id,
-        json!({"block":true, "timeout":10000}),
+        json!({"block":true, "timeout_ms":10000}),
     )
     .await;
     assert_eq!(out["status"], "timed_out", "{out}");

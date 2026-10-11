@@ -3174,4 +3174,33 @@ async fn test_branch_overwrite_reseeds_in_place() {
         "the target's own sequence advanced"
     );
     assert_eq!(meta.slug.as_deref(), Some("briefing"), "slug untouched");
+    assert_eq!(meta.page_limit, Some(1));
+
+    // Fire #4 with page_limit 0 clears the cap: nothing more is pruned.
+    executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            true,
+            ExecutionConfig {
+                page_limit: Some(0),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let meta = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.session_id.to_string() == old_id)
+        .expect("target survives");
+    assert_eq!(meta.page_limit, None, "0 clears the cap");
+    assert_eq!(meta.pruned_pages, 1, "no page pruned under no cap");
 }
