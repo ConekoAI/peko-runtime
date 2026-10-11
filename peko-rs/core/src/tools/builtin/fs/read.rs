@@ -427,6 +427,70 @@ mod tests {
         assert_eq!(page["next_offset"], 2);
     }
 
+    /// The byte budget is exact: content that fits exactly is returned
+    /// whole, one byte more stops at the previous line, and a cut long
+    /// line keeps as much as fits.
+    #[tokio::test]
+    async fn byte_budget_boundaries_are_exact() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+
+        // One line whose numbered entry ("1\t" + text) is exactly the cap.
+        let exact = "x".repeat(MAX_CONTENT_BYTES - 2);
+        fs::write(temp_dir.path().join("exact.txt"), format!("{exact}\n"))
+            .await
+            .unwrap();
+        let page = tool
+            .execute(json!({"file_path": "exact.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(page["content"].as_str().unwrap().len(), MAX_CONTENT_BYTES);
+        assert_eq!(page["truncated"], false);
+
+        // Two lines totalling one byte over the cap: only the first fits.
+        let first = "a".repeat(1000);
+        let second = "b".repeat(MAX_CONTENT_BYTES - 1000 - 4);
+        fs::write(
+            temp_dir.path().join("over.txt"),
+            format!("{first}\n{second}\n"),
+        )
+        .await
+        .unwrap();
+        let page = tool
+            .execute(json!({"file_path": "over.txt"}))
+            .await
+            .unwrap();
+        assert_eq!(page["content"], format!("1\t{first}"));
+        assert_eq!(page["next_offset"], 2);
+
+        // A long line that is not the first selected: cut close to the
+        // budget, and paging continues after it.
+        let long = "é".repeat(MAX_CONTENT_BYTES);
+        fs::write(
+            temp_dir.path().join("long.txt"),
+            format!("short\n{long}\nend\n"),
+        )
+        .await
+        .unwrap();
+        let page = tool
+            .execute(json!({"file_path": "long.txt", "offset": 2}))
+            .await
+            .unwrap();
+        let content = page["content"].as_str().unwrap();
+        assert!(content.starts_with("2\té"));
+        assert!(content.ends_with(LINE_CUT_MARKER));
+        assert!(content.len() > MAX_CONTENT_BYTES - 4, "{}", content.len());
+        assert!(content.len() <= MAX_CONTENT_BYTES);
+        assert_eq!(page["next_offset"], 3);
+    }
+
+    #[test]
+    fn floor_char_boundary_steps_back_inside_a_character() {
+        assert_eq!(floor_char_boundary("aé", 2), 1);
+        assert_eq!(floor_char_boundary("aé", 3), 3);
+        assert_eq!(floor_char_boundary("ab", 9), 2);
+    }
+
     #[tokio::test]
     async fn large_binary_files_are_refused_small_ones_read() {
         let temp_dir = TempDir::new().unwrap();
@@ -437,6 +501,20 @@ mod tests {
         )
         .await
         .unwrap();
+        fs::write(
+            temp_dir.path().join("at_cap.bin"),
+            vec![0xFFu8; MAX_CONTENT_BYTES],
+        )
+        .await
+        .unwrap();
+        let at_cap = tool
+            .execute(json!({"file_path": "at_cap.bin"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            at_cap["size_bytes"], MAX_CONTENT_BYTES,
+            "exactly the cap is allowed"
+        );
         fs::write(temp_dir.path().join("small.bin"), vec![0xFFu8; 16])
             .await
             .unwrap();

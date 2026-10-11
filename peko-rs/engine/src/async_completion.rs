@@ -157,13 +157,20 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
         text: format!("[Async task results — {n} completed since last turn]"),
     }];
     for event in for_session {
-        let status_word = match event.status() {
-            AsyncTaskStatus::Completed { .. } => "completed",
-            AsyncTaskStatus::Failed { .. } => "failed",
-            AsyncTaskStatus::Cancelled => "cancelled",
-            AsyncTaskStatus::TimedOut { .. } => "timed out",
-            AsyncTaskStatus::Pending => "pending",
-            AsyncTaskStatus::Running => "running",
+        let (status_word, error) = match event.status() {
+            AsyncTaskStatus::Completed { .. } => ("completed", None),
+            AsyncTaskStatus::Failed { error } => ("failed", Some(error)),
+            AsyncTaskStatus::Cancelled => ("cancelled", None),
+            AsyncTaskStatus::TimedOut { error } => ("timed out", Some(error)),
+            AsyncTaskStatus::Pending => ("pending", None),
+            AsyncTaskStatus::Running => ("running", None),
+        };
+        // A failed or timed-out task's reason lives in its status; its
+        // result is usually null, which alone tells the model nothing.
+        let body = match (error, event.result()) {
+            (Some(error), serde_json::Value::Null) => format!("error: {error}"),
+            (Some(error), result) => format!("error: {error}\n{result}"),
+            (None, result) => result.to_string(),
         };
         content.push(ContentBlock::Text {
             text: format!(
@@ -171,7 +178,7 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
                 event.task_id(),
                 event.tool_name(),
                 status_word,
-                truncate_for_preview(&event.result().to_string()),
+                truncate_for_preview(&body),
             ),
         });
     }
@@ -358,6 +365,10 @@ mod tests {
         match &msg.content[1] {
             ContentBlock::Text { text } => {
                 assert!(text.contains("status: failed"), "got {text}");
+                assert!(
+                    text.contains("error: oops"),
+                    "the reason reaches the model: {text}"
+                );
             }
             other => panic!("expected Text block, got {other:?}"),
         }
@@ -376,6 +387,7 @@ mod tests {
         match &msg.content[1] {
             ContentBlock::Text { text } => {
                 assert!(text.contains("status: timed out"), "got {text}");
+                assert!(text.contains("error: timed out"), "got {text}");
             }
             other => panic!("expected Text block, got {other:?}"),
         }
@@ -449,6 +461,33 @@ mod tests {
         // than the limit in bytes.
         let body = &out[..out.len() - TRUNCATION_SUFFIX.len()];
         assert!(body.is_char_boundary(body.len()));
+    }
+
+    /// A failed task usually has a null result; the message must carry
+    /// the error instead of a bare `null`.
+    #[test]
+    fn failed_completion_with_null_result_shows_the_error() {
+        let mut event = make_completion_event_with_status(
+            "Bash:x",
+            "Bash",
+            "session_a",
+            AsyncTaskStatus::Failed {
+                error: "Failed to execute Bash command: No such file or directory".to_string(),
+            },
+        );
+        event.result = serde_json::Value::Null;
+        let msg = build_async_completion_message(&[event], "session_a").unwrap();
+        match &msg.content[1] {
+            ContentBlock::Text { text } => {
+                assert!(
+                    text.ends_with(
+                        "\nerror: Failed to execute Bash command: No such file or directory"
+                    ),
+                    "got {text}"
+                );
+            }
+            other => panic!("expected Text block, got {other:?}"),
+        }
     }
 
     #[test]

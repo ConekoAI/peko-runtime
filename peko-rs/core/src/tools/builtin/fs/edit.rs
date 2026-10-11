@@ -362,6 +362,27 @@ mod tests {
         assert_eq!(content, "bar bar bar");
     }
 
+    /// A missing `old_string` is previewed in the error, cut at 50 bytes.
+    #[tokio::test]
+    async fn not_found_error_previews_the_first_50_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = EditTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("f.txt"), "content")
+            .await
+            .unwrap();
+        let missing = format!("{}{}", "m".repeat(50), "TAIL-NOT-SHOWN");
+        let error = tool
+            .execute(json!({"file_path": "f.txt", "old_string": missing, "new_string": "x"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("'{}...'", "m".repeat(50))),
+            "{error}"
+        );
+        assert!(!error.contains("TAIL"), "{error}");
+    }
+
     #[tokio::test]
     async fn test_replace_not_found() {
         let temp_dir = TempDir::new().unwrap();

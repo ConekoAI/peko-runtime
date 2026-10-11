@@ -716,6 +716,150 @@ mod tests {
         }
     }
 
+    /// How `list` shows each schedule to the model, including the unit
+    /// boundaries of an interval.
+    #[test]
+    fn schedules_display_in_their_natural_unit() {
+        for (every_ms, shown) in [
+            (30_000, "every 30s"),
+            (59_999, "every 59s"),
+            (60_000, "every 1m"),
+            (3_599_999, "every 59m"),
+            (3_600_000, "every 1h"),
+            (7_200_000, "every 2h"),
+        ] {
+            assert_eq!(ScheduleKind::Every { every_ms }.display(), shown);
+        }
+        let at = ScheduleKind::At {
+            at: "2026-10-10T09:00:00Z".into(),
+        };
+        assert_eq!(at.display(), "at 2026-10-10T09:00:00Z");
+        let cron = |tz: Option<&str>| ScheduleKind::Cron {
+            expr: "0 9 * * *".into(),
+            tz: tz.map(str::to_string),
+        };
+        assert_eq!(cron(None).display(), "cron '0 9 * * *'");
+        assert_eq!(
+            cron(Some("Asia/Tokyo")).display(),
+            "cron '0 9 * * *' (Asia/Tokyo)"
+        );
+        assert_eq!(ScheduleKind::Idle { minutes: 5 }.display(), "idle 5m");
+    }
+
+    #[test]
+    fn task_description_prefers_the_message_then_the_job_name() {
+        let job = |action| CronJob {
+            id: "j".into(),
+            name: "standup".into(),
+            principal_id: PrincipalId("alice".into()),
+            schedule: ScheduleKind::Idle { minutes: 1 },
+            action,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+        };
+        let send = |message: &str| CronJobAction::Send {
+            message: message.into(),
+            target: None,
+        };
+        assert_eq!(
+            job(send("check the queue")).task_description(),
+            "check the queue"
+        );
+        assert_eq!(job(send("")).task_description(), "scheduled job 'standup'");
+        let tool = CronJobAction::SpawnTool {
+            tool_name: "Read".into(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: None,
+            timeout_secs: None,
+        };
+        assert_eq!(job(tool).task_description(), "scheduled job 'standup'");
+    }
+
+    #[test]
+    fn durations_accept_every_unit() {
+        for (input, ms) in [
+            ("1500", 1_500),
+            ("30s", 30_000),
+            ("5m", 300_000),
+            ("2h", 7_200_000),
+            ("1d", 86_400_000),
+            (" 3m ", 180_000),
+        ] {
+            assert_eq!(parse_duration_ms(input).unwrap(), ms, "{input}");
+        }
+        for bad in ["", "m", "5w", "1.5h", "-1s"] {
+            assert!(parse_duration_ms(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Next-fire computation for every schedule kind. A one-shot whose
+    /// time has passed, and an idle job, must land far in the future or
+    /// they would re-fire on every poll.
+    #[test]
+    fn next_run_for_each_schedule_kind() {
+        let after = DateTime::parse_from_rfc3339("2026-10-10T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let far = after + chrono::Duration::days(365 * 99);
+
+        let past = ScheduleKind::At {
+            at: "2026-10-09T00:00:00Z".into(),
+        };
+        assert!(calculate_next_run(&past, after).unwrap() > far);
+        let future = ScheduleKind::At {
+            at: "2026-10-11T00:00:00Z".into(),
+        };
+        assert_eq!(
+            calculate_next_run(&future, after).unwrap(),
+            after + chrono::Duration::days(1)
+        );
+        assert_eq!(
+            calculate_next_run(&ScheduleKind::Every { every_ms: 90_000 }, after).unwrap(),
+            after + chrono::Duration::seconds(90)
+        );
+        assert!(calculate_next_run(&ScheduleKind::Idle { minutes: 5 }, after).unwrap() > far);
+
+        // 09:00 Tokyo is 00:00 UTC; the next occurrence after midnight
+        // UTC is the following day's.
+        let tokyo = ScheduleKind::Cron {
+            expr: "0 9 * * *".into(),
+            tz: Some("Asia/Tokyo".into()),
+        };
+        assert_eq!(
+            calculate_next_run(&tokyo, after).unwrap(),
+            after + chrono::Duration::days(1)
+        );
+        let utc = ScheduleKind::Cron {
+            expr: "30 6 * * *".into(),
+            tz: None,
+        };
+        assert_eq!(
+            calculate_next_run(&utc, after).unwrap(),
+            after + chrono::Duration::minutes(6 * 60 + 30)
+        );
+    }
+
+    /// A run that finishes before its own slot must not re-fire that slot.
+    #[test]
+    fn anchored_interval_never_repeats_the_scheduled_slot() {
+        let scheduled = DateTime::parse_from_rfc3339("2026-08-07T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let early = scheduled - chrono::Duration::seconds(10);
+        assert_eq!(
+            calculate_next_interval_anchored(scheduled, 60_000, early),
+            scheduled + chrono::Duration::seconds(60)
+        );
+    }
+
     #[test]
     fn cron_job_roundtrip() {
         let job = CronJob {

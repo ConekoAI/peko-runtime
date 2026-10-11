@@ -4,6 +4,31 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Tool contracts: loop-level and mutation testing (2026-10-10)
+
+- Fix background commands failing in runs without a workspace: an empty
+  workspace was copied into the background task's dispatch and injected as
+  `cwd: ""`, so every background `Bash` / `Async`-spawned command failed to
+  start. Found by a new loop-level test of the background completion chain
+  (the model starts a command, waits, and the completion with the command's
+  output reaches its next turn), run for both `Bash run_in_background` and
+  `Async action=spawn`.
+- Fix a failed background task's completion showing the model only
+  `status: failed` and `null`; it now carries the error.
+- Fix tool errors losing their cause: the model saw only the outermost
+  context label (e.g. "Failed to execute Bash command") without the reason.
+- Pin each built-in tool's parallel safety (the engine's parallel gate).
+- Mutation testing (`cargo-mutants`) over the Cron tool: cover schedule
+  display, every duration unit, and next-run computation for each schedule
+  kind, including passed one-shot and idle jobs.
+- Mutation testing over Async, Bash, Channel, fs, Agent and ModelCall: cover
+  Read's exact byte budget, Bash's default cwd / `timeout: 0` / signal exit
+  code / background output at exactly the cap, ChannelSend accepting only the
+  target's reply (local and remote), ModelCall forwarding `temperature` and
+  `max_tokens`, and more. The mock provider records the `ChatOptions` it was
+  called with. (Skill, Session, Workflow, Plan, Task and ModelList are not yet
+  mutation-tested.)
+
 ### Bounded tool output (2026-10-10)
 
 - Fix background `Bash` keeping the start of long output: the result held the

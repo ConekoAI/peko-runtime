@@ -339,6 +339,7 @@ impl Fixture {
         let port = self.channel_port.clone();
         let caller_raw = self.caller.id.0.clone();
         let target = Subject::from(&self.target.id);
+        let caller = Subject::from(&self.caller.id);
         let mut rx = port.subscribe_events(&channel).await;
         tokio::spawn(async move {
             let mut answered = 0usize;
@@ -360,6 +361,10 @@ impl Fixture {
                     .collect();
                 for (id, text) in roots.into_iter().skip(answered) {
                     tokio::time::sleep(delay).await;
+                    // A reply by anyone but the target is not the answer.
+                    port.post(&channel, &caller, PostMsg::reply(id.clone(), "decoy"))
+                        .await
+                        .unwrap();
                     port.post(
                         &channel,
                         &target,
@@ -470,18 +475,30 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
         .with_principal_id(fx.caller.id.0.clone())
         .with_session_id(first.session_id.clone())
         .with_workspace(fx.caller.workspace_path.to_string_lossy());
-    let second: ChannelSendResult = serde_json::from_value(
-        fx.tool
-            .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "two"}),
-                &ctx,
+    let send_from = |ctx: peko_tools_core::ToolContext, text: &'static str| {
+        let fx = &fx;
+        async move {
+            let result: ChannelSendResult = serde_json::from_value(
+                fx.tool
+                    .execute_with_context(
+                        serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": text}),
+                        &ctx,
+                    )
+                    .await
+                    .unwrap(),
             )
-            .await
-            .unwrap(),
+            .unwrap();
+            assert!(result.success, "{text}: {:?}", result.error);
+        }
+    };
+    send_from(ctx.clone(), "two").await;
+    // A session id the store doesn't know is not attributed.
+    send_from(
+        ctx.with_session_id(peko_session::SessionId::from("not-in-store").to_string()),
+        "three",
     )
-    .unwrap();
+    .await;
     responder.abort();
-    assert!(second.success, "{:?}", second.error);
 
     let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
     let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
@@ -494,12 +511,24 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
             ("pong: one".to_string(), None),
             ("two".to_string(), via.clone()),
             ("pong: two".to_string(), None),
+            ("three".to_string(), None),
+            ("pong: three".to_string(), None),
         ]
     );
     let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let target_side = posted_via(&fx.channel_port, &fx.target, &caller_peer).await;
-    assert_eq!(target_side[0], ("one".to_string(), None));
-    assert_eq!(target_side[2], ("two".to_string(), via));
+    let target_roots: Vec<_> = posted_via(&fx.channel_port, &fx.target, &caller_peer)
+        .await
+        .into_iter()
+        .filter(|(text, _)| ["one", "two", "three"].contains(&text.as_str()))
+        .collect();
+    assert_eq!(
+        target_roots,
+        vec![
+            ("one".to_string(), None),
+            ("two".to_string(), via),
+            ("three".to_string(), None),
+        ]
+    );
 }
 
 /// A `ChannelSend` bound to a principal this runtime has not loaded
@@ -558,7 +587,11 @@ async fn concurrent_requests_to_one_target_each_receive_their_own_reply() {
     // one reply. (A slug collision once resolved the caller's own DM to
     // the target's, double-posting every request after the first.)
     let target_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let rows = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer).await;
+    let rows: Vec<_> = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer)
+        .await
+        .into_iter()
+        .filter(|(_, _, text)| text != "decoy")
+        .collect();
     let roots: Vec<_> = rows
         .iter()
         .filter(|r| r.1.is_none())
@@ -623,6 +656,19 @@ fn spawn_remote_peer(
                         })
                         .collect();
                     for (id, text) in roots.into_iter().skip(answered) {
+                        // Replies from a user or from the caller itself are
+                        // not the target's answer.
+                        for decoy_author in ["user:alice", caller_raw.as_str()] {
+                            store
+                                .post_attributed(
+                                    &channel,
+                                    &caller,
+                                    decoy_author,
+                                    PostMsg::reply(id.clone(), "decoy"),
+                                )
+                                .await
+                                .unwrap();
+                        }
                         store
                             .post_attributed(
                                 &channel,

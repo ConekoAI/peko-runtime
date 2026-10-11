@@ -1399,6 +1399,35 @@ mod tests {
         assert!(notes[0].1.contains("[agent]"), "note: {}", notes[0].1);
     }
 
+    /// Empty labels are skipped: an explicit label wins, then the agent's
+    /// label, then the default.
+    #[tokio::test]
+    async fn empty_labels_fall_through_to_the_next_choice() {
+        let target = Subject::User("bob".to_string());
+        for (agent_label, label, shown) in [
+            (Some("worker"), Some(""), "[worker]"),
+            (Some(""), Some(""), "[agent]"),
+            (Some("worker"), Some("deploy"), "[deploy]"),
+        ] {
+            let messenger = StubMessenger {
+                origin: Some(Subject::User("bob".to_string())),
+                ..StubMessenger::delivering()
+            };
+            ChannelSendTool::execute_user_target(
+                &messenger,
+                "prin_x",
+                "sess-1",
+                agent_label,
+                label,
+                &target,
+                "hi",
+            )
+            .await;
+            let notes = messenger.notes.lock().unwrap();
+            assert!(notes[0].1.contains(shown), "{shown}: {}", notes[0].1);
+        }
+    }
+
     /// A note that cannot be delivered is a structured failure naming
     /// the reason; nothing claims success.
     #[tokio::test]

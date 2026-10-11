@@ -527,3 +527,27 @@ async fn detached_foreground_calls_register_in_the_principals_registry() {
     assert_eq!(entry.config.principal_id.0, PRINCIPAL);
     async_call(&harness, "stop", &id, json!({})).await;
 }
+
+/// `list` counts the tasks still running; a blocking `output` without a
+/// timeout waits on its default (minutes), not a second; a finished task's
+/// status reports how long it ran.
+#[tokio::test]
+async fn list_counts_active_tasks_and_output_blocks_on_its_default_timeout() {
+    let harness = harness().await;
+    let quick = spawn(&harness, json!({"tool":"Emit", "params":{"lines":1}})).await;
+    let slow = spawn(&harness, json!({"tool":"Sleep", "params":{"ms":1500}})).await;
+    async_call(&harness, "output", &quick, json!({"block": true})).await;
+
+    let listed = harness.call("Async", json!({"action":"list"})).await.ok();
+    assert_eq!(listed["active"], 1, "{listed}");
+
+    let out = async_call(&harness, "output", &slow, json!({"block": true})).await;
+    assert_eq!(out["is_terminal"], true, "{out}");
+    assert_eq!(out["result"]["slept_ms"], 1500, "{out}");
+    assert!(out["elapsed_seconds"].as_i64().unwrap() >= 1, "{out}");
+    let status = async_call(&harness, "status", &slow, json!({})).await;
+    assert!(
+        status["duration_seconds"].as_i64().unwrap() >= 1,
+        "{status}"
+    );
+}

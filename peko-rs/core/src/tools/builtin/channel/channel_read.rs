@@ -440,6 +440,11 @@ mod tests {
         let page = fx.read(json!({ "since": second })).await;
         assert_eq!(texts(&page), ["third"]);
         assert_eq!(page["has_more"], false);
+
+        // Exactly `limit` events remaining: complete, nothing more.
+        let page = fx.read(json!({ "since": first, "limit": 2 })).await;
+        assert_eq!(texts(&page), ["second", "third"]);
+        assert_eq!(page["has_more"], false);
     }
 
     /// `limit` is clamped to 1..=1000 events.

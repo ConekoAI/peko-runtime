@@ -212,8 +212,12 @@ impl ToolDispatcher {
         let mut base_ctx =
             peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
                 .with_agent_id(call.agent_id.clone().unwrap_or_default())
-                .with_session_id(call.session_id.clone().unwrap_or_default())
-                .with_workspace(call.workspace.clone().unwrap_or_default());
+                .with_session_id(call.session_id.clone().unwrap_or_default());
+        // No workspace stays `None`: an empty one would be copied into a
+        // background task's dispatch and injected as `cwd: ""`.
+        if let Some(workspace) = call.workspace.as_deref().filter(|w| !w.is_empty()) {
+            base_ctx = base_ctx.with_workspace(workspace);
+        }
         if let Some(id) = caller_principal {
             base_ctx = base_ctx.with_principal_id(id);
             if let Some(name) = call.principal_name.as_deref().filter(|n| !n.is_empty()) {
@@ -341,7 +345,9 @@ impl ToolDispatcher {
                     (text, value, success)
                 }
                 Err(e) => {
-                    let text = format!("Error: {e}");
+                    // `{:#}` keeps the cause chain: a `.context()` label
+                    // alone ("Failed to read file") hides the reason.
+                    let text = format!("Error: {e:#}");
                     (text.clone(), Value::String(text), false)
                 }
             }
@@ -451,7 +457,7 @@ fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Opt
         return;
     };
     // Inject agent workspace into tool parameters for filesystem tools.
-    if let Some(ws) = workspace {
+    if let Some(ws) = workspace.filter(|w| !w.is_empty()) {
         match tool_name {
             "Glob" => {
                 if !obj.contains_key("path") {
@@ -513,6 +519,62 @@ mod tests {
             assert!(params["panic"] != true, "fixture panic");
             Ok(params)
         }
+    }
+
+    /// A call without a workspace injects nothing: an empty one used to
+    /// reach background task bodies as `cwd: ""` and fail every spawn.
+    #[test]
+    fn empty_workspace_is_not_injected() {
+        for tool in ["Bash", "Glob", "Grep"] {
+            let mut params = serde_json::json!({});
+            apply_workspace_injection(&mut params, tool, Some(""));
+            assert_eq!(params, serde_json::json!({}), "{tool}");
+            apply_workspace_injection(&mut params, tool, Some("/ws"));
+            let key = if tool == "Bash" { "cwd" } else { "path" };
+            assert_eq!(params[key], "/ws", "{tool}");
+        }
+    }
+
+    /// A tool error reaches the model with its cause, not just the
+    /// outermost `.context()` label.
+    #[tokio::test]
+    async fn tool_errors_keep_their_cause_chain() {
+        use anyhow::Context as _;
+        struct Failing;
+        #[async_trait::async_trait]
+        impl Tool for Failing {
+            fn name(&self) -> &str {
+                "Failing"
+            }
+            fn description(&self) -> String {
+                "fails".into()
+            }
+            fn parameters(&self) -> Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value) -> Result<Value> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no such file",
+                ))
+                .context("Failed to read notes.md")
+            }
+        }
+        let catalog = Arc::new(ToolCatalog::new());
+        catalog
+            .register_system(Arc::new(Failing), ToolSource::BuiltIn)
+            .await;
+        let dispatcher = ToolDispatcher::new(
+            catalog,
+            Arc::new(WorkspaceHookDispatcher::new()),
+            Arc::new(AsyncExecutionRouter::new()),
+            None,
+        );
+        let mut call = ToolCallSpec::new("Failing", serde_json::json!({}));
+        call.principal_id = Some("principal".into());
+        let (text, _, success) = dispatcher.execute(call).await.unwrap();
+        assert!(!success);
+        assert_eq!(text, "Error: Failed to read notes.md: no such file");
     }
 
     #[tokio::test]

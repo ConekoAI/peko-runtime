@@ -489,6 +489,26 @@ mod tests {
         assert_eq!(with_dirs["total_matched"], 3, "{with_dirs}");
     }
 
+    /// Exactly `limit` matches is a complete result, not a truncated one.
+    #[tokio::test]
+    async fn exactly_limit_matches_is_not_truncated() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = GlobTool::new().with_workspace(temp_dir.path());
+        for name in ["a.rs", "b.rs"] {
+            fs::write(temp_dir.path().join(name), "").await.unwrap();
+        }
+        let exact = tool
+            .execute(json!({"pattern": "*.rs", "limit": 2}))
+            .await
+            .unwrap();
+        assert_eq!(exact["truncated"], false, "{exact}");
+        let over = tool
+            .execute(json!({"pattern": "*.rs", "limit": 1}))
+            .await
+            .unwrap();
+        assert_eq!(over["truncated"], true, "{over}");
+    }
+
     #[tokio::test]
     async fn test_glob_include_hidden() {
         let temp_dir = TempDir::new().unwrap();
