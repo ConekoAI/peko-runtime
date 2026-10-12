@@ -117,8 +117,9 @@ pub struct ChannelSendResult {
     /// the request is recorded and the reply will appear.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub dm_channel: Option<String>,
-    /// Principal branch: `delivered` (the target is on this runtime) or
-    /// `sent` (handed to the tunnel for another runtime).
+    /// Principal branch: `delivered` (the target has the message) or
+    /// `queued` (another runtime has not confirmed it yet; it is resent
+    /// until it does).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delivery: Option<String>,
     /// Principal branch: how the reply comes back.
@@ -127,6 +128,10 @@ pub struct ChannelSendResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+/// How long a send to another runtime waits for its delivery receipt
+/// before reporting the message as queued.
+const DELIVERY_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What a principal-branch send tells the caller about the reply.
 const REPLY_NOTE: &str = "Sent; this call does not wait for an answer. When the principal \
@@ -522,7 +527,8 @@ impl ChannelSendTool {
         //    fan-out lands on the target's mirror. `via` stamps the
         //    calling session's slug path, which is where the reply is
         //    routed when it comes back (`daemon::channel_replies`).
-        let mut msg = PostMsg::root(message);
+        let msg_id = peko_channel::new_msg_id();
+        let mut msg = PostMsg::root(message).with_msg_id(msg_id.clone());
         msg.via = via;
         let line = match ctx
             .channel_port
@@ -538,6 +544,25 @@ impl ChannelSendTool {
             }
         };
 
+        // 4. A short wait for the target runtime's receipt, so the
+        //    caller learns whether the message arrived. Unconfirmed
+        //    messages stay in the outbox and are resent until they are
+        //    (`tunnel::channel_outbox`).
+        let delivered = ctx
+            .channel_port
+            .wait_delivered(&msg_id, DELIVERY_CONFIRM_WAIT)
+            .await;
+        let (delivery, note) = if delivered {
+            ("delivered", REPLY_NOTE.to_string())
+        } else {
+            (
+                "queued",
+                format!(
+                    "Not confirmed by the target's runtime yet (it may be offline). The message \
+                     is kept and resent until it is delivered. {REPLY_NOTE}"
+                ),
+            )
+        };
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
             response: String::new(),
@@ -546,8 +571,8 @@ impl ChannelSendTool {
             kind: Some("principal".to_string()),
             channel: format!("principal:{target_did}"),
             dm_channel: Some(channel.as_str().to_string()),
-            delivery: Some("sent".to_string()),
-            note: Some(REPLY_NOTE.to_string()),
+            delivery: Some(delivery.to_string()),
+            note: Some(note),
             error: None,
         })?)
     }
@@ -594,7 +619,7 @@ Any reply threaded onto one of your posts comes back to the session that posted 
 Not for running work in your own principal's sessions — use the Agent tool.
 
 ## Result
-- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel` (read the conversation with ChannelRead); `delivery` is `delivered` (same runtime) or `sent` (handed to another runtime).
+- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel` (read the conversation with ChannelRead); `delivery` is `delivered`, or `queued` when the target's runtime has not confirmed it yet (it may be offline; the message is resent until it arrives).
 - User: `{success, kind: "user", response}`.
 - Channel / group: `{success, id, channel}` — the same `id` ChannelRead reports, usable as `parent`.
 A send that cannot go out (not a member, unknown channel or principal) is an error."#

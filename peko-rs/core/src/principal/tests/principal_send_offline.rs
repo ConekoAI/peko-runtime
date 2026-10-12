@@ -634,7 +634,9 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
 
     let first = fx.send_to(REMOTE_TARGET, "ping").await;
     assert!(first.success, "{:?}", first.error);
-    assert_eq!(first.delivery.as_deref(), Some("sent"));
+    // The captured tunnel never answers, so nothing confirms delivery.
+    assert_eq!(first.delivery.as_deref(), Some("queued"));
+    assert!(first.note.unwrap().contains("resent until it is delivered"));
     assert_eq!(first.channel, format!("principal:{REMOTE_TARGET}"));
     assert_eq!(
         first.dm_channel.as_deref(),

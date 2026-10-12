@@ -1992,6 +1992,25 @@ Both fields are absent on lines written before this change; serde
 `default` + `skip_serializing_if` keeps old logs readable. Both ride
 inside the signed event bytes of cross-runtime envelopes.
 
+### 5¾.2⅞ Cross-runtime delivery files (2026-10-12, ADR-072)
+
+Under the channel runtime dir, `channel_delivery/`:
+
+- `outbox/<seq>-<request_id>.json` — one file per outbound envelope not
+  yet confirmed by its recipient runtime: `{seq, request_id,
+  recipient_runtime_id, item, created_at, attempts, last_attempt}`,
+  where `item` is `{"kind":"event", channel, event, source}` or
+  `{"kind":"invite", channel, inviter, creator_did, invitee}` — the
+  unsigned parts, re-signed on every attempt. The zero-padded `seq`
+  keeps send order. Deleted on receipt; dropped after 30 days.
+- `received.jsonl` — `{request_id, at}` per inbound envelope applied,
+  so a resend is confirmed again but not applied twice; rows older than
+  30 days are pruned on load.
+
+Receipts travel as `{"kind":"received", channel, request_ids, at}`
+channel events inside `TunnelChannelEvent` envelopes and are never
+written to a channel log.
+
 ### 5¾.3 Mirror `members.json` partition (Phase 12a)
 
 `join_remote` re-partitions the invite's source-keyed membership

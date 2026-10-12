@@ -5,6 +5,7 @@
 
 pub mod a2a_signature;
 pub mod backoff;
+pub(crate) mod channel_outbox;
 pub mod client;
 pub mod credential;
 pub mod cross_runtime;

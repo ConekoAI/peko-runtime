@@ -191,33 +191,6 @@ pub struct TunnelDispatcherState {
     pub instance_state: std::collections::HashMap<String, InstanceState>,
     /// Current tunnel handle for sending messages
     pub tunnel_handle: Option<TunnelHandle>,
-    /// ADR-057 transport audit: request_ids of already-processed
-    /// inbound signed channel envelopes (events + invites). The
-    /// envelope signature covers `request_id` but nothing
-    /// time-ordered, so a captured envelope re-injected through the
-    /// hub would otherwise re-verify and re-append forever. Bounded
-    /// FIFO: once full, the oldest id is evicted (replay protection
-    /// window ≈ the last [`REPLAY_CACHE_CAPACITY`] envelopes).
-    pub seen_envelope_ids: std::collections::VecDeque<String>,
-}
-
-/// Capacity of the inbound envelope replay cache (see
-/// [`TunnelDispatcherState::seen_envelope_ids`]).
-pub const REPLAY_CACHE_CAPACITY: usize = 4096;
-
-impl TunnelDispatcherState {
-    /// Record an envelope id as seen. Returns `true` the first time
-    /// (proceed), `false` on a replay (drop).
-    pub fn mark_envelope_seen(&mut self, request_id: &str) -> bool {
-        if self.seen_envelope_ids.contains(&request_id.to_string()) {
-            return false;
-        }
-        if self.seen_envelope_ids.len() >= REPLAY_CACHE_CAPACITY {
-            self.seen_envelope_ids.pop_front();
-        }
-        self.seen_envelope_ids.push_back(request_id.to_string());
-        true
-    }
 }
 
 /// Dispatches tunnel messages to daemon services.
@@ -607,6 +580,9 @@ impl TunnelDispatcher {
                 heartbeat_interval_secs,
             } => {
                 self.mark_ready(heartbeat_interval_secs).await;
+                // Resend channel envelopes the recipient has not confirmed.
+                let port = self.host.tunnel_channel_port();
+                tokio::spawn(async move { port.on_tunnel_ready().await });
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
@@ -1305,19 +1281,11 @@ impl TunnelDispatcher {
             return Ok(());
         }
 
-        // 0b. Replay protection: dedupe on the signature-covered
-        // `request_id` (bounded FIFO — see `mark_envelope_seen`).
-        // ADR-058 D3 adds signed `iat`/`exp` on top; the dedupe cache
-        // is now the belt-and-suspenders second layer.
-        {
-            let mut state = self.state.write().await;
-            if !state.mark_envelope_seen(&request_id) {
-                warn!(
-                    "inbound TunnelChannelEvent: dropping replayed envelope (request_id={request_id}, source={source_runtime_id})"
-                );
-                return Ok(());
-            }
-        }
+        // Replays: the signed `iat`/`exp` (ADR-058 D3) bound an
+        // envelope's life, and the persistent applied-envelope log
+        // (step 5) applies each `request_id` once while still
+        // confirming a resend — the sender's outbox resends under the
+        // same id until it gets a receipt.
 
         // 1. Derive the verifying key.
         let verifying_key = match did_key_to_verifying_key(&source_runtime_id) {
@@ -1382,6 +1350,17 @@ impl TunnelDispatcher {
             warn!(
                 "inbound TunnelChannelEvent: dropping envelope whose event bytes disagree with the signed payload (request_id={request_id})"
             );
+            return Ok(());
+        }
+
+        // 2c. A delivery receipt: the (signature-verified) source runtime
+        // applied envelopes we sent it. It confirms only envelopes
+        // addressed to that runtime, and is never appended to a log.
+        if let peko_protocol::channel::ChannelEvent::Received { request_ids, .. } = &event {
+            self.host
+                .tunnel_channel_port()
+                .confirm_delivery(&source_runtime_id, request_ids)
+                .await;
             return Ok(());
         }
 
@@ -1484,21 +1463,36 @@ impl TunnelDispatcher {
         // `append_remote_event` impl deliberately does not re-verify
         // or re-check membership, since layering a second check here
         // would either duplicate work or risk drift.
-        if let Err(e) = self
-            .host
-            .tunnel_channel_port()
-            .append_remote_event(&channel_id_typed, &event)
-            .await
-        {
+        // A resend of an envelope already applied: confirm it again (the
+        // first receipt may have been lost), apply nothing.
+        let port = self.host.tunnel_channel_port();
+        if port.already_applied(&request_id).await {
+            port.send_receipt(
+                &source_runtime_id,
+                &channel_id_typed,
+                vec![request_id.clone()],
+            )
+            .await;
+            return Ok(());
+        }
+        if let Err(e) = port.append_remote_event(&channel_id_typed, &event).await {
             warn!(
                 "inbound TunnelChannelEvent: local-mirror append failed (request_id={request_id}, channel_id={channel_id}, kind={event_kind}): {e}"
             );
-            // Drop the event but do not error — the source runtime
-            // has no way to retry (channels are push-only) and we
-            // don't want a single bad append to backpressure the
-            // dispatcher. The audit row above preserves the trail.
+            // Drop the event without a receipt — the source resends it
+            // (e.g. once the invite that creates the mirror lands) —
+            // and do not error: a single bad append must not
+            // backpressure the dispatcher. The audit row above
+            // preserves the trail.
             return Ok(());
         }
+        port.mark_applied(&request_id).await;
+        port.send_receipt(
+            &source_runtime_id,
+            &channel_id_typed,
+            vec![request_id.clone()],
+        )
+        .await;
 
         debug!(
             "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
@@ -1558,23 +1552,14 @@ impl TunnelDispatcher {
         signature: String,
         author_signature: String,
     ) -> anyhow::Result<()> {
-        // 0. ADR-057 transport audit: recipient binding + replay
-        // dedupe, mirroring the channel-event handler.
+        // 0. ADR-057 transport audit: recipient binding, mirroring the
+        // channel-event handler (replays: see step 5).
         let own_did = self.host.runtime_did();
         if recipient_runtime_id != own_did {
             warn!(
                 "inbound TunnelChannelInvite: dropping envelope addressed to {recipient_runtime_id} (we are {own_did}, request_id={request_id})"
             );
             return Ok(());
-        }
-        {
-            let mut state = self.state.write().await;
-            if !state.mark_envelope_seen(&request_id) {
-                warn!(
-                    "inbound TunnelChannelInvite: dropping replayed envelope (request_id={request_id}, source={source_runtime_id})"
-                );
-                return Ok(());
-            }
         }
 
         // 1. Derive the verifying key from the claimed
@@ -1705,6 +1690,16 @@ impl TunnelDispatcher {
             &super::tunnel_channel_audit::preview_event_payload(&preview_json),
         );
 
+        // An invite already applied (a resend after a lost receipt):
+        // confirm it again, bootstrap nothing.
+        let port = self.host.tunnel_channel_port();
+        let channel_typed = peko_protocol::channel::ChannelId(channel_id.clone());
+        if port.already_applied(&request_id).await {
+            port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
+                .await;
+            return Ok(());
+        }
+
         // 5. Bootstrap the local mirror through the host (Phase
         // 12a): principal resolution + receiver-local DM binding +
         // `join_remote` (idempotent on the meta.json-existence
@@ -1731,6 +1726,9 @@ impl TunnelDispatcher {
             );
             return Ok(());
         }
+        port.mark_applied(&request_id).await;
+        port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
+            .await;
 
         debug!(
             "inbound TunnelChannelInvite: verified + audited + bootstrapped local mirror \
@@ -3175,6 +3173,144 @@ mod tests {
             }
             other => panic!("expected Posted, got: {other:?}"),
         }
+    }
+
+    /// Delivery receipts: an inbound envelope is applied once and
+    /// confirmed every time it arrives (a resend after a lost receipt is
+    /// confirmed again, not appended twice); an inbound receipt confirms
+    /// only the outbox entries addressed to its sender, and is never
+    /// appended to a log.
+    #[tokio::test]
+    async fn inbound_envelopes_are_applied_once_and_confirmed_every_time() {
+        use peko_channel::ChannelPort;
+        use peko_protocol::channel::ChannelEvent;
+        let app_state = create_test_app_state().await;
+        let local_runtime_id = app_state.runtime_did();
+        let creator = peko_subject::PrincipalId("prin_alice".into());
+        let channel = app_state
+            .channel_port()
+            .create(&creator, peko_channel::CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let channel_id = channel.as_str().to_string();
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let port = dispatcher.host.tunnel_channel_port();
+
+        // A live (captured) tunnel so receipts and posts leave the runtime.
+        let (tx, mut outbound) = tokio::sync::mpsc::channel::<TunnelMessage>(16);
+        port.set_ctx(Arc::new(crate::tunnel::CrossRuntimeChannelCtx {
+            directory: Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::default()),
+            signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])),
+            caller_runtime_id: local_runtime_id.clone(),
+            tunnel: Arc::new(tokio::sync::RwLock::new(Some(TunnelHandle::new(tx)))),
+            principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
+        }))
+        .await;
+
+        let kp = peko_identity::keys::KeyPair::generate();
+        let source = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        let deliver = |request_id: &'static str, event: ChannelEvent| {
+            let (signature, event) = build_signed_tunnel_channel_event(
+                &kp,
+                request_id,
+                &source,
+                &local_runtime_id,
+                "prin_bob",
+                &channel_id,
+                &event,
+            );
+            dispatcher.handle_inbound_tunnel_channel_event(
+                request_id.to_string(),
+                source.clone(),
+                local_runtime_id.clone(),
+                "prin_bob".to_string(),
+                channel_id.clone(),
+                event,
+                signature,
+                String::new(),
+            )
+        };
+        let receipt_for = |message: TunnelMessage| match message {
+            TunnelMessage::TunnelChannelEvent {
+                recipient_runtime_id,
+                event: ChannelEvent::Received { request_ids, .. },
+                ..
+            } => (recipient_runtime_id, request_ids),
+            other => panic!("expected a receipt, got {other:?}"),
+        };
+
+        let post = ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob".into(),
+            parent: None,
+            text: "hello".into(),
+            at: "2026-10-12T00:00:00Z".into(),
+            via: None,
+            msg_id: Some("msg_hello".into()),
+            reply_to: None,
+        };
+        deliver("req-1", post.clone()).await.unwrap();
+        deliver("req-1", post).await.unwrap();
+        let posted = port
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
+            .count();
+        assert_eq!(posted, 1, "applied once");
+        for _ in 0..2 {
+            let (to, ids) = receipt_for(outbound.try_recv().expect("a receipt per arrival"));
+            assert_eq!(to, source);
+            assert_eq!(ids, ["req-1"]);
+        }
+
+        // Our own post to the source runtime waits in the outbox until the
+        // source confirms it; the receipt itself is not logged.
+        port.add_remote_member(&channel, &source, "prin_bob")
+            .await
+            .unwrap();
+        port.post(
+            &channel,
+            &peko_subject::Subject::from(&creator),
+            peko_channel::PostMsg::root("ours").with_msg_id("msg_ours"),
+        )
+        .await
+        .unwrap();
+        let sent = match outbound.try_recv().unwrap() {
+            TunnelMessage::TunnelChannelEvent { request_id, .. } => request_id,
+            other => panic!("expected our post, got {other:?}"),
+        };
+        assert!(
+            !port
+                .wait_delivered("msg_ours", std::time::Duration::from_millis(10))
+                .await
+        );
+        let before = port
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .len();
+        let receipt = ChannelEvent::Received {
+            channel: channel.clone(),
+            request_ids: vec![sent],
+            at: "2026-10-12T00:00:01Z".into(),
+        };
+        deliver("req-receipt", receipt).await.unwrap();
+        assert!(
+            port.wait_delivered("msg_ours", std::time::Duration::from_millis(10))
+                .await
+        );
+        let after = port
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(after, before, "a receipt is never logged");
+        assert!(
+            outbound.try_recv().is_err(),
+            "a receipt is not itself confirmed"
+        );
     }
 
     /// peko-channel cross-runtime PR-B commit 2: the inbound handler

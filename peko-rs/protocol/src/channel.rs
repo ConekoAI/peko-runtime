@@ -285,6 +285,16 @@ pub enum ChannelEvent {
         member: String,
         at: String,
     },
+    /// Delivery receipt, runtime to runtime: the sender of this event
+    /// applied the envelopes `request_ids` it received for `channel`.
+    /// Transport only — never appended to a channel log. It rides the
+    /// same relayed `TunnelChannelEvent` envelope as channel events so
+    /// the hub needs no new message type.
+    Received {
+        channel: ChannelId,
+        request_ids: Vec<String>,
+        at: String,
+    },
 }
 
 impl ChannelEvent {
@@ -296,6 +306,7 @@ impl ChannelEvent {
             Self::Posted { .. } => "posted",
             Self::MemberJoined { .. } => "member_joined",
             Self::MemberLeft { .. } => "member_left",
+            Self::Received { .. } => "received",
         }
     }
 
@@ -308,7 +319,8 @@ impl ChannelEvent {
             Self::Created { channel, .. }
             | Self::Posted { channel, .. }
             | Self::MemberJoined { channel, .. }
-            | Self::MemberLeft { channel, .. } => channel,
+            | Self::MemberLeft { channel, .. }
+            | Self::Received { channel, .. } => channel,
         }
     }
 }

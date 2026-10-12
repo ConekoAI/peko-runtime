@@ -57,6 +57,17 @@ All notable changes to Peko.
   a reply never also starts a conversation turn. Same-runtime replies are
   mirrored onto the caller's DM channel for `peko log`. The description
   no longer claims only the originating user can be messaged.
+- Cross-runtime channel delivery is durable (ADR-072). Messages to
+  another runtime were dropped when either side was offline: the sender
+  skipped the send without a tunnel, and the hub drops envelopes for a
+  disconnected runtime. Outbound events and invites now wait in a
+  runtime outbox (`channel_delivery/outbox/`) until the recipient
+  confirms them, resent on a backoff, on reconnect and after a restart,
+  re-signed each time. Recipients apply each envelope once and confirm
+  every arrival with a `received` receipt carried by the same relay, so
+  the hub needs no change. `ChannelSend` reports `delivered` or `queued`.
+  The dispatcher's in-memory replay cache, which would have silenced a
+  resend after a lost receipt, is removed.
 
 ### SessionCache removed (2026-10-11)
 
