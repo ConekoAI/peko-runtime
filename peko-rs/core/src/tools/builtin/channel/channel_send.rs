@@ -133,10 +133,11 @@ pub struct ChannelSendResult {
 /// before reporting the message as queued.
 const DELIVERY_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// What a principal-branch send tells the caller about the reply.
-const REPLY_NOTE: &str = "Sent; this call does not wait for an answer. When the principal \
-     replies, the reply is delivered to this session (starting a turn if you are idle). \
-     Read the conversation with ChannelRead on dm_channel.";
+/// What a principal-branch send tells the caller about answers.
+const REPLY_NOTE: &str = "Posted. Posting does not wake the other principal; it sees the \
+     message the next time it reads the channel. Its answer, if any, arrives on dm_channel: \
+     read it later with ChannelRead, or call ChannelRead with watch: true to wait for the next \
+     post there.";
 
 // ---------------------------------------------------------------------------
 // ChannelSendTool
@@ -311,12 +312,10 @@ impl ChannelSendTool {
     }
 
     /// Local principal branch: the target lives on THIS runtime. One
-    /// channel store serves both principals, so the cross-runtime
-    /// mirror trick is unavailable — the exchange runs on the
-    /// TARGET's DM channel for the caller (where the target's
-    /// responder fires on the caller's raw-id root post), and is
-    /// mirrored onto the caller's own DM channel for `peko log`
-    /// continuity.
+    /// channel store serves both principals, so each has its own DM
+    /// channel for the other: the message is recorded on the caller's
+    /// and delivered on the target's (where the target reads it), under
+    /// one message id. Posting starts no run in the target (ADR-072).
     async fn execute_local(
         &self,
         ctx: &CrossRuntimeA2aCtx,
@@ -383,10 +382,8 @@ impl ChannelSendTool {
         // 2. Target side: ensure the TARGET's DM channel for the
         //    caller peer, invite the caller in (idempotent; the
         //    target is the creator/member so the store's inviter
-        //    check passes), subscribe BEFORE posting, then post the
-        //    root. Author = the caller's raw id → the target's
-        //    responder fires; the caller has no subscriber on the
-        //    target's channel, so there is no double-drive.
+        //    check passes), then post the root under the caller's raw
+        //    id, where the target reads it.
         let target_peer = Subject::Principal(PrincipalDID(self.caller_principal_did.clone()));
         let target_ingress = match ctx
             .principal_manager
@@ -431,10 +428,9 @@ impl ChannelSendTool {
             ));
         }
 
-        // 3. Return at once. The target's responder answers on its
-        //    channel; the reply is routed to the calling session and
-        //    mirrored onto the caller's channel
-        //    (`daemon::channel_replies`).
+        // 3. Return at once. Posting never starts a run in the target
+        //    (ADR-072); it reads the message on its DM channel, and its
+        //    answer is a post the caller reads on its own.
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
             response: String::new(),
@@ -522,11 +518,9 @@ impl ChannelSendTool {
             }
         }
 
-        // 3. Root post, author = the caller's raw id: self-skipped by
-        //    the caller's own responder, fires the remote one once the
-        //    fan-out lands on the target's mirror. `via` stamps the
-        //    calling session's slug path, which is where the reply is
-        //    routed when it comes back (`daemon::channel_replies`).
+        // 3. Root post, author = the caller's raw id, fanned out to the
+        //    target's mirror. `via` stamps the calling session's slug
+        //    path (attribution only).
         let msg_id = peko_channel::new_msg_id();
         let mut msg = PostMsg::root(message).with_msg_id(msg_id.clone());
         msg.via = via;
@@ -608,18 +602,16 @@ impl Tool for ChannelSendTool {
     }
 
     fn description(&self) -> String {
-        r#"Post a message. Every send returns at once; nothing waits for an answer. The `channel` address picks the kind of message (addresses for your peers are listed in your session context):
+        r#"Post a message. Every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. The `channel` address picks where the message goes (your peers' addresses are listed in your session context):
 
-- `principal:<did>` — a message to another principal, on your shared DM channel. When it answers, the reply is delivered to THIS session (starting a turn if you are idle); you do not need to poll. Use it to delegate work or ask a peer principal something.
-- `user:<id>` — a note to a user's conversation; it appears in their next turn. Their answer, whenever they give it, arrives in their conversation with you, which already holds the note.
-- `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message.
+- `principal:<did>` — a message to another principal, on your shared DM channel (`dm_channel` in the result). Its answer, if any, is a post on that channel: read it later with ChannelRead, or call ChannelRead with `watch: true` to wait for the next post.
+- `user:<id>` — a note to a user's conversation; it appears in their next turn, and their answer arrives in their conversation with you.
+- `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message. In a group, mentioning `@<name>` does not wake that principal either — only users' mentions do.
 
-Any reply threaded onto one of your posts comes back to the session that posted it. Each post carries your session path as `via`.
-
-Not for running work in your own principal's sessions — use the Agent tool.
+Each post carries your session path as `via`. Not for running work in your own principal's sessions — use the Agent tool.
 
 ## Result
-- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel` (read the conversation with ChannelRead); `delivery` is `delivered`, or `queued` when the target's runtime has not confirmed it yet (it may be offline; the message is resent until it arrives).
+- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel`; `delivery` is `delivered`, or `queued` when the target's runtime has not confirmed it yet (it may be offline; the message is resent until it arrives).
 - User: `{success, kind: "user", response}`.
 - Channel / group: `{success, id, channel}` — the same `id` ChannelRead reports, usable as `parent`.
 A send that cannot go out (not a member, unknown channel or principal) is an error."#
@@ -632,7 +624,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Address: `principal:<did>` (a principal; its reply comes back to this session), `user:<id>` (a note to a user), `chan_<id>` or `group:<slug>` (a channel post)."
+                    "description": "Address: `principal:<did>` (a principal, on your DM channel with it), `user:<id>` (a note to a user), `chan_<id>` or `group:<slug>` (a channel post)."
                 },
                 "text": {
                     "type": "string",

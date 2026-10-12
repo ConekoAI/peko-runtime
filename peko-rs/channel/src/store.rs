@@ -2868,8 +2868,8 @@ mod tests {
 
     /// `CreateOpts::passive_binding` persists into `meta.json` and is
     /// readable back through the `ChannelPort::passive_binding`
-    /// accessor. This is the DM-tier binding the daemon's
-    /// `PassiveBindingResponder` reads at subscriber-spawn time.
+    /// accessor. This is the DM marker the daemon reads at
+    /// subscriber-spawn time.
     #[tokio::test]
     async fn passive_binding_persists_through_create() {
         let cfg = tmp_cfg("passive-binding");

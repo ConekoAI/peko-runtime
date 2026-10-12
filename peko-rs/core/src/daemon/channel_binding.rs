@@ -1,186 +1,57 @@
-//! Channel passive binding — Phase 4 of the agent-session paradigm
-//! sprint (2026-08-15, `docs/architecture/AGENT_SESSION_PARADIGM.md`
-//! §3.1 type 1).
+//! Channel subscribers and the group-channel wake (ADR-049 Phase 3,
+//! ADR-072).
 //!
-//! A channel with a `passive_binding` in its `meta.json` (a session id
-//! or `/path` in the creator principal's session tree) is a **DM-tier**
-//! channel: an inbound `Posted` event from another member automatically
-//! wakes the bound session, the session runs one LLM turn, and the
-//! final reply is posted back to the channel as the principal.
+//! Every (principal, channel) membership gets a [`ChannelSubscriber`]
+//! that reads new events. What may start a run is narrow, because
+//! principals must never wake each other into a loop (ADR-072): **only
+//! humans and cron start runs.**
 //!
-//! ## Design decisions
+//! - **DM channels** (a `passive_binding` in `meta.json`) get
+//!   [`NoopChannelResponder`]. A user's DM is driven by the ingress path
+//!   that posted it (`peko send`, Hub, A2A, IPC steer —
+//!   `PeerChildTurns::drive_turn_streaming`). A post by another principal
+//!   starts nothing: the principal reads it with ChannelRead (its turn
+//!   context lists unread posts) or waits for one with ChannelRead
+//!   `watch`.
+//! - **Group channels** (unbound — every `group:<slug>` and bare `chan_*`
+//!   group) get a [`GroupWakeResponder`] when the principal has a
+//!   resolvable model. A `user:*`-authored ROOT post that mentions the
+//!   principal (`@<name>`, case-insensitive, whole word) wakes it.
+//!   Principal-authored posts never wake anyone — the responder's own
+//!   reply is one of them — and replies (`parent: Some`) never wake.
+//!   Everything else is read, not pushed.
 //!
-//! - **Turn driving: the ingress turn driver.** Turns are driven by
-//!   [`PeerTurnDriver`] over `PeerChildTurns::drive_turn_streaming` —
-//!   the same call every ingress path (`peko send`, Hub, A2A) makes, so
-//!   a post's turn is the same turn whichever side drives it: no time
-//!   limit, the session's conversation context, and a stop handle in
-//!   the daemon's streaming-run registry (`peko stop`). Bound sessions
-//!   are standing children (`trigger="spawn"`), which is what the
-//!   resume guards require; the session's prior history loads from its
-//!   JSONL, so the child continues with full context. The alternative — a `PrincipalManager`-based receive path
-//!   — was rejected: `receive`/`receive_trunk` land turns in root
-//!   sessions (`root:{peer}` / `root:self`) and run the *root* agent
-//!   prompt, neither of which fits "wake the bound child session".
-//! - **No `ChannelKind::Channel`.** That variant was sketched for turn
-//!   attribution through `PrincipalManager` routing
-//!   (`principal/router.rs`); since turns do NOT flow through the
-//!   router, the variant would have no consumer and is deliberately
-//!   skipped.
-//! - **No chat-log projection.** Channel-origin turns never touch a
-//!   separate conversation log (the chat-log crate was retired in
-//!   sprint 3 Phase 13). The channel's own append-only event log is
-//!   the durable record of both directions (the inbound post and the
-//!   posted reply); the bound session's JSONL is the principal's
-//!   private working memory. This preserves the channel/session
-//!   separation (ADR-044, PEKO.md).
-//! - **Author-based turn-ownership partition (Phase 11).** The peer DM
-//!   channels are driven by the ingress handlers (`peko send` IPC,
-//!   manager `receive*`/A2A/Hub, IPC steer): the handler posts the
-//!   inbound message with `author = peer.to_string()` — the Subject
-//!   wire form (`user:alice`, `user:local`, `public`,
-//!   `principal:<did>`) — and drives the turn itself, then posts the
-//!   reply as the principal. The responder must NEVER act on those
-//!   posts (that would double-drive the turn), so
-//!   [`PassiveBindingResponder::response_trigger`] drops any `Posted`
-//!   event whose author parses as a Subject wire form. The responder
-//!   owns exactly the raw-principal-id-authored posts: another local
-//!   principal posting via `peko channel send` / `ChannelSend`
-//!   (existing Phase 4 behavior) and Phase 12 cross-runtime fan-out
-//!   posts (a mirrored DM post arrives with author = the peer
-//!   principal's source-local id — a raw form, not a Subject wire
-//!   form). Remote-mirrored posts whose author IS a Subject wire form
-//!   (e.g. `user:*`) are still skipped by this rule — the remote
-//!   side's ingress handler owns those turns.
-//! - **Root-post-only rule (Phase 12a).** The trigger additionally
-//!   requires `parent.is_none()`: every responder reply is posted via
-//!   `PostMsg::reply(triggering_line, …)`, so no responder ever reacts
-//!   to a reply. Cross-runtime ping-pong (A's mirrored reply wakes B's
-//!   responder, whose reply wakes A's, …) is then STRUCTURALLY
-//!   impossible — mirror line numbers diverge between runtimes, so
-//!   correlation-based dedup can't work and the parent-presence bit is
-//!   all the rule needs (`append_remote_event` skips parent
-//!   validation, so a dangling remote parent value is fine).
-//!   Trade-off, accepted: a threaded human reply (`PostMsg::reply` via
-//!   `ChannelSend`) no longer wakes a bound session — root posts only.
-//!   Local ingress reply projections (`post_peer_dm_reply`) stay root
-//!   posts (self-authored + self-skipped anyway).
-//! - **Self-post suppression (anti-loop invariant).** The responder
-//!   posts its reply via `ChannelPort::post` as the principal, then
-//!   observes its own post on the subscriber's next poll tick.
-//!   [`PassiveBindingResponder::response_trigger`] drops any `Posted`
-//!   event whose `author` equals the bound principal's id — a responder
-//!   NEVER processes its own posts (PEKO.md "Violates channel/session
-//!   separation"). Author matching is unambiguous: `ChannelStore::post`
-//!   writes `author: sender.to_string()` and the responder compares
-//!   against the same `PrincipalId::to_string()` form. Together with
-//!   the Subject-wire-form skip and the root-post-only rule above, the
-//!   partition is: posts the responder acts on are exactly
-//!   raw-principal-id ROOT posts from OTHER principals.
-//! - **Run concurrency.** `consider_response` spawns the turn as a
-//!   detached task and returns immediately, so the subscriber's cursor
-//!   keeps advancing (persisted cursors, Phase 0) instead of blocking
-//!   on an LLM turn. Turns for one channel serialize on a per-responder
-//!   `tokio::Mutex`, so a second message arriving mid-run queues behind
-//!   the first and gets its own turn — never a crash, never a
-//!   double-run. Cross-path safety (root agent resuming the same
-//!   session via the `Agent` tool while a channel turn is in flight) is
-//!   inherited from `resume_and_execute`'s
-//!   `has_active_subagent_run_for_child` guard: the driver's executor
-//!   registers in the same principal task registry as the root agent's,
-//!   so both paths see each other's runs and the loser is refused with
-//!   `err_run_active`.
-//! - **Run-active collision → queued steering.** An `err_run_active`
-//!   refusal (and ONLY that refusal — every other failure keeps the
-//!   log-only skip below) is NOT dropped: the post text is pushed into
-//!   the bound session's daemon-shared steering inbox
-//!   (`SteeringMessage::new(text)`), the same conversion the IPC
-//!   ingress path uses. The running loop drains steering as user-role
-//!   input at its next iteration boundary, whichever path drives that
-//!   run, so the post reaches the agent with the live turn's own
-//!   delivery semantics; on the DM tier the responder answers the post
-//!   with a short threaded note saying so (a waiting `ChannelSend`
-//!   caller gets a reply), and the running turn answers separately.
-//!   Leftover watch: steering pushed during the active
-//!   run's FINAL iteration would sit undrained forever (the IPC
-//!   path's "Gap-2" race), so the responder — still holding
-//!   `turn_lock`, preserving per-channel ordering — polls until the
-//!   session's run ends (no deadline — runs have no time limit; a
-//!   stop ends them), then atomically drains
-//!   the inbox and drives one successor turn per leftover message,
-//!   posting each reply as a ROOT post (the original event
-//!   correlation is lost once converted to steering, so there is
-//!   nothing to thread onto; principal-authored root posts are
-//!   self-suppressed by `response_trigger`, so this is loop-safe).
-//!   An empty drain means the active run consumed the steering
-//!   itself — the common case — and nothing more happens. IPC-queued and collision-queued steering share
-//!   the inbox; the atomic `drain_all` means whoever drains it
-//!   drives the turn — no double-driving.
-//! - **Failure policy: answered on the DM tier, log-only on the group
-//!   tier.** Every post that wakes a DM-bound session is another
-//!   principal's request, and a `ChannelSend` caller may be waiting on
-//!   the threaded reply, so a failed resolution or turn is answered
-//!   with a `RUN_FAILED_PREFIX` reply (the same notice the ingress
-//!   paths post) and an empty answer with a short note. Group channels
-//!   keep the log-only skip — a broken wake must never error-spam a
-//!   channel many members read.
-//! - **Restart semantics.** Subscriber cursors are persisted (Phase 0)
-//!   and loaded at spawn; a daemon restart does not re-fire channel
-//!   history through the responder. Delivery is still at-most-once
-//!   across a daemon death: a message whose turn task was in flight
-//!   when the daemon died is not retried (the cursor advanced past it
-//!   at delivery), and collision-queued steering lives in the
-//!   in-memory inbox registry, so a restart drops it too. Within a
-//!   daemon lifetime, though, a wake is never silently dropped: it
-//!   either drives a turn, converts to steering (above), or logs the
-//!   failure.
-//!
-//! ## ADR-049 Phase 3: the group wake (D4)
-//!
-//! Unbound channels (no `passive_binding` in `meta.json` — every
-//! `group:<slug>` channel and every bare `chan_*` group) get a
-//! [`GroupWakeResponder`] instead of [`NoopChannelResponder`] when the
-//! principal has a resolvable model. The trigger is the D4 wake policy:
-//!
-//! - A `user:*`-authored **root** post wakes the principal. Every member
-//!   principal's subscriber fires independently — one wake run per
-//!   (principal, channel).
-//! - Principal-authored posts (bare id or `principal:<did>`) NEVER
-//!   trigger. Loop safety is structural: the group responder's own reply
-//!   is principal-authored, and principals reacting to principals is
-//!   exactly the feedback vector D4 forbids.
-//! - Replies (`parent: Some`) never trigger (same root-post-only rule
-//!   as the DM responder).
+//! ## The group wake
 //!
 //! The wake runs in the principal's per-(principal, channel) standing
 //! child session (`/group-<slug>`, provisioned via
-//! [`crate::principal::peer_children::ensure_group_child`] — the
-//! peer-DM child mechanism keyed on the channel instead of a peer),
-//! driven by the same [`PeerTurnDriver`] as the DM path. The responder posts the turn's final text back to the channel
-//! as the principal, threaded onto the triggering post — the agent
-//! does NOT need the `ChannelSend` tool for the reply (mirroring the
-//! DM responder, which also posts the reply itself). The turn input is
-//! `{author}: {text}` so the principal can tell speakers apart in a
-//! multi-party channel (the DM path passes raw text — a two-party
-//! channel has exactly one possible speaker).
+//! [`crate::principal::peer_children::ensure_group_child`]), driven by
+//! [`PeerTurnDriver`] — the same `drive_turn_streaming` call the ingress
+//! paths make: no time limit, the session's conversation context, and a
+//! stop handle in the daemon's streaming-run registry. The responder
+//! posts the turn's final text back to the channel as the principal,
+//! threaded onto the triggering post. The turn input is
+//! `{author}: {text}` so the principal can tell speakers apart.
 //!
-//! Turn concurrency mirrors the DM path: the per-responder turn mutex
-//! serializes wake runs for one (principal, channel) — a second user
-//! post arriving mid-run queues behind the first and gets its own turn
-//! — and `resume_and_execute`'s `has_active_subagent_run_for_child`
-//! guard refuses cross-path double-runs. A wake that loses that race
-//! (a root agent resuming the same group child mid-wake) converts to
-//! queued steering via the shared `run_turn` collision path — see the
-//! "Run-active collision" bullet above.
+//! - **Run concurrency.** `consider_response` spawns the turn as a
+//!   detached task so the subscriber's cursor keeps advancing; turns
+//!   for one channel serialize on a per-responder mutex, so a second
+//!   mention mid-run queues behind the first.
+//! - **Run-active collision → queued steering.** When another path
+//!   already runs a turn in the session (`err_run_active`), the post is
+//!   pushed into the session's steering inbox, which the running loop
+//!   drains at its next iteration. The responder then waits for that run
+//!   to end, drains any steering it left behind, and drives one successor
+//!   turn per leftover message, posting each reply as a root post.
+//! - **Failures are log-only**: a broken wake must never post errors into
+//!   a channel other members read.
+//! - **Restart semantics.** Subscriber cursors are persisted and loaded at
+//!   spawn, so a restart does not re-fire channel history. A turn in
+//!   flight when the daemon dies is not retried.
 //!
-//! There is no duplicate-run path for `peko send group:` (Phase 2):
-//! the `ChannelPost` IPC handler posts the message and nothing more —
-//! no ingress handler drives a turn for group posts, so the
-//! subscriber's [`GroupWakeResponder`] is the ONLY driver. (Peer DMs
-//! differ: their ingress handlers post AND drive, which is why the DM
-//! trigger must skip Subject-wire-form authors — group posts carry
-//! those same `user:*` authors but have no ingress driver, so the
-//! group trigger keys on them instead.)
+//! `peko send group:` (the `ChannelPost` IPC handler) only posts; the
+//! subscriber's [`GroupWakeResponder`] is the only driver for group
+//! posts.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -204,7 +75,6 @@ use peko_subject::{PrincipalId, Subject};
 use crate::daemon::state::StreamingRunHandle;
 use crate::principal::child_turns::PeerChildTurns;
 use crate::principal::manager::PrincipalManager;
-use crate::principal::peer_dm::RUN_FAILED_PREFIX;
 use crate::principal::Principal;
 use crate::session::ownership::is_run_active_error;
 
@@ -257,44 +127,29 @@ pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
     }
 }
 
-/// Resolves a channel's passive binding (raw session id or `/path`) to
-/// a canonical session id. Trait seam for the same reason as
-/// [`BoundTurnDriver`]; the production impl is
-/// [`SessionStoreBindingResolver`].
+/// Resolves the session a channel's turns run in (for a group channel,
+/// the principal's per-channel child). Trait seam for the same reason as
+/// [`BoundTurnDriver`]; the production impl is [`GroupChildResolver`].
 #[async_trait]
 pub(crate) trait BindingResolver: Send + Sync + 'static {
     async fn resolve(&self, binding: &str) -> anyhow::Result<String>;
 }
 
 // ---------------------------------------------------------------------------
-// PassiveBindingResponder
+// Shared turn machinery
 // ---------------------------------------------------------------------------
 
-/// `ChannelResponder` for DM-tier (passively bound) channels. See the
-/// module docs for the design; the anti-loop filter is
-/// [`Self::response_trigger`].
-///
-/// Cheap to clone (one `Arc` inside) so `consider_response` can move a
-/// handle into the detached turn task.
-#[derive(Clone)]
-pub(crate) struct PassiveBindingResponder {
-    inner: Arc<ResponderInner>,
-}
-
+/// One channel's turn state: the bound session (resolved once), the
+/// turn driver, and the per-channel turn lock.
 struct ResponderInner {
     channel: ChannelId,
     principal: PrincipalId,
     /// The raw binding string from `meta.json` (id or `/path`).
     binding: String,
     /// `via` attribution stamped on every reply post this responder
-    /// makes: the bound session's slug path, so a later reader can
-    /// tell the session's own output projections apart from other
-    /// agents' posts. DM tier: the binding IS the child's `/slug`
-    /// path (`peer_dm::ensure_peer_dm_channel` writes it verbatim);
-    /// config-authored raw-id bindings carry no path → `None`. Group
-    /// tier: derived from the channel wire id with the same slug rule
-    /// as `ensure_group_child`. Attribution only — never an authority
-    /// claim.
+    /// makes: the woken session's slug path, derived from the channel
+    /// wire id with the same slug rule as `ensure_group_child`.
+    /// Attribution only — never an authority claim.
     via: Option<String>,
     port: Arc<dyn ChannelPort>,
     resolver: Arc<dyn BindingResolver>,
@@ -308,90 +163,14 @@ struct ResponderInner {
     /// queues behind the in-flight turn instead of double-running the
     /// bound session.
     turn_lock: tokio::sync::Mutex<()>,
-    /// DM tier: every triggering post is another principal's request,
-    /// and a `ChannelSend` caller may be waiting on the threaded reply,
-    /// so the responder always answers it — a failure as a
-    /// [`RUN_FAILED_PREFIX`] reply, an empty answer or a hand-off to a
-    /// running turn as a short note. Group tier keeps failures log-only
-    /// so a broken wake never spams a multi-party channel.
-    answers_requests: bool,
-}
-
-impl PassiveBindingResponder {
-    pub(crate) fn new(
-        channel: ChannelId,
-        principal: PrincipalId,
-        binding: String,
-        port: Arc<dyn ChannelPort>,
-        resolver: Arc<dyn BindingResolver>,
-        driver: Arc<dyn BoundTurnDriver>,
-    ) -> Self {
-        // The peer-DM provisioning writes the child's `/slug` path as
-        // the binding verbatim (`peer_dm::ensure_peer_dm_channel`), so
-        // a `/`-rooted binding IS the bound session's address as
-        // `compute_path` renders it (modulo the display-side `sess:`
-        // scheme prefix, added here so `via` matches `compute_path`
-        // output). Raw-id bindings (config-authored in
-        // `principals.toml`) carry no path — `via` stays unset.
-        let via = binding
-            .starts_with('/')
-            .then(|| format!("{}{}", peko_session::path::SCHEME_PREFIX, binding));
-        Self {
-            inner: Arc::new(ResponderInner {
-                channel,
-                principal,
-                binding,
-                via,
-                port,
-                resolver,
-                driver,
-                resolved_session: tokio::sync::OnceCell::new(),
-                turn_lock: tokio::sync::Mutex::new(()),
-                answers_requests: true,
-            }),
-        }
-    }
-
-    /// The anti-loop filter. Returns the message text to act on, or
-    /// `None` to drop the event. Only `Posted` ROOT events from OTHER
-    /// members trigger a turn — `Created`/`MemberJoined`/`MemberLeft`
-    /// are channel bookkeeping, self-authored posts are the loop
-    /// vector this filter exists to close, and parent-bearing posts
-    /// are replies (every responder reply carries `parent: Some`, so
-    /// reacting to one would make cross-runtime ping-pong possible).
-    ///
-    /// Phase 11 turn-ownership partition: posts whose author is a
-    /// Subject wire form (`user:*`, `principal:*`, `public`) are
-    /// ingress-handler-owned — the handler already posted them AND
-    /// drives the turn, so the responder must skip them (no
-    /// double-turn). The responder drives only raw-principal-id root
-    /// posts from other principals (local `peko channel send` /
-    /// `ChannelSend` cross-principal posts; Phase 12 cross-runtime
-    /// fan-out posts).
-    fn response_trigger(principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
-        match event {
-            ChannelEvent::Posted {
-                author,
-                text,
-                parent,
-                ..
-            } if *author != principal.to_string()
-                && parent.is_none()
-                && peko_subject::Subject::from_str(author).is_err() =>
-            {
-                Some(text.clone())
-            }
-            _ => None,
-        }
-    }
 }
 
 impl ResponderInner {
     /// One full passive-binding cycle for `text`: resolve the binding
     /// (cached), drive the turn (serialized per channel), post the
     /// reply threaded onto the triggering event (`event_id`). Failures
-    /// are answered on the DM tier and log-only on the group tier (see
-    /// [`ResponderInner::answers_requests`]).
+    /// are log-only: a broken wake must never post errors into a channel
+    /// other members read.
     async fn run_turn(&self, event_id: String, text: String) {
         let _turn_guard = self.turn_lock.lock().await;
 
@@ -407,11 +186,6 @@ impl ResponderInner {
                     binding = %self.binding,
                     "channel binding: resolution failed (will retry on next event): {e:#}"
                 );
-                self.answer(
-                    &event_id,
-                    &format!("{RUN_FAILED_PREFIX}the bound session could not be resolved: {e:#}"),
-                )
-                .await;
                 return;
             }
         };
@@ -423,10 +197,8 @@ impl ResponderInner {
                     debug!(
                         channel = %self.channel,
                         session = %session_id,
-                        "channel binding: turn produced an empty reply"
+                        "channel binding: turn produced an empty reply; posting nothing"
                     );
-                    self.answer(&event_id, "(the turn finished without a reply)")
-                        .await;
                     return;
                 }
                 // Phase 12a: the reply is threaded onto the triggering
@@ -456,40 +228,15 @@ impl ResponderInner {
                 // and the module docs' "Run-active collision" bullet.
                 // Every other failure keeps the log-only skip.
                 if is_run_active_error(&e) {
-                    self.answer(
-                        &event_id,
-                        "(handed to the turn already running in this session; \
-                         its answer follows separately)",
-                    )
-                    .await;
                     self.handle_busy_collision(&session_id, &text).await;
                 } else {
                     warn!(
                         channel = %self.channel,
                         session = %session_id,
-                        "channel binding: turn failed: {e:#}"
+                        "channel binding: turn failed (posting nothing): {e:#}"
                     );
-                    self.answer(&event_id, &format!("{RUN_FAILED_PREFIX}{e:#}"))
-                        .await;
                 }
             }
-        }
-    }
-
-    /// DM tier only: post `text` threaded onto the triggering event, so a
-    /// requester waiting on the reply gets one. No-op on the group tier.
-    async fn answer(&self, event_id: &str, text: &str) {
-        if !self.answers_requests {
-            return;
-        }
-        let mut msg = PostMsg::reply(event_id.to_string(), text);
-        msg.via = self.via.clone();
-        if let Err(e) = self
-            .port
-            .post(&self.channel, &Subject::from(&self.principal), msg)
-            .await
-        {
-            warn!(channel = %self.channel, "channel binding: answer post failed: {e}");
         }
     }
 
@@ -639,18 +386,7 @@ impl ResponderInner {
     }
 }
 
-#[async_trait]
-impl ChannelResponder for PassiveBindingResponder {
-    async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
-        let Some(text) = Self::response_trigger(&ctx.principal, &ctx.event) else {
-            return Ok(());
-        };
-        spawn_turn(Arc::clone(&self.inner), ctx, text);
-        Ok(())
-    }
-}
-
-/// Detached-task spawn shared by both responders: the subscriber's
+/// Detached-task spawn: the subscriber's
 /// cursor advance + persistence must not block on an LLM turn (see
 /// module docs). The turn lock inside `run_turn` serializes concurrent
 /// arrivals.
@@ -666,19 +402,22 @@ fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
 /// module docs' "ADR-049 Phase 3" section for the design; the trigger
 /// is [`Self::response_trigger`].
 ///
-/// Reuses [`ResponderInner`] wholesale — the binding slot carries the
-/// channel's wire id and the resolver find-or-creates the
-/// per-(principal, channel) group child session; the reply post path
-/// (threaded, principal-authored) is identical to the DM responder's.
+/// The binding slot carries the channel's wire id and the resolver
+/// find-or-creates the per-(principal, channel) group child session; the
+/// reply is posted threaded onto the triggering post, as the principal.
 #[derive(Clone)]
 pub(crate) struct GroupWakeResponder {
     inner: Arc<ResponderInner>,
+    /// The principal's name: a user post wakes it only when it mentions
+    /// `@<name>`.
+    name: String,
 }
 
 impl GroupWakeResponder {
     pub(crate) fn new(
         channel: ChannelId,
         principal: PrincipalId,
+        name: String,
         port: Arc<dyn ChannelPort>,
         resolver: Arc<dyn BindingResolver>,
         driver: Arc<dyn BoundTurnDriver>,
@@ -705,33 +444,38 @@ impl GroupWakeResponder {
                 driver,
                 resolved_session: tokio::sync::OnceCell::new(),
                 turn_lock: tokio::sync::Mutex::new(()),
-                answers_requests: false,
             }),
+            name,
         }
     }
 
-    /// The D4 wake filter. Returns the turn input to act on, or `None`
-    /// to drop the event. Fires ONLY on a `user:*`-authored ROOT post:
+    /// The wake filter. Returns the turn input to act on, or `None` to
+    /// drop the event. Fires ONLY on a `user:*`-authored ROOT post that
+    /// mentions this principal (`@<name>`, case-insensitive, whole word):
     ///
-    /// - `parent.is_none()` — replies never wake (same rule as the DM
-    ///   responder; every responder reply carries `parent: Some`).
-    /// - The author parses as `Subject::User` — principal-authored
-    ///   posts (bare ids AND `principal:<did>` forms) never trigger,
-    ///   which is the D4 loop-safety rule; `public` is not a user and
-    ///   never triggers. The subscribing principal's own posts are
-    ///   principal-authored, so self-suppression falls out of the same
-    ///   rule (no separate author-equality check is needed).
+    /// - Only humans start runs (ADR-072): principal-authored posts
+    ///   (bare ids AND `principal:<did>` forms) never trigger, so
+    ///   principals cannot wake each other into a loop; `public` is not
+    ///   a user. The principal's own posts are principal-authored, so
+    ///   self-suppression falls out of the same rule.
+    /// - `parent.is_none()` — replies never wake (every responder reply
+    ///   carries `parent: Some`).
+    /// - Unmentioned posts don't wake anyone; the principal reads them
+    ///   with ChannelRead (its turn context lists unread posts).
     ///
     /// The input is `{author}: {text}` so the woken session can tell
     /// speakers apart in a multi-party channel (see module docs).
-    fn response_trigger(_principal: &PrincipalId, event: &ChannelEvent) -> Option<String> {
+    fn response_trigger(name: &str, event: &ChannelEvent) -> Option<String> {
         match event {
             ChannelEvent::Posted {
                 author,
                 text,
                 parent,
                 ..
-            } if parent.is_none() && matches!(Subject::from_str(author), Ok(Subject::User(_))) => {
+            } if parent.is_none()
+                && matches!(Subject::from_str(author), Ok(Subject::User(_)))
+                && mentions(text, name) =>
+            {
                 Some(format!("{author}: {text}"))
             }
             _ => None,
@@ -742,7 +486,7 @@ impl GroupWakeResponder {
 #[async_trait]
 impl ChannelResponder for GroupWakeResponder {
     async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
-        let Some(input) = Self::response_trigger(&ctx.principal, &ctx.event) else {
+        let Some(input) = Self::response_trigger(&self.name, &ctx.event) else {
             return Ok(());
         };
         spawn_turn(Arc::clone(&self.inner), ctx, input);
@@ -750,61 +494,22 @@ impl ChannelResponder for GroupWakeResponder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SessionStoreBindingResolver (production)
-// ---------------------------------------------------------------------------
-
-/// Production [`BindingResolver`] over the principal's session store.
-/// Raw ids pass through; `/`-rooted paths resolve via
-/// `peko_session::path::resolve_path` anchored at the principal's owner
-/// root (`root:{owner}`) — the tree every standing child hangs under
-/// (Phase 2). A dangling owner root (no human has chatted yet) fails
-/// path resolution with a clear error; the responder logs and retries
-/// on the next event.
-///
-/// **Note (sprint 5 + 6):** bindings are config-authored, not LLM-authored
-/// (the user puts a `local-user:<id>` entry in `principals.toml` and
-/// it never goes through the tool surface). After sprint 6 commit 2
-/// the engine has a single resolver — `peko_session::path::resolve_reference`
-/// — that handles both `/`-paths and engine self-references; raw ids
-/// of any other shape refuse. The engine-internal entrypoints
-/// (`resume_preflight` / `compact_and_execute` / `validate_context_parent`)
-/// canonicalize via `SessionId::from` directly rather than going through
-/// a heuristic; this resolver sits closer to that surface than to the
-/// LLM-facing one. Do not "fix" this without first wiring bindings
-/// through the same resolver.
-pub(crate) struct SessionStoreBindingResolver {
-    session_manager: Arc<RwLock<SessionManager>>,
-    anchor: String,
-}
-
-impl SessionStoreBindingResolver {
-    pub(crate) fn new(session_manager: Arc<RwLock<SessionManager>>, anchor: String) -> Self {
-        Self {
-            session_manager,
-            anchor,
-        }
+/// Whether `text` mentions `@<name>`: case-insensitive and not part of a
+/// longer word (`@ada` is not mentioned by `@adam`; `@ada,` and `@ada.`
+/// are mentions).
+fn mentions(text: &str, name: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
     }
-}
-
-#[async_trait]
-impl BindingResolver for SessionStoreBindingResolver {
-    async fn resolve(&self, binding: &str) -> anyhow::Result<String> {
-        if !binding.starts_with('/') {
-            // Deliberate passthrough — see the doc comment on the
-            // struct. Bindings come from `principals.toml` and are
-            // already canonical ids.
-            return Ok(binding.to_string());
-        }
-        let metas = self
-            .session_manager
-            .write()
-            .await
-            .list_all_sessions(false)
-            .await?;
-        let anchor_id = peko_session::SessionId::from(self.anchor.as_str());
-        Ok(peko_session::path::resolve_path(&metas, anchor_id, binding)?.to_string())
-    }
+    let text = text.to_lowercase();
+    let needle = format!("@{name}");
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    text.match_indices(&needle).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + needle.len()..].chars().next();
+        before.is_none_or(|c| !word(c) && c != '@') && after.is_none_or(|c| !word(c))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -968,28 +673,28 @@ impl BoundTurnDriver for PeerTurnDriver {
 // ---------------------------------------------------------------------------
 
 /// The per-principal driver bundle [`select_responder`] picks from:
-/// the shared turn driver plus the two resolvers (the DM path resolves
-/// the channel's own `passive_binding`; the group path find-or-creates
-/// the per-(principal, channel) group child).
+/// the shared turn driver plus the resolver that find-or-creates the
+/// per-(principal, channel) group child, and the principal's name (what
+/// a user mentions to wake it).
 pub(crate) struct ResponderDrivers {
     pub(crate) turn: Arc<dyn BoundTurnDriver>,
-    pub(crate) binding_resolver: Arc<dyn BindingResolver>,
     pub(crate) group_resolver: Arc<dyn BindingResolver>,
+    pub(crate) name: String,
 }
 
 /// Pick the responder for one (principal, channel) pair. Pure decision
 /// shared by the boot path and the post-boot hooks, and unit-tested
 /// here:
 ///
-/// - a binding + driver bundle yields a [`PassiveBindingResponder`]
-///   (DM tier);
-/// - no binding + driver bundle yields a [`GroupWakeResponder`]
-///   (ADR-049 Phase 3, D4 — group tier; bare `chan_*` and
-///   `group:<slug>` channels alike — any unbound channel can carry
-///   `user:*` posts since Phase 1, so the wake rule keys on the
-///   binding, not the id's kind prefix);
+/// - a bound (DM) channel gets [`NoopChannelResponder`]: a user's DM is
+///   driven by the ingress path that posted it, and a post by another
+///   principal never starts a run (ADR-072) — the principal reads it
+///   with ChannelRead;
+/// - an unbound channel with a driver bundle yields a
+///   [`GroupWakeResponder`] (ADR-049 Phase 3 — bare `chan_*` and
+///   `group:<slug>` channels alike), which wakes on user mentions;
 /// - no driver bundle (the principal has no resolvable model) keeps
-///   the pre-Phase-4 [`NoopChannelResponder`] behavior either way.
+///   [`NoopChannelResponder`].
 pub(crate) fn select_responder(
     channel: ChannelId,
     principal: PrincipalId,
@@ -998,31 +703,15 @@ pub(crate) fn select_responder(
     drivers: Option<ResponderDrivers>,
 ) -> Arc<dyn ChannelResponder> {
     match (binding, drivers) {
-        (Some(binding), Some(drivers)) => Arc::new(PassiveBindingResponder::new(
-            channel,
-            principal,
-            binding,
-            port,
-            drivers.binding_resolver,
-            drivers.turn,
-        )),
         (None, Some(drivers)) => Arc::new(GroupWakeResponder::new(
             channel,
             principal,
+            drivers.name,
             port,
             drivers.group_resolver,
             drivers.turn,
         )),
-        (binding, None) => {
-            if let Some(binding) = binding {
-                debug!(
-                    channel = %channel,
-                    binding = %binding,
-                    "channel binding: no turn driver available; channel stays active-only"
-                );
-            }
-            Arc::new(NoopChannelResponder)
-        }
+        _ => Arc::new(NoopChannelResponder),
     }
 }
 
@@ -1056,24 +745,12 @@ pub(crate) struct ChannelBindingSupervisor {
     /// (principal, channel) pairs that already have a live subscriber.
     /// Short critical sections only — a std Mutex is fine.
     spawned: std::sync::Mutex<HashSet<(PrincipalId, ChannelId)>>,
-    /// Per-principal (turn driver, binding resolver) bundles.
-    drivers: tokio::sync::RwLock<
-        HashMap<
-            PrincipalId,
-            (
-                Arc<PeerTurnDriver>,
-                Arc<SessionStoreBindingResolver>,
-                Arc<GroupChildResolver>,
-            ),
-        >,
-    >,
+    /// Per-principal (turn driver, group resolver) bundles.
+    drivers:
+        tokio::sync::RwLock<HashMap<PrincipalId, (Arc<PeerTurnDriver>, Arc<GroupChildResolver>)>>,
     /// The daemon's streaming-run registry, so responder turns are
     /// stoppable like ingress turns. `None` outside the daemon.
     streaming_runs: Option<StreamingRuns>,
-    /// Routes replies to a principal's posts to the session that asked
-    /// (`daemon::channel_replies`); shared so a reply and its mirror are
-    /// routed once.
-    reply_delivery: Arc<dyn crate::daemon::channel_replies::ReplyDelivery>,
 }
 
 impl ChannelBindingSupervisor {
@@ -1085,10 +762,6 @@ impl ChannelBindingSupervisor {
         llm_resolver: Arc<peko_providers::LlmResolver>,
         observability: Arc<Observability>,
     ) -> Self {
-        let reply_delivery = Arc::new(crate::daemon::channel_replies::SessionReplyDelivery::new(
-            Arc::clone(&principal_manager),
-            Arc::clone(&port),
-        ));
         Self {
             port,
             meter,
@@ -1099,7 +772,6 @@ impl ChannelBindingSupervisor {
             spawned: std::sync::Mutex::new(HashSet::new()),
             drivers: tokio::sync::RwLock::new(HashMap::new()),
             streaming_runs: None,
-            reply_delivery,
         }
     }
 
@@ -1235,34 +907,27 @@ impl ChannelBindingSupervisor {
                 None
             }
         };
-        // ADR-049 Phase 3: the driver bundle is built for bound AND
-        // unbound channels — unbound (group-tier) channels get the
-        // group wake responder from the same bundle.
-        let drivers =
-            self.driver_for(principal)
-                .await
-                .map(
-                    |(turn, binding_resolver, group_resolver)| ResponderDrivers {
-                        turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
-                        binding_resolver: Arc::clone(&binding_resolver) as Arc<dyn BindingResolver>,
-                        group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
-                    },
-                );
-        let responder = select_responder(
+        // A bound (DM) channel never wakes the principal from here (see
+        // `select_responder`), so it needs no driver.
+        if binding.is_some() {
+            return Arc::new(NoopChannelResponder);
+        }
+        let name = principal.config.read().await.name.clone();
+        let drivers = self
+            .driver_for(principal)
+            .await
+            .map(|(turn, group_resolver)| ResponderDrivers {
+                turn: Arc::clone(&turn) as Arc<dyn BoundTurnDriver>,
+                group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
+                name,
+            });
+        select_responder(
             channel.clone(),
             principal.id.clone(),
             Arc::clone(&self.port),
             binding,
             drivers,
-        );
-        // Replies to the principal's own posts go to the session that
-        // asked, whichever responder the channel has.
-        Arc::new(crate::daemon::channel_replies::ReplyRouter::new(
-            channel.clone(),
-            Arc::clone(&self.port),
-            Arc::clone(&self.reply_delivery),
-            responder,
-        ))
+        )
     }
 
     /// Get or build the per-principal driver bundle. `None` (with a
@@ -1282,11 +947,7 @@ impl ChannelBindingSupervisor {
     async fn driver_for(
         &self,
         principal: &Arc<Principal>,
-    ) -> Option<(
-        Arc<PeerTurnDriver>,
-        Arc<SessionStoreBindingResolver>,
-        Arc<GroupChildResolver>,
-    )> {
+    ) -> Option<(Arc<PeerTurnDriver>, Arc<GroupChildResolver>)> {
         if let Some(bundle) = self.drivers.read().await.get(&principal.id).cloned() {
             return Some(bundle);
         }
@@ -1328,17 +989,12 @@ impl ChannelBindingSupervisor {
             }
         };
 
-        let owner_root = turns.parent_session_key().to_string();
         let principal_name = principal.config.read().await.name.clone();
         let turns = Arc::new(turns);
         let turn_driver = Arc::new(PeerTurnDriver::new(
             Arc::clone(&turns),
             self.streaming_runs.clone(),
             principal_name,
-        ));
-        let binding_resolver = Arc::new(SessionStoreBindingResolver::new(
-            Arc::clone(turns.session_manager()),
-            owner_root,
         ));
         // ADR-049 Phase 3: the group-child resolver shares the
         // principal's session manager; provisioning is keyed by the
@@ -1348,7 +1004,7 @@ impl ChannelBindingSupervisor {
             Arc::clone(turns.session_manager()),
         ));
 
-        let bundle = (turn_driver, binding_resolver, group_resolver);
+        let bundle = (turn_driver, group_resolver);
         drivers.insert(principal.id.clone(), bundle.clone());
         Some(bundle)
     }
@@ -1503,129 +1159,39 @@ mod tests {
         false
     }
 
-    // -- response_trigger (the anti-loop filter) ---------------------------
+    // -- mentions ------------------------------------------------------------
 
     #[test]
-    fn response_trigger_ignores_non_posted_events() {
-        let principal = pid("prin_self");
-        let channel = chan();
-        for ev in [
-            ChannelEvent::Created {
-                channel: channel.clone(),
-                creator: "prin_other".into(),
-                name: "dm".into(),
-                at: "2026-08-15T00:00:00Z".into(),
-            },
-            ChannelEvent::MemberJoined {
-                channel: channel.clone(),
-                member: "prin_other".into(),
-                at: "2026-08-15T00:00:00Z".into(),
-            },
-            ChannelEvent::MemberLeft {
-                channel,
-                member: "prin_other".into(),
-                at: "2026-08-15T00:00:00Z".into(),
-            },
+    fn mentions_match_whole_names_case_insensitively() {
+        for text in [
+            "@self hi",
+            "hi @Self",
+            "ping @SELF, please",
+            "(@self)",
+            "@self.",
         ] {
-            assert_eq!(
-                PassiveBindingResponder::response_trigger(&principal, &ev),
-                None
-            );
+            assert!(mentions(text, "self"), "{text}");
         }
-    }
-
-    #[test]
-    fn response_trigger_ignores_self_authored_posts() {
-        let principal = pid("prin_self");
-        // The principal's own reply (posted via ChannelPort::post with
-        // sender = principal) comes back with author ==
-        // principal.to_string() — the anti-loop invariant depends on
-        // this exact-match suppression.
-        let ev = posted("prin_self", "my own reply");
-        assert_eq!(
-            PassiveBindingResponder::response_trigger(&principal, &ev),
-            None
-        );
-    }
-
-    #[test]
-    fn response_trigger_accepts_other_members_posts() {
-        let principal = pid("prin_self");
-        let ev = posted("prin_other", "hello agent");
-        assert_eq!(
-            PassiveBindingResponder::response_trigger(&principal, &ev),
-            Some("hello agent".to_string())
-        );
-    }
-
-    // -- Phase 11: Subject-wire-form authors are ingress-handler-owned ----
-
-    /// Ingress-handler posts (the Phase 11 inbound convention) carry
-    /// `author = peer.to_string()` — the Subject wire form. The
-    /// responder must skip them all: `user:*`, `principal:*`, and
-    /// `public`. Otherwise the peer-DM channel would double-drive
-    /// every turn (handler AND responder).
-    #[test]
-    fn response_trigger_skips_subject_wire_form_authors() {
-        let principal = pid("prin_self");
-        for author in [
-            "user:alice",
-            "user:local",
-            "principal:did:peko:principal:abc123",
-            "public",
-        ] {
-            let ev = posted(author, "inbound via ingress handler");
-            assert_eq!(
-                PassiveBindingResponder::response_trigger(&principal, &ev),
-                None,
-                "Subject-wire-form author {author} must not trigger a responder turn"
-            );
+        for text in ["self hi", "@selfish", "me@self", "@@self", "@sel"] {
+            assert!(!mentions(text, "self"), "{text}");
         }
-    }
-
-    /// The partition boundary: a raw principal-id form that is NOT the
-    /// bound principal (including `@runtime`-decorated mirror forms)
-    /// still triggers — those are local cross-principal posts and
-    /// Phase 12 A2A fan-out posts.
-    #[test]
-    fn response_trigger_still_accepts_raw_principal_id_forms() {
-        let principal = pid("prin_self");
-        for author in ["prin_other", "prin_bob@runtime-B"] {
-            let ev = posted(author, "cross-principal post");
-            assert_eq!(
-                PassiveBindingResponder::response_trigger(&principal, &ev),
-                Some("cross-principal post".to_string()),
-                "raw principal-id author {author} must trigger a responder turn"
-            );
-        }
-    }
-
-    // -- Phase 12a: root-post-only rule ---------------------------------
-
-    /// A parent-bearing post is a reply — and every responder reply
-    /// carries `parent: Some` — so the trigger must drop it even when
-    /// the author is another principal's raw id. This is the bit that
-    /// makes cross-runtime ping-pong structurally impossible: B's
-    /// mirrored reply never wakes A's responder.
-    #[test]
-    fn response_trigger_skips_parent_bearing_posts() {
-        let principal = pid("prin_self");
-        let ev = posted_reply("prin_other", "7", "a threaded reply");
-        assert_eq!(
-            PassiveBindingResponder::response_trigger(&principal, &ev),
-            None,
-            "replies (parent-bearing posts) must never trigger a turn"
+        assert!(
+            !mentions("@ anything", ""),
+            "an empty name is never mentioned"
         );
+        assert!(mentions("cc @ada-lab", "ada-lab"));
     }
 
     // -- responder end-to-end (stub driver, real ChannelStore) -------------
 
+    /// A group responder for principal `label_principal`, named `self`
+    /// (posts wake it with `@self`), over a fresh store.
     async fn bound_responder(
         label_principal: &str,
         driver: impl BoundTurnDriver,
         resolver: StubResolver,
     ) -> (
-        PassiveBindingResponder,
+        GroupWakeResponder,
         Arc<ChannelStore>,
         ChannelId,
         PrincipalId,
@@ -1634,13 +1200,13 @@ mod tests {
         let (store, tmp) = test_store(label_principal);
         let principal = pid(label_principal);
         let channel = store
-            .create(&principal, CreateOpts::runtime("dm"))
+            .create(&principal, CreateOpts::runtime("group"))
             .await
             .unwrap();
-        let responder = PassiveBindingResponder::new(
+        let responder = GroupWakeResponder::new(
             channel.clone(),
             principal.clone(),
-            "/bound".to_string(),
+            "self".to_string(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
             Arc::new(resolver),
             Arc::new(driver),
@@ -1662,13 +1228,10 @@ mod tests {
         // `parent` (the triggering event's line id) validates against
         // the log — in production the subscriber only ever hands the
         // responder line ids that exist.
-        let other = pid("prin_other");
-        store
-            .invite(&channel, &principal, &Subject::from(&other))
-            .await
-            .unwrap();
+        let other = Subject::User("alice".to_string());
+        store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
-            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .post(&channel, &other, PostMsg::root("@self hi"))
             .await
             .unwrap();
 
@@ -1677,7 +1240,7 @@ mod tests {
                 &principal,
                 &channel,
                 &line,
-                posted("prin_other", "hi"),
+                posted("user:alice", "@self hi"),
             ))
             .await
             .unwrap();
@@ -1685,7 +1248,7 @@ mod tests {
         assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
         assert_eq!(
             calls.lock().unwrap()[0],
-            ("session-1".to_string(), "hi".to_string())
+            ("session-1".to_string(), "user:alice: @self hi".to_string())
         );
 
         // The reply lands on the channel as the principal, THREADED
@@ -1758,7 +1321,7 @@ mod tests {
                     &principal,
                     &channel,
                     "1",
-                    posted("prin_other", text),
+                    posted("user:alice", &format!("@self {text}")),
                 ))
                 .await
                 .unwrap();
@@ -1790,7 +1353,7 @@ mod tests {
                 &principal,
                 &channel,
                 "1",
-                posted("prin_other", "m1"),
+                posted("user:alice", "@self m1"),
             ))
             .await
             .unwrap();
@@ -1803,136 +1366,15 @@ mod tests {
                 &principal,
                 &channel,
                 "1",
-                posted("prin_other", "m2"),
+                posted("user:alice", "@self m2"),
             ))
             .await
             .unwrap();
         assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
         assert_eq!(max_active.load(Ordering::SeqCst), 1);
         // Order preserved: the queue is FIFO.
-        assert_eq!(calls.lock().unwrap()[0].1, "m1");
-        assert_eq!(calls.lock().unwrap()[1].1, "m2");
-    }
-
-    /// Two-runtime ping-pong simulation (Phase 12a anti-loop
-    /// end-to-end). Two stores stand in for two runtimes' views of the
-    /// same DM channel; events are hand-forwarded the way the tunnel
-    /// fan-out delivers them. A mirrored ROOT post drives exactly one
-    /// turn on the receiving side; the reply — posted with
-    /// `parent = triggering line` — is then mirrored back and
-    /// observed by the originating side's responder, which must drop
-    /// it. Zero turns on replies, exactly one turn per root post.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn cross_runtime_replies_never_trigger_another_turn() {
-        // Runtime A: the channel creator's side.
-        let (driver_a, calls_a) = StubDriver::new("reply-from-a");
-        let resolver_a = StubResolver {
-            id: "session-a".into(),
-            calls: Arc::new(AtomicUsize::new(0)),
-        };
-        let (responder_a, store_a, channel_a, principal_a, _tmp_a) =
-            bound_responder("prin_a", driver_a, resolver_a).await;
-        // Runtime B: the mirror side.
-        let (driver_b, calls_b) = StubDriver::new("reply-from-b");
-        let resolver_b = StubResolver {
-            id: "session-b".into(),
-            calls: Arc::new(AtomicUsize::new(0)),
-        };
-        let (responder_b, store_b, channel_b, principal_b, _tmp_b) =
-            bound_responder("prin_b", driver_b, resolver_b).await;
-
-        // A posts a root post (line 1; Created is line 0).
-        let line_a = store_a
-            .post(
-                &channel_a,
-                &Subject::from(&principal_a),
-                PostMsg::root("hello from A"),
-            )
-            .await
-            .unwrap();
-
-        // The fan-out mirrors it to B (the tunnel's inbound append
-        // path). The mirrored event keeps the source's author +
-        // timestamp verbatim; B's line numbers are its own.
-        let mirrored = ChannelEvent::Posted {
-            channel: channel_b.clone(),
-            author: principal_a.to_string(),
-            parent: None,
-            text: "hello from A".to_string(),
-            at: "2026-08-19T00:00:00Z".to_string(),
-            via: None,
-            msg_id: None,
-            reply_to: None,
-        };
-        let line_b = store_b
-            .append_remote_event(&channel_b, &mirrored)
-            .await
-            .unwrap();
-
-        // B's responder observes the mirrored root post: exactly one
-        // turn, then a threaded reply on B's log.
-        responder_b
-            .consider_response(respond_ctx(&principal_b, &channel_b, &line_b, mirrored))
-            .await
-            .unwrap();
-        assert!(eventually(|| async { calls_b.lock().unwrap().len() == 1 }).await);
-
-        let store_b2 = Arc::clone(&store_b);
-        let channel_b2 = channel_b.clone();
-        let principal_b2 = principal_b.clone();
-        assert!(
-            eventually(|| async {
-                store_b2
-                    .peek(&channel_b2, &peko_channel::Checkpoint::default())
-                    .await
-                    .unwrap()
-                    .iter()
-                    .any(|ev| {
-                        matches!(ev, ChannelEvent::Posted { author, parent, .. }
-                            if *author == principal_b2.to_string() && parent.is_some())
-                    })
-            })
-            .await,
-            "B's reply must land threaded (parent = Some)"
-        );
-
-        // B's reply fans back to A. A's responder observes the
-        // parent-bearing post and must NOT drive a turn — the
-        // ping-pong vector is closed.
-        let reply_events = store_b
-            .peek_with_ids(&channel_b, &peko_channel::Checkpoint::default())
-            .await
-            .unwrap();
-        let reply = reply_events
-            .into_iter()
-            .map(|(_, ev)| ev)
-            .find(|ev| {
-                matches!(ev, ChannelEvent::Posted { author, parent, .. }
-                    if *author == principal_b.to_string() && parent.is_some())
-            })
-            .expect("B's reply event exists");
-        let line_a_reply = store_a
-            .append_remote_event(&channel_a, &reply)
-            .await
-            .unwrap();
-        responder_a
-            .consider_response(respond_ctx(&principal_a, &channel_a, &line_a_reply, reply))
-            .await
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert_eq!(
-            calls_b.lock().unwrap().len(),
-            1,
-            "exactly one turn per root post"
-        );
-        assert!(
-            calls_a.lock().unwrap().is_empty(),
-            "a mirrored reply must never trigger a turn"
-        );
-        // Silence the unused binding: A's root line is what B's mirror
-        // diverges from (line numbers are runtime-local by design).
-        let _ = line_a;
+        assert_eq!(calls.lock().unwrap()[0].1, "user:alice: @self m1");
+        assert_eq!(calls.lock().unwrap()[1].1, "user:alice: @self m2");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1950,7 +1392,7 @@ mod tests {
                 &principal,
                 &channel,
                 "1",
-                posted("prin_other", "hi"),
+                posted("user:alice", "@self hi"),
             ))
             .await
             .unwrap();
@@ -2038,13 +1480,10 @@ mod tests {
         let (responder, store, channel, principal, _tmp) =
             bound_responder("prin_self", driver, resolver).await;
 
-        let other = pid("prin_other");
-        store
-            .invite(&channel, &principal, &Subject::from(&other))
-            .await
-            .unwrap();
+        let other = Subject::User("alice".to_string());
+        store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
-            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .post(&channel, &other, PostMsg::root("@self hi"))
             .await
             .unwrap();
 
@@ -2053,7 +1492,7 @@ mod tests {
                 &principal,
                 &channel,
                 &line,
-                posted("prin_other", "hi"),
+                posted("user:alice", "@self hi"),
             ))
             .await
             .unwrap();
@@ -2063,11 +1502,11 @@ mod tests {
         assert!(eventually(|| async { calls.lock().unwrap().len() == 2 }).await);
         assert_eq!(
             calls.lock().unwrap()[0],
-            ("session-1".to_string(), "hi".to_string())
+            ("session-1".to_string(), "user:alice: @self hi".to_string())
         );
         assert_eq!(
             calls.lock().unwrap()[1],
-            ("session-1".to_string(), "hi".to_string())
+            ("session-1".to_string(), "user:alice: @self hi".to_string())
         );
 
         // The steering round-tripped through the inbox: the watcher
@@ -2145,13 +1584,10 @@ mod tests {
             drain_active.store(0, Ordering::SeqCst);
         });
 
-        let other = pid("prin_other");
-        store
-            .invite(&channel, &principal, &Subject::from(&other))
-            .await
-            .unwrap();
+        let other = Subject::User("alice".to_string());
+        store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
-            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
+            .post(&channel, &other, PostMsg::root("@self hi"))
             .await
             .unwrap();
         responder
@@ -2159,7 +1595,7 @@ mod tests {
                 &principal,
                 &channel,
                 &line,
-                posted("prin_other", "hi"),
+                posted("user:alice", "@self hi"),
             ))
             .await
             .unwrap();
@@ -2178,96 +1614,12 @@ mod tests {
             .peek(&channel, &peko_channel::Checkpoint::default())
             .await
             .unwrap();
-        // Only the hand-off note, threaded onto the post — no successor
-        // reply.
-        let own: Vec<_> = events
-            .iter()
-            .filter_map(|ev| match ev {
-                ChannelEvent::Posted {
-                    author,
-                    parent,
-                    text,
-                    ..
-                } if *author == principal.to_string() => Some((parent.clone(), text.clone())),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(own.len(), 1, "{events:?}");
-        assert_eq!(own[0].0.as_deref(), Some(line.as_str()));
         assert!(
-            own[0].1.contains("handed to the turn already running"),
-            "{own:?}"
-        );
-    }
-
-    /// A non-run-active driver failure on the DM tier is answered with a
-    /// threaded failure reply (a waiting `ChannelSend` caller must not
-    /// hang); no steering is queued and no successor turn runs.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn non_run_active_error_is_answered_with_a_failure_reply() {
-        let driver = CollisionStubDriver::new("unused", anyhow::anyhow!("provider exploded"));
-        let calls = Arc::clone(&driver.calls);
-        let inbox_registry = Arc::clone(&driver.inbox);
-        let resolver = StubResolver {
-            id: "session-1".into(),
-            calls: Arc::new(AtomicUsize::new(0)),
-        };
-        let (responder, store, channel, principal, _tmp) =
-            bound_responder("prin_self", driver, resolver).await;
-
-        let other = pid("prin_other");
-        store
-            .invite(&channel, &principal, &Subject::from(&other))
-            .await
-            .unwrap();
-        let line = store
-            .post(&channel, &Subject::from(&other), PostMsg::root("hi"))
-            .await
-            .unwrap();
-        responder
-            .consider_response(respond_ctx(
-                &principal,
-                &channel,
-                &line,
-                posted("prin_other", "hi"),
-            ))
-            .await
-            .unwrap();
-
-        assert!(eventually(|| async { calls.lock().unwrap().len() == 1 }).await);
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert_eq!(
-            calls.lock().unwrap().len(),
-            1,
-            "a non-collision failure must not drive a successor turn"
-        );
-        assert!(
-            inbox_registry.peek_inbox("session-1").await.is_none(),
-            "a non-collision failure must not queue steering"
-        );
-        let events = store
-            .peek(&channel, &peko_channel::Checkpoint::default())
-            .await
-            .unwrap();
-        let own: Vec<_> = events
-            .iter()
-            .filter_map(|ev| match ev {
-                ChannelEvent::Posted {
-                    author,
-                    parent,
-                    text,
-                    ..
-                } if *author == principal.to_string() => Some((parent.clone(), text.clone())),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            own,
-            [(
-                Some(line.clone()),
-                format!("{RUN_FAILED_PREFIX}provider exploded")
-            )],
-            "{events:?}"
+            !events
+                .iter()
+                .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
+                if *author == principal.to_string())),
+            "nothing may be posted when the steering was already drained; got {events:?}"
         );
     }
 
@@ -2279,20 +1631,18 @@ mod tests {
     fn stub_drivers(driver: StubDriver, session_id: &str) -> ResponderDrivers {
         ResponderDrivers {
             turn: Arc::new(driver),
-            binding_resolver: Arc::new(StubResolver {
-                id: session_id.into(),
-                calls: Arc::new(AtomicUsize::new(0)),
-            }),
             group_resolver: Arc::new(StubResolver {
                 id: session_id.into(),
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
+            name: "self".to_string(),
         }
     }
 
     /// ADR-049 Phase 3: an unbound channel with a driver bundle gets
-    /// the group wake responder — it fires on `user:*` root posts and
-    /// stays silent on principal-authored posts.
+    /// the group wake responder — it fires on `user:*` root posts that
+    /// mention the principal, never on principal-authored posts or on
+    /// posts that don't mention it.
     #[tokio::test(flavor = "multi_thread")]
     async fn select_responder_group_wake_for_unbound_channel_with_driver() {
         let (store, _tmp) = test_store("select-unbound");
@@ -2322,13 +1672,25 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(calls.lock().unwrap().is_empty());
-        // A user-authored root post MUST fire.
+        // A user post that doesn't mention the principal must NOT fire.
         responder
             .consider_response(respond_ctx(
                 &principal,
                 &channel,
                 "2",
                 posted("user:alice", "hello group"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(calls.lock().unwrap().is_empty());
+        // A user post that mentions it MUST fire.
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "3",
+                posted("user:alice", "@self hello group"),
             ))
             .await
             .unwrap();
@@ -2367,8 +1729,12 @@ mod tests {
             .unwrap();
     }
 
+    /// A bound (DM) channel never wakes the principal from the
+    /// subscriber, even with a driver: a user's DM is driven by its
+    /// ingress path, and another principal's post never starts a run
+    /// (ADR-072).
     #[tokio::test(flavor = "multi_thread")]
-    async fn select_responder_passive_for_bound_channel_with_driver() {
+    async fn select_responder_noop_for_bound_channel_even_with_driver() {
         let (store, _tmp) = test_store("select-bound");
         let principal = pid("prin_self");
         let channel = store
@@ -2387,16 +1753,19 @@ mod tests {
             Some("/user-a".to_string()),
             Some(stub_drivers(driver, "session-1")),
         );
-        responder
-            .consider_response(respond_ctx(
-                &principal,
-                &channel,
-                "1",
-                posted("prin_other", "hi"),
-            ))
-            .await
-            .unwrap();
-        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+        for (line, author) in [("1", "prin_other"), ("2", "user:alice")] {
+            responder
+                .consider_response(respond_ctx(
+                    &principal,
+                    &channel,
+                    line,
+                    posted(author, "@self hi"),
+                ))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     // -- GroupWakeResponder (ADR-049 Phase 3, D4) ----------------------------
@@ -2406,14 +1775,18 @@ mod tests {
     /// replies, and non-Posted events never fire.
     #[test]
     fn group_trigger_fires_only_on_user_root_posts() {
-        let principal = pid("prin_self");
+        let principal = "self";
 
-        // Fires: a user root post (input carries the speaker prefix).
-        let ev = posted("user:alice", "hello group");
+        // Fires: a user root post that mentions the principal (input
+        // carries the speaker prefix).
+        let ev = posted("user:alice", "@self hello group");
         assert_eq!(
-            GroupWakeResponder::response_trigger(&principal, &ev),
-            Some("user:alice: hello group".to_string())
+            GroupWakeResponder::response_trigger(principal, &ev),
+            Some("user:alice: @self hello group".to_string())
         );
+        // Never fires: a user post that doesn't mention it.
+        let ev = posted("user:alice", "hello group");
+        assert_eq!(GroupWakeResponder::response_trigger(principal, &ev), None);
 
         // Never fires: principal-authored root posts — the D4
         // loop-safety rule (the responder's own replies are
@@ -2425,18 +1798,18 @@ mod tests {
             "principal:did:peko:principal:abc123",
             "public",
         ] {
-            let ev = posted(author, "a principal speaking");
+            let ev = posted(author, "@self a principal speaking");
             assert_eq!(
-                GroupWakeResponder::response_trigger(&principal, &ev),
+                GroupWakeResponder::response_trigger(principal, &ev),
                 None,
                 "author {author} must not trigger a group wake"
             );
         }
 
         // Never fires: a user-authored REPLY (threaded).
-        let ev = posted_reply("user:alice", "3", "threaded follow-up");
+        let ev = posted_reply("user:alice", "3", "@self threaded follow-up");
         assert_eq!(
-            GroupWakeResponder::response_trigger(&principal, &ev),
+            GroupWakeResponder::response_trigger(principal, &ev),
             None,
             "replies (parent-bearing posts) must never trigger a group wake"
         );
@@ -2461,7 +1834,7 @@ mod tests {
                 at: "2026-08-15T00:00:00Z".into(),
             },
         ] {
-            assert_eq!(GroupWakeResponder::response_trigger(&principal, &ev), None);
+            assert_eq!(GroupWakeResponder::response_trigger(principal, &ev), None);
         }
     }
 
@@ -2475,6 +1848,7 @@ mod tests {
         GroupWakeResponder::new(
             channel,
             pid(label_principal),
+            "self".to_string(),
             port,
             Arc::new(resolver),
             Arc::new(driver),
@@ -2518,7 +1892,7 @@ mod tests {
             .post(
                 &channel,
                 &Subject::User("alice".to_string()),
-                PostMsg::root("hello group"),
+                PostMsg::root("@self hello group"),
             )
             .await
             .unwrap();
@@ -2542,7 +1916,7 @@ mod tests {
             calls.lock().unwrap()[0],
             (
                 "session-1".to_string(),
-                "user:alice: hello group".to_string()
+                "user:alice: @self hello group".to_string()
             )
         );
 
@@ -2591,6 +1965,7 @@ mod tests {
         let responder = GroupWakeResponder::new(
             channel.clone(),
             principal.clone(),
+            "self".to_string(),
             port,
             Arc::new(StubResolver {
                 id: "session-1".into(),
@@ -2602,7 +1977,7 @@ mod tests {
             .post(
                 &channel,
                 &Subject::User("alice".to_string()),
-                PostMsg::root("hello group"),
+                PostMsg::root("@self hello group"),
             )
             .await
             .unwrap();
@@ -2611,7 +1986,7 @@ mod tests {
                 &principal,
                 &channel,
                 &line,
-                posted("user:alice", "hello group"),
+                posted("user:alice", "@self hello group"),
             ))
             .await
             .unwrap();
@@ -2706,7 +2081,7 @@ mod tests {
         assert_ne!(eng, ops, "distinct channels must get distinct sessions");
     }
 
-    // -- SessionStoreBindingResolver (real session store) -------------------
+    // -- real session store ---------------------------------------------------
 
     /// Build a session manager over a tempdir with a root session and a
     /// spawned child carrying slug `user-a` — the standing-child shape
@@ -2750,25 +2125,6 @@ mod tests {
                 .unwrap();
         }
         (manager, tmp)
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn resolver_passes_raw_ids_through() {
-        let (manager, _tmp) = store_with_standing_child().await;
-        let resolver = SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
-        assert_eq!(
-            resolver.resolve(&sid("child-1")).await.unwrap(),
-            sid("child-1")
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn resolver_resolves_slash_paths() {
-        let (manager, _tmp) = store_with_standing_child().await;
-        let resolver = SessionStoreBindingResolver::new(manager, sid("root:user:alice"));
-        assert_eq!(resolver.resolve("/user-a").await.unwrap(), sid("child-1"));
-        let err = resolver.resolve("/nope").await.unwrap_err();
-        assert!(err.to_string().contains("user-a"), "{err}");
     }
 
     // -- PeerTurnDriver (real ingress turn path, no provider) ---------------
@@ -2869,34 +2225,24 @@ mod tests {
         let (store, tmp) = test_store("restart");
         let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
         let principal = pid("prin_self");
-        let other = pid("prin_other");
+        let other = Subject::User("alice".to_string());
         let channel = store
-            .create(
-                &principal,
-                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
-            )
+            .create(&principal, CreateOpts::runtime("group"))
             .await
             .unwrap();
+        store.invite(&channel, &principal, &other).await.unwrap();
         store
-            .invite(&channel, &principal, &Subject::from(&other))
-            .await
-            .unwrap();
-        store
-            .post(
-                &channel,
-                &Subject::from(&other),
-                PostMsg::root("before-restart"),
-            )
+            .post(&channel, &other, PostMsg::root("@self before-restart"))
             .await
             .unwrap();
 
         let channel_dir = tmp.path().join("channels").join(channel.as_str());
         let (driver, calls) = StubDriver::new("the reply");
         let mk_responder = |driver: StubDriver| {
-            PassiveBindingResponder::new(
+            GroupWakeResponder::new(
                 channel.clone(),
                 principal.clone(),
-                "/user-a".to_string(),
+                "self".to_string(),
                 Arc::clone(&port),
                 Arc::new(StubResolver {
                     id: "session-1".into(),

@@ -1,13 +1,12 @@
 //! `ChannelSend` principal-branch tests over real DM channels.
 //!
-//! The call posts and returns; replies are routed to the asking session
-//! by the channel subscribers (`daemon::channel_replies`).
+//! The call posts and returns; posting never starts a run in the target
+//! (ADR-072), which reads the message on its DM channel.
 //!
 //! Same runtime: `LocalFirstAgentDirectory` resolves the target without
-//! the hub; the request is posted, under one message id, to the caller's
-//! DM channel (the `peko log` record) and the target's (where its
-//! responder runs). A reply on the target's channel reaches the asking
-//! session's inbox and is mirrored onto the caller's channel.
+//! the hub; the message is posted, under one message id, to the caller's
+//! DM channel (the caller's record) and the target's (where the target
+//! reads it).
 //!
 //! Remote runtime: a `FakeAgentDirectory` resolves the target to another
 //! runtime and a captured `TunnelHandle` records outbound traffic.
@@ -28,7 +27,7 @@ use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
 use peko_auth::Subject;
-use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint, PostMsg};
+use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 
@@ -90,36 +89,6 @@ async fn create_test_principal(
         children: Default::default(),
     };
     manager.create(config).await.unwrap()
-}
-
-/// The `(author, parent, text)` rows of every `Posted` event on the
-/// channel bound to `binding` for `principal` (find-only — the sends
-/// above already provisioned it).
-async fn dm_posted_rows(
-    port: &Arc<dyn ChannelPort>,
-    principal: &Arc<crate::principal::Principal>,
-    peer: &Subject,
-) -> Vec<(String, Option<String>, String)> {
-    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
-    let channel =
-        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
-            .await
-            .expect("dm lookup")
-            .expect("DM channel exists after ChannelSend");
-    port.peek(&channel, &Checkpoint::default())
-        .await
-        .expect("peek")
-        .iter()
-        .filter_map(|ev| match ev {
-            ChannelEvent::Posted {
-                author,
-                parent,
-                text,
-                ..
-            } => Some((author.clone(), parent.clone(), text.clone())),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The `(text, via)` of every `Posted` event on `principal`'s DM channel
@@ -370,7 +339,10 @@ async fn same_runtime_send_records_and_delivers_and_returns_at_once() {
     let result = fx.send_to(&fx.target_did, "ping").await;
     assert!(result.success, "{:?}", result.error);
     assert_eq!(result.delivery.as_deref(), Some("delivered"));
-    assert!(result.note.unwrap().contains("does not wait"));
+    assert!(result
+        .note
+        .unwrap()
+        .contains("does not wake the other principal"));
     assert!(!result.task_id.is_empty(), "the request's id on dm_channel");
 
     let record = root_ids(
@@ -390,119 +362,9 @@ async fn same_runtime_send_records_and_delivers_and_returns_at_once() {
     assert!(record[0].0.is_some());
 }
 
-/// The reply path end to end: the target answers on its channel (as its
-/// responder does), the target-side subscriber's reply router hands the
-/// answer to the session that asked and mirrors it onto the caller's log.
-#[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
-async fn a_same_runtime_reply_reaches_the_asking_session_and_the_callers_log() {
-    use crate::daemon::channel_replies::{ReplyRouter, SessionReplyDelivery};
-    use peko_channel::{ChannelResponder, NoopChannelResponder, RespondCtx};
-
-    let fx = Fixture::new().await;
-    fx.connect();
-    // Provision the caller's peer child, then ask from inside it.
-    let first = fx.send_to(&fx.target_did, "hello").await;
-    let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
-        .with_principal_id(fx.caller.id.0.clone())
-        .with_session_id(first.session_id.clone())
-        .with_workspace(fx.caller.workspace_path.to_string_lossy());
-    let sent: ChannelSendResult = serde_json::from_value(
-        fx.tool
-            .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "what is 2+2?"}),
-                &ctx,
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(sent.success, "{:?}", sent.error);
-
-    // The target answers, threaded onto the request on ITS channel.
-    let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let slug = crate::principal::peer_children::peer_child_slug(&caller_peer).unwrap();
-    let target_channel = crate::principal::peer_dm::find_peer_dm_channel(
-        &fx.channel_port,
-        &fx.target.id,
-        &format!("/{slug}"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let request_line = fx
-        .channel_port
-        .peek_with_ids(&target_channel, &Checkpoint::default())
-        .await
-        .unwrap()
-        .into_iter()
-        .rev()
-        .find_map(|(line, ev)| {
-            matches!(&ev, ChannelEvent::Posted { text, .. } if text == "what is 2+2?")
-                .then_some(line)
-        })
-        .unwrap();
-    let (reply_line, reply) = fx
-        .tunnel_port
-        .local()
-        .post_with_event(
-            &target_channel,
-            &Subject::from(&fx.target.id),
-            PostMsg::reply(request_line, "4"),
-        )
-        .await
-        .unwrap();
-
-    // The target's subscriber sees its own reply and routes it.
-    let router = ReplyRouter::new(
-        target_channel.clone(),
-        Arc::clone(&fx.channel_port),
-        Arc::new(SessionReplyDelivery::new(
-            Arc::clone(&fx.manager),
-            Arc::clone(&fx.channel_port),
-        )),
-        Arc::new(NoopChannelResponder),
-    );
-    router
-        .consider_response(RespondCtx {
-            channel: target_channel,
-            principal: fx.target.id.clone(),
-            event: reply,
-            event_id: reply_line,
-            now: std::time::SystemTime::now(),
-        })
-        .await
-        .unwrap();
-
-    // Delivered to the asking session's inbox…
-    let inbox = fx
-        .manager
-        .shared_inbox_registry()
-        .peek_inbox(&first.session_id)
-        .await
-        .expect("the asking session has an inbox");
-    let steering = inbox.drain_steering().await;
-    assert_eq!(steering.len(), 1, "{steering:?}");
-    let text = &steering[0].content;
-    assert!(
-        text.contains(&format!("Reply from principal:{}", fx.target_did)),
-        "{text}"
-    );
-    assert!(text.contains("\"what is 2+2?\""), "{text}");
-    assert!(text.contains("\n\n4\n\n"), "{text}");
-
-    // …and mirrored onto the caller's log, threaded onto the request.
-    let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
-    let rows = dm_posted_rows(&fx.channel_port, &fx.caller, &target_peer).await;
-    let last = rows.last().unwrap();
-    assert_eq!(last.0, fx.target.id.0, "attributed to the target");
-    assert!(last.1.is_some(), "threaded onto the request");
-    assert_eq!(last.2, "4");
-}
-
 /// Every root post a call makes carries the calling session's slug path
-/// as `via` — the session a reply is routed back to. Calls without a
-/// resolvable session stay unattributed.
+/// as `via` (attribution). Calls without a resolvable session stay
+/// unattributed.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn root_posts_carry_the_calling_sessions_slug_path() {

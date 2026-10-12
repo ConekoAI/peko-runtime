@@ -19,12 +19,9 @@
 //! - `passive_binding`: the peer child's `/`-path (`/<slug>`, legacy
 //!   bare form — the `sess:` scheme prefix is a display-side concern
 //!   added by `compute_path` and the attribution stamps, never stored
-//!   here, so existing channels keep matching across upgrades) — the
-//!   shape the `PassiveBindingResponder` fixtures
-//!   (`daemon::channel_binding`) and `SessionStoreBindingResolver`'s
-//!   `/`-path resolution both speak. Raw session ids would also pass
-//!   the resolver through, but the path form is the established
-//!   convention and stays human-readable in `meta.json`;
+//!   here, so existing channels keep matching across upgrades). The
+//!   binding marks the channel as a DM and names its conversation
+//!   session; the path form stays human-readable in `meta.json`;
 //! - membership: the principal itself (the channel creator is
 //!   auto-added as first member by `ChannelStore::create` — the
 //!   responder's reply post and the `ChannelSend` tool both post with
@@ -58,8 +55,8 @@
 //! this helper reports `created: true`; the daemon installs a hook
 //! that forwards to
 //! `ChannelBindingSupervisor::ensure_subscriber`, so the new channel
-//! gets its `PassiveBindingResponder` subscriber immediately —
-//! without waiting for the next boot sweep.
+//! gets its subscriber (audit meter; a DM never wakes a run from there)
+//! immediately — without waiting for the next boot sweep.
 //!
 //! ## Conversation home (Phase 11)
 //!
@@ -224,9 +221,8 @@ pub(crate) async fn find_peer_dm_channel(
 /// attributed to the peer. `sender` stays the principal (the
 /// channel's creator/member — the human peer is deliberately not a
 /// member); `author` is the peer's Subject wire form
-/// (`peer.to_string()`: `user:alice`, `user:local`, `principal:did:…`),
-/// which is also what the responder's author-based skip rule matches
-/// so it never double-drives the turn.
+/// (`peer.to_string()`: `user:alice`, `user:local`, `principal:did:…`).
+/// The ingress handler that posts it drives the turn itself.
 pub(crate) async fn post_peer_dm_inbound(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,

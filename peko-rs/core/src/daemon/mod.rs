@@ -8,7 +8,6 @@
 
 pub(crate) mod background_runtime;
 pub(crate) mod channel_binding;
-pub(crate) mod channel_replies;
 pub(crate) mod completion_wake;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;
@@ -227,12 +226,11 @@ impl Daemon {
         // PR-3c / PR-5a / Phase 4: spawn a per-(principal, channel)
         // `ChannelSubscriber` for every loaded principal's channels.
         // Every subscriber runs the audit meter; channels whose
-        // `meta.json` declares a `passive_binding` additionally get a
-        // `PassiveBindingResponder` that wakes the bound session on
-        // inbound posts (DM-tier, paradigm §3.1 type 1). Unbound
-        // (group-tier) channels get the ADR-049 Phase 3
-        // `GroupWakeResponder` — `user:*` root posts wake the member
-        // principal (D4); principal posts never wake, so
+        // `meta.json` declares a `passive_binding` (DMs) wake nothing —
+        // ingress drives user DMs, and principal posts never start a
+        // run (ADR-072). Unbound (group-tier) channels get the
+        // `GroupWakeResponder` — a `user:*` root post mentioning the
+        // principal wakes it; principal posts never wake, so
         // principal-only channels behave exactly as before (agents
         // read them actively via the `ChannelRead` tool, PR-4a).
         // Spawn-and-forget so a subscriber crash doesn't block daemon
@@ -562,11 +560,10 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 /// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
 /// principal is a member of). Delegates to the [`ChannelBindingSupervisor`]
 /// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
-/// whose `meta.json` carries a `passive_binding` get a
-/// `PassiveBindingResponder` (DM-tier — inbound posts wake the bound
-/// session and the reply posts back); unbound (group-tier) channels get
-/// the ADR-049 Phase 3 `GroupWakeResponder` (D4 — `user:*` root posts
-/// wake the member principal; principal posts never wake). Post-boot
+/// whose `meta.json` carries a `passive_binding` (DMs) get no responder
+/// (ingress drives user DMs; principal posts never start a run,
+/// ADR-072); unbound (group-tier) channels get the `GroupWakeResponder`
+/// (a `user:*` root post mentioning the principal wakes it). Post-boot
 /// channels (created or joined after this enumeration) are covered by
 /// the supervisor's `ensure_subscriber`, wired to the
 /// `ChannelHost::channel_created` / `ensure_invitee_subscriber` hooks.

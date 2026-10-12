@@ -141,8 +141,8 @@ pub trait TunnelHost: Send + Sync {
     ///   — no local-only DM channel) and the `/​<slug>` binding
     ///   derived from that child's real slug;
     /// - the post-bootstrap `ChannelBindingSupervisor::ensure_subscriber`
-    ///   kickoff, so the mirror's `PassiveBindingResponder` starts
-    ///   immediately (closing the Phase 10 live-hook gap).
+    ///   kickoff, so the mirror's subscriber starts immediately
+    ///   (closing the Phase 10 live-hook gap).
     ///
     /// Non-DM invites (`passive_binding: None`) bootstrap an unbound
     /// mirror and still get the subscriber (the meter-only `Noop`

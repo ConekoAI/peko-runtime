@@ -890,8 +890,7 @@ impl AppState {
         // Sprint 3 Phase 10: peer ingress (`PeerChildTurns::ensure_child`
         // via `PrincipalManager`) fires this hook when it freshly
         // creates a peer's DM channel, so the channel gets its
-        // subscriber — including the `PassiveBindingResponder` — without
-        // waiting for the next boot sweep. Installed post-construction
+        // subscriber without waiting for the next boot sweep. Installed post-construction
         // because the supervisor itself needs the manager's `Arc`.
         {
             let supervisor = Arc::clone(&channel_binding_supervisor);
@@ -2157,10 +2156,8 @@ impl crate::tunnel::TunnelHost for AppState {
             .await?;
 
         // 4. Live subscriber — closes the Phase 10 live-hook gap:
-        //    bound mirrors get their `PassiveBindingResponder`
-        //    immediately; unbound mirrors get the ADR-049 Phase 3
-        //    `GroupWakeResponder`, matching the boot sweep's treatment
-        //    of unbound channels (`select_responder`).
+        //    the mirror gets its subscriber immediately, with the same
+        //    responder the boot sweep would pick (`select_responder`).
         self.channel_binding_supervisor()
             .ensure_subscriber(principal.id.clone(), channel);
         Ok(())
@@ -2290,10 +2287,8 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
 
     /// Phase 4 (agent-session paradigm sprint): post-create hook.
     /// Ensures a subscriber exists for the (creator, channel) pair so
-    /// a channel created after boot gets its responder — including the
-    /// `PassiveBindingResponder` when `create --bind` set
-    /// `meta.json`'s `passive_binding` — without waiting for a daemon
-    /// restart.
+    /// a channel created after boot gets its responder without waiting
+    /// for a daemon restart.
     fn channel_created(
         &self,
         creator: &peko_subject::PrincipalId,

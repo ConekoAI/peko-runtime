@@ -467,11 +467,10 @@ pub struct CreateOpts {
     pub id: Option<ChannelId>,
     /// Phase 4 (agent-session paradigm sprint): optional **passive
     /// binding** — a session id or `/path` in the creator principal's
-    /// session tree. When set, the daemon's `PassiveBindingResponder`
-    /// wakes the bound session on every inbound `Posted` event from
-    /// another member and posts the reply back (DM-tier semantics,
-    /// paradigm §3.1 type 1). `None` keeps the channel purely active
-    /// (group tier, paradigm §3.1 type 2). Persisted to `meta.json`;
+    /// session tree. When set, the channel is a DM: its conversation
+    /// session is the bound one, and posts never wake a run from the
+    /// subscriber (ADR-072 — ingress drives user DMs). `None` makes it a
+    /// group channel, where a user's mention wakes a member principal. Persisted to `meta.json`;
     /// immutable after create.
     pub passive_binding: Option<String>,
 }

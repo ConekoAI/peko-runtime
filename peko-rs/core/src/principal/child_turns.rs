@@ -348,12 +348,6 @@ impl PeerChildTurns {
         &self.session_manager
     }
 
-    /// The ownership anchor for the resume guard stack (the trunk,
-    /// `root:self`).
-    pub(crate) fn parent_session_key(&self) -> &str {
-        &self.parent_session_key
-    }
-
     /// The root agent's prompt name, stamped on created sessions
     /// (ADR-049 Phase 3: group child provisioning).
     pub(crate) fn agent_name(&self) -> &str {

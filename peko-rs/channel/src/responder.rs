@@ -7,9 +7,8 @@
 //! - `peko-channel::ChannelSubscriber` consumes it via
 //!   `Arc<dyn ChannelResponder>`.
 //!
-//! Only the `Noop` impl ships in this crate. The production passive
-//! responder (`PassiveBindingResponder`, Phase 4 of the agent-session
-//! paradigm sprint) lives in the root crate
+//! Only the `Noop` impl ships in this crate. The production responder
+//! (`GroupWakeResponder`) lives in the root crate
 //! (`peko-rs/core/src/daemon/channel_binding.rs`) because driving a
 //! turn needs the subagent executor — a root-only dependency this leaf
 //! crate must not take.
