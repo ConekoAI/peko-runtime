@@ -40,23 +40,30 @@ All notable changes to Peko.
   Cron expressions without a timezone use the machine's zone (recorded on
   the job), and Cron list shows each job's schedule and message.
 - Unit tests no longer write task files into the user's data directory.
-- Turns a channel post starts — another principal's post on a DM channel,
-  a user's post in a group channel — now run through the same driver as
-  `peko send` (`PeerChildTurns::drive_turn_streaming`): no time limit
-  (they were killed at 300 s and nothing was posted), the session's
-  conversation context, and a stop handle so `peko stop` reaches them.
-  On DM channels the responder answers every request: a failed turn as a
-  `⚠ Run failed:` reply, an empty answer or a hand-off to a running turn
-  as a short note. Group channels stay log-only.
-- `ChannelSend` posts and returns for every kind of address. A reply —
-  any post threaded onto one of a principal's posts, identified across
-  runtimes by the new stable `msg_id` / `reply_to` on channel posts — is
-  routed to the session that asked (`daemon::channel_replies`): queued
-  in its inbox and woken like a background completion, whether it comes
-  back in seconds, days, or after a restart. Nothing waits in memory and
-  a reply never also starts a conversation turn. Same-runtime replies are
-  mirrored onto the caller's DM channel for `peko log`. The description
-  no longer claims only the originating user can be messaged.
+- Only humans and cron start runs (ADR-072). A post from another
+  principal no longer starts a turn: principals answering each other
+  automatically could loop without end. A user's DM still starts a turn
+  through ingress; a group channel starts one only for a user's root post
+  mentioning `@<principal name>`, run through the same driver as
+  `peko send` (`PeerChildTurns::drive_turn_streaming`: no time limit —
+  they were killed at 300 s — the session's context, and a stop handle so
+  `peko stop` reaches it). The DM channel responder and its
+  always-answer replies are removed.
+- `ChannelSend` posts and returns for every kind of address; it never
+  waits for an answer (the principal branch blocked for up to a minute
+  behind a per-target lock, and a slow reply was lost). An answer is a
+  later post, read with `ChannelRead`. New `ChannelRead` `watch: true`
+  waits — with no time limit, moving to the background past 10 minutes —
+  for the next post by someone else (optionally by `author`, matching
+  `query`, or threaded onto `reply_to`), skipping posts that start turns
+  on their own. Posts carry a stable `msg_id` / `reply_to` across
+  runtime mirrors. The description no longer claims only the originating
+  user can be messaged.
+- The session context lists unread channel posts: on the session's own
+  channel, and — for the trunk and the peer conversations — on the
+  principal's other channels (another principal's answer, a group post no
+  one was woken for). A channel opened after the session started is unread
+  from its first post, so a new peer's opening message is not lost.
 - Cross-runtime channel delivery is durable (ADR-072). Messages to
   another runtime were dropped when either side was offline: the sender
   skipped the send without a tunnel, and the hub drops envelopes for a

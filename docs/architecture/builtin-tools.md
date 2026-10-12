@@ -292,7 +292,7 @@ subject to runtime ownership guards. Page retention prunes old pages permanently
 
 ### ChannelSend
 
-Post to a channel/group, ask a peer principal and await a reply, or send the originating user a note.
+Post to a channel/group, message a peer principal, or send a user a note. Every send returns at once.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_send.rs)
 
@@ -303,13 +303,13 @@ Post to a channel/group, ask a peer principal and await a reply, or send the ori
 | `parent` | string | no | — |
 | `label` | string | no | — |
 
-channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
+channel selects dispatch: chan_<id> = post; principal:<did> = DM post; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. Posts carry session attribution.
 
-Every send returns at once. A principal:<did> message is posted on the pair's DM channel (on the same runtime, recorded on the caller's channel and delivered on the target's under one message id); the target's channel responder drives the turn with the same driver as `peko send` (no time limit, stoppable with `peko stop`) and answers every request on the DM channel — a failed turn as a `⚠ Run failed:` reply. Any reply threaded onto a post — `reply_to` naming the post's stable `msg_id` — is routed by the channel subscribers (`daemon::channel_replies`) to the session in the post's `via`: queued in its inbox and woken like a background completion, so it arrives days later or after a restart just the same, and never also starts a conversation turn. Same-runtime replies are mirrored onto the caller's channel for `peko log`. The result reports `id`, `dm_channel`, and `delivery`: `delivered`, or `queued` when another runtime has not confirmed the message within a few seconds — it is kept in the runtime outbox and resent until it is (ADR-072).
+Posting never starts a run in another principal (ADR-072): only humans (a user's DM) and cron start runs, and a group channel wakes a principal only for a user's root post mentioning `@<principal name>`. A principal:<did> message is posted on the pair's DM channel (on the same runtime, recorded on the caller's channel and delivered on the target's under one message id); the target sees it the next time it reads — in its session context's unread summary or with ChannelRead. An answer is a later post on the caller's `dm_channel`, read with ChannelRead or waited for with `watch: true`. The result reports `id`, `dm_channel`, and `delivery`: `delivered`, or `queued` when another runtime has not confirmed the message within a few seconds — it is kept in the runtime outbox and resent until it is.
 
 ### ChannelRead
 
-Read or search channel events with backward/forward pagination.
+Read or search channel events with backward/forward pagination, or wait for the next post.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_read.rs)
 
@@ -321,8 +321,12 @@ Read or search channel events with backward/forward pagination.
 | `author` | string | no | — |
 | `before` | string | no | — |
 | `since` | string | no | — |
+| `watch` | boolean | no | false |
+| `reply_to` | string | no | — |
 
 Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
+
+`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel, a user's root `@<name>` mention in a group) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses.
 
 ## Inference and workflows
 

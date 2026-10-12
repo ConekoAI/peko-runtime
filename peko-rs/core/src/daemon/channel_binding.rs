@@ -474,7 +474,7 @@ impl GroupWakeResponder {
                 ..
             } if parent.is_none()
                 && matches!(Subject::from_str(author), Ok(Subject::User(_)))
-                && mentions(text, name) =>
+                && peko_channel::mentions(text, name) =>
             {
                 Some(format!("{author}: {text}"))
             }
@@ -492,24 +492,6 @@ impl ChannelResponder for GroupWakeResponder {
         spawn_turn(Arc::clone(&self.inner), ctx, input);
         Ok(())
     }
-}
-
-/// Whether `text` mentions `@<name>`: case-insensitive and not part of a
-/// longer word (`@ada` is not mentioned by `@adam`; `@ada,` and `@ada.`
-/// are mentions).
-fn mentions(text: &str, name: &str) -> bool {
-    let name = name.trim().to_lowercase();
-    if name.is_empty() {
-        return false;
-    }
-    let text = text.to_lowercase();
-    let needle = format!("@{name}");
-    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
-    text.match_indices(&needle).any(|(at, _)| {
-        let before = text[..at].chars().next_back();
-        let after = text[at + needle.len()..].chars().next();
-        before.is_none_or(|c| !word(c) && c != '@') && after.is_none_or(|c| !word(c))
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,29 +1139,6 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         false
-    }
-
-    // -- mentions ------------------------------------------------------------
-
-    #[test]
-    fn mentions_match_whole_names_case_insensitively() {
-        for text in [
-            "@self hi",
-            "hi @Self",
-            "ping @SELF, please",
-            "(@self)",
-            "@self.",
-        ] {
-            assert!(mentions(text, "self"), "{text}");
-        }
-        for text in ["self hi", "@selfish", "me@self", "@@self", "@sel"] {
-            assert!(!mentions(text, "self"), "{text}");
-        }
-        assert!(
-            !mentions("@ anything", ""),
-            "an empty name is never mentioned"
-        );
-        assert!(mentions("cc @ada-lab", "ada-lab"));
     }
 
     // -- responder end-to-end (stub driver, real ChannelStore) -------------

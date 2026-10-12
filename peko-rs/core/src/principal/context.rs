@@ -566,12 +566,12 @@ async fn install_principal_tool_bag(
             crate::principal::child_turns::PeersSessionContextHandler,
         ));
 
-        // Channel-activity digest (2026-09-12): render "N new messages on
-        // #channel" for posts that land on the session's bound channels
-        // without a wake (same-principal posts by other agents, threaded
-        // replies, other principals' group posts, human CLI posts). Rides
-        // the same ADR-052 change-detection as the providers above; the
-        // digest's read marks live in each channel's `read_marks.json`.
+        // Unread channel summary (2026-09-12, widened by ADR-072): posts
+        // never wake another principal, so the running session is told
+        // what is waiting — on its own channel, and (for sessions humans
+        // or cron drive) on the principal's other channels. Rides the same
+        // ADR-052 change-detection as the providers above; read marks live
+        // in each channel's `read_marks.json`.
         core.register_prompt_section(Arc::new(
             crate::principal::channel_digest::ChannelDigestSessionContextHandler,
         ));

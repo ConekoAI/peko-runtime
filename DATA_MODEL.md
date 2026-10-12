@@ -1864,7 +1864,10 @@ represent "what has this *session* actually been shown". Read marks
 are keyed by session id and advance only when the session's
 `{{session_context}}` digest renders (or filters) activity up to a
 line, or when its `ChannelRead` returns that line — they are what the
-channel-activity digest means by "since you last read". Both files
+unread summary means by "since you last read". A session's first look
+at a channel adopts the newest line as its mark, unless the channel was
+opened after the session was created: then it is unread from its first
+post. Both files
 share the atomic tmp+fsync+rename save convention.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
@@ -1958,17 +1961,16 @@ within the author's principal. It is written verbatim and is
 **attribution/audit metadata only** — it never feeds membership
 checks, the channel responders' trigger rules, or reply matching, and
 it is NOT an authority claim (`author` remains the only authorship
-signal). One exception: a reply to a post is routed to the session in
-the post's `via` (see 5¾.2¾).
+signal). The unread summary uses it to skip a session's own posts.
 
 `via` is absent (not `null`) on lines written before this change, on
 posts without an agent context (CLI `peko channel post`, peer-authored
-inbound projections, `ChannelSend` reply mirrors, messenger notes),
+inbound projections, messenger notes),
 and whenever the posting side could not resolve the calling session's
 path — attribution is best-effort and never fails a send. Serde
 `default` + `skip_serializing_if` keeps old logs and mixed-version
 cross-runtime peers byte-compatible. Producers: the `ChannelSend`
-tool (the calling session's path), the DM/group channel responders
+tool (the calling session's path), the group channel responder
 (the bound session's path), and `peer_dm::post_peer_dm_reply` (the
 bound peer child's path).
 
@@ -1979,16 +1981,14 @@ bound peer child's path).
 - `msg_id` — a stable message id (`msg_<uuid>`), minted by the store
   that writes the post (or supplied by the poster, so one message can
   be written to two channels under one id: a same-runtime
-  `ChannelSend`'s record and delivery copies, a reply mirror). It is
+  `ChannelSend`'s record and delivery copies). It is
   carried verbatim to every runtime's mirror; line numbers are not.
 - `reply_to` — the `msg_id` of the post this one replies to, derived by
   the writing store from `parent`'s line. It is the cross-runtime form
   of `parent`.
 
-A reply (`reply_to` set) to a post written by a principal on this
-runtime is routed to the session in that post's `via`
-(`daemon::channel_replies`) instead of starting a conversation turn.
-Both fields are absent on lines written before this change; serde
+Neither field changes who is woken: only humans and cron start runs
+(ADR-072). Both fields are absent on lines written before this change; serde
 `default` + `skip_serializing_if` keeps old logs readable. Both ride
 inside the signed event bytes of cross-runtime envelopes.
 

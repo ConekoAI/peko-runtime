@@ -8,7 +8,7 @@
 //! | Wire form             | Kind       | Tool semantics                                     |
 //! |-----------------------|------------|-----------------------------------------------------|
 //! | `chan_<8 base36>`     | Bare       | Plain fire-and-forget post (backward compat)        |
-//! | `principal:<did>`     | Principal  | RPC: auto-provision DM, await reply up to 1 min      |
+//! | `principal:<did>`     | Principal  | Post on the pair's DM channel and return (ADR-072)  |
 //! | `user:<id>`           | User       | Fire-and-forget note via peer messenger             |
 //! | `group:<slug>`        | Group      | Fire-and-forget post (the LLM has bound a group)    |
 //!
@@ -17,15 +17,19 @@
 //! is enforced at the `ChannelPort` call site; this tool itself
 //! dispatches to:
 //!
-//! - `ChannelPort::post` for Bare / Group / Principal (the
-//!   per-target mutex + await-reply + mirror logic from the retired
-//!   `send_peer` tool is now in `execute_local` / `execute_remote`).
+//! - `ChannelPort::post` for Bare / Group / Principal (`execute_local`
+//!   posts on both principals' DM channels; `execute_remote` posts on
+//!   the caller's and lets the runtime outbox deliver it).
+//!
+//! No branch waits for an answer: posting never wakes another principal
+//! (ADR-072). An answer is a later post the caller reads with
+//! `ChannelRead` (optionally `watch: true`).
 //! - `crate::principal::messenger::global_messenger()` for the User
 //!   branch (fire-and-forget note, gated to the originating user).
 //!
 //! ## Principal-scoped registration
 //!
-//! The caller DID and reply locks stay bound to the principal. Production
+//! The caller DID stays bound to the principal. Production
 //! tools resolve the current tunnel context from shared runtime services
 //! per invocation, including tunnel connections made after installation.
 
@@ -70,8 +74,7 @@ pub struct ChannelSendArgs {
     /// `principal:<did>`, `user:<id>`, `group:<slug>`).
     pub channel: String,
     /// Message body. Bare / Group: posted as-is. Principal: posted
-    /// to the pair's DM channel and the target principal's reply is
-    /// awaited. User: becomes the note text (no reply).
+    /// to the pair's DM channel. User: becomes the note text.
     pub text: String,
     /// User branch only: short label for the delivered note. Ignored
     /// on bare / principal / group branches.
@@ -84,9 +87,9 @@ pub struct ChannelSendArgs {
     pub parent: Option<String>,
 }
 
-/// Result of a `ChannelSend` execution. The principal branch (RPC)
-/// returns at once with the request's `id` on the caller's DM channel
-/// (the reply is routed to the calling session later); the bare / group
+/// Result of a `ChannelSend` execution. The principal branch returns
+/// at once with the post's `id` on the caller's DM channel (an answer
+/// is a later post there, read with `ChannelRead`); the bare / group
 /// branches populate `task_id` (wire name `id`, the same event id
 /// ChannelRead reports) with the line number assigned in the channel's
 /// JSONL; the user branch populates `response` with a delivery
@@ -447,8 +450,9 @@ impl ChannelSendTool {
 
     /// Remote principal branch: the target lives on another runtime.
     /// Runs entirely on the CALLER's DM channel for the peer: invite
-    /// the target's runtime on first contact, root-post the message,
-    /// and await the mirrored reply on the channel broadcast.
+    /// the target's runtime on first contact, root-post the message
+    /// (fanned out through the runtime outbox), and wait briefly for the
+    /// target runtime's delivery receipt.
     #[allow(clippy::too_many_arguments)]
     async fn execute_remote(
         &self,

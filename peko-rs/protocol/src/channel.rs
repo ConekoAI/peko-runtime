@@ -310,6 +310,17 @@ impl ChannelEvent {
         }
     }
 
+    /// When the event happened (RFC 3339; every variant carries one).
+    pub fn at(&self) -> &str {
+        match self {
+            Self::Created { at, .. }
+            | Self::Posted { at, .. }
+            | Self::MemberJoined { at, .. }
+            | Self::MemberLeft { at, .. }
+            | Self::Received { at, .. } => at,
+        }
+    }
+
     /// The channel this event belongs to (every variant carries one).
     /// Used by the tunnel dispatcher to bind the inner event to the
     /// envelope's signature-covered `channel_id` (ADR-057 transport

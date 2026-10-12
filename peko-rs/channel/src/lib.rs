@@ -91,7 +91,7 @@ pub use port::{
     Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier,
 };
 pub use read_marks::ChannelReadMarks;
-pub use responder::{ChannelResponder, NoopChannelResponder, RespondCtx};
+pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use store::{new_msg_id, subject_wire_form, ChannelConfig, ChannelStore};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

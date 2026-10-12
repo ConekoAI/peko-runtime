@@ -1,6 +1,6 @@
 # ADR-049: Multi-Party Group Channels (Users + Principals)
 
-**Status:** Accepted
+**Status:** Accepted (wake policy superseded by [ADR-072](ADR-072-human-started-runs-and-durable-delivery.md): groups wake a principal only on a user's `@<name>` mention)
 **Date:** 2026-08-29
 **Author:** rlsn
 **Related:** [ADR-048](ADR-048-channel-native-cli-surface.md) (partially

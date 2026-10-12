@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peko_channel::{ChannelError, ChannelId, ChannelPort, Checkpoint};
+use peko_channel::port::TaskId;
+use peko_channel::{ChannelError, ChannelEvent, ChannelId, ChannelPort, Checkpoint};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
@@ -33,6 +34,142 @@ impl ChannelReadTool {
     pub fn new(port: Arc<dyn ChannelPort>) -> Self {
         Self { port }
     }
+
+    /// Watch mode: wait until a post after `since` (default: the tip
+    /// now) passes `filter`, then return the passing posts. Wakes on
+    /// the channel's event broadcast, re-checks every
+    /// [`WATCH_RECHECK`] in case a write path did not broadcast, and
+    /// ends early only when the call is aborted.
+    async fn watch(
+        &self,
+        channel: &ChannelId,
+        since: Option<String>,
+        filter: &WatchFilter,
+        limit: usize,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<(Vec<(TaskId, ChannelEvent)>, bool, Option<String>)> {
+        // Subscribe before reading the tip so a post landing in between
+        // still wakes the loop.
+        let mut events_rx = self.port.subscribe_events(channel).await;
+        let mut broadcast_live = true;
+        let mut abort = ctx.abort_signal();
+        let mut abort_live = true;
+        let is_dm = self.port.passive_binding(channel).await?.is_some();
+
+        let mut cursor = match since {
+            Some(s) => Some(s),
+            None => self
+                .port
+                .peek_tail(channel, 1, None)
+                .await
+                .map_err(|e| anyhow::anyhow!("ChannelRead watch: {e}"))?
+                .events
+                .pop()
+                .map(|(id, _)| id),
+        };
+        loop {
+            if *abort.borrow() {
+                anyhow::bail!("ChannelRead watch on {} was cancelled", channel.as_str());
+            }
+            let after = self
+                .port
+                .peek_with_ids(channel, &Checkpoint(cursor.clone().unwrap_or_default()))
+                .await
+                .map_err(|e| anyhow::anyhow!("ChannelRead watch: {e}"))?;
+            let after: Vec<_> = after
+                .into_iter()
+                .filter(|(id, _)| cursor.as_ref() != Some(id))
+                .collect();
+            let observed = after.last().map(|(id, _)| id.clone());
+            let hits: Vec<_> = after
+                .into_iter()
+                .filter(|(_, ev)| filter.matches(ev, is_dm))
+                .collect();
+            if !hits.is_empty() {
+                let has_more = hits.len() > limit;
+                let page: Vec<_> = hits.into_iter().take(limit).collect();
+                // Resume after the last returned post when the page is
+                // cut short, else after everything looked at.
+                let next = if has_more {
+                    page.last().map(|(id, _)| id.clone())
+                } else {
+                    observed
+                };
+                return Ok((page, has_more, next));
+            }
+            if observed.is_some() {
+                cursor = observed;
+            }
+
+            tokio::select! {
+                recv = events_rx.recv(), if broadcast_live => {
+                    if matches!(recv, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                        broadcast_live = false;
+                    }
+                }
+                changed = abort.changed(), if abort_live => {
+                    if changed.is_err() {
+                        abort_live = false;
+                    }
+                }
+                () = tokio::time::sleep(WATCH_RECHECK) => {}
+            }
+        }
+    }
+}
+
+/// How often a watch re-reads its channel without a broadcast wake.
+const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Which posts end a watch.
+struct WatchFilter {
+    /// The watching principal's id; its own posts never count.
+    me: String,
+    /// The watching principal's name, for group `@<name>` mentions.
+    name: String,
+    /// Exact author, when set.
+    author: Option<String>,
+    /// Lowercased text substring, when set.
+    text: Option<String>,
+    /// The event id the post must be threaded onto, when set.
+    reply_to: Option<String>,
+}
+
+impl WatchFilter {
+    /// A post by someone else that matches every filter and does not
+    /// start a turn on its own: a user's root post on a DM (it drives the
+    /// session bound to that DM) or a user's root post mentioning
+    /// `@<name>` in a group (it wakes the group's session). Reporting
+    /// those here too would hand the same message to two sessions.
+    fn matches(&self, ev: &ChannelEvent, is_dm: bool) -> bool {
+        let ChannelEvent::Posted {
+            author,
+            text,
+            parent,
+            ..
+        } = ev
+        else {
+            return false;
+        };
+        if *author == self.me {
+            return false;
+        }
+        if author.starts_with("user:")
+            && parent.is_none()
+            && (is_dm || peko_channel::mentions(text, &self.name))
+        {
+            return false;
+        }
+        self.author.as_ref().is_none_or(|a| a == author)
+            && self
+                .text
+                .as_ref()
+                .is_none_or(|t| text.to_lowercase().contains(t))
+            && self
+                .reply_to
+                .as_ref()
+                .is_none_or(|r| parent.as_ref() == Some(r))
+    }
 }
 
 #[async_trait]
@@ -42,20 +179,27 @@ impl Tool for ChannelReadTool {
     }
 
     fn description(&self) -> String {
-        "Read events from a peko channel the calling principal is a member of.\n\n\
+        "Read events from a peko channel the calling principal is a member of, \
+         or wait for the next post there.\n\n\
          Parameters:\n\
-         - channel: string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
+         - channel:  string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
          named group 'group:<slug>'\n\
-         - limit:   int    (optional) — max events returned (default 50, cap 1000)\n\
-         - query:   string (optional) — search mode: case-insensitive substring \
+         - limit:    int    (optional) — max events returned (default 50, cap 1000)\n\
+         - query:    string (optional) — search mode: case-insensitive substring \
          match on message text\n\
-         - author:  string (optional) — search mode: exact author match \
+         - author:   string (optional) — search mode: exact author match \
          (e.g. 'user:alice' or a principal id)\n\
-         - before:  string (optional) — event id; in read mode return the page \
+         - before:   string (optional) — event id; in read mode return the page \
          of events OLDER than it; in search mode, only search older history\n\
-         - since:   string (optional) — event id; return events strictly NEWER \
+         - since:    string (optional) — event id; return events strictly NEWER \
          than it (catch up after a prior read). Overrides `before`. Ignored in \
-         search mode.\n\n\
+         search mode.\n\
+         - watch:    bool   (optional) — wait until someone else posts after \
+         `since` (default: the newest event now), then return those posts. \
+         `query`, `author` and `reply_to` narrow which posts count.\n\
+         - reply_to: string (optional) — watch mode: only replies threaded \
+         onto the event with this id (the `id` ChannelSend or ChannelRead gave \
+         you).\n\n\
          With no cursor and no query, returns the NEWEST `limit` events. Events \
          are always oldest→newest; each carries an `id` field (its line number \
          in the channel log). The response object is {channel, events, \
@@ -63,7 +207,15 @@ impl Tool for ChannelReadTool {
          back as `before` (or `since` after a forward read) to continue. \
          Search mode scans backward from `before` (or the tip) and returns \
          only matching `posted` events (at most 200 per call). Each event's \
-         `kind` is created, posted, member_joined, or member_left."
+         `kind` is created, posted, member_joined, or member_left.\n\n\
+         Watch mode is how you wait for an answer: posting never wakes another \
+         principal, so after ChannelSend you can watch the returned dm_channel. \
+         It has no time limit; a long wait moves to the background like any \
+         slow tool and its result arrives when a post does. Your own posts \
+         never end a watch, nor do posts that start turns by themselves (a \
+         user's message on a DM, a user's @mention of you in a group) — those \
+         reach you as conversation turns. Pass the returned `next_cursor` as \
+         `since` to keep watching without missing posts."
             .to_string()
     }
 
@@ -94,7 +246,15 @@ impl Tool for ChannelReadTool {
                 },
                 "since": {
                     "type": "string",
-                    "description": "Event id; return events strictly newer than it (read mode only)"
+                    "description": "Event id; return events strictly newer than it (read mode), or watch for posts after it (watch mode)"
+                },
+                "watch": {
+                    "type": "boolean",
+                    "description": "Wait until someone else posts after `since` (default: the newest event now) and return those posts. No time limit."
+                },
+                "reply_to": {
+                    "type": "string",
+                    "description": "Watch mode: only replies threaded onto the event with this id"
                 }
             },
             "required": ["channel"]
@@ -156,6 +316,19 @@ impl Tool for ChannelReadTool {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        let watch = params
+            .get("watch")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let reply_to = params
+            .get("reply_to")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if reply_to.is_some() && !watch {
+            anyhow::bail!("ChannelRead: 'reply_to' needs 'watch': true");
+        }
+
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -197,7 +370,16 @@ impl Tool for ChannelReadTool {
         // bounded backward scan; `since` is a forward catch-up walk;
         // the default path is the tail read — the newest `limit`
         // events, parsed at the store without decoding the whole log.
-        let (events, has_more, next_cursor) = if query_text.is_some() || author.is_some() {
+        let (events, has_more, next_cursor) = if watch {
+            let filter = WatchFilter {
+                me: principal_str.clone(),
+                name: ctx.principal_name.clone().unwrap_or_default(),
+                author,
+                text: query_text.map(|t| t.to_lowercase()),
+                reply_to,
+            };
+            self.watch(&channel_id, since, &filter, limit, ctx).await?
+        } else if query_text.is_some() || author.is_some() {
             let q = peko_channel::ChannelQuery {
                 text: query_text,
                 author,
@@ -349,7 +531,8 @@ mod tests {
 
         fn ctx(&self, session: Option<&str>) -> ToolContext {
             let ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
-                .with_principal_id(self.alice.0.clone());
+                .with_principal_id(self.alice.0.clone())
+                .with_principal_name("alice");
             match session {
                 Some(s) => ctx.with_session_id(s),
                 None => ctx,
@@ -576,5 +759,167 @@ mod tests {
             Some(newest),
             "a backward page (ending at {first}) must not rewind the mark"
         );
+    }
+
+    // -- watch -------------------------------------------------------------
+
+    /// Run `call` while `posts` happen 50 ms later, failing after 10 s.
+    async fn while_posting<F, P>(call: F, posts: P) -> anyhow::Result<serde_json::Value>
+    where
+        F: std::future::Future<Output = anyhow::Result<serde_json::Value>>,
+        P: std::future::Future<Output = ()>,
+    {
+        let posts = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            posts.await;
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(call, posts)
+        })
+        .await
+        .expect("watch never returned");
+        result
+    }
+
+    /// A watch waits past the caller's own posts and a user's @mention of
+    /// it (that wakes the group's session instead), and returns the next
+    /// post that is for it to see.
+    #[tokio::test]
+    async fn watch_returns_the_next_post_by_someone_else() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let bob = Subject::User("bob".into());
+        fx.post(&alice, "before the watch").await;
+
+        let page = while_posting(
+            fx.tool.execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "watch": true }),
+                &fx.ctx(Some("sess-w")),
+            ),
+            async {
+                fx.post(&alice, "my own note").await;
+                fx.post(&bob, "@alice are you there?").await;
+                fx.post(&bob, "never mind, found it").await;
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(texts(&page), ["never mind, found it"]);
+        assert_eq!(page["has_more"], false);
+        let cursor = page["next_cursor"].as_str().unwrap().to_string();
+        assert_eq!(page["events"][0]["id"], cursor.as_str());
+        assert_eq!(
+            fx.store.read_mark(&fx.channel, "sess-w").await.unwrap(),
+            Some(cursor.clone()),
+            "a watch result counts as read"
+        );
+
+        // Posts already past `since` return at once.
+        fx.post(&bob, "one more").await;
+        let page = fx.read(json!({ "watch": true, "since": cursor })).await;
+        assert_eq!(texts(&page), ["one more"]);
+    }
+
+    /// `reply_to` waits for an answer to one post, ignoring other traffic.
+    #[tokio::test]
+    async fn watch_reply_to_waits_for_the_answer() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let bob = Subject::User("bob".into());
+        let question = fx.post(&alice, "what is the status?").await;
+
+        let page = while_posting(
+            fx.tool.execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "watch": true, "reply_to": question }),
+                &fx.ctx(None),
+            ),
+            async {
+                fx.post(&bob, "unrelated chatter").await;
+                fx.store
+                    .post(
+                        &fx.channel,
+                        &bob,
+                        PostMsg::reply(question.clone(), "all green"),
+                    )
+                    .await
+                    .unwrap();
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(texts(&page), ["all green"]);
+    }
+
+    /// On a DM a user's root post drives the bound session, so a watch
+    /// there skips it; a principal's post still ends the watch.
+    #[tokio::test]
+    async fn watch_on_a_dm_skips_user_messages() {
+        let fx = Fixture::new().await;
+        let dm = fx
+            .store
+            .create(
+                &fx.alice,
+                CreateOpts::runtime("dm-bob").with_passive_binding("/user-bob"),
+            )
+            .await
+            .unwrap();
+        let bob = Subject::User("bob".into());
+        fx.store.invite(&dm, &fx.alice, &bob).await.unwrap();
+        let other = PrincipalId::generate();
+        fx.store
+            .invite(&dm, &fx.alice, &Subject::from(&other))
+            .await
+            .unwrap();
+
+        let page = while_posting(
+            fx.tool.execute_with_context(
+                json!({ "channel": dm.as_str(), "watch": true }),
+                &fx.ctx(None),
+            ),
+            async {
+                fx.store.post(&dm, &bob, PostMsg::root("hi")).await.unwrap();
+                fx.store
+                    .post(&dm, &Subject::from(&other), PostMsg::root("from a peer"))
+                    .await
+                    .unwrap();
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(texts(&page), ["from a peer"]);
+    }
+
+    /// Aborting the call ends the watch with an error.
+    #[tokio::test]
+    async fn watch_ends_when_aborted() {
+        let fx = Fixture::new().await;
+        let signal = peko_tools_core::AbortSignal::new();
+        let ctx = signal
+            .create_context("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_principal_id(fx.alice.0.clone());
+        let err = while_posting(
+            fx.tool.execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "watch": true }),
+                &ctx,
+            ),
+            async { signal.abort() },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn reply_to_needs_watch() {
+        let fx = Fixture::new().await;
+        let err = fx
+            .tool
+            .execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "reply_to": "m1" }),
+                &fx.ctx(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("needs 'watch'"), "{err}");
     }
 }
