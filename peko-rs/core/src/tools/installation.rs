@@ -379,12 +379,12 @@ mod tests {
         let file = workspace.path().join("roles/worker.md");
         std::fs::write(&file, "---\nname: Worker\ndescription: Original\n---\nWork").unwrap();
         assert_eq!(
-            roles.execute(serde_json::json!({})).await.unwrap()["agents"][0]["description"],
+            roles.execute(serde_json::json!({})).await.unwrap()["roles"][0]["description"],
             "Original"
         );
         std::fs::write(&file, "---\nname: Worker\ndescription: Updated\n---\nWork").unwrap();
         assert_eq!(
-            roles.execute(serde_json::json!({})).await.unwrap()["agents"][0]["description"],
+            roles.execute(serde_json::json!({})).await.unwrap()["roles"][0]["description"],
             "Updated"
         );
         std::fs::remove_file(file).unwrap();

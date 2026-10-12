@@ -38,6 +38,17 @@ pub fn standalone_inbox_registry() -> Arc<InboxRegistry> {
     Arc::new(InboxRegistry::new(default_inbox_factory()))
 }
 
+/// Where an executor records task files unless given a writer. Unit tests
+/// use a directory under the system temp dir so they never write into the
+/// user's real data directory.
+fn default_task_file_dir() -> std::path::PathBuf {
+    if cfg!(test) {
+        std::env::temp_dir().join("peko-test-async-tasks")
+    } else {
+        peko_tools_core::default_data_dir().join("async_tasks")
+    }
+}
+
 /// Process-global slot for the daemon-shared `InboxRegistry`.
 ///
 /// `AppState::new` installs the daemon's registry here
@@ -160,9 +171,7 @@ impl AsyncExecutor {
     /// per-call scopes, placeholders, and tests.
     #[must_use]
     pub fn new(inbox_registry: Arc<InboxRegistry>) -> Self {
-        let task_file_writer = peko_tools_core::default_data_dir()
-            .join("async_tasks")
-            .into();
+        let task_file_writer = default_task_file_dir();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
@@ -181,9 +190,7 @@ impl AsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
-        let task_file_writer = peko_tools_core::default_data_dir()
-            .join("async_tasks")
-            .into();
+        let task_file_writer = default_task_file_dir();
         Self {
             registry,
             task_file_writer: Some(TaskFileWriter::new(task_file_writer)),

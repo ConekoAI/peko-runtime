@@ -2,7 +2,7 @@
 //!
 //! ## Module layout
 //!
-//! - [`async_router`]: the concrete router (5-minute timeout funnel +
+//! - [`async_router`]: the concrete router (10-minute foreground wait +
 //!   background detach). The `ToolDispatcher`
 //!   (`crate::tools::dispatcher`) routes tool executions through it.
 //! - [`async_transport`]: the in-process transport (`LocalAsyncTransport`)
@@ -18,5 +18,6 @@
 //! `PreprocessorFn` / `ExecFn` bridge types were deleted — the
 //! `ToolDispatcher` drives the concrete router directly.
 
+pub(crate) mod arg_errors;
 pub mod async_router;
 pub mod async_transport;

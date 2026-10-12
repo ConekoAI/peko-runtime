@@ -52,16 +52,6 @@ pub fn require_principal_id(ctx: &ToolContext) -> AnyhowResult<PrincipalId> {
         .map(PrincipalId)
 }
 
-/// Soft-error JSON shape used by `get` / `mark_step` /
-/// `record_evidence` / `add_step` when the targeted plan or node is
-/// not found. Mirrors `tasks::update::{"error": "Todo not found"}`.
-pub fn not_found_error(kind: &str, id: &str) -> serde_json::Value {
-    serde_json::json!({
-        "error": format!("{kind} not found"),
-        "id": id,
-    })
-}
-
 /// Parse the structured `PlanNodeStatus` from the JSON a tool receives.
 /// `blocked` and `failed` need reason + timestamp; the other variants
 /// take no extra payload.

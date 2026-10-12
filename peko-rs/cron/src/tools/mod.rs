@@ -358,10 +358,16 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind>
         let normalized = normalize_cron_expr(expr);
         let _ = cron::Schedule::from_str(&normalized)
             .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
-        let tz = params
-            .get("timezone")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        let tz = match params.get("timezone").and_then(|v| v.as_str()) {
+            Some(tz) => {
+                tz.parse::<chrono_tz::Tz>()
+                    .map_err(|e| anyhow::anyhow!("Invalid timezone '{tz}': {e}"))?;
+                Some(tz.to_string())
+            }
+            // "Every day at 9" means 9 where the user is: default to the
+            // machine's zone, recorded on the job so it stays fixed.
+            None => local_timezone(),
+        };
         return Ok(ScheduleKind::Cron {
             expr: expr.to_string(),
             tz,
@@ -379,6 +385,14 @@ pub fn resolve_schedule_kind(params: &serde_json::Value) -> Result<ScheduleKind>
     Err(anyhow::anyhow!(
         "No schedule provided. Supply one of: cron, at, interval_ms, idle_ms."
     ))
+}
+
+/// The machine's IANA timezone, when it is known and `chrono-tz` can
+/// resolve it; `None` falls back to UTC.
+fn local_timezone() -> Option<String> {
+    iana_time_zone::get_timezone()
+        .ok()
+        .filter(|tz| tz.parse::<chrono_tz::Tz>().is_ok())
 }
 
 /// Parse a human duration into milliseconds. Accepts a bare number
@@ -492,19 +506,24 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
     let jobs_json: Vec<_> = jobs
         .into_iter()
         .map(|j| {
-            let sub_command = match &j.schedule {
-                ScheduleKind::At { .. } => "at",
-                ScheduleKind::Every { .. } => "every",
-                ScheduleKind::Cron { .. } => "cron",
-                ScheduleKind::Idle { .. } => "idle",
+            // The schedule in the same fields `create` takes.
+            let schedule = match &j.schedule {
+                ScheduleKind::At { at } => serde_json::json!({"at": at}),
+                ScheduleKind::Every { every_ms } => serde_json::json!({"interval_ms": every_ms}),
+                ScheduleKind::Cron { expr, tz } => serde_json::json!({
+                    "cron": expr,
+                    "timezone": tz.as_deref().unwrap_or("UTC"),
+                }),
+                ScheduleKind::Idle { minutes } => {
+                    serde_json::json!({"idle_ms": minutes.saturating_mul(60_000)})
+                }
             };
             let status = if j.enabled { "active" } else { "disabled" };
             let mut obj = serde_json::json!({
                 "job_id": j.id,
                 "label": j.name,
                 "principal": j.principal_id.0,
-                "sub_command": sub_command,
-                "action": j.action.kind_label(),
+                "schedule": schedule,
                 "status": status,
                 "next_run_at": j.next_run.to_rfc3339(),
                 "run_count": j.run_count,
@@ -513,7 +532,7 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             match &j.action {
                 CronJobAction::Send { message, target } => {
                     map.insert(
-                        "task".to_string(),
+                        "message".to_string(),
                         serde_json::Value::String(message.clone()),
                     );
                     if let Some(t) = target {
@@ -1058,7 +1077,6 @@ mod tests {
         let rendered = render_job_list(vec![back]);
         let entry = &rendered["jobs"][0];
         assert_eq!(entry["tool"], "ChannelRead");
-        assert_eq!(entry["action"], "spawn_tool");
         assert_eq!(entry["principal"], "bob");
         assert_eq!(entry["params"]["channel"], "chan_a1b2c3d4");
     }

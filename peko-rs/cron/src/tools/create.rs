@@ -54,8 +54,8 @@ pub struct CronCreateArgs {
     /// when the scheduled run completes (default `false`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
-    /// `SpawnTool`-only. Per-run timeout in seconds. Defaults to the
-    /// executor's `7200s` policy when `None`.
+    /// `SpawnTool`-only. Optional per-run time limit in seconds; `None`
+    /// runs uncapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     /// Human-readable label for the job
@@ -139,7 +139,7 @@ impl Tool for CronCreateAction {
     }
 
     fn description(&self) -> String {
-        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon. Runs of the same job do not overlap. Recurring intervals are nominal: after a run finishes, overdue slots are skipped and execution resumes at the first future slot; there is no catch-up burst. Keep the whole tool/agent turn shorter than the interval for timely checks.".to_string()
+        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon. Runs of the same job do not overlap. Recurring intervals are nominal: after a run finishes, overdue slots are skipped and execution resumes at the first future slot; there is no catch-up burst. Keep the whole tool/agent turn shorter than the interval for timely checks. A `message` job on `interval_ms` needs at least 60000 ms (use `cron` or `delay` for anything faster).".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -166,7 +166,7 @@ impl Tool for CronCreateAction {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Per-run timeout in seconds. Defaults to the executor's 7200s policy."
+                    "description": "Optional per-run time limit in seconds. Omit for no limit (the default)."
                 },
                 "one_shot": {
                     "type": "boolean",
@@ -195,11 +195,11 @@ impl Tool for CronCreateAction {
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "Timezone for the cron expression (default: UTC)"
+                    "description": "IANA timezone for the cron expression, e.g. 'Europe/Berlin' (default: this machine's local zone)"
                 },
                 "idle_ms": {
                     "type": "integer",
-                    "description": "Idle duration in milliseconds before triggering"
+                    "description": "Fire once you (the principal) have had no activity for this long, in milliseconds (rounded down to whole minutes, at least one minute)"
                 }
             },
             "allOf": [

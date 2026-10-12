@@ -116,7 +116,7 @@ async fn timeout_secs_bounds_the_task_lifetime() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":10000}),
+        json!({"block":true, "timeout_ms":10000}),
     )
     .await;
     assert_eq!(out["is_terminal"], true, "{out}");
@@ -136,7 +136,7 @@ async fn running_tasks_report_partial_output_and_stop_is_idempotent() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":100}),
+        json!({"block":true, "timeout_ms":100}),
     )
     .await;
     assert_eq!(
@@ -229,7 +229,7 @@ async fn spawning_an_unknown_tool_fails_the_task() {
         &harness,
         "output",
         &id,
-        json!({"block":true, "timeout":5000}),
+        json!({"block":true, "timeout_ms":5000}),
     )
     .await;
     assert_eq!(out["is_terminal"], true, "{out}");
@@ -382,7 +382,7 @@ async fn background_bash_timeout_bounds_the_task() {
         &harness,
         "output",
         id,
-        json!({"block":true, "timeout":10000}),
+        json!({"block":true, "timeout_ms":10000}),
     )
     .await;
     assert_eq!(out["status"], "timed_out", "{out}");
@@ -526,6 +526,64 @@ async fn detached_foreground_calls_register_in_the_principals_registry() {
         .expect("detached call registered in the principal's registry");
     assert_eq!(entry.config.principal_id.0, PRINCIPAL);
     async_call(&harness, "stop", &id, json!({})).await;
+}
+
+/// A foreground call still running at the foreground wait detaches: the
+/// agent gets a receipt explaining how to follow up, the work keeps running
+/// with no time limit, and its result is delivered to the calling session.
+#[tokio::test]
+async fn detached_foreground_call_runs_uncapped_and_reports_to_its_session() {
+    use crate::tools::builtin::test_harness::{PRINCIPAL, SESSION};
+    let harness = ToolHarness::with_router_timeout(1).await;
+    harness.register(Arc::new(Sleep)).await;
+
+    let receipt = harness.call("Sleep", json!({"ms":2500})).await.ok();
+    assert_eq!(receipt["_async_status"], "queued", "{receipt}");
+    assert_eq!(receipt["detached_after_secs"], 1, "{receipt}");
+    let note = receipt["note"].as_str().unwrap();
+    assert!(
+        note.contains("no time limit") && note.contains("Async action output"),
+        "{note}"
+    );
+    let id = receipt["task_id"].as_str().unwrap().to_string();
+    let principal = peko_subject::PrincipalId(PRINCIPAL.into());
+    let entry = harness
+        .tooling
+        .task_registry_for(&principal)
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .unwrap();
+    assert_eq!(entry.config.timeout_secs, None, "detached work is uncapped");
+    assert_eq!(entry.config.timeout_millis, None);
+
+    let mut out = Value::Null;
+    for _ in 0..100 {
+        out = async_call(&harness, "output", &id, json!({})).await;
+        if out["is_terminal"] == true {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(out["status"], "completed", "{out}");
+    assert_eq!(out["result"], json!({"slept_ms": 2500}), "{out}");
+
+    let executor = harness
+        .tooling
+        .async_executor_for(
+            &principal,
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .await;
+    let inbox = executor
+        .inbox_registry()
+        .peek_inbox(SESSION)
+        .await
+        .expect("the calling session has an inbox");
+    let delivered = inbox.drain_all().await;
+    assert_eq!(delivered.len(), 1, "completion delivered: {delivered:?}");
+    assert!(format!("{delivered:?}").contains(&id), "{delivered:?}");
 }
 
 /// `list` counts the tasks still running; a blocking `output` without a

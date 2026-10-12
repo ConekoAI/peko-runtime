@@ -36,8 +36,7 @@ Parameters:
 - artifacts: array<string>? — file paths or external references
 - decidedBy: string? — attribution (e.g., 'root-agent', 'subagent:researcher')
 
-Returns the updated PlanRecord. Soft-errors when the node is not
-found."
+Returns the updated plan. An unknown planId or nodeId is an error."
             .to_string()
     }
 
@@ -112,9 +111,6 @@ found."
             .await
         {
             Ok(rec) => Ok(serde_json::to_value(rec)?),
-            Err(peko_plan::PlanError::InvalidNodeId(_)) => Ok(
-                crate::tools::builtin::plan::not_found_error("Node", &node_id_str),
-            ),
             Err(e) => Err(anyhow::anyhow!("{e}")),
         }
     }
@@ -166,7 +162,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_evidence_soft_errors_on_unknown_node() {
+    async fn record_evidence_errors_on_unknown_node() {
         let port = std::sync::Arc::new(TestPlanPort::new());
         let p = peko_subject::PrincipalId::generate();
         let create = PlanCreateAction::new(port.clone());
@@ -189,7 +185,7 @@ mod tests {
                 &ctx_with(p),
             )
             .await
-            .unwrap();
-        assert_eq!(res["error"], "Node not found");
+            .unwrap_err();
+        assert!(res.to_string().contains("not found in plan"), "{res}");
     }
 }

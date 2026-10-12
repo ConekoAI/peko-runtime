@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 pub(crate) struct ActionSchema {
     name: &'static str,
+    schema: Value,
     default: Option<String>,
     variants: BTreeMap<String, Variant>,
 }
@@ -46,6 +47,7 @@ impl ActionSchema {
             .collect();
         Self {
             name,
+            schema: schema.clone(),
             default: schema["properties"]["action"]["default"]
                 .as_str()
                 .map(str::to_owned),
@@ -70,23 +72,16 @@ impl ActionSchema {
                 self.variants.keys().cloned().collect::<Vec<_>>().join(", ")
             )
         })?;
-        validator.validator.validate(params).map_err(|error| {
-            let detail = match error.kind() {
-                jsonschema::error::ValidationErrorKind::AnyOf { context }
-                | jsonschema::error::ValidationErrorKind::OneOfNotValid { context } => context
-                    .iter()
-                    .flatten()
-                    .take(5)
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join("; "),
-                _ => error.to_string(),
-            };
-            anyhow::anyhow!(
-                "Invalid arguments for {} action '{action}': {detail}",
-                self.name
-            )
-        })
+        if validator.validator.is_valid(params) {
+            return Ok(());
+        }
+        let message = crate::extensions::framework::transport::arg_errors::explain(
+            &self.schema,
+            params,
+            self.name,
+        )
+        .unwrap_or_else(|| format!("Invalid arguments for {} action '{action}'", self.name));
+        Err(anyhow::anyhow!(message))
     }
     /// JSON Schema treats 1.0 as an integer. Canonicalize that accepted spelling
     /// so unsigned Rust argument parsers do not reject it or silently default.

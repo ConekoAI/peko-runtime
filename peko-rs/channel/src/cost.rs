@@ -168,6 +168,8 @@ mod tests {
             text: "hello".into(),
             at: "2026-08-05T12:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         }
     }
 

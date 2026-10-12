@@ -293,6 +293,26 @@ impl PeerChildTurns {
         })
     }
 
+    /// A bundle over an existing executor and session store, for tests
+    /// that drive turns without a principal or provider.
+    #[cfg(test)]
+    pub(crate) fn from_parts(
+        executor: SubagentExecutor,
+        session_manager: Arc<RwLock<SessionManager>>,
+        parent_session_key: String,
+    ) -> Self {
+        Self {
+            principal_id: executor.principal_id().clone(),
+            executor,
+            session_manager,
+            parent_session_key,
+            agent_name: "root".to_string(),
+            channel_port: None,
+            dm_subscriber_hook: None,
+            dm_lock: None,
+        }
+    }
+
     /// Phase 10: attach the channel port peer DM channels are
     /// provisioned through (`None` keeps provisioning disabled — the
     /// standalone/test default).
@@ -317,8 +337,8 @@ impl PeerChildTurns {
         self
     }
 
-    /// The shared executor (channel driver wraps this in its
-    /// final-only `SubagentResumeDriver`).
+    /// The shared executor (the channel driver reads its steering
+    /// inbox and active-run check from it).
     pub(crate) fn executor(&self) -> &SubagentExecutor {
         &self.executor
     }
@@ -326,12 +346,6 @@ impl PeerChildTurns {
     /// The session manager the principal's peer children live in.
     pub(crate) fn session_manager(&self) -> &Arc<RwLock<SessionManager>> {
         &self.session_manager
-    }
-
-    /// The ownership anchor for the resume guard stack (the trunk,
-    /// `root:self`).
-    pub(crate) fn parent_session_key(&self) -> &str {
-        &self.parent_session_key
     }
 
     /// The root agent's prompt name, stamped on created sessions

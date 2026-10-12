@@ -412,8 +412,8 @@ pub enum TunnelMessage {
         name: String,
         /// Sprint 3 Phase 12a: DM marker — the source channel's
         /// `passive_binding`, carried so the receiver knows to
-        /// bootstrap a DM-tier mirror (with a
-        /// `PassiveBindingResponder` subscriber). The VALUE is
+        /// bootstrap a DM-tier mirror bound to its own peer child.
+        /// The VALUE is
         /// ignored by the receiver: each side's binding names its
         /// OWN child for the other principal and `-N` slug-collision
         /// suffixes are runtime-local, so the receiver derives its
@@ -993,6 +993,8 @@ mod tests {
             text: "hello from A".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

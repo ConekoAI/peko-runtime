@@ -273,7 +273,8 @@ pub(crate) struct AppState {
 /// Per-run control handle for an in-flight principal-send run.
 ///
 /// Inserted by the streaming handler when it spawns the root agent
-/// task (and by steering-successor runs), removed on natural
+/// task (and by steering-successor runs and channel-responder turns,
+/// `daemon::channel_binding::PeerTurnDriver`), removed on natural
 /// completion. Registry entries are keyed by the peer child session
 /// id. Looked up by the `PrincipalStop` IPC handler to cancel the
 /// run. See `src/ipc/server.rs` for the streaming handler and the
@@ -283,8 +284,10 @@ pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only.
     pub principal_name: String,
     /// Peer subject whose thread this run belongs to — diagnostic
-    /// only (cheap, `Subject` is small).
-    pub peer: peko_auth::Subject,
+    /// only (cheap, `Subject` is small). `None` for channel-responder
+    /// turns, which may run in a session without a single peer (a
+    /// group channel's child).
+    pub peer: Option<peko_auth::Subject>,
     /// Cancellation token for soft-interrupt. Setting this signals
     /// the agentic loop to finish the current step and exit cleanly.
     /// Cloned into both the agentic loop and the IPC handler.
@@ -880,14 +883,14 @@ impl AppState {
                 Arc::clone(&principal_manager),
                 Arc::clone(&resolver),
                 Arc::clone(&observability),
-            ),
+            )
+            .with_streaming_runs(Arc::clone(&streaming_runs)),
         );
 
         // Sprint 3 Phase 10: peer ingress (`PeerChildTurns::ensure_child`
         // via `PrincipalManager`) fires this hook when it freshly
         // creates a peer's DM channel, so the channel gets its
-        // subscriber — including the `PassiveBindingResponder` — without
-        // waiting for the next boot sweep. Installed post-construction
+        // subscriber without waiting for the next boot sweep. Installed post-construction
         // because the supervisor itself needs the manager's `Arc`.
         {
             let supervisor = Arc::clone(&channel_binding_supervisor);
@@ -1566,7 +1569,6 @@ impl AppState {
         vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
-        use std::time::Duration;
 
         // Shared directory + runtime_id. Same components the channel
         // ctx consumes; factored out so the two install paths cannot
@@ -1583,7 +1585,6 @@ impl AppState {
             caller_runtime_id,
             principal_manager: self.principal_manager().clone(),
             channel_port: Arc::clone(&self.tunnel_channel_port),
-            response_timeout: Duration::from_mins(1),
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
         // to avoid a framework → tunnel dependency.
@@ -2155,10 +2156,8 @@ impl crate::tunnel::TunnelHost for AppState {
             .await?;
 
         // 4. Live subscriber — closes the Phase 10 live-hook gap:
-        //    bound mirrors get their `PassiveBindingResponder`
-        //    immediately; unbound mirrors get the ADR-049 Phase 3
-        //    `GroupWakeResponder`, matching the boot sweep's treatment
-        //    of unbound channels (`select_responder`).
+        //    the mirror gets its subscriber immediately, with the same
+        //    responder the boot sweep would pick (`select_responder`).
         self.channel_binding_supervisor()
             .ensure_subscriber(principal.id.clone(), channel);
         Ok(())
@@ -2288,10 +2287,8 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
 
     /// Phase 4 (agent-session paradigm sprint): post-create hook.
     /// Ensures a subscriber exists for the (creator, channel) pair so
-    /// a channel created after boot gets its responder — including the
-    /// `PassiveBindingResponder` when `create --bind` set
-    /// `meta.json`'s `passive_binding` — without waiting for a daemon
-    /// restart.
+    /// a channel created after boot gets its responder without waiting
+    /// for a daemon restart.
     fn channel_created(
         &self,
         creator: &peko_subject::PrincipalId,

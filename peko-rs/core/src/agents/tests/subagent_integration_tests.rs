@@ -177,6 +177,58 @@ async fn test_e2e_spawn_and_complete() {
     );
 }
 
+/// `timeout_seconds: 0` (the Agent tool's setting) runs without a time
+/// limit, and the wait lasts until the run ends instead of timing out at
+/// once.
+#[tokio::test]
+async fn zero_timeout_runs_uncapped_and_waits_for_the_end() {
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    let parent_key = {
+        let mut manager = session_manager.write().await;
+        manager
+            .route(
+                &Subject::User("alice".to_string()),
+                peko_session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap()
+            .context
+            .full_session_key
+            .clone()
+    };
+    let executor = Arc::new(SubagentExecutor::with_registry(
+        registry.clone(),
+        session_manager.clone(),
+        agent_name,
+        peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
+    ));
+    let config = ExecutionConfig {
+        timeout_seconds: 0,
+        ..ExecutionConfig::default()
+    };
+    let outcome = executor
+        .execute_and_wait("Test task", &parent_key, config, 0, None)
+        .await;
+    if let Err(error) = &outcome {
+        assert!(
+            !format!("{error:#}").contains("timed out"),
+            "an uncapped wait must not time out: {error:#}"
+        );
+    }
+    let entry = registry
+        .read()
+        .await
+        .list_tasks(None)
+        .into_iter()
+        .find(|entry| entry.task_id.starts_with("run_"))
+        .expect("the run is registered");
+    assert!(entry.status.is_terminal(), "{:?}", entry.status);
+    assert_eq!(entry.config.timeout_secs, None, "the run has no time limit");
+}
+
 /// Pre-merge check for the "interrupt actually means stop" follow-up:
 /// when a parent cancel token is plumbed into `spawn_and_execute` and
 /// then cancelled, the sub-agent's `run_id` should reach
@@ -3122,4 +3174,33 @@ async fn test_branch_overwrite_reseeds_in_place() {
         "the target's own sequence advanced"
     );
     assert_eq!(meta.slug.as_deref(), Some("briefing"), "slug untouched");
+    assert_eq!(meta.page_limit, Some(1));
+
+    // Fire #4 with page_limit 0 clears the cap: nothing more is pruned.
+    executor
+        .branch_and_execute(
+            None,
+            "briefing",
+            "Write today's briefing",
+            &source_key,
+            true,
+            ExecutionConfig {
+                page_limit: Some(0),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let meta = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.session_id.to_string() == old_id)
+        .expect("target survives");
+    assert_eq!(meta.page_limit, None, "0 clears the cap");
+    assert_eq!(meta.pruned_pages, 1, "no page pruned under no cap");
 }

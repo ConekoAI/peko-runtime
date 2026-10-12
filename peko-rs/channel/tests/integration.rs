@@ -281,9 +281,8 @@ async fn subscriber_calls_responder_for_each_new_event() {
 /// A spawned subscriber with a LONG backstop interval must still
 /// process a fresh post promptly: the store's append-time broadcast
 /// wakes the loop's `select!` instead of the post sitting unseen
-/// until the next tick. This is the end-to-end contract the DM-tier
-/// `PassiveBindingResponder` relies on for real-time bound-channel
-/// wake-ups.
+/// until the next tick. This is the end-to-end contract the group
+/// responder relies on for real-time mention wake-ups.
 #[tokio::test(flavor = "multi_thread")]
 async fn spawned_subscriber_wakes_on_append_without_waiting_for_tick() {
     let (tmp, adapter) = adapter_in_tempdir();

@@ -2275,6 +2275,8 @@ mod tests {
                 parent: None,
                 at: "2026-08-06T12:00:00Z".into(),
                 via: None,
+                msg_id: None,
+                reply_to: None,
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

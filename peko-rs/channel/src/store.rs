@@ -1591,6 +1591,20 @@ impl ChannelStore {
             }
         }
 
+        // A reply names its parent by stable id too, so a runtime whose
+        // mirror numbers lines differently can still tell what it
+        // answers.
+        let reply_to = match msg.parent.as_ref() {
+            Some(parent_line) => {
+                self.event_at(tier, channel, parent_line)
+                    .await?
+                    .and_then(|parent| match parent {
+                        ChannelEvent::Posted { msg_id, .. } => msg_id,
+                        _ => None,
+                    })
+            }
+            None => None,
+        };
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
             author: author.to_string(),
@@ -1598,12 +1612,41 @@ impl ChannelStore {
             text: msg.text,
             at: Utc::now().to_rfc3339(),
             via: msg.via.clone(),
+            msg_id: Some(msg.msg_id.unwrap_or_else(new_msg_id)),
+            reply_to,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
             .await?;
         Ok((line.to_string(), ev))
     }
+
+    /// The event at global line `line`, if there is one.
+    async fn event_at(
+        &self,
+        tier: Tier,
+        channel: &ChannelId,
+        line: &TaskId,
+    ) -> Result<Option<ChannelEvent>> {
+        // `read_tail`'s bound is exclusive: read the one line before
+        // `line + 1`.
+        let Ok(index) = line.parse::<u64>() else {
+            return Ok(None);
+        };
+        let page = self
+            .read_tail(tier, channel, 1, Some(&(index + 1).to_string()))
+            .await?;
+        Ok(page
+            .events
+            .into_iter()
+            .find(|(id, _)| id == line)
+            .map(|(_, ev)| ev))
+    }
+}
+
+/// A fresh stable message id.
+pub fn new_msg_id() -> String {
+    format!("msg_{}", uuid::Uuid::new_v4().simple())
 }
 
 // ---------------------------------------------------------------------------
@@ -2313,6 +2356,8 @@ mod tests {
             text: "foreign".into(),
             at: "2026-09-03T00:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -2823,8 +2868,8 @@ mod tests {
 
     /// `CreateOpts::passive_binding` persists into `meta.json` and is
     /// readable back through the `ChannelPort::passive_binding`
-    /// accessor. This is the DM-tier binding the daemon's
-    /// `PassiveBindingResponder` reads at subscriber-spawn time.
+    /// accessor. This is the DM marker the daemon reads at
+    /// subscriber-spawn time.
     #[tokio::test]
     async fn passive_binding_persists_through_create() {
         let cfg = tmp_cfg("passive-binding");
@@ -3039,6 +3084,72 @@ mod tests {
     /// sender checks that the local `post` path enforces. This is
     /// the test for the "remote events land in the mirror" invariant
     /// that PR-B's cross-runtime fan-out relies on.
+    /// Every post gets a stable id; a reply names its parent's id in
+    /// `reply_to`; an explicit id is kept; `find_post` resolves an id.
+    #[tokio::test]
+    async fn posts_carry_stable_ids_and_replies_name_their_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChannelStore::new(ChannelConfig {
+            runtime_dir: dir.path().to_path_buf(),
+            shared_dir: None,
+        });
+        let alice = PrincipalId("prin_alice".into());
+        let channel = store
+            .create(&alice, CreateOpts::runtime("ids"))
+            .await
+            .unwrap();
+        let sender = Subject::from(&alice);
+        let (root_line, root) = store
+            .post_with_event(&channel, &sender, PostMsg::root("question"))
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            msg_id: Some(root_id),
+            reply_to: None,
+            ..
+        } = root
+        else {
+            panic!("root post must carry an id and no reply_to: {root:?}");
+        };
+        assert!(root_id.starts_with("msg_"), "{root_id}");
+
+        let (_, reply) = store
+            .post_with_event(&channel, &sender, PostMsg::reply(root_line, "answer"))
+            .await
+            .unwrap();
+        let ChannelEvent::Posted {
+            msg_id: Some(reply_id),
+            reply_to: Some(reply_to),
+            ..
+        } = reply
+        else {
+            panic!("reply must carry an id and reply_to: {reply:?}");
+        };
+        assert_eq!(reply_to, root_id);
+        assert_ne!(reply_id, root_id);
+
+        let (_, pinned) = store
+            .post_with_event(
+                &channel,
+                &sender,
+                PostMsg::root("copy").with_msg_id("msg_fixed"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(pinned, ChannelEvent::Posted { msg_id: Some(ref id), .. } if id == "msg_fixed")
+        );
+
+        let (line, found) = store.find_post(&channel, &root_id).await.unwrap().unwrap();
+        assert_eq!(line, "1");
+        assert!(matches!(found, ChannelEvent::Posted { ref text, .. } if text == "question"));
+        assert!(store
+            .find_post(&channel, "msg_missing")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
     #[tokio::test]
     async fn append_remote_event_writes_into_local_mirror() {
         let cfg = tmp_cfg("append-remote");
@@ -3057,6 +3168,8 @@ mod tests {
             text: "hello from B".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -3110,6 +3223,8 @@ mod tests {
             text: "remote one".to_string(),
             at: "2026-09-16T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -3125,6 +3240,8 @@ mod tests {
             text: "legacy one".to_string(),
             at: "2026-09-16T00:00:01Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -3210,6 +3327,8 @@ mod tests {
             text: "hello from B".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -3235,6 +3354,8 @@ mod tests {
             text: "should not land".to_string(),
             at: "2026-08-06T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -3444,6 +3565,8 @@ mod tests {
             text: "hello from B".to_string(),
             at: "2026-08-18T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

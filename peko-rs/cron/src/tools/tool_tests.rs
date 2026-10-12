@@ -300,6 +300,74 @@ async fn list_returns_only_the_callers_jobs() {
     assert_eq!(listed["jobs"][0]["job_id"], mine.as_str());
 }
 
+/// A cron expression without a timezone runs in the machine's zone, which
+/// is recorded on the job; an explicit zone is kept and a bad one refused.
+/// `list` reports each job's schedule in the fields `create` takes.
+#[tokio::test]
+async fn cron_schedules_default_to_the_local_timezone_and_list_shows_them() {
+    let fx = Fixture::new();
+    let local = fx
+        .create(ALICE, json!({"message":"m", "cron":"0 9 * * *"}))
+        .await;
+    let ScheduleKind::Cron { tz, .. } = fx.job(ALICE, &local).schedule else {
+        panic!("cron schedule");
+    };
+    let expected = iana_time_zone::get_timezone()
+        .ok()
+        .filter(|tz| tz.parse::<chrono_tz::Tz>().is_ok());
+    assert_eq!(tz, expected, "the machine's zone is recorded");
+
+    let berlin = fx
+        .create(
+            ALICE,
+            json!({"message":"m", "cron":"0 9 * * *", "timezone":"Europe/Berlin"}),
+        )
+        .await;
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "message":"m", "cron":"0 9 * * *", "timezone":"Mars/Olympus"}),
+        )
+        .await;
+    assert!(error.contains("Invalid timezone 'Mars/Olympus'"), "{error}");
+    fx.create(
+        ALICE,
+        json!({"tool":"Bash", "params":{"command":"true"}, "interval_ms":60000}),
+    )
+    .await;
+
+    let listed = fx.ok(ALICE, json!({"action":"list"})).await;
+    let schedule_of = |id: &str| {
+        listed["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["job_id"] == id)
+            .map(|job| job["schedule"].clone())
+            .unwrap()
+    };
+    assert_eq!(
+        schedule_of(&berlin),
+        json!({"cron":"0 9 * * *", "timezone":"Europe/Berlin"})
+    );
+    assert_eq!(schedule_of(&local)["cron"], "0 9 * * *");
+    let message_job = listed["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["job_id"] == berlin.as_str())
+        .unwrap();
+    assert_eq!(message_job["message"], "m", "{message_job}");
+    assert!(
+        listed["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["schedule"] == json!({"interval_ms": 60000})),
+        "{listed}"
+    );
+}
+
 #[tokio::test]
 async fn delete_by_id_or_label_removes_only_the_callers_job() {
     let fx = Fixture::new();

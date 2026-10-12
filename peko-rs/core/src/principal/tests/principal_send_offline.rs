@@ -1,19 +1,18 @@
 //! `ChannelSend` principal-branch tests over real DM channels.
 //!
+//! The call posts and returns; posting never starts a run in the target
+//! (ADR-072), which reads the message on its DM channel.
+//!
 //! Same runtime: `LocalFirstAgentDirectory` resolves the target without
-//! the hub; the message is posted to both the caller's DM channel (the
-//! `peko log` record) and the target's, and the reply await times out
-//! cleanly with no responder. A fake target responder (`spawn_responder`)
-//! covers the reply path and per-target request serialization.
+//! the hub; the message is posted, under one message id, to the caller's
+//! DM channel (the caller's record) and the target's (where the target
+//! reads it).
 //!
 //! Remote runtime: a `FakeAgentDirectory` resolves the target to another
-//! runtime and a captured `TunnelHandle` records outbound traffic; a fake
-//! peer (`spawn_remote_peer`) mirrors the reply back into the caller's DM
-//! channel. Covers first-contact invite (once), fan-out, reply, timeout,
-//! and directory refusals.
+//! runtime and a captured `TunnelHandle` records outbound traffic.
+//! Covers first-contact invite (once), fan-out, and directory refusals.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::engine::tool_runtime::ToolRuntime;
 
@@ -28,7 +27,7 @@ use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
 use peko_auth::Subject;
-use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint, PostMsg};
+use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 
@@ -90,36 +89,6 @@ async fn create_test_principal(
         children: Default::default(),
     };
     manager.create(config).await.unwrap()
-}
-
-/// The `(author, parent, text)` rows of every `Posted` event on the
-/// channel bound to `binding` for `principal` (find-only — the sends
-/// above already provisioned it).
-async fn dm_posted_rows(
-    port: &Arc<dyn ChannelPort>,
-    principal: &Arc<crate::principal::Principal>,
-    peer: &Subject,
-) -> Vec<(String, Option<String>, String)> {
-    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
-    let channel =
-        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
-            .await
-            .expect("dm lookup")
-            .expect("DM channel exists after ChannelSend");
-    port.peek(&channel, &Checkpoint::default())
-        .await
-        .expect("peek")
-        .iter()
-        .filter_map(|ev| match ev {
-            ChannelEvent::Posted {
-                author,
-                parent,
-                text,
-                ..
-            } => Some((author.clone(), parent.clone(), text.clone())),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The `(text, via)` of every `Posted` event on `principal`'s DM channel
@@ -236,7 +205,7 @@ impl Fixture {
 
     /// Connect the cross-runtime context; the installed tool picks it up
     /// on its next call without re-registration.
-    fn connect(&self, response_timeout: Duration) {
+    fn connect(&self) {
         let runtime_id = "did:key:test-runtime".to_string();
         self.tooling
             .services()
@@ -249,7 +218,6 @@ impl Fixture {
                 caller_runtime_id: runtime_id,
                 principal_manager: self.manager.clone(),
                 channel_port: Arc::new(self.tunnel_port.clone()),
-                response_timeout,
             }));
     }
 
@@ -259,7 +227,6 @@ impl Fixture {
     async fn connect_remote(
         &self,
         directory: Arc<crate::tunnel::hub_directory::FakeAgentDirectory>,
-        response_timeout: Duration,
     ) -> tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tunnel = Arc::new(tokio::sync::RwLock::new(Some(
@@ -285,7 +252,6 @@ impl Fixture {
                 caller_runtime_id: CALLER_RUNTIME.into(),
                 principal_manager: self.manager.clone(),
                 channel_port: Arc::new(self.tunnel_port.clone()),
-                response_timeout,
             }));
         rx
     }
@@ -300,9 +266,16 @@ impl Fixture {
                 serde_json::json!({"channel": format!("principal:{target_did}"), "text": text}),
                 &ctx,
             )
-            .await
-            .expect("execute_with_context should not throw");
-        serde_json::from_value(result).expect("parse result")
+            .await;
+        match result {
+            Ok(value) => serde_json::from_value(value).expect("parse result"),
+            // A failed send is a tool error; keep its text for assertions.
+            Err(error) => serde_json::from_value(serde_json::json!({
+                "success": false,
+                "error": error.to_string(),
+            }))
+            .expect("failure shape"),
+        }
     }
 
     async fn send(&self, text: &str) -> serde_json::Value {
@@ -315,73 +288,46 @@ impl Fixture {
                 &ctx,
             )
             .await
-            .expect("execute_with_context should not throw")
-    }
-
-    /// The target's DM channel for the caller, provisioned the way the
-    /// tool provisions it (idempotent).
-    async fn target_channel(&self) -> ChannelId {
-        let peer = Subject::Principal(PrincipalDID(self.caller_did.clone()));
-        self.manager
-            .ensure_peer_child_ingress(&self.target, &peer)
-            .await
-            .expect("provision target-side DM")
-            .dm_channel
-            .expect("DM channel")
-    }
-
-    /// Stand in for the target's responder: answer each caller-authored
-    /// root post on the target's DM channel with `pong: <text>` after
-    /// `delay`, authored by the target. Replies are produced in arrival
-    /// order, one at a time.
-    async fn spawn_responder(&self, delay: Duration) -> tokio::task::JoinHandle<()> {
-        let channel = self.target_channel().await;
-        let port = self.channel_port.clone();
-        let caller_raw = self.caller.id.0.clone();
-        let target = Subject::from(&self.target.id);
-        let caller = Subject::from(&self.caller.id);
-        let mut rx = port.subscribe_events(&channel).await;
-        tokio::spawn(async move {
-            let mut answered = 0usize;
-            while rx.recv().await.is_ok() {
-                let roots: Vec<_> = port
-                    .peek_with_ids(&channel, &Checkpoint::default())
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .filter_map(|(id, ev)| match ev {
-                        ChannelEvent::Posted {
-                            author,
-                            parent: None,
-                            text,
-                            ..
-                        } if author == caller_raw => Some((id, text)),
-                        _ => None,
-                    })
-                    .collect();
-                for (id, text) in roots.into_iter().skip(answered) {
-                    tokio::time::sleep(delay).await;
-                    // A reply by anyone but the target is not the answer.
-                    port.post(&channel, &caller, PostMsg::reply(id.clone(), "decoy"))
-                        .await
-                        .unwrap();
-                    port.post(
-                        &channel,
-                        &target,
-                        PostMsg::reply(id, format!("pong: {text}")),
-                    )
-                    .await
-                    .unwrap();
-                    answered += 1;
-                }
-            }
-        })
+            // A failed send is a tool error; keep its text for assertions.
+            .unwrap_or_else(|error| serde_json::json!({"success": false, "error": error.to_string()}))
     }
 }
 
+/// The `(msg_id, text)` of every root post on `principal`'s DM channel
+/// with `peer`.
+async fn root_ids(
+    port: &Arc<dyn ChannelPort>,
+    principal: &Arc<crate::principal::Principal>,
+    peer: &Subject,
+) -> Vec<(Option<String>, String)> {
+    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let channel =
+        crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
+            .await
+            .unwrap()
+            .unwrap();
+    port.peek(&channel, &Checkpoint::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|ev| match ev {
+            ChannelEvent::Posted {
+                parent: None,
+                msg_id,
+                text,
+                ..
+            } => Some((msg_id, text)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Same runtime: the request is recorded on the caller's DM channel and
+/// delivered to the target's under ONE message id, and the call returns
+/// at once — it does not wait for an answer.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
+async fn same_runtime_send_records_and_delivers_and_returns_at_once() {
     let fx = Fixture::new().await;
     let offline = fx.send("ping").await;
     assert!(offline["error"]
@@ -389,83 +335,41 @@ async fn same_runtime_channel_send_principal_branch_posts_and_times_out() {
         .unwrap()
         .contains("cross-runtime context"));
 
-    fx.connect(Duration::from_millis(200));
-    let result = fx.send("ping").await;
+    fx.connect();
+    let result = fx.send_to(&fx.target_did, "ping").await;
+    assert!(result.success, "{:?}", result.error);
+    assert_eq!(result.delivery.as_deref(), Some("delivered"));
+    assert!(result
+        .note
+        .unwrap()
+        .contains("does not wake the other principal"));
+    assert!(!result.task_id.is_empty(), "the request's id on dm_channel");
 
-    // No live responder in this harness → the reply await times out
-    // with a structured error.
-    let parsed: ChannelSendResult = serde_json::from_value(result).expect("parse result");
-    assert!(!parsed.success, "no responder → await must time out");
-    let err = parsed.error.expect("timeout error must be set");
-    assert!(
-        err.contains("timed out"),
-        "error must name the timeout; got: {err}"
-    );
-
-    // …but the message stands durably on BOTH DM channels:
-    // 1. the caller's own channel (self-authored root — the `peko log`
-    //    mirror);
-    let caller_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
-    let caller_rows = dm_posted_rows(&fx.channel_port, &fx.caller, &caller_peer).await;
-    assert_eq!(
-        caller_rows,
-        vec![(fx.caller.id.0.clone(), None, "ping".to_string())],
-        "caller's DM channel must hold the self-authored outbound post"
-    );
-
-    // 2. the target's channel (caller-authored root — the post the
-    //    target's responder would fire on).
-    let target_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let target_rows = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer).await;
-    assert_eq!(
-        target_rows,
-        vec![(fx.caller.id.0.clone(), None, "ping".to_string())],
-        "target's DM channel must hold the caller's root post"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
-async fn same_runtime_reply_is_returned_and_mirrored_to_the_callers_log() {
-    let fx = Fixture::new().await;
-    fx.connect(Duration::from_secs(10));
-    let responder = fx.spawn_responder(Duration::ZERO).await;
-
-    let parsed: ChannelSendResult =
-        serde_json::from_value(fx.send("ping").await).expect("parse result");
-    responder.abort();
-    assert!(parsed.success, "{:?}", parsed.error);
-    assert_eq!(parsed.response, "pong: ping");
-    assert_eq!(parsed.kind.as_deref(), Some("principal"));
-    assert_eq!(parsed.channel, format!("principal:{}", fx.target_did));
-    assert!(
-        !parsed.session_id.is_empty(),
-        "caller-side child session id"
-    );
-
-    // The caller's log holds the full exchange: its root, then the reply
-    // attributed to the target and parented on that root.
-    let caller_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
-    let rows = dm_posted_rows(&fx.channel_port, &fx.caller, &caller_peer).await;
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    assert_eq!(rows[0], (fx.caller.id.0.clone(), None, "ping".to_string()));
-    assert_eq!(rows[1].0, fx.target.id.0, "reply attributed to the target");
-    assert!(
-        rows[1].1.is_some(),
-        "reply is parented on the outbound root"
-    );
-    assert_eq!(rows[1].2, "pong: ping");
+    let record = root_ids(
+        &fx.channel_port,
+        &fx.caller,
+        &Subject::Principal(PrincipalDID(fx.target_did.clone())),
+    )
+    .await;
+    let delivered = root_ids(
+        &fx.channel_port,
+        &fx.target,
+        &Subject::Principal(PrincipalDID(fx.caller_did.clone())),
+    )
+    .await;
+    assert_eq!(record.len(), 1, "{record:?}");
+    assert_eq!(record, delivered, "same text, same message id on both");
+    assert!(record[0].0.is_some());
 }
 
 /// Every root post a call makes carries the calling session's slug path
-/// (`via`); calls from outside a known session, and the reply mirror,
-/// stay unattributed.
+/// as `via` (attribution). Calls without a resolvable session stay
+/// unattributed.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn root_posts_carry_the_calling_sessions_slug_path() {
     let fx = Fixture::new().await;
-    fx.connect(Duration::from_secs(10));
-    let responder = fx.spawn_responder(Duration::ZERO).await;
+    fx.connect();
 
     // The first exchange provisions the caller's peer child; the second
     // is made from inside it, as the child's own agent would.
@@ -498,36 +402,23 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
         "three",
     )
     .await;
-    responder.abort();
 
     let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
     let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
     let via = Some(format!("{}/{slug}", peko_session::path::SCHEME_PREFIX));
-    let caller_side = posted_via(&fx.channel_port, &fx.caller, &target_peer).await;
+    let expected = vec![
+        ("one".to_string(), None),
+        ("two".to_string(), via),
+        ("three".to_string(), None),
+    ];
     assert_eq!(
-        caller_side,
-        vec![
-            ("one".to_string(), None),
-            ("pong: one".to_string(), None),
-            ("two".to_string(), via.clone()),
-            ("pong: two".to_string(), None),
-            ("three".to_string(), None),
-            ("pong: three".to_string(), None),
-        ]
+        posted_via(&fx.channel_port, &fx.caller, &target_peer).await,
+        expected
     );
     let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let target_roots: Vec<_> = posted_via(&fx.channel_port, &fx.target, &caller_peer)
-        .await
-        .into_iter()
-        .filter(|(text, _)| ["one", "two", "three"].contains(&text.as_str()))
-        .collect();
     assert_eq!(
-        target_roots,
-        vec![
-            ("one".to_string(), None),
-            ("two".to_string(), via),
-            ("three".to_string(), None),
-        ]
+        posted_via(&fx.channel_port, &fx.target, &caller_peer).await,
+        expected
     );
 }
 
@@ -535,70 +426,21 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
 /// refuses before touching any channel.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn caller_not_loaded_on_this_runtime_is_a_structured_error() {
+async fn caller_not_loaded_on_this_runtime_is_an_error() {
     let fx = Fixture::new().await;
-    fx.connect(Duration::from_millis(200));
+    fx.connect();
     let ghost = build_channel_send_tool(&fx.tooling, "did:key:zGhostCaller").unwrap();
     let ctx = peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
         .with_principal_id("ghost");
-    let result: ChannelSendResult = serde_json::from_value(
-        ghost
-            .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
-                &ctx,
-            )
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(!result.success);
-    assert!(
-        result
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("caller principal is not loaded"),
-        "{:?}",
-        result.error
-    );
-}
-
-/// Replies carry no correlation id, so the per-target await lock is what
-/// keeps overlapping requests from claiming each other's replies.
-#[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
-async fn concurrent_requests_to_one_target_each_receive_their_own_reply() {
-    let fx = Fixture::new().await;
-    fx.connect(Duration::from_secs(10));
-    let responder = fx.spawn_responder(Duration::from_millis(150)).await;
-
-    let (a, b, c) = tokio::join!(fx.send("a"), fx.send("b"), fx.send("c"));
-    responder.abort();
-    for (sent, result) in [("a", a), ("b", b), ("c", c)] {
-        let parsed: ChannelSendResult = serde_json::from_value(result).expect("parse result");
-        assert!(parsed.success, "{sent}: {:?}", parsed.error);
-        assert_eq!(
-            parsed.response,
-            format!("pong: {sent}"),
-            "{sent} got another reply"
-        );
-    }
-    // Each request lands exactly once on the target's channel: one root,
-    // one reply. (A slug collision once resolved the caller's own DM to
-    // the target's, double-posting every request after the first.)
-    let target_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
-    let rows: Vec<_> = dm_posted_rows(&fx.channel_port, &fx.target, &target_peer)
+    let error = ghost
+        .execute_with_context(
+            serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
+            &ctx,
+        )
         .await
-        .into_iter()
-        .filter(|(_, _, text)| text != "decoy")
-        .collect();
-    let roots: Vec<_> = rows
-        .iter()
-        .filter(|r| r.1.is_none())
-        .map(|r| r.2.as_str())
-        .collect();
-    assert_eq!(roots.len(), 3, "one root per request: {rows:?}");
-    assert_eq!(rows.len(), 6, "one reply per request: {rows:?}");
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("caller principal is not loaded"), "{error}");
 }
 
 fn remote_resolution(
@@ -614,12 +456,8 @@ fn remote_resolution(
     }
 }
 
-/// Play the remote runtime: for each outbound channel event (a fanned-out
-/// root post), mirror a `pong: <text>` reply from the remote principal
-/// into the caller's DM channel, as the inbound tunnel mirror would.
-/// Records every outbound message kind.
+/// Record the kind of every outbound tunnel message.
 fn spawn_remote_peer(
-    fx: &Fixture,
     mut outbound: tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage>,
 ) -> (
     tokio::task::JoinHandle<()>,
@@ -627,73 +465,25 @@ fn spawn_remote_peer(
 ) {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen_w = Arc::clone(&seen);
-    let store = Arc::clone(fx.tunnel_port.local());
-    let caller = Subject::from(&fx.caller.id);
-    let caller_raw = fx.caller.id.0.clone();
-    let channel = ChannelId::for_principal(REMOTE_TARGET);
     let handle = tokio::spawn(async move {
-        let mut answered = 0usize;
         while let Some(message) = outbound.recv().await {
-            match message {
-                crate::tunnel::TunnelMessage::TunnelChannelInvite { .. } => {
-                    seen_w.lock().unwrap().push("invite");
-                }
-                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. } => {
-                    seen_w.lock().unwrap().push("event");
-                    let roots: Vec<_> = store
-                        .peek_with_ids(&channel, &Checkpoint::default())
-                        .await
-                        .unwrap()
-                        .into_iter()
-                        .filter_map(|(id, ev)| match ev {
-                            ChannelEvent::Posted {
-                                author,
-                                parent: None,
-                                text,
-                                ..
-                            } if author == caller_raw => Some((id, text)),
-                            _ => None,
-                        })
-                        .collect();
-                    for (id, text) in roots.into_iter().skip(answered) {
-                        // Replies from a user or from the caller itself are
-                        // not the target's answer.
-                        for decoy_author in ["user:alice", caller_raw.as_str()] {
-                            store
-                                .post_attributed(
-                                    &channel,
-                                    &caller,
-                                    decoy_author,
-                                    PostMsg::reply(id.clone(), "decoy"),
-                                )
-                                .await
-                                .unwrap();
-                        }
-                        store
-                            .post_attributed(
-                                &channel,
-                                &caller,
-                                REMOTE_TARGET,
-                                PostMsg::reply(id, format!("pong: {text}")),
-                            )
-                            .await
-                            .unwrap();
-                        answered += 1;
-                    }
-                }
-                _ => {}
-            }
+            let kind = match message {
+                crate::tunnel::TunnelMessage::TunnelChannelInvite { .. } => "invite",
+                crate::tunnel::TunnelMessage::TunnelChannelEvent { .. } => "event",
+                _ => continue,
+            };
+            seen_w.lock().unwrap().push(kind);
         }
     });
     (handle, seen)
 }
 
 /// Remote principal: first contact invites the target's runtime over the
-/// tunnel, the root post fans out, and the reply mirrored back into the
-/// caller's DM channel is returned. Later requests do not re-invite.
+/// tunnel, the root post fans out, and the call returns at once. Later
+/// requests do not re-invite.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn remote_request_invites_once_fans_out_and_returns_the_mirrored_reply() {
+async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     use crate::tunnel::hub_directory::ResolvedExposure;
     let fx = Fixture::new().await;
     let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
@@ -701,16 +491,23 @@ async fn remote_request_invites_once_fans_out_and_returns_the_mirrored_reply() {
         REMOTE_TARGET,
         remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
     );
-    let outbound = fx.connect_remote(directory, Duration::from_secs(10)).await;
-    let (peer, seen) = spawn_remote_peer(&fx, outbound);
+    let outbound = fx.connect_remote(directory).await;
+    let (peer, seen) = spawn_remote_peer(outbound);
 
     let first = fx.send_to(REMOTE_TARGET, "ping").await;
     assert!(first.success, "{:?}", first.error);
-    assert_eq!(first.response, "pong: ping");
+    // The captured tunnel never answers, so nothing confirms delivery.
+    assert_eq!(first.delivery.as_deref(), Some("queued"));
+    assert!(first.note.unwrap().contains("resent until it is delivered"));
     assert_eq!(first.channel, format!("principal:{REMOTE_TARGET}"));
+    assert_eq!(
+        first.dm_channel.as_deref(),
+        Some(ChannelId::for_principal(REMOTE_TARGET).as_str())
+    );
     let second = fx.send_to(REMOTE_TARGET, "again").await;
     assert!(second.success, "{:?}", second.error);
-    assert_eq!(second.response, "pong: again");
+    // Let the captured tunnel drain.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     peer.abort();
 
     let seen = seen.lock().unwrap().clone();
@@ -733,33 +530,11 @@ async fn remote_request_invites_once_fans_out_and_returns_the_mirrored_reply() {
     assert_eq!(remote_members[0].runtime_id, REMOTE_RUNTIME);
 }
 
-/// Without a reply the remote request fails with a timeout naming the
-/// remote runtime; the invite routing state is still recorded.
-#[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
-async fn remote_request_without_a_reply_times_out_cleanly() {
-    use crate::tunnel::hub_directory::ResolvedExposure;
-    let fx = Fixture::new().await;
-    let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
-    directory.register_did(
-        REMOTE_TARGET,
-        remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
-    );
-    let _outbound = fx
-        .connect_remote(directory, Duration::from_millis(200))
-        .await;
-    let result = fx.send_to(REMOTE_TARGET, "ping").await;
-    assert!(!result.success);
-    let error = result.error.unwrap();
-    assert!(error.contains("timed out"), "{error}");
-    assert!(error.contains(REMOTE_RUNTIME), "{error}");
-}
-
 /// Directory refusals and unusable resolutions are structured errors,
 /// and nothing is sent over the tunnel.
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
-async fn remote_resolution_failures_are_structured_errors() {
+async fn remote_resolution_failures_are_errors() {
     use crate::tunnel::hub_directory::DirectoryErrorKind;
     use crate::tunnel::hub_directory::ResolvedExposure;
     let fx = Fixture::new().await;
@@ -774,9 +549,7 @@ async fn remote_resolution_failures_are_structured_errors() {
         "did:key:nodid",
         remote_resolution(ResolvedExposure::Public, ""),
     );
-    let mut outbound = fx
-        .connect_remote(directory, Duration::from_millis(200))
-        .await;
+    let mut outbound = fx.connect_remote(directory).await;
 
     for (target, needle) in [
         ("did:key:missing", "not found in hub directory"),

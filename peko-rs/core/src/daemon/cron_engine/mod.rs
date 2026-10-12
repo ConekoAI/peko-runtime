@@ -913,7 +913,8 @@ impl CronEngine {
             .await?;
 
         let wake = wake_on_completion.unwrap_or(false);
-        let timeout = timeout_secs.or(Some(7200));
+        // Uncapped unless the job set its own limit.
+        let timeout = *timeout_secs;
 
         let config = AsyncToolConfig {
             timeout_secs: timeout,
@@ -963,19 +964,20 @@ impl CronEngine {
         // `AsyncExecutor::wait_for_completion` here: it holds the
         // registry read lock for the whole wait, which blocks the
         // spawned task's status write and deadlocks until the timeout.
-        // The budget is the task's own timeout plus a grace margin —
-        // the executor flips the task to `TimedOut` itself when its
-        // timeout is exhausted, so this cannot hang.
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(timeout.unwrap_or(7200).saturating_add(5));
+        // A job with a limit waits for it plus a grace margin (the
+        // executor flips the task to `TimedOut` itself); an uncapped job
+        // waits until the task ends.
+        let deadline = timeout.map(|secs| {
+            tokio::time::Instant::now() + std::time::Duration::from_secs(secs.saturating_add(5))
+        });
         loop {
             match executor.check_status(&receipt.task_id).await {
                 Some(status) if status.is_terminal() => break Ok(map_async_status(status)),
-                _ if tokio::time::Instant::now() >= deadline => {
-                    // Still non-terminal (or purged from the registry)
-                    // after the wait budget: leave the run open with
-                    // the task id so `reconcile_running_runs` can close
-                    // it later.
+                // Purged from the registry, or still non-terminal after
+                // the wait budget: leave the run open with the task id so
+                // `reconcile_running_runs` can close it later.
+                None => break Ok(("running".to_string(), Some(receipt.task_id), None)),
+                _ if deadline.is_some_and(|d| tokio::time::Instant::now() >= d) => {
                     break Ok(("running".to_string(), Some(receipt.task_id), None));
                 }
                 _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
@@ -1169,9 +1171,9 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "<no result data>".to_string());
             // In-band failure: the tool executed without a transport
-            // error, but its payload reports failure — the standard
-            // `ChannelSendResult` (`"success": false` + `"error"`) and
-            // the Agent tool's error envelope (`"error": "…"`). Record
+            // error, but its payload reports failure (`"success": false`
+            // or a non-empty `"error"`) — built-ins fail as tool errors,
+            // but MCP and workspace tools may still answer this way. Record
             // the run as failed so the history, the `cron.result` audit
             // event, and the consecutive-failure retry budget reflect
             // what actually happened instead of accumulating green

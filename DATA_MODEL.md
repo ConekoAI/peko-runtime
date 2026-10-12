@@ -1864,7 +1864,10 @@ represent "what has this *session* actually been shown". Read marks
 are keyed by session id and advance only when the session's
 `{{session_context}}` digest renders (or filters) activity up to a
 line, or when its `ChannelRead` returns that line — they are what the
-channel-activity digest means by "since you last read". Both files
+unread summary means by "since you last read". A session's first look
+at a channel adopts the newest line as its mark, unless the channel was
+opened after the session was created: then it is unread from its first
+post. Both files
 share the atomic tmp+fsync+rename save convention.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
@@ -1958,18 +1961,55 @@ within the author's principal. It is written verbatim and is
 **attribution/audit metadata only** — it never feeds membership
 checks, the channel responders' trigger rules, or reply matching, and
 it is NOT an authority claim (`author` remains the only authorship
-signal).
+signal). The unread summary uses it to skip a session's own posts.
 
 `via` is absent (not `null`) on lines written before this change, on
 posts without an agent context (CLI `peko channel post`, peer-authored
-inbound projections, `ChannelSend` reply mirrors, messenger notes),
+inbound projections, messenger notes),
 and whenever the posting side could not resolve the calling session's
 path — attribution is best-effort and never fails a send. Serde
 `default` + `skip_serializing_if` keeps old logs and mixed-version
 cross-runtime peers byte-compatible. Producers: the `ChannelSend`
-tool (the calling session's path), the DM/group channel responders
+tool (the calling session's path), the group channel responder
 (the bound session's path), and `peer_dm::post_peer_dm_reply` (the
 bound peer child's path).
+
+### 5¾.2¾ `posted` event `msg_id` / `reply_to` (2026-10-12)
+
+`posted` lines carry two more optional fields:
+
+- `msg_id` — a stable message id (`msg_<uuid>`), minted by the store
+  that writes the post (or supplied by the poster, so one message can
+  be written to two channels under one id: a same-runtime
+  `ChannelSend`'s record and delivery copies). It is
+  carried verbatim to every runtime's mirror; line numbers are not.
+- `reply_to` — the `msg_id` of the post this one replies to, derived by
+  the writing store from `parent`'s line. It is the cross-runtime form
+  of `parent`.
+
+Neither field changes who is woken: only humans and cron start runs
+(ADR-072). Both fields are absent on lines written before this change; serde
+`default` + `skip_serializing_if` keeps old logs readable. Both ride
+inside the signed event bytes of cross-runtime envelopes.
+
+### 5¾.2⅞ Cross-runtime delivery files (2026-10-12, ADR-072)
+
+Under the channel runtime dir, `channel_delivery/`:
+
+- `outbox/<seq>-<request_id>.json` — one file per outbound envelope not
+  yet confirmed by its recipient runtime: `{seq, request_id,
+  recipient_runtime_id, item, created_at, attempts, last_attempt}`,
+  where `item` is `{"kind":"event", channel, event, source}` or
+  `{"kind":"invite", channel, inviter, creator_did, invitee}` — the
+  unsigned parts, re-signed on every attempt. The zero-padded `seq`
+  keeps send order. Deleted on receipt; dropped after 30 days.
+- `received.jsonl` — `{request_id, at}` per inbound envelope applied,
+  so a resend is confirmed again but not applied twice; rows older than
+  30 days are pruned on load.
+
+Receipts travel as `{"kind":"received", channel, request_ids, at}`
+channel events inside `TunnelChannelEvent` envelopes and are never
+written to a channel log.
 
 ### 5¾.3 Mirror `members.json` partition (Phase 12a)
 

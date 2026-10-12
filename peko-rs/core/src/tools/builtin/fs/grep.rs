@@ -4,12 +4,12 @@
 //! every response is a plain-text `output` string in ripgrep-style
 //! formatting, with shape driven by `output_mode`:
 //! - `"content"` (default) — `path:line:content\n` per match and per
-//!   context line, matching Claude Code's Grep
+//!   context line
 //! - `"files_with_matches"` — one path per line for files that
 //!   contain at least one match
 //! - `"count"` — `path:count\n` per file
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use glob::Pattern as GlobPattern;
 use regex::Regex;
@@ -28,8 +28,7 @@ pub struct GrepArgs {
     /// Path to search (file or directory, default: workspace)
     #[serde(default)]
     pub path: Option<String>,
-    /// Glob pattern to filter files (e.g., "*.rs"). Named `include`
-    /// to match Claude Code's Grep; same semantics — files whose
+    /// Glob pattern to filter files (e.g., "*.rs") — files whose
     /// basename does not match are skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<String>,
@@ -53,7 +52,7 @@ pub struct GrepArgs {
     /// (shortcut for `context_before` + `context_after` to the same
     /// value). When set, takes precedence over the separate
     /// `context_before` / `context_after` parameters. Only consulted
-    /// when `output_mode == "content"`. Mirrors Claude Code's `-C N`.
+    /// when `output_mode == "content"`.
     #[serde(default)]
     pub context: Option<usize>,
     /// Case insensitive search (default: false)
@@ -62,6 +61,9 @@ pub struct GrepArgs {
     /// Include hidden files (default: false)
     #[serde(default)]
     pub include_hidden: bool,
+    /// Include files excluded by .gitignore / .ignore (default: false)
+    #[serde(default)]
+    pub include_ignored: bool,
     /// Output shape: `"content"` (default) returns per-match records
     /// with line numbers and (optionally) the matching line + context;
     /// `"files_with_matches"` returns just the unique file paths that
@@ -131,28 +133,38 @@ impl GrepTool {
         }
     }
 
+    /// `path` as the agent should see it: relative to the workspace when
+    /// inside it (ready for Read, and short), absolute otherwise.
+    fn display_path(&self, path: &std::path::Path) -> String {
+        self.workspace_dir
+            .as_ref()
+            .and_then(|workspace| path.strip_prefix(workspace).ok())
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map_or_else(
+                || path.display().to_string(),
+                |relative| relative.to_string_lossy().replace('\\', "/"),
+            )
+    }
+
     /// Execute grep search
-    async fn grep(
-        &self,
-        pattern: &str,
-        path: Option<&str>,
-        include: Option<&str>,
-        limit: usize,
-        include_content: bool,
-        context_before: usize,
-        context_after: usize,
-        context: Option<usize>,
-        case_insensitive: bool,
-        include_hidden: bool,
-        output_mode: &str,
-    ) -> Result<serde_json::Value> {
+    async fn grep(&self, args: &GrepArgs) -> Result<serde_json::Value> {
+        let pattern = args.pattern.as_str();
+        let path = args.path.as_deref();
+        let include = args.include.as_deref();
+        let limit = args.limit;
+        let include_content = args.include_content;
+        let (context_before, context_after, context) =
+            (args.context_before, args.context_after, args.context);
+        let case_insensitive = args.case_insensitive;
+        let (include_hidden, include_ignored) = (args.include_hidden, args.include_ignored);
+        let output_mode = args.output_mode.as_str();
         if !matches!(output_mode, "content" | "files_with_matches" | "count") {
             return Err(anyhow::anyhow!(
                 "Invalid output_mode '{output_mode}': expected 'content', 'files_with_matches', or 'count'"
             ));
         }
 
-        // The combined `context` parameter (Claude Code's `-C N`) wins
+        // The combined `context` parameter wins
         // when set; otherwise honor the separate `context_before` /
         // `context_after` overrides.
         let (effective_before, effective_after) = match context {
@@ -210,6 +222,7 @@ impl GrepTool {
                 effective_before,
                 effective_after,
                 include_hidden,
+                include_ignored,
                 &mut matches,
                 &mut files_searched,
                 &mut files_with_matches,
@@ -314,7 +327,7 @@ impl GrepTool {
         for (line_num, line) in lines.iter().enumerate() {
             if regex.is_match(line) {
                 let mut match_obj = serde_json::json!({
-                    "path": path.display().to_string(),
+                    "path": self.display_path(path),
                     "line": line_num + 1, // 1-indexed
                 });
 
@@ -364,71 +377,45 @@ impl GrepTool {
         context_before: usize,
         context_after: usize,
         include_hidden: bool,
+        include_ignored: bool,
         matches: &mut Vec<serde_json::Value>,
         files_searched: &mut usize,
         files_with_matches: &mut usize,
     ) -> Result<()> {
-        let mut entries = fs::read_dir(dir)
-            .await
-            .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            // Check if we've hit the limit
+        let found = super::walk(dir.clone(), None, include_hidden, include_ignored).await?;
+        for found in found {
             if matches.len() >= limit {
                 return Ok(());
             }
-
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-
-            // Skip hidden files unless requested
-            if !include_hidden && name_str.starts_with('.') {
+            if !found.metadata.is_file() {
                 continue;
             }
+            if let Some(pattern) = include {
+                let name = found
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !Self::simple_glob_match(&name, pattern) {
+                    continue;
+                }
+            }
 
-            let path = entry.path();
-            let metadata = entry.metadata().await?;
-
-            if metadata.is_dir() {
-                // Recurse into subdirectories
-                Box::pin(self.search_directory(
-                    &path,
+            *files_searched += 1;
+            let file_matches = self
+                .search_file(
+                    &found.path,
                     regex,
-                    include,
-                    limit,
+                    limit - matches.len(),
                     include_content,
                     context_before,
                     context_after,
-                    include_hidden,
-                    matches,
-                    files_searched,
-                    files_with_matches,
-                ))
+                )
                 .await?;
-            } else if metadata.is_file() {
-                // Check include filter if provided
-                if let Some(pattern) = include {
-                    if !Self::simple_glob_match(&name_str, pattern) {
-                        continue;
-                    }
-                }
 
-                *files_searched += 1;
-                let file_matches = self
-                    .search_file(
-                        &path,
-                        regex,
-                        limit - matches.len(),
-                        include_content,
-                        context_before,
-                        context_after,
-                    )
-                    .await?;
-
-                if !file_matches.is_empty() {
-                    *files_with_matches += 1;
-                    matches.extend(file_matches);
-                }
+            if !file_matches.is_empty() {
+                *files_with_matches += 1;
+                matches.extend(file_matches);
             }
         }
 
@@ -496,81 +483,22 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Search file contents using regular expressions. Finds files by their content.
+        r#"Search file contents with a regular expression. Use Glob to find files by name and Read to read them.
 
-Use when: Finding files containing specific text, searching for patterns across files, locating function definitions.
-Don't use when: You need to list files by name (use Glob) or read file contents (use Read).
+`pattern` uses Rust regex syntax: no look-around (`(?=`, `(?!`, `(?<=`) and no backreferences. `path` is a file or directory (default: the workspace); `include` filters by file name glob (e.g. `*.rs`; it matches names, not paths — narrow by directory with `path`); like ripgrep, hidden files and anything excluded by `.gitignore` / `.ignore` files are skipped unless `include_hidden` / `include_ignored` is true.
 
-## Parameters
+Paths inside the workspace are reported relative to it. The response's `output` is plain text:
+- `content` (default): `path:line:content` per match, with `context` (or `context_before` / `context_after`) lines interleaved.
+- `files_with_matches`: one path per line.
+- `count`: `path:count` per file.
 
-### pattern (required)
-Regex pattern to search for. Examples:
-- `"fn main"` - Find main function definitions
-- `"TODO|FIXME"` - Find TODO or FIXME comments
-- `"^pub fn"` - Find public function definitions
-- `"struct \w+"` - Find struct declarations
+`limit` (default 100, max 1000) caps the matching lines collected in every mode; `truncated: true` means more matches exist. `files_searched` and `files_with_matches` counts come back alongside `output`.
 
-### path (optional)
-File or directory to search. Defaults to workspace root.
-
-### include (optional)
-Glob pattern to filter files (e.g., "*.rs"). Named `include` to match
-Claude Code's Grep; same semantics.
-
-### limit (optional)
-Maximum number of matches. Default: 100.
-
-### include_content (optional)
-Include the matching line content. Default: true.
-
-### context_before (optional)
-Number of context lines before each match. Default: 0.
-
-### context_after (optional)
-Number of context lines after each match. Default: 0.
-
-### context (optional)
-Number of context lines to show before AND after each match. When
-set, takes precedence over `context_before` / `context_after`. Useful
-for `context: 3` style "show me the surrounding code" requests.
-
-### case_insensitive (optional)
-Case-insensitive search. Default: false.
-
-### include_hidden (optional)
-Search hidden files. Default: false.
-
-### output_mode (optional)
-Shape of the response. The body is always a single `output` field —
-a plain-text string in ripgrep-style formatting:
-- `"content"` (default) — one line per match and per context line,
-  formatted as `path:line:content\n`. With `context_before` /
-  `context_after` (or the combined `context`), surrounding lines are
-  interleaved in the right order and at the right line numbers.
-- `"files_with_matches"` — one path per line for files that contain
-  at least one match. Cheap when you only need to know *which* files.
-- `"count"` — one `path:count\n` line per file.
-
-JSON metadata (`files_searched`, `files_with_matches`, `truncated`,
-`output_mode`, `pattern`, `path`) is always returned alongside
-`output`.
-
-## Examples
-
-Find function definitions:
+Examples:
 ```json
 {"pattern": "^pub fn ", "include": "*.rs"}
-```
-
-Search for TODO comments:
-```json
-{"pattern": "TODO|FIXME", "case_insensitive": true}
-```
-
-Find where a function is called:
-```json
-{"pattern": "my_function\\(", "context_before": 1, "context_after": 1}
+{"pattern": "TODO|FIXME", "case_insensitive": true, "output_mode": "files_with_matches"}
+{"pattern": "my_function\\(", "context": 2}
 ```"#
         .to_string()
     }
@@ -581,7 +509,7 @@ Find where a function is called:
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Regex pattern to search for"
+                    "description": "Regex (Rust syntax: no look-around or backreferences)"
                 },
                 "path": {
                     "type": "string",
@@ -589,7 +517,7 @@ Find where a function is called:
                 },
                 "include": {
                     "type": "string",
-                    "description": "Glob pattern to filter files (e.g., '*.rs')"
+                    "description": "File name glob (e.g. '*.rs'); matches names, not paths"
                 },
                 "limit": {
                     "type": "integer",
@@ -619,7 +547,7 @@ Find where a function is called:
                 },
                 "context": {
                     "type": "integer",
-                    "description": "Number of context lines to show before AND after each match (shortcut for context_before + context_after). When set, takes precedence over the separate context_before/context_after parameters. Mirrors Claude Code's -C N.",
+                    "description": "Context lines before AND after each match; overrides context_before / context_after.",
                     "minimum": 0,
                     "maximum": 10
                 },
@@ -631,6 +559,11 @@ Find where a function is called:
                 "include_hidden": {
                     "type": "boolean",
                     "description": "Search hidden files",
+                    "default": false
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Search files excluded by .gitignore / .ignore",
                     "default": false
                 },
                 "output_mode": {
@@ -648,20 +581,7 @@ Find where a function is called:
         let args: GrepArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
-        self.grep(
-            &args.pattern,
-            args.path.as_deref(),
-            args.include.as_deref(),
-            args.limit,
-            args.include_content,
-            args.context_before,
-            args.context_after,
-            args.context,
-            args.case_insensitive,
-            args.include_hidden,
-            &args.output_mode,
-        )
-        .await
+        self.grep(&args).await
     }
 
     fn estimated_duration_ms(&self, params: &serde_json::Value) -> u64 {
@@ -939,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_grep_context_param_sets_both_sides() {
-        // The combined `context` parameter mirrors Claude Code's `-C N`:
+        // The combined `context` parameter:
         // it sets both before and after to the same value. When
         // `context` is set, it takes precedence over the separate
         // `context_before` / `context_after` fields.
@@ -1097,6 +1017,37 @@ mod tests {
             .execute(json!({"pattern": "x", "output_mode": "bogus"}))
             .await;
         assert!(result.is_err());
+    }
+
+    /// Like ripgrep: files excluded by .gitignore / .ignore are not
+    /// searched — in or out of a git repository — unless asked for.
+    #[tokio::test]
+    async fn ignored_files_are_not_searched_unless_requested() {
+        let temp_dir = TempDir::new().unwrap();
+        for (file, contents) in [
+            (".gitignore", "node_modules/\n"),
+            ("src/app.js", "needle\n"),
+            ("node_modules/lib/index.js", "needle\n"),
+            ("vendor/.ignore", "copy.js\n"),
+            ("vendor/copy.js", "needle\n"),
+        ] {
+            let path = temp_dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let tool = GrepTool::new().with_workspace(temp_dir.path());
+        let result = tool
+            .execute(json!({"pattern": "needle", "output_mode": "files_with_matches"}))
+            .await
+            .unwrap();
+        // Workspace-relative, ready for Read.
+        assert_eq!(result["output"], "src/app.js\n", "{result}");
+
+        let result = tool
+            .execute(json!({"pattern": "needle", "output_mode": "files_with_matches", "include_ignored": true}))
+            .await
+            .unwrap();
+        assert_eq!(result["files_with_matches"], 3, "{result}");
     }
 
     #[tokio::test]

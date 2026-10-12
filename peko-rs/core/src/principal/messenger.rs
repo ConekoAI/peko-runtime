@@ -207,9 +207,8 @@ impl PeerMessenger for PrincipalPeerMessenger {
         // chat-log projection. Peer notes (📨 from ChannelSend's
         // `user:<id>` branch, ⏰ from
         // cron Send/Notify) are principal-authored root posts on the
-        // peer's DM channel — `peko log` reads them there, and the
-        // bound `PassiveBindingResponder` self-skips them (author ==
-        // the principal's own id). The channel is the durable record,
+        // peer's DM channel — `peko log` reads them there (a DM post
+        // never starts a run, ADR-072). The channel is the durable record,
         // the child JSONL is working memory — both get the note.
         //
         // Find-only posture, best-effort: no channel port (standalone/

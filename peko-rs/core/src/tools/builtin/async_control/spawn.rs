@@ -47,7 +47,7 @@ Parameters:
 - params: object (required) — parameters to pass to the tool
 - label: string? — optional label for the task
 - wake_on_completion: boolean? — default true; deliver completion to the spawning session and start a follow-up turn when idle. false queues the completion silently for the next run.
-- timeout_secs: integer? — task lifetime in seconds, default 7200. null/omit selects the default.
+- timeout_secs: integer? — optional limit on the task's lifetime in seconds. Omit for no limit (the default).
 
 Returns: { task_id, status, tool_name }"
             .to_string()
@@ -76,7 +76,7 @@ Returns: { task_id, status, tool_name }"
                 "timeout_secs": {
                     "type": ["integer", "null"],
                     "minimum": 1,
-                    "description": "Maximum lifetime of the spawned task in seconds. Defaults to 7200 (2h). Pass null/omit to use the default. Cron schedules can override per job."
+                    "description": "Optional limit on the spawned task's lifetime in seconds. Omit (or null) for no limit, the default."
                 }
             },
             "required": ["tool", "params"]
@@ -161,7 +161,7 @@ impl AsyncSpawnAction {
         Ok(json!({
             "task_id": receipt.task_id,
             "status": "running",
-            "tool": tool_name,
+            "tool_name": tool_name,
         }))
     }
 }

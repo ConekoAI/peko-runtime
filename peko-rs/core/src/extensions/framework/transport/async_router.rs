@@ -1,10 +1,12 @@
 //! Async Execution Router
 //!
-//! Routes tool execution with a constant 5-minute timeout. Tools that exceed
-//! the timeout are auto-detached to background tasks; the agent retrieves
-//! the result with `Async action spawn` / `Async action output` / `Async action status` /
-//! `Async action list` and stops a task with `Async action stop` (the legacy `task`
-//! tool was removed; these tools replaced it).
+//! Routes foreground tool execution with a constant 10-minute wait. A call
+//! still running at that point is detached: it keeps running as a
+//! background task with no time limit, the agent gets a receipt it can poll
+//! with `Async action output` / `Async action status` (or cancel with
+//! `Async action stop`), and the eventual result is delivered to the
+//! calling session — waking it when idle, or reaching the running loop at
+//! its next iteration.
 //!
 //! # Usage
 //!
@@ -27,11 +29,10 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::{info, instrument, warn};
 
-/// Default tool execution timeout in seconds. When a tool call exceeds
-/// this, the work is detached to a background task and a receipt is
-/// returned to the agent. Agent config can override via
-/// `AgentConfig::default_tool_timeout_secs`.
-pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 300;
+/// How long a foreground tool call may run before it is detached to the
+/// background (10 minutes). The detached work has no time limit; only
+/// the wait is bounded.
+pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 600;
 
 /// Legacy reserved params are no longer honored; this is now a no-op.
 fn strip_legacy_reserved_params(params: Value) -> Value {
@@ -40,10 +41,11 @@ fn strip_legacy_reserved_params(params: Value) -> Value {
 
 /// Async Execution Router
 ///
-/// Routes tool execution with a constant 5-minute timeout
-/// ([`DEFAULT_TOOL_TIMEOUT_SECS`]). Tools exceeding the timeout are
-/// auto-detached to background tasks; the agent retrieves the result
-/// via the `Async*` tool family (`Async action output`/`Async action status`).
+/// Routes tool execution with a constant 10-minute wait
+/// ([`DEFAULT_TOOL_TIMEOUT_SECS`]). Calls still running then are
+/// detached to uncapped background tasks; the agent retrieves the result
+/// via `Async action output`/`Async action status`, and the completion is
+/// delivered to its session.
 ///
 /// This is the unified router for ALL tool types in ADR-018a.
 ///
@@ -52,7 +54,7 @@ fn strip_legacy_reserved_params(params: Value) -> Value {
 /// transport anymore.
 #[derive(Clone)]
 pub struct AsyncExecutionRouter {
-    /// Default tool execution timeout (5 min default).
+    /// How long a foreground call runs before it detaches (10 min default).
     default_tool_timeout: Duration,
     /// Transport for async task execution (local or HTTP)
     transport: std::sync::Arc<dyn AsyncTaskTransport>,
@@ -75,7 +77,7 @@ impl Default for AsyncExecutionRouter {
 
 impl AsyncExecutionRouter {
     /// Create a new async execution router with the default tool timeout
-    /// (5 min) and a local transport.
+    /// (10 min) and a local transport.
     #[must_use]
     pub fn new() -> Self {
         use crate::async_exec::executor::AsyncExecutor;
@@ -209,12 +211,10 @@ impl AsyncExecutionRouter {
         // in an inbox nobody drains (P0-4 had the same bug for Bash).
         let session_key = tool_context.session_id.clone();
 
-        // The background task's hard timeout is the default 300s regardless of
-        // the router's polling timeout (which may be shorter in tests).
-        let task_hard_timeout_secs = DEFAULT_TOOL_TIMEOUT_SECS;
-
+        // The work itself has no time limit: only the foreground wait
+        // below is bounded. A call that outlives the wait keeps running.
         let config = AsyncToolConfig {
-            timeout_secs: Some(task_hard_timeout_secs),
+            timeout_secs: None,
             timeout_millis: None,
             cleanup_after_delivery: true,
             label: Some(tool_name.to_string()),
@@ -303,9 +303,10 @@ impl AsyncExecutionRouter {
         // Timeout fired — the task is still running in the background.
         // The agent is getting a `queued` receipt instead of the result,
         // so the eventual completion MUST reach its inbox: flip
-        // `deliver_completion` on. A task that raced past terminal before
-        // the flip landed reports `false` — its result stays available
-        // via `Async action output` polling.
+        // `deliver_completion` on. A task that finished just before the
+        // flip is delivered by the flip itself, and a delivered completion
+        // wakes an idle session (a running loop drains it at its next
+        // iteration).
         if let Err(e) = transport.deliver_on_completion(&task_id).await {
             warn!(
                 tool_name = tool_name,
@@ -326,8 +327,14 @@ impl AsyncExecutionRouter {
             "status": "running",
             "tool_name": tool_name,
             "task_file": receipt.task_file,
-            "timeout_requested": timeout_secs,
+            "detached_after_secs": timeout_secs,
             "reason": "timeout",
+            "note": format!(
+                "{tool_name} is still running after {timeout_secs}s, so it now runs in the \
+                 background with no time limit. Its result will be delivered to this session \
+                 when it finishes. To check sooner use Async action output (block: true waits) \
+                 or action status with this task_id; to cancel use Async action stop."
+            ),
         }))
     }
 
@@ -390,26 +397,11 @@ impl AsyncExecutionRouter {
             }
         };
 
-        let mut errors = validator.iter_errors(args);
-        match errors.next() {
-            None => Ok(()),
-            Some(first) => {
-                let mut msg = format!("Invalid arguments for tool '{tool_name}': {first}");
-                // Append the rest of the error chain (cap at 5 to keep
-                // the LLM-facing string bounded). The path is included
-                // so the LLM can locate the offending field.
-                let mut count = 0;
-                for err in errors {
-                    count += 1;
-                    if count >= 5 {
-                        msg.push_str(&format!(" (and {} more)", count));
-                        break;
-                    }
-                    msg.push_str(&format!("; {err}"));
-                }
-                Err(msg)
-            }
+        if validator.is_valid(args) {
+            return Ok(());
         }
+        Err(super::arg_errors::explain(schema, args, tool_name)
+            .unwrap_or_else(|| format!("Invalid arguments for tool '{tool_name}'")))
     }
 }
 
@@ -489,8 +481,8 @@ mod tests {
 
     #[test]
     fn test_default_tool_timeout_constant() {
-        // Single source of truth for the 5-min default.
-        assert_eq!(DEFAULT_TOOL_TIMEOUT_SECS, 300);
+        // Single source of truth for the 10-min foreground wait.
+        assert_eq!(DEFAULT_TOOL_TIMEOUT_SECS, 600);
     }
 
     // ===================== F32b: schema argument validation =====================

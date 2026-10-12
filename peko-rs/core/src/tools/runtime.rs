@@ -859,7 +859,7 @@ mod tests {
                 &principal,
                 "session-a",
                 "Async",
-                json!({"action":"output", "task_id":task_id, "block":true, "timeout":5000}),
+                json!({"action":"output", "task_id":task_id, "block":true, "timeout_ms":5000}),
             ))
             .await
             .unwrap();
@@ -898,7 +898,7 @@ mod tests {
             .execute(call(
                 &principal,
                 "session-a",
-                "Async", json!({"action":"output", "task_id":context_receipt["task_id"], "block":true, "timeout":5000}),
+                "Async", json!({"action":"output", "task_id":context_receipt["task_id"], "block":true, "timeout_ms":5000}),
             ))
             .await
             .unwrap();

@@ -56,7 +56,9 @@ use uuid::Uuid;
 /// `peko_protocol::channel::ChannelEvent`'s wire form.
 type TaskId = String;
 
+use crate::tunnel::channel_outbox::{ChannelOutbox, OutboxEntry, OutboxItem, ReceivedLog};
 use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
+use std::str::FromStr;
 
 /// Concrete `ChannelPort` impl that wraps a local [`ChannelStore`]
 /// and (in commit 3) fans events out to the channel's remote
@@ -86,7 +88,19 @@ pub struct TunnelChannelPort {
     /// `TunnelChannelPort` (same pattern as `ctx.tunnel` for the
     /// live `TunnelHandle`).
     ctx: Arc<RwLock<Option<Arc<CrossRuntimeChannelCtx>>>>,
+
+    /// Envelopes not yet confirmed by their recipient runtime
+    /// ([`crate::tunnel::channel_outbox`]).
+    outbox: Arc<ChannelOutbox>,
+    /// Inbound envelopes already applied, so a resend is confirmed but
+    /// not applied twice.
+    received: Arc<ReceivedLog>,
+    /// Set once the periodic resend task runs.
+    resender_started: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// How often pending envelopes are considered for a resend.
+const RESEND_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl std::fmt::Debug for TunnelChannelPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -104,9 +118,13 @@ impl TunnelChannelPort {
     /// fan-out.
     #[must_use]
     pub fn new(local: Arc<peko_channel::ChannelStore>) -> Self {
+        let delivery_dir = local.config().runtime_dir.join("channel_delivery");
         Self {
             local,
             ctx: Arc::new(RwLock::new(None)),
+            outbox: Arc::new(ChannelOutbox::new(delivery_dir.join("outbox"))),
+            received: Arc::new(ReceivedLog::new(delivery_dir.join("received.jsonl"))),
+            resender_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -116,8 +134,231 @@ impl TunnelChannelPort {
     /// credential rotation) propagates without rebuilding every
     /// `TunnelChannelPort`.
     pub async fn set_ctx(&self, ctx: Arc<CrossRuntimeChannelCtx>) {
-        let mut guard = self.ctx.write().await;
-        *guard = Some(ctx);
+        {
+            let mut guard = self.ctx.write().await;
+            *guard = Some(ctx);
+        }
+        self.start_resender();
+        // Envelopes queued before a restart go out as soon as there is
+        // a tunnel to send them on.
+        self.flush(true).await;
+    }
+
+    /// Resend pending envelopes every [`RESEND_TICK`] (each on its own
+    /// backoff). Started once, on the first `set_ctx`.
+    fn start_resender(&self) {
+        use std::sync::atomic::Ordering;
+        if self.resender_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let port = self.clone();
+        runtime.spawn(async move {
+            let mut tick = tokio::time::interval(RESEND_TICK);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                port.flush(false).await;
+            }
+        });
+    }
+
+    /// The tunnel (re)connected: resend everything pending now.
+    pub(crate) async fn on_tunnel_ready(&self) {
+        self.flush(true).await;
+    }
+
+    /// Send the pending envelopes that are due (all of them with
+    /// `force`), oldest first. Needs a ctx and a live tunnel; a send
+    /// error (tunnel gone) stops the pass. Envelopes whose build fails
+    /// stay queued and are retried — the cause (e.g. a locked vault)
+    /// may clear.
+    pub(crate) async fn flush(&self, force: bool) {
+        let Some(ctx) = self.ctx.read().await.clone() else {
+            return;
+        };
+        let Some(handle) = ctx.tunnel.read().await.clone() else {
+            return;
+        };
+        for entry in self.outbox.due(force).await {
+            let envelope = match self.envelope_for(&ctx, &entry).await {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    warn!(
+                        request_id = %entry.request_id,
+                        "channel outbox: envelope build failed; will retry: {e}"
+                    );
+                    self.outbox.attempted(entry.seq).await;
+                    continue;
+                }
+            };
+            self.outbox.attempted(entry.seq).await;
+            if let Err(e) = handle.send(envelope) {
+                warn!("channel outbox: tunnel send failed; resending later: {e}");
+                break;
+            }
+        }
+    }
+
+    /// Queue `item` for `recipient` and try it at once. A build failure
+    /// is the caller's error (and drops the entry); no tunnel just
+    /// leaves it queued.
+    async fn send_queued(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        recipient_runtime_id: &str,
+        item: OutboxItem,
+    ) -> std::result::Result<(), String> {
+        let entry = self
+            .outbox
+            .enqueue(recipient_runtime_id, item)
+            .await
+            .map_err(|e| format!("queue envelope for {recipient_runtime_id}: {e}"))?;
+        let envelope = match self.envelope_for(ctx, &entry).await {
+            Ok(envelope) => envelope,
+            Err(e) => {
+                self.outbox.discard(entry.seq).await;
+                return Err(e);
+            }
+        };
+        let handle = ctx.tunnel.read().await.clone();
+        let Some(handle) = handle else {
+            warn!(
+                recipient = %recipient_runtime_id,
+                "channel envelope queued: tunnel not connected; sent on reconnect"
+            );
+            return Ok(());
+        };
+        self.outbox.attempted(entry.seq).await;
+        if let Err(e) = handle.send(envelope) {
+            warn!(recipient = %recipient_runtime_id, "channel envelope queued; send failed: {e}");
+        }
+        Ok(())
+    }
+
+    /// Build and sign the envelope for an outbox entry (fresh `iat`/`exp`,
+    /// the entry's own `request_id`).
+    async fn envelope_for(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        entry: &OutboxEntry,
+    ) -> std::result::Result<crate::tunnel::TunnelMessage, String> {
+        match &entry.item {
+            OutboxItem::Event {
+                channel,
+                event,
+                source,
+            } => {
+                let source = Subject::from_str(source)
+                    .unwrap_or_else(|_| Subject::Principal(source.clone().into()));
+                self.event_envelope(
+                    ctx,
+                    &entry.request_id,
+                    &entry.recipient_runtime_id,
+                    channel,
+                    event,
+                    &source,
+                )
+                .await
+            }
+            OutboxItem::Invite {
+                channel,
+                inviter,
+                creator_did,
+                invitee,
+            } => {
+                self.invite_envelope(
+                    ctx,
+                    &entry.request_id,
+                    channel,
+                    inviter,
+                    creator_did,
+                    invitee,
+                )
+                .await
+            }
+        }
+    }
+
+    /// `recipient` confirmed the envelopes `request_ids`.
+    pub(crate) async fn confirm_delivery(
+        &self,
+        recipient_runtime_id: &str,
+        request_ids: &[String],
+    ) {
+        self.outbox.confirm(recipient_runtime_id, request_ids).await;
+    }
+
+    /// Wait up to `timeout` for every recipient to confirm message
+    /// `msg_id`. `true` when confirmed (or nothing was queued for it).
+    pub(crate) async fn wait_delivered(&self, msg_id: &str, timeout: std::time::Duration) -> bool {
+        self.outbox.wait_confirmed(msg_id, timeout).await
+    }
+
+    /// Whether inbound envelope `request_id` was already applied.
+    pub(crate) async fn already_applied(&self, request_id: &str) -> bool {
+        self.received.contains(request_id).await
+    }
+
+    /// Record inbound envelope `request_id` as applied.
+    pub(crate) async fn mark_applied(&self, request_id: &str) {
+        self.received.record(request_id).await;
+    }
+
+    /// Confirm to `recipient` that this runtime applied `request_ids`
+    /// for `channel`. Best-effort (a lost receipt means a resend, which
+    /// is confirmed again); signed with the runtime key.
+    pub(crate) async fn send_receipt(
+        &self,
+        recipient_runtime_id: &str,
+        channel: &ChannelId,
+        request_ids: Vec<String>,
+    ) {
+        let Some(ctx) = self.ctx.read().await.clone() else {
+            return;
+        };
+        let Some(handle) = ctx.tunnel.read().await.clone() else {
+            return;
+        };
+        let event = ChannelEvent::Received {
+            channel: channel.clone(),
+            request_ids,
+            at: chrono::Utc::now().to_rfc3339(),
+        };
+        let Ok(event_bytes) = serde_json::to_vec(&event) else {
+            return;
+        };
+        let request_id = Uuid::new_v4().to_string();
+        let iat = chrono::Utc::now().timestamp();
+        let (signature, author_signature) = crate::tunnel::sign_channel_event(
+            &ctx.signing_key,
+            None,
+            crate::tunnel::ChannelSignedFields {
+                request_id: &request_id,
+                source_runtime_id: &ctx.caller_runtime_id,
+                recipient_runtime_id,
+                source_principal_did: &ctx.caller_runtime_id,
+                channel_id: channel.as_str(),
+                event_bytes: &event_bytes,
+            },
+            iat,
+            iat + 300,
+        );
+        let envelope = crate::tunnel::TunnelMessage::TunnelChannelEvent {
+            request_id,
+            source_runtime_id: ctx.caller_runtime_id.clone(),
+            recipient_runtime_id: recipient_runtime_id.to_string(),
+            source_principal_did: ctx.caller_runtime_id.clone(),
+            channel_id: channel.as_str().to_string(),
+            event,
+            signature,
+            author_signature,
+        };
+        if let Err(e) = handle.send(envelope) {
+            warn!(recipient = %recipient_runtime_id, "channel receipt send failed: {e}");
+        }
     }
 
     /// Borrow the wrapped local store (used by tests that want to
@@ -218,28 +459,40 @@ impl TunnelChannelPort {
             .map(|rm| rm.runtime_id.clone())
             .collect();
 
-        // Snapshot the live tunnel handle once. If the tunnel is not
-        // currently connected, we skip the whole fan-out with a warn
-        // (the next event or a tunnel reconnect will not retry —
-        // channel events are push-only and the next fan-out will
-        // pick up new state).
-        let handle = {
-            let guard = ctx.tunnel.read().await;
-            guard.clone()
-        };
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                warn!(
-                    "outbound TunnelChannelEvent fan-out skipped: tunnel not connected \
-                     (channel={}, remote runtimes={})",
-                    channel.as_str(),
-                    unique_runtimes.len()
-                );
-                return Ok(());
+        // Queue one envelope per recipient runtime; each is sent now if
+        // the tunnel is up and resent until its recipient confirms it
+        // (`tunnel::channel_outbox`).
+        let mut failures: Vec<String> = Vec::new();
+        for recipient_runtime_id in unique_runtimes {
+            let item = OutboxItem::Event {
+                channel: channel.clone(),
+                event: ev.clone(),
+                source: source.to_string(),
+            };
+            if let Err(e) = self.send_queued(&ctx, &recipient_runtime_id, item).await {
+                failures.push(e);
             }
-        };
+        }
 
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+
+    /// Build and sign one `TunnelChannelEvent` for `recipient_runtime_id`
+    /// under `request_id` (fresh `iat`/`exp` on every call, so a resend
+    /// is never stale).
+    async fn event_envelope(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        request_id: &str,
+        recipient_runtime_id: &str,
+        channel: &ChannelId,
+        ev: &ChannelEvent,
+        source: &Subject,
+    ) -> std::result::Result<crate::tunnel::TunnelMessage, String> {
         // Serialize the event ONCE so the bytes signed are the bytes
         // the receiver will re-serialize and verify (serde_json
         // emits struct fields in declaration order, so the round-trip
@@ -285,66 +538,52 @@ impl TunnelChannelPort {
             None => subject_wire_form(source),
         };
 
-        let mut failures: Vec<String> = Vec::new();
-        for recipient_runtime_id in unique_runtimes {
-            // Fresh request_id per recipient — the hub can scope
-            // replay protection per request id and the audit rows
-            // join on it (`forwarded_outbound` on the source side
-            // ↔ `received_inbound` on each recipient).
-            let request_id = Uuid::new_v4().to_string();
-            let signed = crate::tunnel::ChannelSignedFields {
-                request_id: &request_id,
-                source_runtime_id: &ctx.caller_runtime_id,
-                recipient_runtime_id: &recipient_runtime_id,
-                source_principal_did: &source_wire_id,
-                channel_id: channel.as_str(),
-                event_bytes: &event_bytes,
-            };
-            // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
-            let iat = chrono::Utc::now().timestamp();
-            let (signature, author_signature) = crate::tunnel::sign_channel_event(
-                &ctx.signing_key,
-                author.as_ref().map(|(_, k)| k.as_ref()),
-                signed,
-                iat,
-                iat + 300,
-            );
+        let request_id = request_id.to_string();
+        let recipient_runtime_id = recipient_runtime_id.to_string();
+        let signed = crate::tunnel::ChannelSignedFields {
+            request_id: &request_id,
+            source_runtime_id: &ctx.caller_runtime_id,
+            recipient_runtime_id: &recipient_runtime_id,
+            source_principal_did: &source_wire_id,
+            channel_id: channel.as_str(),
+            event_bytes: &event_bytes,
+        };
+        // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
+        let iat = chrono::Utc::now().timestamp();
+        let (signature, author_signature) = crate::tunnel::sign_channel_event(
+            &ctx.signing_key,
+            author.as_ref().map(|(_, k)| k.as_ref()),
+            signed,
+            iat,
+            iat + 300,
+        );
 
-            // Audit on the source runtime side. The receiver's
-            // `received_inbound` audit row is emitted by the
-            // dispatcher's inbound handler.
-            let event_kind = ev.kind();
-            let preview_json = String::from_utf8_lossy(&event_bytes).into_owned();
-            crate::tunnel::emit_forwarded_outbound(
-                &request_id,
-                &ctx.caller_runtime_id,
-                &source_wire_id,
-                channel.as_str(),
-                event_kind,
-                &crate::tunnel::tunnel_channel_audit::preview_event_payload(&preview_json),
-            );
+        // Audit on the source runtime side. The receiver's
+        // `received_inbound` audit row is emitted by the
+        // dispatcher's inbound handler.
+        let event_kind = ev.kind();
+        let preview_json = String::from_utf8_lossy(&event_bytes).into_owned();
+        crate::tunnel::emit_forwarded_outbound(
+            &request_id,
+            &ctx.caller_runtime_id,
+            &source_wire_id,
+            channel.as_str(),
+            event_kind,
+            &crate::tunnel::tunnel_channel_audit::preview_event_payload(&preview_json),
+        );
 
-            let envelope = crate::tunnel::TunnelMessage::TunnelChannelEvent {
-                request_id,
-                source_runtime_id: ctx.caller_runtime_id.clone(),
-                recipient_runtime_id: recipient_runtime_id.clone(),
-                source_principal_did: source_wire_id.clone(),
-                channel_id: channel.as_str().to_string(),
-                event: ev.clone(),
-                signature,
-                author_signature,
-            };
+        let envelope = crate::tunnel::TunnelMessage::TunnelChannelEvent {
+            request_id,
+            source_runtime_id: ctx.caller_runtime_id.clone(),
+            recipient_runtime_id: recipient_runtime_id.clone(),
+            source_principal_did: source_wire_id.clone(),
+            channel_id: channel.as_str().to_string(),
+            event: ev.clone(),
+            signature,
+            author_signature,
+        };
 
-            if let Err(e) = handle.send(envelope) {
-                failures.push(format!("send to {recipient_runtime_id} failed: {e}"));
-            }
-        }
-
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(failures.join("; "))
-        }
+        Ok(envelope)
     }
 
     /// Add a remote-member row to the channel's `members.json` and
@@ -488,23 +727,38 @@ impl TunnelChannelPort {
                 )
             })?;
 
-        // Snapshot the live tunnel handle once.
-        let handle = {
-            let guard = ctx.tunnel.read().await;
-            guard.clone()
-        };
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                warn!(
-                    "outbound TunnelChannelInvite fan-out skipped: tunnel not connected \
-                     (channel={}, invitee_runtime_id={invitee_runtime_id})",
-                    channel.as_str(),
-                );
-                return Ok(());
-            }
-        };
+        // Queue the invite; it is sent now if the tunnel is up and resent
+        // until the invitee's runtime confirms it.
+        self.send_queued(
+            &ctx,
+            &invitee_runtime_id,
+            OutboxItem::Invite {
+                channel: channel.clone(),
+                inviter: inviter.clone(),
+                creator_did: creator_did.to_string(),
+                invitee: invitee.clone(),
+            },
+        )
+        .await
+    }
 
+    /// Build and sign the `TunnelChannelInvite` for `invitee` under
+    /// `request_id`, from the channel's current meta and membership.
+    async fn invite_envelope(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        request_id: &str,
+        channel: &ChannelId,
+        inviter: &PrincipalId,
+        creator_did: &str,
+        invitee: &PrincipalId,
+    ) -> std::result::Result<crate::tunnel::TunnelMessage, String> {
+        let at = invitee
+            .0
+            .rfind('@')
+            .ok_or_else(|| format!("invitee {} names no runtime", invitee.0))?;
+        let invitee_runtime_id = invitee.0[at + 1..].to_string();
+        let invitee_bare = invitee.0[..at].to_string();
         // Read meta.json for creator + name + the DM marker. We read
         // it directly via the store's `channel_dir` so a missing
         // meta surfaces as an error rather than silently using
@@ -600,7 +854,7 @@ impl TunnelChannelPort {
         let initial_members_bytes = serde_json::to_vec(&initial_members)
             .map_err(|e| format!("serialize initial_members for invite envelope: {e}"))?;
 
-        let request_id = Uuid::new_v4().to_string();
+        let request_id = request_id.to_string();
         // ADR-058 D2: when the creator's DID is vault-backed (the DM
         // provisioning path passes the inviter's real `did:key`), the
         // envelope's `source_principal_did` carries that DID and the
@@ -676,11 +930,7 @@ impl TunnelChannelPort {
             author_signature,
         };
 
-        handle
-            .send(envelope)
-            .map_err(|e| format!("send TunnelChannelInvite to {invitee_runtime_id} failed: {e}"))?;
-
-        Ok(())
+        Ok(envelope)
     }
 
     /// Bootstrap a local mirror for a cross-runtime channel the
@@ -1011,6 +1261,8 @@ mod tests {
             text: "hello from B".into(),
             at: "2026-08-06T00:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let line = port
             .append_remote_event(&channel, &remote_event)
@@ -1097,6 +1349,8 @@ mod tests {
             text: "should not land".into(),
             at: "2026-08-06T00:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let result = port.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -1144,6 +1398,8 @@ mod tests {
             text: "live from B".into(),
             at: "2026-08-06T00:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         port.append_remote_event(&channel, &remote_event)
             .await
@@ -1598,6 +1854,146 @@ mod tests {
             .await
             .expect("post must succeed even without tunnel");
         assert_eq!(line, "1");
+    }
+
+    /// The request id of a `TunnelChannelEvent`, plus its signature.
+    fn event_ids(message: &crate::tunnel::TunnelMessage) -> (String, String) {
+        match message {
+            crate::tunnel::TunnelMessage::TunnelChannelEvent {
+                request_id,
+                signature,
+                ..
+            } => (request_id.clone(), signature.clone()),
+            other => panic!("expected a channel event, got {other:?}"),
+        }
+    }
+
+    /// A post made while the tunnel is down is kept, sent when the tunnel
+    /// comes back under the same request id (signed afresh), resent on
+    /// the next reconnect until confirmed, and forgotten once the
+    /// recipient runtime confirms it. Another runtime cannot confirm it.
+    #[tokio::test]
+    async fn queued_posts_are_resent_until_their_recipient_confirms() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store);
+        let (ctx, mut rx) = build_test_ctx("did:key:zRuntimeA").await;
+        let live = ctx.tunnel.write().await.take();
+        port.set_ctx(Arc::clone(&ctx)).await;
+
+        let channel = port
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("team"),
+            )
+            .await
+            .unwrap();
+        port.add_remote_member(&channel, "did:key:zRuntimeB", "prin_bob")
+            .await
+            .unwrap();
+        port.post(
+            &channel,
+            &Subject::from(&PrincipalId("prin_alice".into())),
+            PostMsg::root("while offline").with_msg_id("msg_offline"),
+        )
+        .await
+        .expect("a post never fails on a missing tunnel");
+        assert!(rx.try_recv().is_err(), "nothing sent without a tunnel");
+        assert!(
+            !port
+                .wait_delivered("msg_offline", std::time::Duration::from_millis(10))
+                .await
+        );
+
+        // The tunnel comes back: the queued post goes out.
+        *ctx.tunnel.write().await = live;
+        port.on_tunnel_ready().await;
+        let (request_id, first_signature) = event_ids(&rx.try_recv().unwrap());
+
+        // Unconfirmed, it is sent again on the next reconnect — same
+        // request id, fresh signature.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        port.on_tunnel_ready().await;
+        let (again, second_signature) = event_ids(&rx.try_recv().unwrap());
+        assert_eq!(again, request_id);
+        assert_ne!(second_signature, first_signature, "re-signed for freshness");
+
+        port.confirm_delivery("did:key:zRuntimeC", std::slice::from_ref(&request_id))
+            .await;
+        assert!(
+            !port
+                .wait_delivered("msg_offline", std::time::Duration::from_millis(10))
+                .await,
+            "only the recipient can confirm"
+        );
+        port.confirm_delivery("did:key:zRuntimeB", std::slice::from_ref(&request_id))
+            .await;
+        assert!(
+            port.wait_delivered("msg_offline", std::time::Duration::from_millis(10))
+                .await
+        );
+        port.on_tunnel_ready().await;
+        assert!(rx.try_recv().is_err(), "a confirmed post is not resent");
+
+        // The queue is on disk: a fresh port after a restart has nothing.
+        let restarted = TunnelChannelPort::new(Arc::clone(port.local()));
+        assert!(
+            restarted
+                .wait_delivered("msg_offline", std::time::Duration::from_millis(10))
+                .await
+        );
+    }
+
+    /// Envelopes queued before a restart go out when the restarted
+    /// runtime gets its tunnel.
+    #[tokio::test]
+    async fn queued_posts_survive_a_restart() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(Arc::clone(&store));
+        let (ctx, _rx) = build_test_ctx("did:key:zRuntimeA").await;
+        ctx.tunnel.write().await.take();
+        port.set_ctx(ctx).await;
+        let channel = port
+            .create(
+                &PrincipalId("prin_alice".into()),
+                CreateOpts::runtime("team"),
+            )
+            .await
+            .unwrap();
+        port.add_remote_member(&channel, "did:key:zRuntimeB", "prin_bob")
+            .await
+            .unwrap();
+        port.post(
+            &channel,
+            &Subject::from(&PrincipalId("prin_alice".into())),
+            PostMsg::root("before the restart"),
+        )
+        .await
+        .unwrap();
+
+        let restarted = TunnelChannelPort::new(store);
+        let (ctx, mut rx) = build_test_ctx("did:key:zRuntimeA").await;
+        restarted.set_ctx(ctx).await;
+        let message = rx.try_recv().expect("sent once the tunnel is back");
+        let crate::tunnel::TunnelMessage::TunnelChannelEvent {
+            recipient_runtime_id,
+            event,
+            ..
+        } = message
+        else {
+            panic!("expected a channel event");
+        };
+        assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
+        assert!(
+            matches!(event, ChannelEvent::Posted { ref text, .. } if text == "before the restart")
+        );
     }
 
     // -----------------------------------------------------------------

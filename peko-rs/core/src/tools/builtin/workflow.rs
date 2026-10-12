@@ -45,9 +45,9 @@
 //! - **Output discipline**: stdout/stderr are captured with a bounded
 //!   TAIL ([`OUTPUT_CAP_BYTES`] each) + a truncation marker — nothing
 //!   unbounded reaches the caller's context.
-//! - **Timeout/abort**: default 300s, hard cap 3600s; on timeout or
-//!   `ToolContext` abort the child is killed (plain `kill`, no process
-//!   group, for the spike).
+//! - **Timeout/abort**: no time limit unless `timeout_ms` is set; on
+//!   timeout, abort, or a dropped call the script's process tree is
+//!   killed.
 //!
 //! ## `workflows/` prompt catalog
 //!
@@ -84,10 +84,6 @@ pub const WORKFLOW_TOOL_NAME: &str = "Workflow";
 /// is the deepest legal chain.
 pub const MAX_WORKFLOW_DEPTH: u32 = 2;
 
-/// Default run timeout when `timeout_ms` is absent (5 minutes).
-const DEFAULT_TIMEOUT_MS: u64 = 300_000;
-/// Hard ceiling on `timeout_ms` (1 hour).
-const MAX_TIMEOUT_MS: u64 = 3_600_000;
 /// Per-stream capture cap; the TAIL is kept when a stream overflows.
 const OUTPUT_CAP_BYTES: usize = 16 * 1024;
 /// Marker prepended to a truncated stream (the kept portion is the
@@ -95,6 +91,10 @@ const OUTPUT_CAP_BYTES: usize = 16 * 1024;
 const TRUNCATION_MARKER: &str = "[… truncated by peko: showing the last 16 KiB …]\n";
 /// Extra lifetime minted onto a run token past the run timeout.
 const RUN_TOKEN_TTL_MARGIN: Duration = Duration::from_mins(1);
+/// Lease on the run token of a run without a timeout. The runner revokes
+/// the token when the run ends; the lease only bounds a token whose
+/// revoke never ran (the daemon died mid-run invalidates it anyway).
+const UNCAPPED_RUN_TOKEN_TTL: Duration = Duration::from_hours(24 * 30);
 
 /// `Workflow` runner tool.
 ///
@@ -161,7 +161,9 @@ impl Tool for WorkflowTool {
         "Run an agent-authored Python workflow from this principal's \
          `workflows/` directory as a subprocess. `path` is relative to \
          `workflows/` (e.g. \"triage.py\"); `args` are passed to the script; \
-         `timeout_ms` defaults to 300000 (capped at 3600000). The workflow \
+         `timeout_ms` optionally limits the run (no limit by default). A run \
+         still going after 10 minutes returns a receipt and continues in the \
+         background; its result is delivered to your session. The workflow \
          process runs with PEKO_* identity env injected and can call back \
          into the runtime (ModelCall, Glob, …) via the peko_workflow SDK; \
          every callback is attributed to this principal. Returns exit \
@@ -187,7 +189,7 @@ impl Tool for WorkflowTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Run timeout in milliseconds (default 300000, max 3600000). On timeout the process is killed."
+                    "description": "Optional run timeout in milliseconds; omit (or 0) for no limit. On timeout the script and every process it started are killed."
                 }
             },
             "required": ["path"],
@@ -240,8 +242,7 @@ impl Tool for WorkflowTool {
         let timeout_ms = params
             .get("timeout_ms")
             .and_then(Value::as_u64)
-            .filter(|&t| t > 0)
-            .map_or(DEFAULT_TIMEOUT_MS, |t| t.min(MAX_TIMEOUT_MS));
+            .filter(|&t| t > 0);
 
         // ── 2. Recursion guard (D8) — server-derived depth first ─────
         // `_workflow_depth` arrives via the ExecuteTool handler (stamped
@@ -297,8 +298,16 @@ impl Tool for WorkflowTool {
             &session_key,
             caller_depth + 1,
             caller_session_id,
-            Duration::from_millis(timeout_ms) + RUN_TOKEN_TTL_MARGIN,
+            timeout_ms.map_or(UNCAPPED_RUN_TOKEN_TTL, |ms| {
+                Duration::from_millis(ms) + RUN_TOKEN_TTL_MARGIN
+            }),
         );
+        // The token dies with the run it was minted for, however the
+        // call ends (exit, timeout, abort, spawn error, or a drop).
+        let _revoke = RevokeOnDrop {
+            registry: &self.run_tokens,
+            token: &run_token,
+        };
         let env = build_workflow_env(
             &workspace,
             &principal,
@@ -354,7 +363,12 @@ impl Tool for WorkflowTool {
                         }
                     }
                 }
-                () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => Outcome::TimedOut,
+                () = async {
+                    match timeout_ms {
+                        Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
+                        None => std::future::pending().await,
+                    }
+                } => Outcome::TimedOut,
                 _ = abort_rx.changed() => Outcome::Aborted,
             }
         };
@@ -373,10 +387,7 @@ impl Tool for WorkflowTool {
         let duration_ms = started.elapsed().as_millis() as u64;
 
         match outcome {
-            Outcome::Aborted => {
-                // The token dies with the run it was minted for.
-                Err(ToolError::Aborted.into())
-            }
+            Outcome::Aborted => Err(ToolError::Aborted.into()),
             Outcome::TimedOut => Ok(json!({
                 "workflow": path,
                 "success": false,
@@ -400,6 +411,18 @@ impl Tool for WorkflowTool {
                 "stderr_truncated": stderr_truncated,
             })),
         }
+    }
+}
+
+/// Revokes a run token when the run that holds it ends.
+struct RevokeOnDrop<'a> {
+    registry: &'a RunTokenRegistry,
+    token: &'a str,
+}
+
+impl Drop for RevokeOnDrop<'_> {
+    fn drop(&mut self) {
+        self.registry.revoke(self.token);
     }
 }
 
@@ -1339,10 +1362,10 @@ print("argv:" + ",".join(sys.argv[1:]))
     /// A runaway script is killed at the timeout together with any
     /// process it started; partial output and `timed_out` come back as
     /// data.
-    /// `timeout_ms: 0` selects the default timeout, not an instant one.
+    /// `timeout_ms: 0` means no limit, not an instant timeout.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn zero_timeout_uses_the_default() {
+    async fn zero_timeout_means_no_limit() {
         if !python3_available() {
             eprintln!("skipping: python3 not on PATH");
             return;
@@ -1466,8 +1489,13 @@ print("argv:" + ",".join(sys.argv[1:]))
         assert_eq!(out["success"], true, "got: {out}");
         let stdout = out["stdout"].as_str().unwrap();
         let token = stdout.lines().next().expect("token line");
-        // The minted token records the calling node…
-        let entry = fx.run_tokens.verify(token).expect("token verifies");
+        // The run's token is revoked once it ends…
+        assert!(
+            fx.run_tokens.verify(token).is_none(),
+            "revoked after the run"
+        );
+        // …and it recorded the calling node…
+        let entry = fx.run_tokens.minted_entry(token).expect("token was minted");
         assert_eq!(entry.caller_session_id.as_deref(), Some(node));
         assert_eq!(entry.principal_name, "runner");
         // …and the session key wraps the node id into the workflow
@@ -1498,7 +1526,10 @@ print("argv:" + ",".join(sys.argv[1:]))
             .expect("run");
         assert_eq!(out["success"], true, "got: {out}");
         let token = out["stdout"].as_str().unwrap().trim().to_string();
-        let entry = fx.run_tokens.verify(&token).expect("token verifies");
+        let entry = fx
+            .run_tokens
+            .minted_entry(&token)
+            .expect("token was minted");
         assert_eq!(entry.caller_session_id, None);
         assert_eq!(
             entry.workflow_depth, 1,

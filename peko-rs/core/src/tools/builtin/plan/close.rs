@@ -36,10 +36,8 @@ Parameters:
 - reason: string (required) — short human-readable note explaining
   why the plan is being closed.
 
-Returns { planId, closedAt, reason } on success. Second close on
-the same plan returns Err(PlanError::AlreadyClosed) — the storage
-layer treats close as idempotent for state but non-idempotent for
-return value so callers can detect duplicate-close races."
+Returns { planId, closedAt, reason }. Closing an already-closed plan
+is an error."
             .to_string()
     }
 

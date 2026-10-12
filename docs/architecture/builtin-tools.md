@@ -12,6 +12,16 @@ no tool allowlist or capability filter. Principal bindings select workspace and
 service dependencies; ownership, peer permissions, and channel membership
 control access to resources.
 
+The wire catalog states each field's schema once: in a multi-action tool's
+`oneOf` variants, a field whose constraints match the top-level field is sent as
+`{}` (`ToolMetadata::to_tool_definition`), so the model sees the same accepted
+calls in far fewer tokens. The dispatcher validates against the full schema and
+explains a failure for the action the caller chose — a missing field, a field the
+action does not take (with the ones it does), an either/or group, or an unknown
+action. A call that cannot do what was asked (unknown id, missing channel,
+unknown skill, refused run) is a tool error, never a success carrying an
+`error` field.
+
 ## Naming
 
 Built-in wire names are exact PascalCase names: `Session`, `ModelList`,
@@ -47,8 +57,17 @@ completion events go to that session's inbox. Bash `run_in_background` takes
 the same path as `Async action=spawn tool=Bash`: the dispatcher hands every call
 from a principal a background spawner backed by that principal's Async runtime,
 so both register one task in the principal's executor. A background task's body
-runs inline under the task's own timeout and cancellation — it is not subject to
-the foreground tool timeout — and streams live output to `Async output`.
+runs inline under its own optional timeout and cancellation — it is not subject
+to the foreground wait — and streams live output to `Async output`.
+
+A foreground call waits at most 10 minutes. A call still running then detaches:
+the agent receives a receipt (`_async_status: "queued"`, `task_id`,
+`detached_after_secs`, and a `note` on how to follow up), the work keeps running
+with no time limit, and its completion is delivered to the calling session — it
+starts a turn when the session is idle and reaches a running loop at its next
+iteration. Background work has no time limit by default: Async spawn, background
+Bash, cron tool jobs, Workflow, and Agent runs are bounded only by a limit the
+caller sets explicitly.
 Each principal has one task registry, shared by every executor doing its
 work — Async spawn, background Bash, foreground calls detached on timeout,
 subagent runs, and cron tool jobs — so the Async surface reads only the
@@ -129,10 +148,11 @@ Find files and optionally directories by glob pattern.
 | `pattern` | string | yes | — |
 | `path` | string | no | — |
 | `include_hidden` | boolean | no | default false |
+| `include_ignored` | boolean | no | default false |
 | `include_dirs` | boolean | no | default false |
 | `limit` | integer | no | default 1000, ≥ 1, ≤ 10000 |
 
-path defaults to the calling workspace. An explicit path overrides workspace injection.
+path defaults to the calling workspace. An explicit path overrides workspace injection. A pattern with `**` searches from the directory before its first `**` and matches the remainder against each path below it (`**/tests/*.py`); without `**`, the last segment matches names in one directory. Results are in path order with paths relative to the base directory. Like ripgrep, hidden names and files excluded by `.gitignore` / `.ignore` (and git's exclude/global lists) are skipped — in or out of a git repository — unless include_hidden / include_ignored.
 
 ### Grep
 
@@ -152,9 +172,10 @@ Regex search with context, filename-only, or count output.
 | `context` | integer | no | ≥ 0, ≤ 10 |
 | `case_insensitive` | boolean | no | default false |
 | `include_hidden` | boolean | no | default false |
+| `include_ignored` | boolean | no | default false |
 | `output_mode` | content \| files_with_matches \| count | no | default "content" |
 
-context overrides context_before/context_after. Content/context controls apply only to content mode. Output is a plain-text string with accompanying JSON metadata.
+context overrides context_before/context_after. Content/context controls apply only to content mode. Output is a plain-text string with accompanying JSON metadata; paths inside the workspace are relative to it. Files are walked in path order; hidden names and files excluded by `.gitignore` / `.ignore` are skipped unless include_hidden / include_ignored.
 
 ### Bash
 
@@ -190,9 +211,9 @@ Run work in a new, resumed, compacted, or branched session.
 | `model` | string | no | — |
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
-| `page_limit` | integer | no | ≥ 1, ≤ 10000 |
+| `page_limit` | integer | no | ≥ 0, ≤ 10000 |
 
-All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 1–10000, omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 ### RoleCatalog
 
@@ -204,7 +225,7 @@ Discover role templates available in the principal.
 |---|---|---|---|
 | — | — | — | No parameters |
 
-Returns {total, agents}. Entries expose id, name, description, and enabled; use an enabled entry’s id as Agent.role.
+Returns {total, roles}. Each role exposes id, name, and description; use its id as Agent.role.
 
 ### Skill
 
@@ -271,7 +292,7 @@ subject to runtime ownership guards. Page retention prunes old pages permanently
 
 ### ChannelSend
 
-Post to a channel/group, ask a peer principal and await a reply, or send the originating user a note.
+Post to a channel/group, message a peer principal, or send a user a note. Every send returns at once.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_send.rs)
 
@@ -282,11 +303,13 @@ Post to a channel/group, ask a peer principal and await a reply, or send the ori
 | `parent` | string | no | — |
 | `label` | string | no | — |
 
-channel selects dispatch: chan_<id> = post; principal:<did> = request/reply; user:<id> = note; group:<slug> = post. parent applies to bare/group posts; label applies to user notes and defaults to the agent name. User notes are limited to the originating user. Posts carry session attribution.
+channel selects dispatch: chan_<id> = post; principal:<did> = DM post; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. Posts carry session attribution.
+
+Posting never starts a run in another principal (ADR-072): only humans (a user's DM) and cron start runs, and a group channel wakes a principal only for a user's root post mentioning `@<principal name>`. A principal:<did> message is posted on the pair's DM channel (on the same runtime, recorded on the caller's channel and delivered on the target's under one message id); the target sees it the next time it reads — in its session context's unread summary or with ChannelRead. An answer is a later post on the caller's `dm_channel`, read with ChannelRead or waited for with `watch: true`. The result reports `id`, `dm_channel`, and `delivery`: `delivered`, or `queued` when another runtime has not confirmed the message within a few seconds — it is kept in the runtime outbox and resent until it is.
 
 ### ChannelRead
 
-Read or search channel events with backward/forward pagination.
+Read or search channel events with backward/forward pagination, or wait for the next post.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_read.rs)
 
@@ -298,8 +321,12 @@ Read or search channel events with backward/forward pagination.
 | `author` | string | no | — |
 | `before` | string | no | — |
 | `since` | string | no | — |
+| `watch` | boolean | no | false |
+| `reply_to` | string | no | — |
 
 Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
+
+`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel, a user's root `@<name>` mention in a group) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses.
 
 ## Inference and workflows
 
@@ -346,7 +373,7 @@ Run a saved Python workflow from the principal’s workflows directory.
 | `args` | string[] | no | — |
 | `timeout_ms` | integer | no | — |
 
-path must resolve to a .py file inside workflows/. timeout_ms defaults to 300000 and caps at 3600000; zero/nonpositive values fall back to the default. The process receives runtime identity and can call tools through the workflow SDK. Nesting depth is injected internally from the run token and is absent from the public schema.
+path must resolve to a .py file inside workflows/. timeout_ms is optional; omitted or zero means no limit. The run token is revoked when the run ends. The process receives runtime identity and can call tools through the workflow SDK. Nesting depth is injected internally from the run token and is absent from the public schema.
 
 ## Session todos
 
@@ -521,7 +548,7 @@ Start a tool in the background and return an async receipt.
 | `wake_on_completion` | boolean | no | — |
 | `timeout_secs` | integer \| null | no | ≥ 1 |
 
-params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs defaults to the executor’s 7200-second policy; null/omit selects that default.
+params is forwarded verbatim. wake_on_completion defaults true; completion enters the spawning session’s inbox and may start an idle-session follow-up. timeout_secs is an optional lifetime limit; null/omit means no limit.
 
 #### output
 
@@ -533,10 +560,10 @@ Fetch output, optionally waiting for completion.
 |---|---|---|---|
 | `task_id` | string | yes | — |
 | `block` | boolean | no | default false |
-| `timeout` | integer | no | ≥ 0 |
+| `timeout_ms` | integer | no | ≥ 0 |
 | `tail_lines` | integer | no | default 0, ≥ 0 |
 
-block defaults false. With block=true, timeout defaults to 300000 milliseconds. tail_lines=0 returns full output; positive values select the last N lines.
+block defaults false. With block=true, timeout_ms (the wait, not a limit on the task) defaults to 300000. tail_lines=0 returns full output; positive values select the last N lines.
 
 #### status
 
@@ -599,11 +626,11 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | `timezone` | string | no | — |
 | `idle_ms` | integer | no | — |
 
-Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs uses the executor’s 7200-second policy. delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults UTC. idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults to the machine's IANA zone (recorded on the job; UTC if it cannot be determined). idle_ms rounds down to whole minutes, with a one-minute minimum. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
 
 #### list
 
-List the calling principal’s scheduled jobs.
+List the calling principal’s scheduled jobs. Each entry reports its schedule in create's fields (`at`, `interval_ms`, `cron` + `timezone`, or `idle_ms`) and its `message` or `tool` + `params`.
 
 [Implementation](../../peko-rs/cron/src/tools/list.rs)
 

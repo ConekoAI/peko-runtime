@@ -4,6 +4,78 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Tool function review (2026-10-11)
+
+- Fix every foreground tool call being capped at five minutes: the
+  dispatcher returned a "still running" receipt after 300 s, but the
+  detached task carried the same 300 s hard timeout and died almost at
+  once, and Agent runs were cancelled at 300 s. A foreground call now
+  waits up to 10 minutes, then keeps running with no time limit; the
+  receipt explains how to poll, and the completion is delivered to the
+  calling session (waking it when idle). Background work — Async spawn,
+  background Bash, cron tool jobs, Workflow, Agent runs — has no default
+  limit. Workflow run tokens are revoked when the run ends.
+- Argument errors name the problem for the action the agent chose
+  (missing field, a field the action does not take plus the ones it does,
+  an either/or group, a forbidden combination, an unknown action) instead
+  of "not valid under any of the schemas listed in the 'oneOf' keyword".
+- Calls that could not do what was asked — unknown todo/plan/node id,
+  unknown skill, missing channel or non-member, a failed ChannelSend,
+  Agent refusals — are tool errors, not successes carrying an `error`.
+- The wire catalog states each field's schema once (multi-action variants
+  keep only their discriminator and constraints): ~95.6K -> ~56K
+  characters. Descriptions were corrected where they disagreed with the
+  code (Session copy + Agent resume, Agent's resume example, Grep's regex
+  limits and `include` semantics, Bash exit codes) and stripped of
+  internal type names.
+- Consistent names: ChannelSend returns the message `id` (not `task_id`);
+  receipts use `tool_name`; Async output's wait is `timeout_ms`;
+  RoleCatalog returns `roles`; Agent `page_limit: 0` clears the cap.
+- Glob and Grep skip files excluded by `.gitignore` / `.ignore` (in or out
+  of a git repo; `include_ignored` to include) and walk in path order.
+  Glob now matches `**` patterns against paths (`**/tests/*.py` used to
+  match nothing) and returns paths relative to the base directory, ready
+  for Read; Grep reports workspace-relative paths.
+- Skill returns its directory so files the body mentions can be opened.
+  Cron expressions without a timezone use the machine's zone (recorded on
+  the job), and Cron list shows each job's schedule and message.
+- Unit tests no longer write task files into the user's data directory.
+- Only humans and cron start runs (ADR-072). A post from another
+  principal no longer starts a turn: principals answering each other
+  automatically could loop without end. A user's DM still starts a turn
+  through ingress; a group channel starts one only for a user's root post
+  mentioning `@<principal name>`, run through the same driver as
+  `peko send` (`PeerChildTurns::drive_turn_streaming`: no time limit —
+  they were killed at 300 s — the session's context, and a stop handle so
+  `peko stop` reaches it). The DM channel responder and its
+  always-answer replies are removed.
+- `ChannelSend` posts and returns for every kind of address; it never
+  waits for an answer (the principal branch blocked for up to a minute
+  behind a per-target lock, and a slow reply was lost). An answer is a
+  later post, read with `ChannelRead`. New `ChannelRead` `watch: true`
+  waits — with no time limit, moving to the background past 10 minutes —
+  for the next post by someone else (optionally by `author`, matching
+  `query`, or threaded onto `reply_to`), skipping posts that start turns
+  on their own. Posts carry a stable `msg_id` / `reply_to` across
+  runtime mirrors. The description no longer claims only the originating
+  user can be messaged.
+- The session context lists unread channel posts: on the session's own
+  channel, and — for the trunk and the peer conversations — on the
+  principal's other channels (another principal's answer, a group post no
+  one was woken for). A channel opened after the session started is unread
+  from its first post, so a new peer's opening message is not lost.
+- Cross-runtime channel delivery is durable (ADR-072). Messages to
+  another runtime were dropped when either side was offline: the sender
+  skipped the send without a tunnel, and the hub drops envelopes for a
+  disconnected runtime. Outbound events and invites now wait in a
+  runtime outbox (`channel_delivery/outbox/`) until the recipient
+  confirms them, resent on a backoff, on reconnect and after a restart,
+  re-signed each time. Recipients apply each envelope once and confirm
+  every arrival with a `received` receipt carried by the same relay, so
+  the hub needs no change. `ChannelSend` reports `delivered` or `queued`.
+  The dispatcher's in-memory replay cache, which would have silenced a
+  resend after a lost receipt, is removed.
+
 ### SessionCache removed (2026-10-11)
 
 - Delete `SessionCache`, an 803-line in-memory `SessionRuntime` that only

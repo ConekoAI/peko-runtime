@@ -10,7 +10,9 @@
 //! the caller principal's background spawner — the same path as
 //! `Async action=spawn tool=Bash` — and the task body then streams its output
 //! into the task's live buffer. Poll with the Async family (output, status,
-//! stop, list); blocking calls are bounded only by `timeout`.
+//! stop, list). A blocking call stops at `timeout` (none by default); one
+//! still running after the framework's 10-minute wait detaches to the
+//! background and keeps running.
 
 use crate::tools::builtin::process::spawn_in_own_group;
 use anyhow::{Context, Result};
@@ -204,7 +206,7 @@ impl BashTool {
         Ok(json!({
             "task_id": task_id,
             "status": "running",
-            "tool": "Bash",
+            "tool_name": "Bash",
         }))
     }
 
@@ -462,87 +464,26 @@ impl Tool for BashTool {
         };
 
         format!(
-            r#"## Purpose
-Execute system shell commands. Full shell access including pipes, redirection, and environment variables.
+            r#"Run a shell command on {OS_DISPLAY} ({SHELL_DISPLAY}) with full shell syntax: pipes, redirection, environment variables. Commands run as the OS user, in the agent workspace unless `cwd` says otherwise, and can read or write anything that user can.
 
-## Platform Information
-- **OS**: {OS_DISPLAY}
-- **Shell**: {SHELL_DISPLAY}
+## Result
+`{{exit_code, success, stdout, stderr, stdout_truncated, stderr_truncated}}`. A non-zero exit is reported as `success: false` with its `exit_code`; the call itself still succeeds. Each stream is capped at `max_output_bytes` (default 100000) and a cut stream ends with `...(truncated)`. For large output, run in the background and read the end with `Async` action `output` + `tail_lines`: a background command keeps the last 100000 bytes of each stream (a dropped start is marked with a leading `(truncated)...`).
 
-## Security Note
-This tool has FULL SYSTEM ACCESS when enabled. It can:
-- Execute any shell command
-- Access all environment variables
-- Read/write any file the OS user can access
-- Run commands in any directory
+## Time limits
+`timeout` (milliseconds) kills the command and everything it started; there is none by default. A blocking call still running after 10 minutes returns a receipt with a `task_id` and keeps running in the background; its result is delivered to your session when it finishes.
 
-## API
-```json
-{{
-    "command": "your command here",
-    "description": "what the command does",
-    "cwd": "./subdir",
-    "run_in_background": false,
-    "timeout": 60000,
-    "max_output_bytes": 100000
-}}
-```
-
-## Output truncation
-
-Stdout and stderr are each capped at `max_output_bytes` (default 100000).
-When a stream is truncated, it ends with `...(truncated)` and the response
-sets `stdout_truncated: true` and/or `stderr_truncated: true`. If you
-expect large output, prefer `run_in_background: true` and read it with
-`Async action output` + `tail_lines` instead of raising the cap: a
-background command keeps the LAST 100000 bytes of each stream (a dropped
-start is marked with a leading `(truncated)...`).
+## Background
+`run_in_background: true` returns a receipt with a `task_id` at once (`timeout` still applies). Follow up with `Async`: action `output` (`block: true` waits for the end), `status`, `stop`, or `list`.
 
 ## Examples
-
-Simple command:
 ```json
 {simple_cmd}
-```
-
-With pipes:
-```json
 {pipe_cmd}
-```
-
-With redirection:
-```json
 {redirect_cmd}
-```
-
-Environment variables:
-```json
 {env_cmd}
-```
-
-Background execution:
-```json
+{{"command": "npm run build", "cwd": "web", "timeout": 600000}}
 {{"command": "sleep 10 && echo done", "run_in_background": true}}
 ```
-
-## Background-task lifecycle
-
-When `run_in_background: true`, this tool returns a
-`{{task_id, status: "running", tool: "Bash"}}` receipt immediately.
-To monitor or cancel the backgrounded command, use Async:
-
-- `Async({{action: "status", task_id}})` — one-shot status (pending / running /
-  completed / failed / cancelled / timed_out)
-- `Async({{action: "output", task_id, block?, timeout?, tail_lines?}})` — read
-  the result; with `block: true` the call waits until the task
-  reaches a terminal state
-- `Async({{action: "stop", task_id}})` — cancel a still-running task; returns
-  `success: true, already_terminal: true` if the task is already done
-- `Async({{action: "list", status_filter?, tool_filter?}})` — enumerate all
-  background tasks owned by the current principal
-
-The blocking form of this tool (default) is bounded only by the
-`timeout` parameter; there is no implicit auto-detach to background.
 "#
         )
     }
@@ -570,12 +511,12 @@ The blocking form of this tool (default) is bounded only by the
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional timeout in milliseconds for blocking execution",
+                    "description": "Optional timeout in milliseconds; the command and everything it started are killed when it passes. No timeout by default.",
                     "minimum": 1
                 },
                 "max_output_bytes": {
                     "type": "integer",
-                    "description": "Optional cap (in bytes) for stdout and stderr returned in the response. Each stream is truncated independently and flagged via stdout_truncated / stderr_truncated. Defaults to 100000. Ignored when run_in_background is true: background output keeps the last 100000 bytes of each stream.",
+                    "description": "Cap in bytes on each of stdout and stderr (default 100000); a cut stream is flagged by stdout_truncated / stderr_truncated. Ignored in the background, where each stream keeps its last 100000 bytes.",
                     "minimum": 1
                 }
             },

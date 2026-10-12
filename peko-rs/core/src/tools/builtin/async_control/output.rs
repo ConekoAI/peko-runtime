@@ -47,7 +47,7 @@ Works for ALL async tasks: Bash, Agent, Read, etc.
 Parameters:
 - task_id: string (required) — the task ID from the async receipt
 - block: boolean (default false) — if true, wait until the task reaches a terminal state
-- timeout: integer? — milliseconds to wait when block=true (default 5 minutes)
+- timeout_ms: integer? — milliseconds to wait when block=true (default 300000, 5 minutes)
 - tail_lines: integer (default 0) — if >0, return only the last N lines
 
 Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds? }"
@@ -67,10 +67,10 @@ Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds
                     "description": "If true, wait until the task reaches a terminal state before returning.",
                     "default": false
                 },
-                "timeout": {
+                "timeout_ms": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Optional timeout in milliseconds when block=true (default 5 minutes)."
+                    "description": "How long block=true waits, in milliseconds (default 300000). The task keeps running if the wait ends first."
                 },
                 "tail_lines": {
                     "type": "integer",
@@ -93,7 +93,7 @@ Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let timeout_ms = params
-            .get("timeout")
+            .get("timeout_ms")
             .and_then(|v| v.as_u64())
             .unwrap_or(5 * 60 * 1000);
         let tail_lines = params

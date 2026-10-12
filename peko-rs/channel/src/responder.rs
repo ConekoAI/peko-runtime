@@ -7,9 +7,8 @@
 //! - `peko-channel::ChannelSubscriber` consumes it via
 //!   `Arc<dyn ChannelResponder>`.
 //!
-//! Only the `Noop` impl ships in this crate. The production passive
-//! responder (`PassiveBindingResponder`, Phase 4 of the agent-session
-//! paradigm sprint) lives in the root crate
+//! Only the `Noop` impl ships in this crate. The production responder
+//! (`GroupWakeResponder`) lives in the root crate
 //! (`peko-rs/core/src/daemon/channel_binding.rs`) because driving a
 //! turn needs the subagent executor — a root-only dependency this leaf
 //! crate must not take.
@@ -82,5 +81,49 @@ pub struct NoopChannelResponder;
 impl ChannelResponder for NoopChannelResponder {
     async fn consider_response(&self, _ctx: RespondCtx) -> Result<()> {
         Ok(())
+    }
+}
+
+/// Whether `text` mentions `@<name>`: case-insensitive and not part of a
+/// longer word (`@ada` is not mentioned by `@adam`; `@ada,` and `@ada.`
+/// are mentions).
+pub fn mentions(text: &str, name: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    let text = text.to_lowercase();
+    let needle = format!("@{name}");
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    text.match_indices(&needle).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + needle.len()..].chars().next();
+        before.is_none_or(|c| !word(c) && c != '@') && after.is_none_or(|c| !word(c))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_match_whole_names_case_insensitively() {
+        for text in [
+            "@self hi",
+            "hi @Self",
+            "ping @SELF, please",
+            "(@self)",
+            "@self.",
+        ] {
+            assert!(mentions(text, "self"), "{text}");
+        }
+        for text in ["self hi", "@selfish", "me@self", "@@self", "@sel"] {
+            assert!(!mentions(text, "self"), "{text}");
+        }
+        assert!(
+            !mentions("@ anything", ""),
+            "an empty name is never mentioned"
+        );
+        assert!(mentions("cc @ada-lab", "ada-lab"));
     }
 }

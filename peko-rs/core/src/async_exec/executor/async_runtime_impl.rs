@@ -105,13 +105,8 @@ impl AsyncExecutorRuntime {
             .unwrap_or_else(|| "unknown".to_string());
 
         let config = AsyncToolConfig {
-            // `None` (model omitted `timeout_secs`) must fall back to the
-            // documented 7200s default — the struct-update syntax below would
-            // otherwise overwrite `AsyncToolConfig::default().timeout_secs`
-            // with `None`, giving the task no timeout at all.
-            timeout_secs: request
-                .timeout_secs
-                .or_else(|| AsyncToolConfig::default().timeout_secs),
+            // Background tasks run uncapped unless the caller set a limit.
+            timeout_secs: request.timeout_secs,
             timeout_millis: request.timeout_millis,
             label: request.label,
             wake_on_completion: request.wake_on_completion,
@@ -324,11 +319,10 @@ mod tests {
         );
     }
 
-    /// P0-3: an `Async action spawn` that omits `timeout_secs` must inherit the
-    /// documented 7200s default — the spawned task must not run
-    /// timeout-free.
+    /// An `Async action spawn` that omits `timeout_secs` runs with no time
+    /// limit; an explicit limit is kept.
     #[tokio::test]
-    async fn spawn_without_timeout_gets_default_7200() {
+    async fn spawn_without_timeout_runs_uncapped() {
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let core = crate::tools::runtime::ToolingRuntime::standalone();
         let runtime = Arc::new(AsyncExecutorRuntime::new(
@@ -354,11 +348,27 @@ mod tests {
             reg.get(&receipt.task_id).cloned()
         }
         .expect("spawned task must be registered");
-        assert_eq!(
-            entry.config.timeout_secs,
-            Some(7200),
-            "omitted timeout_secs must inherit the documented 7200s default"
-        );
+        assert_eq!(entry.config.timeout_secs, None, "no limit unless asked");
+
+        let receipt = runtime
+            .spawn(crate::tools::builtin::async_control::SpawnRequest {
+                tool_name: "whatever".to_string(),
+                params: serde_json::json!({}),
+                label: None,
+                wake_on_completion: false,
+                timeout_secs: Some(30),
+                timeout_millis: None,
+                parent_session_id: Some("session_t".to_string()),
+            })
+            .await
+            .unwrap();
+        let limit = executor
+            .registry()
+            .read()
+            .await
+            .get(&receipt.task_id)
+            .map(|entry| entry.config.timeout_secs);
+        assert_eq!(limit, Some(Some(30)));
     }
 
     /// P1-4 defense in depth: even over one shared registry, a task

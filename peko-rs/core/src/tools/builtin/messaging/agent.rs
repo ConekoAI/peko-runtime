@@ -3,9 +3,10 @@
 //! Spawns subagent sessions for isolated task execution. Results are
 //! announced back to the parent via the event system.
 //!
-//! Note: Async execution and timeout are handled by the framework-level
-//! `AsyncExecutionRouter` using a constant 5-minute timeout. On timeout,
-//! the work is detached to a background task automatically.
+//! Subagent runs have no time limit. A call still running after the
+//! framework's 10-minute foreground wait (`AsyncExecutionRouter`) is
+//! detached: the run continues and its result reaches the caller's
+//! session when it finishes.
 //!
 //! The tool itself is a thin shell over [`SubagentRuntime`]. Disk I/O
 //! (`PathResolver`, `principal::agent_prompt`), session ownership,
@@ -144,9 +145,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         ));
     }
     if let Some(limit) = args.page_limit {
-        if limit == 0 || limit > 10_000 {
+        if limit > 10_000 {
             return Err(anyhow::anyhow!(
-                "'page_limit' must be between 1 and 10000 (omit for unlimited)"
+                "'page_limit' must be between 0 (unlimited) and 10000"
             ));
         }
     }
@@ -274,53 +275,30 @@ pub struct AgentTool {
 
 impl AgentTool {
     pub(crate) fn tool_description() -> String {
-        r#"Run LLM work on sessions: spawn a sub-agent run (action "new", the default), re-attach a run to a previous spawned session (action "resume"), compact a session now and continue it with a prompt (action "compact"), or copy a session's live context into a fresh session and run a prompt there (action "branch").
+        r#"Run LLM work in a session: start or continue a sub-agent (action "new", the default), re-attach to a session you spawned earlier ("resume"), compact a session and continue it ("compact"), or run a prompt on a copy of a session's context ("branch"). Every action needs `prompt`, `role` (a template from RoleCatalog: `<workspace>/roles/<role>.md` or `roles/<role>/ROLE.md`), and `path`.
 
-The framework applies a constant 5-minute timeout to all tool calls. If the subagent takes longer than 5 minutes, the work is automatically detached to a background task and a receipt is returned.
+## Addressing
+Session addresses are slug paths like `sess:/user-bob/writer-1` (the `path` field of Session action `list`; your own position is in the runtime context). For `new` and `branch`, a bare slug (`writer-1`, 1-64 chars, no `/`) means a session under yours. Raw session ids are refused.
 
-Actions:
-- new (default): Spawn a sub-agent run. Requires prompt + role + path. `path` is a uniform address: a RELATIVE slug segment (no `/`s) mints/attaches a session under YOUR current session (`<you>/<slug>`); an ABSOLUTE path (`/user-bob`) addresses a top-level session from the tree root. Raw UUIDs and relative multi-segment paths are REFUSED. Create-or-resume: if the addressed spawn-created session already exists, the call ATTACHES to it and drives a new turn there instead of minting a fresh session — repeating the same `new` call (e.g. a recurring cron job) keeps one continuous session. You may address ANY session in the principal's store (e.g. a peer's `/user-bob`); multi-segment absolute paths can only attach, not mint.
-- resume: Re-attach this run to an existing spawned session. `path` is an absolute slug path (`/a/b/c`) from the session tool's `list` `path` field. Requires path + prompt + role.
-- compact: Compact the session NOW and continue it with `prompt` in one run — the continuation run summarizes older messages first (phase `standalone_turn`), then processes the prompt against the compacted history. `path` is an absolute slug path (`/a/b/c`). Requires path + prompt + role. Returns the run's outcome like resume does. Works on any session in the principal’s store (unlike resume, the target need not be a spawned session).
-- branch: Copy a session's live context into a session at `path` and run `prompt` there, WITHOUT touching the source session (ADR-053). `source` names the session to snapshot (absolute slug path; omit for YOUR current session). The branch sees the source's live context — the compaction summary plus everything since — verbatim, as of the last completed turn. Ideal for recurring sideline tasks (e.g. a scheduled briefing) that depend on a main session's context but must not pollute it. With `overwrite: true`, an existing spawn-created session at `path` is OVERWRITTEN IN PLACE: it keeps its id, slug, and whole descendant subtree (addresses below it are unaffected), its previous live transcript is closed behind a compaction boundary (retained as a page — history is never destroyed), and the source's snapshot becomes the new live context. Requires path + prompt + role. The branch never writes to the source; each run is a pure function of the source's context at fire time.
+## Actions
+- new: if the addressed session exists and was spawned, the run continues it with its history; otherwise a new session is created. Repeating the same `new` call (e.g. from a cron job) keeps one continuous session. Only a bare slug or a single-segment absolute path can create a session.
+- resume: continue an existing spawned session at an absolute path.
+- compact: summarize the session's older messages now, then run `prompt` against the compacted history. Works on any session except yours and your ancestors (those compact automatically). Keeps the session's model, so `model` is refused.
+- branch: copy the live context of `source` (default: your session) into the session at `path` and run `prompt` there; the source is never modified. If `path` already holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug, and children stay; the old transcript is kept as a compaction page); without it the call is refused. Useful for a recurring side task that needs a main session's context without adding to it.
 
-Parameters:
-- action: "new" | "resume" | "compact" | "branch" (default: "new")
-- prompt: Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)
-- role: Name of the role template. Loads the system prompt from `<workspace>/roles/<role>.md` (flat layout) or `<workspace>/roles/<role>/ROLE.md` (directory layout). (required for all actions)
-- path: Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c' from the session tool's list `path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and relative multi-segment paths are refused. Required for all actions.
-- model: Optional model override for new/resume/branch; refused for compact, which keeps the session's model
-- source: (branch only) Absolute slug path of the session to snapshot. Omit to branch from YOUR current session.
-- overwrite: (branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false (refuse when the target exists).
-- page_limit: (new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. 1-10000; omit to retain an existing cap (new sessions are unlimited).
+## Result and time
+The call waits for the run and returns `{status, success, run_id, role, output | error}`. Runs have no time limit: if one is still going after 10 minutes, the call returns a receipt with a `task_id` and the run continues; its result is delivered to your session when it finishes (starting a turn if you are idle). Check sooner with `Async` action `output` or `status`; cancel with `Async` action `stop`.
 
-Use `Session` action `list` to find session paths, then `status` to inspect `parent_session`, the spawned session's parent. The session tool manages memory; this tool runs work.
+## Refusals
+A call is refused when the target is your own session or an ancestor, already has an active run, or (resume) does not exist or was not spawned. All live runs of your principal share one concurrency limit (default 20) — peer turns, cron runs, waiting parents, detached runs. At capacity the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent`, and `max_concurrent`; retry after a run finishes instead of polling. Delegation depth is unlimited and idle sessions use no slots.
 
-resume refusals (structured errors naming the session): target must exist, be a spawned session (branches/live root sessions refuse), not be the session you are running in or an ancestor, and not have an active run. compact refusals: target must exist, not be the session you are running in or an ancestor (the engine compacts those automatically), be in the principal’s store, and not have an active run. branch refusals: an existing non-spawned target always refuses (never overwrite user-created sessions); overwriting a spawned target additionally refuses while it has an active run, and never targets your own session or an ancestor.
-
-Limits:
-- All live agent runs of your principal share one concurrency limit (default 20),
-  including peer turns, cron runs, waiting parents and detached agent runs.
-  Each action that starts a run reserves a slot; at capacity it immediately
-  returns `error_type: "ConcurrentLimitExceeded"` with `current_concurrent`
-  and `max_concurrent`. Try again after an existing run finishes; do not busy-poll.
-- Delegation depth is unrestricted. Idle persisted sessions use no slots.
-
-Examples:
-// Blocking spawn - parent waits for result (auto-detaches on timeout)
+## Examples
+```json
 {"prompt": "Use Write to create report.txt with a summary", "role": "writer", "path": "writer-1"}
-
-// Persistent worker - continue a previous spawned session with its history
-{"action": "resume", "path": "sess:/writer-1", "prompt": "Now update report.txt with the new numbers", "role": "writer"}
-
-// Compact a long transcript now and continue with a follow-up task in the same run
-{"action": "compact", "path": "sess:/writer-1", "prompt": "Now draft the final report from our work so far", "role": "writer"}
-
-// Branch from THIS session into a sideline briefing (does not touch this session)
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above and send it to the user's channel", "role": "writer"}
-
-// Recurring cron pattern: overwrite the previous briefing branch each fire
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing", "role": "writer", "overwrite": true}"#
+{"prompt": "Now update report.txt with the new numbers", "role": "writer", "path": "writer-1"}
+{"action": "compact", "path": "sess:/user-bob/writer-1", "prompt": "Draft the final report from our work so far", "role": "writer"}
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above", "role": "writer", "overwrite": true}
+```"#
             .to_string()
     }
 
@@ -331,42 +309,42 @@ Examples:
                 "action": {
                     "type": "string",
                     "enum": ["new", "resume", "compact", "branch"],
-                    "description": "What to do: 'new' creates a session or attaches to an existing eligible session (default), 'resume' re-attaches a run to an existing spawned session, 'compact' compacts a session now and continues it with `prompt` in one run, 'branch' copies a session's live context into a fresh session and runs `prompt` there without touching the source",
+                    "description": "new (default): start or continue a spawned session; resume: continue an existing spawned session; compact: compact a session, then run prompt; branch: run prompt on a copy of a session's context",
                     "default": "new"
                 },
                 "prompt": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Description of the task to execute (required for all actions — for compact, the task the session continues with after compacting; for branch, the task the branch runs against the snapshot)"
+                    "description": "The task to run (for compact, run after compacting; for branch, run against the copied context)"
                 },
                 "role": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Name of the role template. Loads the system prompt from `<workspace>/roles/<role>.md` (flat layout) or `<workspace>/roles/<role>/ROLE.md` (directory layout). (required for all actions)"
+                    "description": "Role template id (see RoleCatalog); its body becomes the run's system prompt"
                 },
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Target session address. For `new`: a slug segment (1-64 chars, no '/') for a session under yours, or an absolute path ('sess:/user-bob') for a top-level session. For `resume` and `compact`: an absolute slug path ('sess:/a/b/c') from the session tool's list (`path` field). For `branch`: a slug segment or absolute path naming where the branched session lives (same rules as `new`). Raw session ids and relative multi-segment paths are refused. Required for all actions. Note: the session tool's `path` only accepts the absolute form — relative slug segments (minting) are exclusive to `new` / `branch` here."
+                    "description": "Session address: an absolute slug path ('sess:/a/b'), or for new/branch a bare slug (1-64 chars, no '/') for a session under yours"
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for new/resume/branch; compact keeps the session model and refuses this field"
+                    "description": "Catalog model id to run with (see ModelList); not for compact"
                 },
                 "source": {
                     "type": "string",
-                    "description": "(branch only) Absolute slug path of the session to snapshot. Omit to branch from your own current session."
+                    "description": "branch: absolute path of the session to copy (default: yours)"
                 },
                 "overwrite": {
                     "type": "boolean",
                     "default": false,
-                    "description": "(branch only) When true and the target path already holds a spawned session, reseed that session in place with the source's live context (it keeps its id, slug, and descendants; its previous transcript is retained as a compaction page). Default false."
+                    "description": "branch: replace the live context of an existing spawned session at path (default false: refuse)"
                 },
                 "page_limit": {
                     "type": "integer",
-                    "minimum": 1,
+                    "minimum": 0,
                     "maximum": 10000,
-                    "description": "(new/branch only) Retention cap on the session's closed compaction pages — FIFO: the oldest page is PERMANENTLY deleted when the cap is exceeded. Surviving page numbers never renumber. Omit to retain an existing cap; new sessions are unlimited."
+                    "description": "new/branch: keep at most this many closed compaction pages (0 = unlimited); older pages are deleted permanently. Omit to keep the current setting (unlimited for a new session)"
                 }
             },
         });
@@ -468,7 +446,9 @@ Examples:
         page_limit: Option<u32>,
         ctx: Option<&ToolContext>,
     ) -> anyhow::Result<serde_json::Value> {
-        let timeout_seconds: u64 = 300;
+        // 0 = no time limit: the run continues past the framework's
+        // foreground wait and reports back when done.
+        let timeout_seconds: u64 = 0;
 
         // Resolve the subagent config first so we can audit with
         // the resolved name (and so `audit_spawn` runs even when the
@@ -552,7 +532,6 @@ Examples:
                     "child_session_key": run.child_session_key,
                     "success": success,
                     "role": agent,
-                    "timeout_seconds": timeout_seconds,
                 });
 
                 // Include output or error if available
@@ -567,7 +546,20 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
+        }
+    }
+
+    /// The tool error for a failed or refused run. Typed refusals carry
+    /// their structured envelope (`error_type`, limits, ...) as the
+    /// message; anything else keeps its cause chain.
+    fn refusal(error: &anyhow::Error) -> anyhow::Error {
+        let typed = error
+            .chain()
+            .any(|source| source.is::<crate::tools::builtin::messaging::dto::SpawnError>());
+        match Self::format_error_response(error) {
+            Ok(envelope) if typed => anyhow::anyhow!("{envelope}"),
+            _ => anyhow::anyhow!("{error:#}"),
         }
     }
 
@@ -734,7 +726,7 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
         }
     }
 
@@ -825,7 +817,7 @@ Examples:
 
                 Ok(result)
             }
-            Err(e) => Self::format_error_response(&e),
+            Err(e) => Err(Self::refusal(&e)),
         }
     }
 }
@@ -996,6 +988,9 @@ struct TestSubagentState {
     /// requests, in order. Tests assert the resume action's
     /// `path` is forwarded onto the spawn request.
     resume_sessions_seen: Vec<Option<String>>,
+    /// Every `(timeout_seconds, config.timeout_seconds)` pair seen in
+    /// `execute_and_wait` requests, in order.
+    timeouts_seen: Vec<(u64, u64)>,
     /// Whether `execute_and_wait` should succeed (true) or fail with
     /// an error (false).
     succeed_on_execute: bool,
@@ -1028,6 +1023,7 @@ impl TestSubagentRuntime {
                 model_overrides_seen: Vec::new(),
                 names_seen: Vec::new(),
                 resume_sessions_seen: Vec::new(),
+                timeouts_seen: Vec::new(),
                 succeed_on_execute: true,
                 compaction_requests: Vec::new(),
                 branch_requests: Vec::new(),
@@ -1083,6 +1079,17 @@ impl TestSubagentRuntime {
             .lock()
             .expect("TestSubagentRuntime mutex poisoned")
             .names_seen
+            .clone()
+    }
+
+    /// Every `(timeout_seconds, config.timeout_seconds)` pair seen in
+    /// `execute_and_wait` requests.
+    #[must_use]
+    pub fn timeouts_seen(&self) -> Vec<(u64, u64)> {
+        self.inner
+            .lock()
+            .expect("TestSubagentRuntime mutex poisoned")
+            .timeouts_seen
             .clone()
     }
 
@@ -1235,6 +1242,9 @@ impl SubagentRuntime for TestSubagentRuntime {
             state
                 .resume_sessions_seen
                 .push(request.resume_session.clone());
+            state
+                .timeouts_seen
+                .push((request.timeout_seconds, request.config.timeout_seconds));
             state.succeed_on_execute
         };
         if !succeed {
@@ -1400,12 +1410,8 @@ mod tests {
                 "'page_limit' is only valid",
             ),
             (
-                ok(serde_json::json!({ "path": "a", "page_limit": 0 })),
-                "between 1 and 10000",
-            ),
-            (
                 ok(serde_json::json!({ "path": "a", "page_limit": 10_001 })),
-                "between 1 and 10000",
+                "between 0 (unlimited) and 10000",
             ),
             (
                 serde_json::json!({ "path": "a", "role": "primary" }),
@@ -1909,6 +1915,7 @@ mod tests {
     async fn test_page_limit_param_scope_and_range() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.set_session_id("caller:sess");
+        runtime.register_agent("writer", make_test_prompt("writer", None));
         let tool = AgentTool::new(runtime as SharedSubagentRuntime);
 
         // `page_limit` is refused on actions that don't create/rewrite
@@ -1925,18 +1932,16 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("page_limit"), "{err}");
 
-        // 0 is meaningless at creation (unlimited = omit) — refused.
-        let err = tool
-            .execute(serde_json::json!({
-                "action": "new",
-                "path": "task-a",
-                "prompt": "p",
-                "role": "writer",
-                "page_limit": 0,
-            }))
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("minimum of 1"), "{err}");
+        // 0 clears the cap (unlimited) — accepted.
+        tool.execute(serde_json::json!({
+            "action": "new",
+            "path": "task-a",
+            "prompt": "p",
+            "role": "writer",
+            "page_limit": 0,
+        }))
+        .await
+        .expect("page_limit 0 means unlimited");
 
         // Above the hard cap — refused.
         let err = tool
@@ -2220,6 +2225,10 @@ mod tests {
         // The `path` param lands on SpawnRequest.name (the adapter
         // projects it onto the child session's slug).
         assert_eq!(runtime.names_seen(), vec![Some("task-b".to_string())]);
+        // Runs have no time limit (0 = unlimited) and the response
+        // carries no stale timeout figure.
+        assert_eq!(runtime.timeouts_seen(), vec![(0, 0)]);
+        assert!(result.get("timeout_seconds").is_none(), "{result}");
         // For new, resume_session is None.
         assert_eq!(runtime.resume_sessions_seen(), vec![None]);
 
