@@ -1586,7 +1586,6 @@ impl AppState {
             caller_runtime_id,
             principal_manager: self.principal_manager().clone(),
             channel_port: Arc::clone(&self.tunnel_channel_port),
-            response_timeout: None,
         });
         // The framework stores the ctx as `Arc<dyn Any + Send + Sync>`
         // to avoid a framework → tunnel dependency.

@@ -350,6 +350,8 @@ mod tests {
             text: "body".to_string(),
             at: "2026-09-12T00:00:00Z".to_string(),
             via: via.map(str::to_string),
+            msg_id: None,
+            reply_to: None,
         }
     }
 

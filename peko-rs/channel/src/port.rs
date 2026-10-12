@@ -212,6 +212,20 @@ pub trait ChannelPort: Send + Sync + 'static {
         since: &Checkpoint,
     ) -> Result<Vec<(TaskId, ChannelEvent)>>;
 
+    /// The post carrying stable id `msg_id`, with its line, if this
+    /// channel's log holds one. Newest first, so a message posted twice
+    /// under one id (a mirror) resolves to its latest copy.
+    async fn find_post(
+        &self,
+        channel: &ChannelId,
+        msg_id: &str,
+    ) -> Result<Option<(TaskId, ChannelEvent)>> {
+        let events = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        Ok(events.into_iter().rev().find(
+            |(_, ev)| matches!(ev, ChannelEvent::Posted { msg_id: Some(id), .. } if id == msg_id),
+        ))
+    }
+
     /// Remove `principal` from the channel membership set. Emits a
     /// `MemberLeft` event. PR-1: leaves are always permitted.
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
@@ -389,6 +403,11 @@ pub struct PostMsg {
     /// — audit metadata only, never an authority claim. `None` for
     /// human/CLI posts and peer-authored inbound projections.
     pub via: Option<String>,
+    /// Stable message id to post under. `None` (the usual case) lets the
+    /// store mint one; a caller posting the SAME message into two
+    /// channels (a local cross-principal send's record + delivery
+    /// copies, a reply mirror) passes one id to both.
+    pub msg_id: Option<String>,
 }
 
 impl PostMsg {
@@ -398,6 +417,7 @@ impl PostMsg {
             text: text.into(),
             parent: None,
             via: None,
+            msg_id: None,
         }
     }
 
@@ -407,7 +427,15 @@ impl PostMsg {
             text: text.into(),
             parent: Some(parent),
             via: None,
+            msg_id: None,
         }
+    }
+
+    /// Post under an existing stable message id (see the field docs).
+    #[must_use]
+    pub fn with_msg_id(mut self, msg_id: impl Into<String>) -> Self {
+        self.msg_id = Some(msg_id.into());
+        self
     }
 
     /// Stamp the posting agent's session slug path as the `via`

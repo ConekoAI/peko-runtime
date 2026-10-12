@@ -993,6 +993,8 @@ mod tests {
             text: "hello from A".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

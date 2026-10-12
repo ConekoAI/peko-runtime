@@ -30,7 +30,6 @@
 //! from here.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::principal::PrincipalManager;
 use crate::tunnel::hub_directory::AgentDirectory;
@@ -63,13 +62,6 @@ pub struct CrossRuntimeA2aCtx {
     /// bare `ChannelPort::invite` path cannot resolve) and
     /// `local().list_remote_members` (first-contact detection).
     pub channel_port: Arc<TunnelChannelPort>,
-
-    /// An optional limit on the wait for the peer's reply post. `None`
-    /// (production) waits like any tool call: the dispatcher detaches a
-    /// long call and delivers the reply when it lands, and the peer's
-    /// responder answers every request (failures included). Tests set
-    /// sub-second limits.
-    pub response_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for CrossRuntimeA2aCtx {
@@ -79,7 +71,6 @@ impl std::fmt::Debug for CrossRuntimeA2aCtx {
             .field("caller_runtime_id", &self.caller_runtime_id)
             .field("principal_manager", &"<PrincipalManager>")
             .field("channel_port", &self.channel_port)
-            .field("response_timeout", &self.response_timeout)
             .finish()
     }
 }

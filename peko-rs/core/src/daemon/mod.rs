@@ -8,6 +8,7 @@
 
 pub(crate) mod background_runtime;
 pub(crate) mod channel_binding;
+pub(crate) mod channel_replies;
 pub(crate) mod completion_wake;
 pub(crate) mod config_drift;
 pub(crate) mod cron_engine;

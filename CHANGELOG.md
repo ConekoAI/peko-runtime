@@ -48,10 +48,15 @@ All notable changes to Peko.
   On DM channels the responder answers every request: a failed turn as a
   `⚠ Run failed:` reply, an empty answer or a hand-off to a running turn
   as a short note. Group channels stay log-only.
-- `ChannelSend` to a principal waits for the reply like any tool call
-  instead of giving up after 60 s: past the 10-minute foreground wait it
-  returns a receipt and the reply is delivered to the session; a failed
-  target turn is a tool error; aborting the call ends the wait.
+- `ChannelSend` posts and returns for every kind of address. A reply —
+  any post threaded onto one of a principal's posts, identified across
+  runtimes by the new stable `msg_id` / `reply_to` on channel posts — is
+  routed to the session that asked (`daemon::channel_replies`): queued
+  in its inbox and woken like a background completion, whether it comes
+  back in seconds, days, or after a restart. Nothing waits in memory and
+  a reply never also starts a conversation turn. Same-runtime replies are
+  mirrored onto the caller's DM channel for `peko log`. The description
+  no longer claims only the originating user can be messaged.
 
 ### SessionCache removed (2026-10-11)
 

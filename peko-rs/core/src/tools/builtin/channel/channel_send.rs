@@ -29,16 +29,12 @@
 //! tools resolve the current tunnel context from shared runtime services
 //! per invocation, including tunnel connections made after installation.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
-
-use crate::principal::peer_dm::RUN_FAILED_PREFIX;
+use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use peko_auth::Subject;
-use peko_channel::{ChannelError, ChannelEvent, ChannelPort, Checkpoint, PostMsg};
+use peko_channel::{ChannelError, ChannelPort, PostMsg};
 use peko_protocol::channel::{ChannelId as ProtoChannelId, ChannelKind as ProtoChannelKind};
 use peko_session::events::MessageSource;
 use peko_subject::{PrincipalDID, PrincipalId};
@@ -89,7 +85,8 @@ pub struct ChannelSendArgs {
 }
 
 /// Result of a `ChannelSend` execution. The principal branch (RPC)
-/// populates `response` with the awaited reply; the bare / group
+/// returns at once with the request's `id` on the caller's DM channel
+/// (the reply is routed to the calling session later); the bare / group
 /// branches populate `task_id` (wire name `id`, the same event id
 /// ChannelRead reports) with the line number assigned in the channel's
 /// JSONL; the user branch populates `response` with a delivery
@@ -97,13 +94,12 @@ pub struct ChannelSendArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSendResult {
     pub success: bool,
-    /// Bare / Group: empty. Principal: the awaited reply text. User:
-    /// a delivery confirmation.
+    /// User: a delivery confirmation. Empty otherwise.
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub response: String,
-    /// Bare / Group only: the line number the post was assigned in
-    /// the channel's JSONL log — its event `id`. Empty on principal /
-    /// user branches.
+    /// The line the post was assigned in the channel's log — its event
+    /// `id` (Principal: on the caller's DM channel, `dm_channel`). Empty
+    /// on the user branch.
     #[serde(rename = "id", skip_serializing_if = "String::is_empty", default)]
     pub task_id: String,
     /// Principal branch only: the caller's standing child session
@@ -117,9 +113,25 @@ pub struct ChannelSendResult {
     /// Echo of the resolved channel id (post-`ChannelId::parse`).
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub channel: String,
+    /// Principal branch: the caller's DM channel with the target, where
+    /// the request is recorded and the reply will appear.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub dm_channel: Option<String>,
+    /// Principal branch: `delivered` (the target is on this runtime) or
+    /// `sent` (handed to the tunnel for another runtime).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub delivery: Option<String>,
+    /// Principal branch: how the reply comes back.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+/// What a principal-branch send tells the caller about the reply.
+const REPLY_NOTE: &str = "Sent; this call does not wait for an answer. When the principal \
+     replies, the reply is delivered to this session (starting a turn if you are idle). \
+     Read the conversation with ChannelRead on dm_channel.";
 
 // ---------------------------------------------------------------------------
 // ChannelSendTool
@@ -157,13 +169,6 @@ pub struct ChannelSendTool {
     cross_runtime: Option<Arc<CrossRuntimeA2aCtx>>,
     /// Production bindings read the current tunnel service per invocation.
     services: Option<Weak<ExtensionServices>>,
-    /// Per-target serialization for the blocking reply await on the
-    /// principal branch. Without a wire correlation id, two
-    /// overlapping awaits on the same DM channel can't tell replies
-    /// apart; holding the per-target mutex for the whole
-    /// post→await exchange makes reply order match request order.
-    /// Keyed by target DID (the caller is fixed per tool instance).
-    await_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ChannelSendTool {
@@ -178,7 +183,6 @@ impl ChannelSendTool {
             caller_principal_did,
             cross_runtime: None,
             services: None,
-            await_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -207,19 +211,12 @@ impl ChannelSendTool {
             session_id: String::new(),
             kind: Some(kind.to_string()),
             channel: String::new(),
+            dm_channel: None,
+            delivery: None,
+            note: None,
             error: Some(err.to_string()),
         };
         serde_json::to_value(result).expect("ChannelSendResult must serialize to JSON")
-    }
-
-    /// The per-target await mutex (see the field docs).
-    fn await_lock(&self, target_did: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.await_locks
-            .lock()
-            .expect("ChannelSend await-locks mutex poisoned")
-            .entry(target_did.to_string())
-            .or_default()
-            .clone()
     }
 
     /// User branch: append a labeled note to a user's conversational
@@ -249,6 +246,9 @@ impl ChannelSendTool {
                 session_id: String::new(),
                 kind: Some("user".to_string()),
                 channel: target.to_string(),
+                dm_channel: None,
+                delivery: None,
+                note: None,
                 error: Some(err),
             })
             .expect("ChannelSendResult must serialize to JSON")
@@ -292,6 +292,9 @@ impl ChannelSendTool {
                 session_id: String::new(),
                 kind: Some("user".to_string()),
                 channel: target.to_string(),
+                dm_channel: None,
+                delivery: None,
+                note: None,
                 error: None,
             })
             .expect("ChannelSendResult must serialize to JSON"),
@@ -316,7 +319,6 @@ impl ChannelSendTool {
         target_did: &str,
         message: &str,
         via: Option<String>,
-        abort: tokio::sync::watch::Receiver<bool>,
     ) -> Result<serde_json::Value> {
         let Some(target) = ctx.principal_manager.find_by_did(target_did).await else {
             return Ok(self.error_value(
@@ -324,8 +326,6 @@ impl ChannelSendTool {
                 "target principal is not loaded on this runtime",
             ));
         };
-        let await_lock = self.await_lock(target_did);
-        let _guard = await_lock.lock().await;
 
         // 1. Caller-side DM channel: the durable outbound record for
         //    the caller's `peko log` (self-authored root — the
@@ -355,7 +355,11 @@ impl ChannelSendTool {
         // posts (caller-side projection + target-side post); the
         // reply mirror below stays unattributed (the remote replier's
         // agent is unknown).
-        let mut own_msg = PostMsg::root(message);
+        // One stable id for both copies of the request (the caller's
+        // record and the target-side delivery), so the reply — threaded
+        // onto the delivery copy — is recognised on both channels.
+        let msg_id = peko_channel::new_msg_id();
+        let mut own_msg = PostMsg::root(message).with_msg_id(msg_id.clone());
         own_msg.via = via.clone();
         let own_line = match ctx
             .channel_port
@@ -409,96 +413,33 @@ impl ChannelSendTool {
                 &format!("ChannelSend: could not join the target's DM channel: {e}"),
             ));
         }
-        let mut rx = ctx.channel_port.subscribe_events(&target_channel).await;
-        let mut target_msg = PostMsg::root(message);
+        let mut target_msg = PostMsg::root(message).with_msg_id(msg_id);
         target_msg.via = via;
-        let line = match ctx
+        if let Err(e) = ctx
             .channel_port
             .post(&target_channel, &Subject::from(&caller.id), target_msg)
             .await
         {
-            Ok(l) => l,
-            Err(e) => {
-                return Ok(self.error_value(
-                    "principal",
-                    &format!("ChannelSend: DM channel post failed: {e}"),
-                ));
-            }
-        };
-
-        // 3. Await the reply on the target's channel. Same store →
-        //    exact matching: a parent-bearing post authored by the
-        //    target's raw id after our root line.
-        let target_raw = target.id.0.clone();
-        let reply = await_reply(
-            &ctx.channel_port,
-            &target_channel,
-            &mut rx,
-            &line,
-            ctx.response_timeout,
-            abort,
-            move |ev| match ev {
-                ChannelEvent::Posted {
-                    parent: Some(_),
-                    author,
-                    text,
-                    ..
-                } if *author == target_raw => Some(text.clone()),
-                _ => None,
-            },
-        )
-        .await;
-
-        let text = match reply {
-            Ok(text) => text,
-            Err(end) => {
-                return Ok(self.error_value(
-                    "principal",
-                    &format!(
-                        "local ChannelSend {} waiting for the reply (target did={}, channel={})",
-                        end.describe(),
-                        target_did,
-                        target_channel.as_str()
-                    ),
-                ));
-            }
-        };
-
-        // 4. Mirror the reply onto the caller's own DM channel so
-        //    `peko log` reads the full exchange: attributed to the
-        //    target's raw id, parented on the outbound line. The
-        //    parent bit keeps the caller's responder from reacting;
-        //    `own_line` exists in that log so the parent validates.
-        //    Best-effort: the reply has already been produced.
-        if let Err(e) = ctx
-            .channel_port
-            .post_attributed(
-                &own_channel,
-                &Subject::from(&caller.id),
-                &target.id.0,
-                PostMsg::reply(own_line, &text),
-            )
-            .await
-        {
-            tracing::warn!(
-                channel = %own_channel,
-                "ChannelSend: caller-side reply mirror failed (reply already returned): {e}"
-            );
-        }
-
-        if let Some(reason) = text.strip_prefix(RUN_FAILED_PREFIX) {
             return Ok(self.error_value(
                 "principal",
-                &format!("the target principal could not answer: {reason}"),
+                &format!("ChannelSend: DM channel post failed: {e}"),
             ));
         }
+
+        // 3. Return at once. The target's responder answers on its
+        //    channel; the reply is routed to the calling session and
+        //    mirrored onto the caller's channel
+        //    (`daemon::channel_replies`).
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
-            response: text,
-            task_id: String::new(),
+            response: String::new(),
+            task_id: own_line,
             session_id: caller_ingress.child_id,
             kind: Some("principal".to_string()),
             channel: format!("principal:{target_did}"),
+            dm_channel: Some(own_channel.as_str().to_string()),
+            delivery: Some("delivered".to_string()),
+            note: Some(REPLY_NOTE.to_string()),
             error: None,
         })?)
     }
@@ -516,11 +457,7 @@ impl ChannelSendTool {
         message: &str,
         resolution: &AgentResolution,
         via: Option<String>,
-        abort: tokio::sync::watch::Receiver<bool>,
     ) -> Result<serde_json::Value> {
-        let await_lock = self.await_lock(target_did);
-        let _guard = await_lock.lock().await;
-
         // 1. Caller-side standing child + DM channel (Phase 10/11
         //    machinery): the channel is the conversation's home on
         //    this runtime, and the remote runtime mirrors it via the
@@ -580,14 +517,11 @@ impl ChannelSendTool {
             }
         }
 
-        // 3. Subscribe BEFORE posting — the per-channel broadcast only
-        //    fires for appends after subscription.
-        let mut rx = ctx.channel_port.subscribe_events(&channel).await;
-
-        // 4. Root post, author = the caller's raw id: self-skipped by
+        // 3. Root post, author = the caller's raw id: self-skipped by
         //    the caller's own responder, fires the remote one once the
         //    fan-out lands on the target's mirror. `via` stamps the
-        //    calling session's slug path (attribution only).
+        //    calling session's slug path, which is where the reply is
+        //    routed when it comes back (`daemon::channel_replies`).
         let mut msg = PostMsg::root(message);
         msg.via = via;
         let line = match ctx
@@ -604,66 +538,18 @@ impl ChannelSendTool {
             }
         };
 
-        // 5. Await the mirrored reply: the first parent-bearing post
-        //    after our root line whose author is neither the caller
-        //    (raw id or DID forms) nor a `user:*`/`public` form — on a
-        //    1:1 DM channel that is the peer's reply. (`parent` can't
-        //    be matched exactly: mirror line numbers diverge between
-        //    runtimes.)
-        let caller_raw = caller.id.0.clone();
-        let caller_did = self.caller_principal_did.clone();
-        let reply = await_reply(
-            &ctx.channel_port,
-            &channel,
-            &mut rx,
-            &line,
-            ctx.response_timeout,
-            abort,
-            move |ev| match ev {
-                ChannelEvent::Posted {
-                    parent: Some(_),
-                    author,
-                    text,
-                    ..
-                } if *author != caller_raw
-                    && *author != caller_did
-                    && !author.starts_with("user:")
-                    && author != "public" =>
-                {
-                    Some(text.clone())
-                }
-                _ => None,
-            },
-        )
-        .await;
-
-        match reply {
-            Ok(text) if text.starts_with(RUN_FAILED_PREFIX) => Ok(self.error_value(
-                "principal",
-                &format!(
-                    "the target principal could not answer: {}",
-                    &text[RUN_FAILED_PREFIX.len()..]
-                ),
-            )),
-            Ok(text) => Ok(serde_json::to_value(ChannelSendResult {
-                success: true,
-                response: text,
-                task_id: String::new(),
-                session_id: ingress.child_id,
-                kind: Some("principal".to_string()),
-                channel: format!("principal:{target_did}"),
-                error: None,
-            })?),
-            Err(end) => Ok(self.error_value(
-                "principal",
-                &format!(
-                    "remote ChannelSend {} (target runtime_id={}, channel={})",
-                    end.describe(),
-                    resolution.runtime_id,
-                    channel.as_str()
-                ),
-            )),
-        }
+        Ok(serde_json::to_value(ChannelSendResult {
+            success: true,
+            response: String::new(),
+            task_id: line,
+            session_id: ingress.child_id,
+            kind: Some("principal".to_string()),
+            channel: format!("principal:{target_did}"),
+            dm_channel: Some(channel.as_str().to_string()),
+            delivery: Some("sent".to_string()),
+            note: Some(REPLY_NOTE.to_string()),
+            error: None,
+        })?)
     }
 }
 
@@ -690,98 +576,6 @@ async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String>
         .then(|| peko_session::path::compute_path(&metas, session_id))
 }
 
-/// Why [`await_reply`] stopped without a reply.
-#[derive(Debug)]
-enum AwaitEnd {
-    /// The configured wait (tests only) elapsed.
-    TimedOut(Duration),
-    /// The call was aborted (stopped run, `Async stop`).
-    Aborted,
-    /// The channel broadcast closed or could not be read.
-    Closed,
-}
-
-impl AwaitEnd {
-    fn describe(&self) -> String {
-        match self {
-            Self::TimedOut(after) => format!("timed out after {after:?}"),
-            Self::Aborted => "was stopped".to_string(),
-            Self::Closed => "lost the channel".to_string(),
-        }
-    }
-}
-
-/// Await the first channel event strictly after `after_line` that
-/// `matches` accepts, returning its text. Wakes on the channel's
-/// per-channel broadcast (subscription must precede the post that
-/// prompts the reply) and re-reads via `peek_with_ids` on every wake —
-/// so a `Lagged` receiver self-repairs, and a reply that landed
-/// between post and first wake is still seen.
-///
-/// Like any tool call, the wait has no deadline of its own (`timeout`
-/// is `None` outside tests): the dispatcher detaches a call that runs
-/// past its foreground wait, and the reply is delivered to the caller's
-/// session when it arrives. The responder answers every request — a
-/// failure as a `RUN_FAILED_PREFIX` reply — so the wait ends with the
-/// target's turn; aborting the call ends it sooner.
-async fn await_reply(
-    port: &Arc<crate::tunnel::TunnelChannelPort>,
-    channel: &peko_channel::ChannelId,
-    rx: &mut tokio::sync::broadcast::Receiver<ChannelEvent>,
-    after_line: &str,
-    timeout: Option<Duration>,
-    mut abort: tokio::sync::watch::Receiver<bool>,
-    matches: impl Fn(&ChannelEvent) -> Option<String>,
-) -> std::result::Result<String, AwaitEnd> {
-    let since = Checkpoint(after_line.to_string());
-    let deadline = async {
-        match timeout {
-            Some(after) => {
-                tokio::time::sleep(after).await;
-                after
-            }
-            None => std::future::pending().await,
-        }
-    };
-    tokio::pin!(deadline);
-    loop {
-        if *abort.borrow() {
-            return Err(AwaitEnd::Aborted);
-        }
-        match port.peek_with_ids(channel, &since).await {
-            Ok(events) => {
-                for (_id, ev) in events {
-                    if let Some(text) = matches(&ev) {
-                        return Ok(text);
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(channel = %channel, "ChannelSend: reply peek failed: {e}");
-                return Err(AwaitEnd::Closed);
-            }
-        }
-        tokio::select! {
-            after = &mut deadline => return Err(AwaitEnd::TimedOut(after)),
-            changed = abort.changed() => {
-                // A dropped sender means nobody can abort any more.
-                if changed.is_err() {
-                    abort = tokio::sync::watch::channel(false).1;
-                }
-            }
-            recv = rx.recv() => {
-                match recv {
-                    // Any append (or a lag gap) → loop and re-peek.
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return Err(AwaitEnd::Closed);
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[async_trait]
 impl Tool for ChannelSendTool {
     fn name(&self) -> &'static str {
@@ -789,39 +583,21 @@ impl Tool for ChannelSendTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Post a message to a peko channel. The `channel` id selects the branch:
+        r#"Post a message. Every send returns at once; nothing waits for an answer. The `channel` address picks the kind of message (addresses for your peers are listed in your session context):
 
-- `chan_<8 base36>` (Bare) — plain fire-and-forget post. The channel id must match one the calling principal is a member of.
-- `principal:<did>` (Principal) — send a message to another Principal and RECEIVE its reply. The conversation lives on the pair's standing DM channel (continuity is automatic — there is no session to name). The call waits for the reply like any tool call: if the other principal is still working after 10 minutes, you get a receipt with a `task_id` and the reply is delivered to your session when it arrives. If its turn fails, the call fails with the reason.
-- `user:<id>` (User) — deliver a fire-and-forget NOTE to that user's conversational session. The note appears in their next turn. Users do NOT reply synchronously; do not wait for an answer. You may only message the user who started this conversation.
-- `group:<slug>` (Group) — plain fire-and-forget post to a group channel.
+- `principal:<did>` — a message to another principal, on your shared DM channel. When it answers, the reply is delivered to THIS session (starting a turn if you are idle); you do not need to poll. Use it to delegate work or ask a peer principal something.
+- `user:<id>` — a note to a user's conversation; it appears in their next turn. Their answer, whenever they give it, arrives in their conversation with you, which already holds the note.
+- `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message.
 
-Every post you make carries a `via` attribution with your session path (e.g. `/user-a/reminder`) for audit — it never affects delivery, permissions, or reply matching.
+Any reply threaded onto one of your posts comes back to the session that posted it. Each post carries your session path as `via`.
 
-## When to Use (Principal branch)
-- Delegate a task to another Principal you have access to
-- Request analysis, review, or specialized work from a peer Principal
-- Continue an ongoing exchange with another Principal (the DM channel keeps the history)
+Not for running work in your own principal's sessions — use the Agent tool.
 
-## When NOT to Use
-- For human-to-agent communication outside the originating user (use the CLI/API instead)
-- For spawning subagents of the SAME principal (use the Agent tool instead)
-
-## Parameters
-```json
-{
-  "channel": "chan_a1b2c3d4 | principal:did:peko:… | user:<id> | group:<slug>",
-  "text":    "Please review this code for bugs",
-  "parent":  "<event id> (Bare / Group branch only)",
-  "label":   "<note label> (User branch only)"
-}
-```
-
-## Response
-Bare / Group: `{ "success": true, "id": "<event id>", "channel": "<wire form>" }` — the same `id` ChannelRead reports, usable as `parent`.
-Principal:    `{ "success": true, "kind": "principal", "response": "<the principal's reply>", "session_id": "…", "channel": "principal:<did>" }`.
-User:         `{ "success": true, "kind": "user", "response": "Delivered as a note …" }` — no reply follows."#
+## Result
+- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel` (read the conversation with ChannelRead); `delivery` is `delivered` (same runtime) or `sent` (handed to another runtime).
+- User: `{success, kind: "user", response}`.
+- Channel / group: `{success, id, channel}` — the same `id` ChannelRead reports, usable as `parent`.
+A send that cannot go out (not a member, unknown channel or principal) is an error."#
             .to_string()
     }
 
@@ -831,19 +607,19 @@ User:         `{ "success": true, "kind": "user", "response": "Delivered as a no
             "properties": {
                 "channel": {
                     "type": "string",
-                    "description": "Channel id. Wire form selects the dispatch: `chan_<8 base36>` (Bare post), `principal:<did>` (RPC, await reply), `user:<id>` (fire-and-forget note), `group:<slug>` (fire-and-forget group post)."
+                    "description": "Address: `principal:<did>` (a principal; its reply comes back to this session), `user:<id>` (a note to a user), `chan_<id>` or `group:<slug>` (a channel post)."
                 },
                 "text": {
                     "type": "string",
-                    "description": "Message body. Bare / Group: posted as-is. Principal: posted to the pair's DM channel and the target principal's reply is awaited. User: becomes the note text."
+                    "description": "Message body."
                 },
                 "parent": {
                     "type": "string",
-                    "description": "Bare / Group branch only: id of the message being replied to (an event id from ChannelRead or a previous send); omit to post a root message."
+                    "description": "Channel posts only: id of the message being replied to (an event id from ChannelRead or a previous send); omit to post a new message."
                 },
                 "label": {
                     "type": "string",
-                    "description": "User branch only: short label for the note (shown as 📨 [<label>]). Defaults to your agent name."
+                    "description": "Notes to users only: short label for the note (shown as 📨 [<label>]); defaults to your agent name."
                 }
             },
             "required": ["channel", "text"]
@@ -980,6 +756,9 @@ impl ChannelSendTool {
                 session_id: String::new(),
                 kind: Some(kind.to_string()),
                 channel: channel_id.as_str().to_string(),
+                dm_channel: None,
+                delivery: None,
+                note: None,
                 error: None,
             })
             .expect("ChannelSendResult must serialize to JSON")),
@@ -990,6 +769,9 @@ impl ChannelSendTool {
                 session_id: String::new(),
                 kind: Some(kind.to_string()),
                 channel: channel_id.as_str().to_string(),
+                dm_channel: None,
+                delivery: None,
+                note: None,
                 error: Some("caller is not a member of this channel".to_string()),
             })
             .expect("ChannelSendResult must serialize to JSON")),
@@ -1000,6 +782,9 @@ impl ChannelSendTool {
                 session_id: String::new(),
                 kind: Some(kind.to_string()),
                 channel: channel_id.as_str().to_string(),
+                dm_channel: None,
+                delivery: None,
+                note: None,
                 error: Some("channel not found".to_string()),
             })
             .expect("ChannelSendResult must serialize to JSON")),
@@ -1015,7 +800,7 @@ impl ChannelSendTool {
         &self,
         channel_id: &ProtoChannelId,
         text: &str,
-        ctx: &peko_tools_core::exec::ToolContext,
+        _ctx: &peko_tools_core::exec::ToolContext,
         via: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
@@ -1077,15 +862,8 @@ impl ChannelSendTool {
             ));
         }
         if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            self.execute_local(
-                cross_runtime,
-                &caller,
-                target_principal_did,
-                text,
-                via,
-                ctx.abort_signal(),
-            )
-            .await
+            self.execute_local(cross_runtime, &caller, target_principal_did, text, via)
+                .await
         } else {
             self.execute_remote(
                 cross_runtime,
@@ -1094,7 +872,6 @@ impl ChannelSendTool {
                 text,
                 &resolution,
                 via,
-                ctx.abort_signal(),
             )
             .await
         }

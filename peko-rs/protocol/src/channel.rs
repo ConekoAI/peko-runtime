@@ -259,6 +259,18 @@ pub enum ChannelEvent {
         /// keeping old peers byte-compatible).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         via: Option<String>,
+        /// Stable message id, assigned once by the posting store and
+        /// carried verbatim to every runtime's mirror (line numbers
+        /// differ between mirrors; this does not). `None` on lines
+        /// written before the field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        msg_id: Option<String>,
+        /// The `msg_id` of the message this post replies to — the
+        /// cross-runtime form of `parent`. Set by the posting store from
+        /// the parent line's own `msg_id`; `None` for root posts and for
+        /// replies to messages without an id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -465,6 +477,8 @@ mod tests {
             text: "hello".into(),
             at: "2026-08-05T12:01:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -480,6 +494,8 @@ mod tests {
             text: "reply".into(),
             at: "2026-08-05T12:02:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -499,6 +515,8 @@ mod tests {
             text: "hello".into(),
             at: "2026-08-05T12:01:00Z".into(),
             via: Some("/user-a/reminder".into()),
+            msg_id: None,
+            reply_to: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -557,6 +575,8 @@ mod tests {
                     text: "t".into(),
                     at: "2026".into(),
                     via: None,
+                    msg_id: None,
+                    reply_to: None,
                 },
                 "posted",
             ),

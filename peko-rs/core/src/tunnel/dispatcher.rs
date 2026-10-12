@@ -2959,6 +2959,8 @@ mod tests {
             text: "hello from A".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -3013,6 +3015,8 @@ mod tests {
             text: "tampered".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -3063,6 +3067,8 @@ mod tests {
             text: "hello".to_string(),
             at: "2026-08-06T12:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
 
         let result = dispatcher
@@ -3119,6 +3125,8 @@ mod tests {
             text: "hello from B".into(),
             at: "2026-08-06T12:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -3191,6 +3199,8 @@ mod tests {
             text: "should not land".into(),
             at: "2026-08-06T12:00:00Z".into(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -3257,6 +3267,8 @@ mod tests {
                 text: "hello from the did:key author".to_string(),
                 at: "2026-09-16T00:00:00Z".to_string(),
                 via: None,
+                msg_id: None,
+                reply_to: None,
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {

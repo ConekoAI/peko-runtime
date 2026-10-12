@@ -1070,6 +1070,10 @@ pub(crate) struct ChannelBindingSupervisor {
     /// The daemon's streaming-run registry, so responder turns are
     /// stoppable like ingress turns. `None` outside the daemon.
     streaming_runs: Option<StreamingRuns>,
+    /// Routes replies to a principal's posts to the session that asked
+    /// (`daemon::channel_replies`); shared so a reply and its mirror are
+    /// routed once.
+    reply_delivery: Arc<dyn crate::daemon::channel_replies::ReplyDelivery>,
 }
 
 impl ChannelBindingSupervisor {
@@ -1081,6 +1085,10 @@ impl ChannelBindingSupervisor {
         llm_resolver: Arc<peko_providers::LlmResolver>,
         observability: Arc<Observability>,
     ) -> Self {
+        let reply_delivery = Arc::new(crate::daemon::channel_replies::SessionReplyDelivery::new(
+            Arc::clone(&principal_manager),
+            Arc::clone(&port),
+        ));
         Self {
             port,
             meter,
@@ -1091,6 +1099,7 @@ impl ChannelBindingSupervisor {
             spawned: std::sync::Mutex::new(HashSet::new()),
             drivers: tokio::sync::RwLock::new(HashMap::new()),
             streaming_runs: None,
+            reply_delivery,
         }
     }
 
@@ -1239,13 +1248,21 @@ impl ChannelBindingSupervisor {
                         group_resolver: Arc::clone(&group_resolver) as Arc<dyn BindingResolver>,
                     },
                 );
-        select_responder(
+        let responder = select_responder(
             channel.clone(),
             principal.id.clone(),
             Arc::clone(&self.port),
             binding,
             drivers,
-        )
+        );
+        // Replies to the principal's own posts go to the session that
+        // asked, whichever responder the channel has.
+        Arc::new(crate::daemon::channel_replies::ReplyRouter::new(
+            channel.clone(),
+            Arc::clone(&self.port),
+            Arc::clone(&self.reply_delivery),
+            responder,
+        ))
     }
 
     /// Get or build the per-principal driver bundle. `None` (with a
@@ -1371,6 +1388,8 @@ mod tests {
             text: text.to_string(),
             at: "2026-08-15T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         }
     }
 
@@ -1382,6 +1401,8 @@ mod tests {
             text: text.to_string(),
             at: "2026-08-15T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         }
     }
 
@@ -1840,6 +1861,8 @@ mod tests {
             text: "hello from A".to_string(),
             at: "2026-08-19T00:00:00Z".to_string(),
             via: None,
+            msg_id: None,
+            reply_to: None,
         };
         let line_b = store_b
             .append_remote_event(&channel_b, &mirrored)

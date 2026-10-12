@@ -3851,6 +3851,8 @@ mod tests {
                 text: "ancient".to_string(),
                 at: "2020-01-01T00:00:00Z".to_string(),
                 via: None,
+                msg_id: None,
+                reply_to: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -3884,6 +3886,8 @@ mod tests {
                 text: "from elsewhere".to_string(),
                 at: Utc::now().to_rfc3339(),
                 via: None,
+                msg_id: None,
+                reply_to: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)
