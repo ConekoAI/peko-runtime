@@ -1,5 +1,10 @@
 # Peko — Data Model Specification
 
+> Current actor addressing and conversation binding are defined in ADR-073 and
+> the ADR-073 section below. Earlier sprint records describe retired contracts:
+> DIDs are signing credentials, actor references use local/Hub IDs, and sessions
+> bind only to channels.
+
 **Version:** 0.1.0
 **Date:** 2026-10-03 (ADR-067)
 **Status:** Current
@@ -2926,3 +2931,51 @@ persisted session, task, cron, or workflow fields.
 ---
 
 *Version: 0.1.0 · Last Updated: 2026-04-26 · Status: Draft*
+
+## ADR-073 dual identities and conversations
+
+`runtime/actors.json` contains actor records with `info` (`address`, `local_id`,
+`hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
+and optional private `signing_did`. The identity key and signing DID are omitted
+from tool profiles. Local addresses have the form `kind:local:<id>`; optional
+aliases are `kind:hub:<UUID>`. Registry writes use a file lock and atomic replacement.
+Aliases and immutable keys cannot belong to two local actors.
+
+`principal.toml` stores `id`, `actor_key`, optional `hub_id`, signing `did`, and
+`exposure` (`local_only`, `private`, `public`). The registry is authoritative for the
+Hub link; loading or editing a workspace cannot manufacture a verified Hub alias.
+New principals are local-only until an explicit registration receipt. Signing keys
+are vault-backed independently of Hub login.
+
+`runtime/hub-login.json` stores `{user_id, hub_url}` for the current authenticated
+human. API credentials stay in the vault. Tunnel `pekohub.toml.owner_id` identifies
+the runtime registrar and does not select the local caller. The default user's
+local ID is `local`; authenticated accounts/visitors use `local_<Hub UUID>`, with
+kind preserved. Login state is reread per request and remains cached when offline.
+
+Conversation `SessionEntry.channel_id` is the sole binding. Binding clears
+`peer_type`/`peer_id`, and index backfill does not restore actor stamps onto a
+channel-bound entry. Per-principal session paths live in channel `meta.json.bindings`;
+DM `participants` identify its fixed pair, while group rosters use current membership.
+DM IDs hash `peko-dm-v1\0` plus sorted immutable actor keys, each length-prefixed by
+its UTF-8 byte length as a big-endian u64. Human peers have membership rows.
+
+Registration announcements add `{localId, identityKey, registrationId}` to the
+principal signing proof and deployment metadata. The Hub replies
+`principal_registered {registrationId, localId, hubId, signingDid}` or
+`principal_registration_rejected {registrationId, message}`. Hub actor UUIDs are
+stable across deployment instances; routing instance UUIDs remain separate.
+Invites add `hubId`, `identityKey`, and `name` to each member snapshot. Signed posts
+use Hub actor addresses on the wire and runtime-local canonical addresses on reads.
+
+Directory responses contain `{name, hubId, localId, identityKey, principalDid,
+runtimeId, instanceId, ownerSubject, exposure}`. `principalDid` is a signing credential.
+Registered callers use `Authorization: PekoPrincipal <JWS>` with EdDSA claims
+`{sub:<signing DID>, aud:"peko-directory-v1", path, iat, exp}`; the proof expires
+within 60 seconds and is bound to the exact request path. Routing never grants
+private chat permission. These contracts replace the pre-launch identity format.
+
+ADR-073 snapshots use the same vault-backed `did:key` signing credential as live
+principals. Import writes the seed to the `principal-identity` vault namespace,
+clears the copied Hub ID and exposure projection, and preserves the immutable actor
+key unless keys are rotated. A known contact retains its destination local ID.

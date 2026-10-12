@@ -684,10 +684,16 @@ mod tests {
     fn sample_initial_members_bytes() -> Vec<u8> {
         let members = vec![
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "prin_alice".to_string(),
                 runtime_id: None,
             },
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "prin_bob".to_string(),
                 runtime_id: Some("did:key:zRuntimeB".to_string()),
             },
@@ -756,6 +762,9 @@ mod tests {
         );
 
         let tampered_members = serde_json::to_vec(&vec![InitialMember {
+            hub_id: None,
+            identity_key: None,
+            name: None,
             principal_did: "prin_alice".to_string(),
             runtime_id: Some("did:key:zRuntimeAttacker".to_string()),
         }])

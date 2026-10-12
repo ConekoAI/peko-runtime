@@ -406,7 +406,7 @@ impl RuntimeAuthority {
 
     /// Name-keyed variant of [`shared_config_write`] for IPC
     /// `PrincipalGrantPermission` / `PrincipalSetStatus` /
-    /// `PrincipalSetExposure` / `PrincipalUpdate`, where the
+    /// `PrincipalRegister` / `PrincipalUpdate`, where the
     /// caller's `PrincipalId` may not round-trip through
     /// `lookup_principal_name` (e.g. the principal's on-disk
     /// `did = None` because it was created via the CLI default).

@@ -45,6 +45,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("Workflow", false),
         ("ChannelSend", false),
         ("ChannelRead", true),
+        ("Contacts", true),
         ("Task", false),
         ("Plan", false),
         ("Cron", false),
@@ -78,7 +79,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 19);
+    assert_eq!(actual.len(), 20);
     for retired in [
         "TaskCreate",
         "TaskGet",
@@ -837,7 +838,7 @@ async fn failed_calls_are_tool_errors() {
         ),
         (
             "ChannelSend",
-            json!({"channel":"chan_zzzzzzzz","text":"hi"}),
+            json!({"to":"chan_zzzzzzzz","text":"hi"}),
             "ChannelSend to chan_zzzzzzzz failed: channel not found",
         ),
     ] {

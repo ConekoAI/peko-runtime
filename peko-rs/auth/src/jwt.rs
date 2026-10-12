@@ -485,6 +485,10 @@ impl JwtValidator {
             }
         }
 
+        if let Some(kind) = claims.kind.as_deref() {
+            peko_subject::Subject::from_bridge_claim(kind, &claims.sub)
+                .map_err(|_| JwtError::InvalidFormat)?;
+        }
         // Verify signature
         self.verify_signature(token, &header, &claims).await?;
 
@@ -590,7 +594,11 @@ impl JwtValidator {
     /// Build a CallerContext from a validated JWT.
     #[must_use]
     pub fn to_caller(validated: ValidatedJwt) -> CallerContext {
-        CallerContext::from_jwt(validated.sub)
+        if validated.kind.as_deref() == Some("visitor") {
+            CallerContext::from_visitor_jwt(validated.sub)
+        } else {
+            CallerContext::from_jwt(validated.sub)
+        }
     }
 }
 

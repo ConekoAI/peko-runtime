@@ -280,6 +280,8 @@ mod tests {
         .unwrap();
         manager
             .create(PrincipalConfig {
+                hub_id: None,
+                actor_key: None,
                 name: name.to_string(),
                 id: None,
                 did: None,
@@ -324,6 +326,10 @@ mod tests {
                     Arc::new(DefaultPrincipalRouterFactory),
                     crate::async_exec::executor::standalone_inbox_registry(),
                 )
+                .with_identity_vault(Arc::new(crate::common::vault::Vault::for_test(
+                    &tmp.path().join("identity-vault"),
+                    "cron-fixture-key",
+                )))
                 .with_tooling(tool_runtime.tooling().clone())
                 .with_resolver(llm),
             );

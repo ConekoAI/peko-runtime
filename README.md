@@ -1,5 +1,13 @@
 # Peko 🐱
 
+Actors have runtime-local IDs and optional Hub IDs. Local operation needs no Hub
+login or principal registration. Use `peko login --api-key KEY` for a human account
+and `peko register NAME [--public]` for online principal access. Agent references
+are `principal:local:<id>` / `principal:hub:<UUID>` (and equivalent user/visitor
+scopes); Contacts exposes both. Conversation sessions bind to channels. See
+[ADR-073](docs/architecture/adr/ADR-073-actor-addresses-and-conversation-bindings.md).
+
+
 **Lightweight Multi-Peko Runtime**
 
 Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, peko-to-peko messaging over channels, per-peer long-running threads, and a unified extension architecture. Peko is the only top-level runtime actor (ADR-041); roles are thin Markdown templates inside a peko. Sessions are an internal storage noun (ADR-042) and are not surfaced in the CLI.
@@ -168,7 +176,7 @@ peko credential list --namespace llm
 peko model test my-model
 
 # PekoHub login (separate flow)
-peko login --api-key ph_xxx --registry https://hub.example.com
+peko login --api-key ph_xxx --hub https://hub.example.com
 peko logout
 ```
 

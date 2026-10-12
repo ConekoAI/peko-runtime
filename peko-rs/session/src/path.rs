@@ -461,6 +461,7 @@ mod tests {
             title: None,
             parent_session_id: parent,
             trigger: "user".to_string(),
+            channel_id: None,
             peer_type: None,
             peer_id: None,
             slug: slug.map(String::from),

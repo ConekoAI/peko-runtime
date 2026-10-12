@@ -6,22 +6,16 @@
 //! over the tunnel. The hub-side surface is shipped via pekohub#14
 //! (merged Jun 19 2026, commit `2995164`):
 //!
-//!   * `GET /v1/principals/by-did/:did`
+//!   * `GET /v1/principals/by-hub-id/:did`
 //!   * `GET /v1/principals/by-handle/:owner/:principal_name`
 //!
 //! ## Authentication
 //!
-//! Slice B's v1 hits the hub **anonymously**, which limits cross-runtime
-//! a2a to agents with `exposure: "public"` — the hub's
-//! `principalCanAccess` short-circuits on public exposure but otherwise
-//! requires a `Subject` to gate. There is no shared HTTP credential
-//! between the runtime and the hub today: the runtime authenticates
-//! over the WebSocket tunnel via Ed25519 + nonce challenge, not over
-//! HTTP. Slice B documents this and surfaces a clean `Forbidden` error
-//! when a private-exposure target is resolved anonymously, so a
-//! follow-up (cross-repo, gated on a runtime-attested JWT — see
-//! pekohub PR #15's discussion) can lift the limitation without
-//! changing this client's call sites.
+//! Public and unlisted lookups work anonymously. ADR-073 principal-scoped
+//! requests carry a short-lived EdDSA directory proof bound to the request
+//! path. The Hub verifies the caller DID and supplies private routing metadata;
+//! the recipient runtime checks its own grants before accepting a private DM.
+//! User-facing HTTP clients continue using Hub account authentication.
 //!
 //! ## Abstraction
 //!
@@ -40,7 +34,7 @@ use thiserror::Error;
 
 use peko_auth::Subject;
 
-/// Hit payload returned by the hub's `/v1/principals/by-did/:did` and
+/// Hit payload returned by the hub's `/v1/principals/by-hub-id/:did` and
 /// `/v1/principals/by-handle/:owner/:principal_name` endpoints.
 ///
 /// Field names match pekohub's `PrincipalTargetResolution` (camelCase on the
@@ -56,6 +50,11 @@ pub struct AgentResolution {
     /// (`AuditEvent.target_instance_id`) but not strictly required to
     /// dispatch.
     pub instance_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub hub_id: String,
+    pub local_id: String,
+    pub identity_key: String,
     /// Per-agent stable DID. Pekohub returns the empty string for the
     /// by-handle path when the target row predates the `agent_did`
     /// column (pre-#34 runtime); the by-did path never returns empty
@@ -81,8 +80,8 @@ pub struct AgentResolution {
 pub enum ResolvedExposure {
     Public,
     Private,
-    Unlisted,
-    Unexposed,
+
+    LocalOnly,
 }
 
 /// Errors the directory client surfaces. The variants are deliberately
@@ -95,8 +94,7 @@ pub enum DirectoryError {
     /// 404 from the hub: the target spec resolves to nothing.
     #[error("agent directory: target not found")]
     NotFound,
-    /// 403 from the hub: the caller (anonymous today, Agent-attested
-    /// later) does not pass `principalCanAccess` on the target.
+    /// 403 from the hub: the caller does not pass `principalCanAccess` on the target.
     #[error("agent directory: caller not permitted to resolve target")]
     Forbidden,
     /// 400 from the hub: malformed target spec. This indicates a bug
@@ -119,8 +117,25 @@ pub enum DirectoryError {
 /// registry without re-allocating the underlying HTTP client.
 #[async_trait]
 pub trait AgentDirectory: Send + Sync {
+    /// Directory identity is proved by the requesting principal, not by a Hub
+    /// user credential. Resolution grants routing only; the recipient checks ACLs.
+    async fn resolve_by_hub_id_as(
+        &self,
+        did: &str,
+        _caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.resolve_by_hub_id(did).await
+    }
+    async fn resolve_by_handle_as(
+        &self,
+        owner: &str,
+        name: &str,
+        _caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.resolve_by_handle(owner, name).await
+    }
     /// Resolve a `did:peko:agent:...` to its host.
-    async fn resolve_by_did(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
+    async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
 
     /// Resolve a `{owner, principal_name}` handle to its host. The
     /// `owner` segment is a user namespace today.
@@ -140,6 +155,7 @@ pub struct HubAgentDirectoryClient {
     /// (see `From<&PekoHubCredential>`).
     base_url: String,
     http: reqwest::Client,
+    principal_keys: Option<std::sync::Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>>,
 }
 
 impl HubAgentDirectoryClient {
@@ -149,11 +165,12 @@ impl HubAgentDirectoryClient {
     ///
     /// `base_url` should be the HTTPS base, e.g. `https://pekohub.org`,
     /// not the WebSocket URL. The two endpoints are appended as
-    /// `/v1/principals/by-did/...` / `/v1/principals/by-handle/...`.
+    /// `/v1/principals/by-hub-id/...` / `/v1/principals/by-handle/...`.
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
+            principal_keys: None,
             // Reasonable default; the call-site adds per-request
             // timeouts via the outbound a2a policy layer.
             http: reqwest::Client::builder()
@@ -161,6 +178,51 @@ impl HubAgentDirectoryClient {
                 .build()
                 .expect("reqwest client builder must not fail with default settings"),
         }
+    }
+
+    pub fn with_principal_keys(
+        mut self,
+        keys: std::sync::Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>,
+    ) -> Self {
+        self.principal_keys = Some(keys);
+        self
+    }
+
+    async fn request_as(
+        &self,
+        path: &str,
+        caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use ed25519_dalek::Signer as _;
+        let url = format!("{}{path}", self.base_url);
+        let mut request = self.http.get(&url);
+        if caller.starts_with("did:key:") {
+            if let Some(keys) = &self.principal_keys {
+                let key = keys.signing_key_for_did(caller).await.ok_or_else(|| {
+                    DirectoryError::Transport("principal signing key unavailable".into())
+                })?;
+                let now = chrono::Utc::now().timestamp();
+                let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+                let payload = URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&serde_json::json!({
+                        "sub":caller,"aud":"peko-directory-v1","path":path,"iat":now,"exp":now+60
+                    }))
+                    .map_err(|e| DirectoryError::Transport(e.to_string()))?,
+                );
+                let input = format!("{header}.{payload}");
+                let signature = URL_SAFE_NO_PAD.encode(key.sign(input.as_bytes()).to_bytes());
+                request = request.header(
+                    "authorization",
+                    format!("PekoPrincipal {input}.{signature}"),
+                );
+            }
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DirectoryError::Transport(e.to_string()))?;
+        Self::handle_response(response).await
     }
 
     /// Build a client from the runtime's stored PekoHub credential by
@@ -225,12 +287,29 @@ impl HubAgentDirectoryClient {
 
 #[async_trait]
 impl AgentDirectory for HubAgentDirectoryClient {
-    async fn resolve_by_did(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
+    async fn resolve_by_hub_id_as(
+        &self,
+        did: &str,
+        caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.request_as(&format!("/v1/principals/by-hub-id/{did}"), caller)
+            .await
+    }
+    async fn resolve_by_handle_as(
+        &self,
+        owner: &str,
+        name: &str,
+        caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.request_as(&format!("/v1/principals/by-handle/{owner}/{name}"), caller)
+            .await
+    }
+    async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
         // The hub regex accepts `[\w:.\-]{1,512}` for the :did segment;
         // bad shapes round-trip to 400. We do NOT pre-validate here:
         // surfacing the hub's 400 unmodified gives the calling agent
         // a single source of truth for "what's a valid DID".
-        let url = format!("{base}/v1/principals/by-did/{did}", base = self.base_url);
+        let url = format!("{base}/v1/principals/by-hub-id/{did}", base = self.base_url);
         let resp = self
             .http
             .get(&url)
@@ -314,14 +393,14 @@ pub mod fake {
             }
         }
 
-        pub fn register_did(&self, did: impl Into<String>, resolution: AgentResolution) {
+        pub fn register_hub_id(&self, did: impl Into<String>, resolution: AgentResolution) {
             self.by_did
                 .lock()
                 .unwrap()
                 .insert(did.into(), Ok(resolution));
         }
 
-        pub fn register_did_err(&self, did: impl Into<String>, err: DirectoryErrorKind) {
+        pub fn register_hub_id_err(&self, did: impl Into<String>, err: DirectoryErrorKind) {
             self.by_did.lock().unwrap().insert(did.into(), Err(err));
         }
 
@@ -358,7 +437,7 @@ pub mod fake {
 
     #[async_trait]
     impl AgentDirectory for FakeAgentDirectory {
-        async fn resolve_by_did(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
+        async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
             self.by_did
                 .lock()
                 .unwrap()
@@ -396,6 +475,10 @@ mod tests {
 
     fn sample_resolution() -> AgentResolution {
         AgentResolution {
+            name: None,
+            hub_id: "12345678-1234-4234-8234-123456789abc".into(),
+            local_id: "prin_target".into(),
+            identity_key: "actor-key".into(),
             runtime_id: "did:key:zHostingRuntime".to_string(),
             instance_id: "inst-abc-123".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
@@ -413,6 +496,7 @@ mod tests {
     #[test]
     fn test_agent_resolution_decodes_pekohub_payload() {
         let body = r#"{
+            "hubId": "12345678-1234-4234-8234-123456789abc", "localId": "prin_target", "identityKey": "actor-key",
             "runtimeId": "did:key:zHostingRuntime",
             "instanceId": "inst-abc-123",
             "agentDid": "did:peko:agent:target-keyhash",
@@ -430,6 +514,7 @@ mod tests {
     #[test]
     fn test_agent_resolution_ignores_retired_transport_keys() {
         let body = r#"{
+            "hubId": "12345678-1234-4234-8234-123456789abc", "localId": "prin_target", "identityKey": "actor-key",
             "runtimeId": "did:key:zRuntime",
             "instanceId": "inst-x",
             "agentDid": "did:peko:agent:x",
@@ -460,7 +545,8 @@ mod tests {
         ] {
             let body = format!(
                 r#"{{
-                    "runtimeId": "r",
+                    "hubId": "12345678-1234-4234-8234-123456789abc", "localId": "prin_target", "identityKey": "actor-key",
+            "runtimeId": "r",
                     "instanceId": "i",
                     "agentDid": "did:peko:agent:x",
                     "ownerPrincipal": {kind_json},
@@ -483,8 +569,7 @@ mod tests {
         for (json, expected) in [
             ("\"public\"", ResolvedExposure::Public),
             ("\"private\"", ResolvedExposure::Private),
-            ("\"unexposed\"", ResolvedExposure::Unexposed),
-            ("\"unlisted\"", ResolvedExposure::Unlisted),
+            ("\"local_only\"", ResolvedExposure::LocalOnly),
         ] {
             let decoded: ResolvedExposure = serde_json::from_str(json).unwrap();
             assert_eq!(decoded, expected);
@@ -539,9 +624,9 @@ mod tests {
     #[tokio::test]
     async fn test_fake_directory_returns_registered_hit() {
         let fake = FakeAgentDirectory::new();
-        fake.register_did("did:peko:agent:x", sample_resolution());
+        fake.register_hub_id("did:peko:agent:x", sample_resolution());
 
-        let res = fake.resolve_by_did("did:peko:agent:x").await.unwrap();
+        let res = fake.resolve_by_hub_id("did:peko:agent:x").await.unwrap();
         assert_eq!(res, sample_resolution());
     }
 
@@ -551,28 +636,28 @@ mod tests {
     async fn test_fake_directory_unknown_did_returns_not_found() {
         let fake = FakeAgentDirectory::new();
         assert!(matches!(
-            fake.resolve_by_did("did:peko:agent:nope").await,
+            fake.resolve_by_hub_id("did:peko:agent:nope").await,
             Err(DirectoryError::NotFound)
         ));
     }
 
-    /// `register_did_err` lets tests inject the denied / bad-request
+    /// `register_hub_id_err` lets tests inject the denied / bad-request
     /// / transport branches.
     #[tokio::test]
     async fn test_fake_directory_propagates_registered_error_kind() {
         let fake = FakeAgentDirectory::new();
-        fake.register_did_err("did:peko:agent:locked", DirectoryErrorKind::Forbidden);
-        fake.register_did_err(
+        fake.register_hub_id_err("did:peko:agent:locked", DirectoryErrorKind::Forbidden);
+        fake.register_hub_id_err(
             "did:peko:agent:malformed",
             DirectoryErrorKind::BadRequest("bad shape".to_string()),
         );
 
         assert!(matches!(
-            fake.resolve_by_did("did:peko:agent:locked").await,
+            fake.resolve_by_hub_id("did:peko:agent:locked").await,
             Err(DirectoryError::Forbidden)
         ));
         let err = fake
-            .resolve_by_did("did:peko:agent:malformed")
+            .resolve_by_hub_id("did:peko:agent:malformed")
             .await
             .unwrap_err();
         match err {

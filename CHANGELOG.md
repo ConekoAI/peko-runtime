@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Dual actor identities (ADR-073, 2026-10-13)
+
+- Give every actor a stable local ID and optional verified Hub ID; resolve either
+  scoped reference consistently in Contacts, channel membership, sends and reads.
+- Keep offline users, authenticated accounts and visitors distinct. Verify account
+  login, persist it separately from tunnel ownership, and apply account switches and
+  logout to the next request without rewriting principal identity.
+- Replace automatic publication with explicit private/public principal registration
+  and correlated Hub receipts. Retire DID addresses, old visibility states and
+  unsigned principal transport paths.
+- Bind conversation sessions only to channels. Preserve pair DMs through registration
+  and host changes using immutable actor keys; expose current member profiles and
+  both IDs in agent context. Require ChannelSend.to; reject its retired channel alias.
+- Export and restore vault-backed signing credentials in portable snapshots; key
+  rotation creates a new local actor. Synchronize remote group additions and leaves,
+  and enforce private chat grants on both DM and group ingress.
+
 ### Tool function review (2026-10-11)
 
 - Fix every foreground tool call being capped at five minutes: the

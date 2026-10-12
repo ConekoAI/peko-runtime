@@ -60,7 +60,7 @@ builtin_manifest! {
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
-        "Task", "Plan", "ChannelSend", "ModelList"
+        "Task", "Plan", "ChannelSend", "Contacts", "ModelList"
     ];
     ASYNC_TOOL_NAMES: Principal, Async, false => ["Async"];
 }
@@ -235,6 +235,12 @@ pub(crate) async fn install_principal_services(
         tools.push(Arc::new(ModelListTool::new(Arc::downgrade(&catalog))));
     }
     if let Some(did) = bindings.caller_did {
+        if let Some(port) = tooling.services().channel_port() {
+            tools.push(Arc::new(channel::contacts::ContactsTool::new(
+                port,
+                Arc::downgrade(tooling.services()),
+            )));
+        }
         if let Some(tool) = channel::build_channel_send_tool(tooling, did) {
             tools.push(tool);
         }

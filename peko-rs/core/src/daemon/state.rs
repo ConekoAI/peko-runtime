@@ -6,6 +6,8 @@
 use crate::daemon::background_runtime::{
     BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
 };
+use peko_channel::ChannelPort;
+use peko_subject::Subject;
 // Sprint 9 Commit 3: chat-gateway adapter framework retired.
 // `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
 // ingress flows exclusively through per-peer standing children under
@@ -73,7 +75,6 @@ pub(crate) struct AppState {
     /// logged into pekohub. Resolved from the pekohub credential at
     /// build time; the auth layer uses it to derive the local
     /// terminal's attribution identity.
-    pub hub_owner: Option<String>,
 
     /// Observability hub for audit, metrics, and tracing
     observability: Arc<Observability>,
@@ -795,6 +796,24 @@ impl AppState {
             }
         };
 
+        // Local addressing exists before any Hub credential or tunnel startup.
+        tooling
+            .services()
+            .set_cross_runtime_a2a_ctx(Arc::new(crate::tunnel::CrossRuntimeA2aCtx {
+                directory: Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
+                    "local",
+                    Arc::clone(&principal_manager),
+                    Arc::new(crate::tunnel::local_directory::OfflineDirectory),
+                )),
+                caller_runtime_id: "local".into(),
+                principal_manager: Arc::clone(&principal_manager),
+                channel_port: Arc::clone(
+                    tunnel_channel_port
+                        .as_ref()
+                        .expect("channel port constructed above"),
+                ),
+            }));
+
         // F19: now that `principal_manager` is built, wire it into the
         // global MCP manager so MCP sampling can resolve per-principal
         // quota meters for the server's `SamplingRequestHandler`.
@@ -849,21 +868,6 @@ impl AppState {
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        // ADR-057: resolve the pekohub owner id (the hub user that
-        // owns this runtime's registration) when the runtime is
-        // logged into pekohub. A missing or unreadable credential is
-        // non-fatal — the local terminal then attributes as
-        // `user:local` (not logged in).
-        let hub_owner = (|| {
-            let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&config_dir);
-            if !cred_path.exists() {
-                return None;
-            }
-            crate::tunnel::PekoHubCredential::from_file(&cred_path)
-                .ok()
-                .and_then(|cred| cred.owner_id)
-        })();
-
         // Phase 4 (agent-session paradigm sprint): the channel
         // passive-binding supervisor. Owns subscriber spawning (boot +
         // post-boot hooks) and per-principal bound-session turn
@@ -905,7 +909,6 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
-            hub_owner,
             // Phase A: carry the typed resolver forward so starters
             // and IPC handlers can reach `extensions_root()`,
             // `principal_layout(name).local.root`, etc. without
@@ -1301,8 +1304,11 @@ impl AppState {
     /// runtime is logged into pekohub. The auth layer folds this into
     /// local callers' attribution identity.
     #[must_use]
-    pub fn hub_owner(&self) -> Option<String> {
-        self.hub_owner.clone()
+    pub fn hub_user_id(&self) -> Option<String> {
+        crate::tunnel::HubLogin::load(self.path_resolver.config_dir())
+            .ok()
+            .flatten()
+            .map(|login| login.user_id)
     }
 
     /// Build a `StarterContext` for use by runtime starters.
@@ -1646,7 +1652,12 @@ impl AppState {
         // Directory: hub HTTP client + local-first wrap so
         // same-runtime principals resolve without the hub.
         let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
-            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("HubAgentDirectoryClient::from_credential: {e}"))?
+            .with_principal_keys(Arc::new(VaultPrincipalSigningKeys {
+                vault: Arc::clone(&self.vault),
+                principal_manager: Arc::clone(&self.principal_manager),
+                cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }));
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
                 cred.runtime_id.clone(),
@@ -2054,14 +2065,6 @@ impl crate::tunnel::TunnelHost for AppState {
         Arc::clone(&self.tunnel_channel_port)
     }
 
-    /// ADR-058 post-review cutoff gate: wired from the auth config
-    /// (`auth_config.toml` → `accept_asserted_remote_channel_authors`,
-    /// rollout default `true`). Flipping it to `false` refuses
-    /// runtime-vouched (non-`did:key`) channel authors.
-    fn accept_asserted_remote_channel_authors(&self) -> bool {
-        self.auth_config.accept_asserted_remote_channel_authors()
-    }
-
     /// Sprint 3 Phase 12a: cross-runtime DM mirror bootstrap. The
     /// dispatcher calls this after the invite signature verifies (see
     /// the trait docs for the contract).
@@ -2093,6 +2096,162 @@ impl crate::tunnel::TunnelHost for AppState {
             return Ok(());
         };
 
+        let target_actor = self
+            .tunnel_channel_port
+            .actor_info(&Subject::from(&principal.id))
+            .await;
+        let addressed = invite
+            .initial_members
+            .iter()
+            .find(|m| m.runtime_id.is_none())
+            .expect("invitee checked above");
+        anyhow::ensure!(
+            target_actor.hub_id.is_some()
+                && addressed.hub_id == target_actor.hub_id
+                && addressed.identity_key.as_deref() == Some(target_actor.identity_key.as_str()),
+            "Invite target is not this registered actor"
+        );
+        let creator_hub = invite
+            .creator
+            .strip_prefix("principal:hub:")
+            .ok_or_else(|| anyhow::anyhow!("Remote invites require a registered Hub actor"))?;
+        let directory = self
+            .tool_runtime
+            .tooling()
+            .services()
+            .cross_runtime_a2a_ctx()
+            .and_then(|ctx| Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(ctx).ok())
+            .ok_or_else(|| anyhow::anyhow!("Hub directory unavailable"))?;
+        let source = directory
+            .directory
+            .resolve_by_hub_id_as(creator_hub, &principal.did().await.0)
+            .await?;
+        anyhow::ensure!(
+            source.hub_id == creator_hub
+                && source.agent_did == invite.creator_did
+                && source.runtime_id == invite.source_runtime_id,
+            "Invite Hub identity does not match its signed source"
+        );
+        let source_actor = self
+            .tunnel_channel_port
+            .register_actor(
+                &Subject::Principal(format!("local_{creator_hub}").into()),
+                Some(creator_hub),
+                Some(&source.agent_did),
+                Some(&source.identity_key),
+                None,
+                if source.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public {
+                    "public"
+                } else {
+                    "private"
+                },
+            )
+            .await?;
+        for member in invite
+            .initial_members
+            .iter()
+            .filter(|m| m.runtime_id.is_some())
+        {
+            if member.principal_did.starts_with("did:key:") {
+                let hub = member
+                    .hub_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("Principal membership requires a Hub ID"))?;
+                let resolved = directory
+                    .directory
+                    .resolve_by_hub_id_as(hub, &principal.did().await.0)
+                    .await?;
+                anyhow::ensure!(
+                    resolved.agent_did == member.principal_did && resolved.hub_id == hub,
+                    "Membership Hub identity does not match its signing key"
+                );
+                self.tunnel_channel_port
+                    .register_actor(
+                        &Subject::Principal(
+                            if resolved.runtime_id == self.runtime_identity.runtime_did {
+                                resolved.local_id.clone()
+                            } else {
+                                format!("local_{hub}")
+                            }
+                            .into(),
+                        ),
+                        Some(hub),
+                        Some(&resolved.agent_did),
+                        Some(&resolved.identity_key),
+                        member.name.as_deref(),
+                        if resolved.exposure
+                            == crate::tunnel::hub_directory::ResolvedExposure::Public
+                        {
+                            "public"
+                        } else {
+                            "private"
+                        },
+                    )
+                    .await?;
+            } else if let Ok(subject) = member.principal_did.parse::<Subject>() {
+                if matches!(subject, Subject::User(_) | Subject::Visitor(_)) {
+                    let hub = subject.subject_id().strip_prefix("hub:").ok_or_else(|| {
+                        anyhow::anyhow!("Remote human membership requires a Hub reference")
+                    })?;
+                    let local = format!("{}:local_{hub}", subject.kind()).parse::<Subject>()?;
+                    self.tunnel_channel_port
+                        .register_actor(
+                            &local,
+                            Some(hub),
+                            None,
+                            None,
+                            member.name.as_deref(),
+                            "registered",
+                        )
+                        .await?;
+                }
+            }
+        }
+        if invite.channel_id.starts_with("dm_") {
+            let me = self
+                .tunnel_channel_port
+                .actor_info(&Subject::from(&principal.id))
+                .await;
+            let expected =
+                peko_channel::dm_channel_id(&me.identity_key, &source_actor.identity_key);
+            anyhow::ensure!(
+                invite.channel_id == expected.as_str(),
+                "DM invite does not identify its participant pair"
+            );
+        }
+        // Registration gates every remote channel, including group invitations.
+        let config = principal.config.read().await;
+        anyhow::ensure!(
+            config.hub_id.is_some() && config.exposure != peko_auth::Exposure::LocalOnly,
+            "Channel target is local-only"
+        );
+        let already_member = self
+            .tunnel_channel_port
+            .is_remote_member(
+                &peko_channel::ChannelId(invite.channel_id.clone()),
+                &invite.source_runtime_id,
+                &invite.creator_did,
+            )
+            .await
+            .unwrap_or(false);
+        if config.exposure == peko_auth::Exposure::Private && !already_member {
+            let mut resource_config = config.clone();
+            for grant in &mut resource_config.permissions {
+                grant.subject = self
+                    .tunnel_channel_port
+                    .actor_info(&grant.subject)
+                    .await
+                    .subject();
+            }
+            peko_auth::ownership::check_permission(
+                &peko_auth::ownership::principal_resource(&resource_config),
+                peko_auth::ownership::Permission::Chat,
+                &source_actor.subject(),
+            )
+            .map_err(|e| anyhow::anyhow!("Channel invite denied: {e}"))?;
+        }
+        drop(config);
+
         // 2. DM invites (binding marker present): CHILD-ONLY ensure
         //    of the receiver's peer child for the creator and derive
         //    the receiver-local binding from the child's real slug.
@@ -2103,9 +2262,6 @@ impl crate::tunnel::TunnelHost for AppState {
         //    `-N` slug suffixes are runtime-local.
         let binding = match invite.passive_binding.as_ref() {
             Some(_) => {
-                let peer = peko_auth::Subject::Principal(peko_subject::PrincipalDID(
-                    invite.creator_did.clone(),
-                ));
                 let (owner, agent_name) = {
                     let config = principal.config.read().await;
                     (
@@ -2122,16 +2278,18 @@ impl crate::tunnel::TunnelHost for AppState {
                     &agent_name,
                     &owner,
                 );
-                let child_id = crate::principal::peer_children::ensure_peer_child(
+                let child_id = crate::principal::peer_children::ensure_channel_child(
                     &agent_name,
-                    &peer,
+                    &invite.channel_id,
+                    &crate::principal::peer_children::peer_child_slug(&source_actor.subject())?,
+                    &source_actor.subject().to_string(),
                     &session_manager,
                 )
                 .await?;
                 let slug = crate::principal::peer_dm::peer_child_slug_readback(
                     &session_manager,
                     &child_id,
-                    &peer,
+                    &source_actor.subject(),
                 )
                 .await?;
                 Some(format!("/{slug}"))
@@ -2146,7 +2304,7 @@ impl crate::tunnel::TunnelHost for AppState {
         self.tunnel_channel_port
             .join_remote(
                 &channel,
-                &invite.creator,
+                &invite.creator_did,
                 &invite.name,
                 &invite.initial_members,
                 &principal.id,
@@ -3187,6 +3345,23 @@ mod tests {
         // uptime_seconds() returns u64, so it's always >= 0.
         // We just verify it doesn't panic and is reasonable.
         let _ = uptime2;
+    }
+
+    #[tokio::test]
+    async fn local_addressing_is_installed_before_tunnel_setup() {
+        let state = create_test_state().await;
+        let context = state
+            .tool_runtime
+            .tooling()
+            .services()
+            .cross_runtime_a2a_ctx()
+            .expect("local directory is always installed");
+        let context = Arc::downcast::<crate::tunnel::CrossRuntimeA2aCtx>(context).unwrap();
+        assert_eq!(context.caller_runtime_id, "local");
+        assert!(Arc::ptr_eq(
+            &context.principal_manager,
+            &state.principal_manager
+        ));
     }
 
     #[tokio::test]

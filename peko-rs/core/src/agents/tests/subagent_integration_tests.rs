@@ -2587,9 +2587,9 @@ async fn peer_bound_run_delivers_reply_via_surface() {
 
     #[async_trait::async_trait]
     impl PeerTurnSurface for RecordingSurface {
-        async fn peer_surface(&self, session_id: &str) -> Option<(String, String)> {
+        async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)> {
             self.probed.lock().unwrap().push(session_id.to_string());
-            Some(("user:local".to_string(), "chan_test".to_string()))
+            Some((Some("user:local".to_string()), "chan_test".to_string()))
         }
 
         async fn post_reply(&self, channel_id: &str, text: &str) {

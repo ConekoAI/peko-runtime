@@ -93,14 +93,11 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Tunnel(cmd) => tunnel::handle_tunnel(cmd, paths, json).await,
         Commands::Quota(cmd) => quota::handle_quota(cmd, paths, json).await,
         Commands::Audit(cmd) => audit::handle_audit(cmd, paths).await,
-        Commands::Login { registry, api_key } => {
-            let host = registry.unwrap_or_else(|| "pekohub.ai".to_string());
-            auth::handle_login(paths, &host, api_key)
+        Commands::Login { hub, api_key } => {
+            let host = hub.unwrap_or_else(|| "https://pekohub.org".to_string());
+            auth::handle_login(paths, &host, api_key).await
         }
-        Commands::Logout { registry } => {
-            let host = registry.unwrap_or_else(|| "pekohub.ai".to_string());
-            auth::handle_logout(paths, &host)
-        }
+        Commands::Logout { hub } => auth::handle_logout(paths, hub.as_deref()),
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {
             // Render to a buffer first, then write to stdout. This keeps

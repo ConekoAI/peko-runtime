@@ -355,6 +355,9 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 
     let announce = TunnelMessage::InstanceAnnounce {
         payload: InstanceAnnouncePayload {
+            registration_id: None,
+            local_id: String::new(),
+            identity_key: String::new(),
             id: instance_id.clone(),
             instance_type: InstanceType::Agent,
             name: "test-agent".to_string(),
@@ -583,6 +586,9 @@ async fn test_instance_announce_registers_directory_entry() {
 
     let announce = TunnelMessage::InstanceAnnounce {
         payload: InstanceAnnouncePayload {
+            registration_id: None,
+            local_id: String::new(),
+            identity_key: String::new(),
             id: instance_id,
             instance_type: InstanceType::Principal,
             name: "transport-agent".to_string(),

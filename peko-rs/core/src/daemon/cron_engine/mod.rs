@@ -1667,6 +1667,8 @@ mod tests {
 
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,

@@ -20,6 +20,7 @@
 
 pub mod channel_read;
 pub mod channel_send;
+pub mod contacts;
 pub use channel_read::ChannelReadTool;
 pub use channel_send::{
     ChannelSendArgs, ChannelSendResult, ChannelSendTool, CHANNEL_SEND_TOOL_NAME,

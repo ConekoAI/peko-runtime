@@ -14,9 +14,6 @@ pub struct AuthConfig {
     enable_api_key: bool,
     trusted_issuers: Vec<String>,
     rate_limit: RateLimitConfig,
-    /// ADR-058 post-review cutoff gate: accept runtime-vouched
-    /// ("asserted-remote") channel authors. See `AuthConfigFile`.
-    accept_asserted_remote_channel_authors: bool,
     /// Path to the auth config file
     config_path: PathBuf,
     /// Path to the API keys file
@@ -80,7 +77,6 @@ impl AuthConfig {
                 burst_jwt: file.rate_limit.burst_jwt,
                 burst_api_key: file.rate_limit.burst_api_key,
             },
-            accept_asserted_remote_channel_authors: file.accept_asserted_remote_channel_authors,
             config_path,
             api_keys_path,
             pekohub_path,
@@ -101,7 +97,6 @@ impl AuthConfig {
                 burst_jwt: self.rate_limit.burst_jwt,
                 burst_api_key: self.rate_limit.burst_api_key,
             },
-            accept_asserted_remote_channel_authors: self.accept_asserted_remote_channel_authors,
         };
 
         if let Some(parent) = self.config_path.parent() {
@@ -147,16 +142,6 @@ impl AuthConfig {
     #[must_use]
     pub fn has_any_remote_auth_method(&self) -> bool {
         self.enable_pekohub_jwt || self.enable_api_key
-    }
-
-    /// ADR-058 post-review cutoff gate: whether inbound cross-runtime
-    /// channel envelopes authored by NON-`did:key` principals
-    /// (runtime-vouched / "asserted-remote") are accepted. Rollout
-    /// default `true`; `false` enforces the ADR's post-migration
-    /// refusal.
-    #[must_use]
-    pub fn accept_asserted_remote_channel_authors(&self) -> bool {
-        self.accept_asserted_remote_channel_authors
     }
 
     /// Get the path to the API keys file
@@ -250,7 +235,6 @@ mod tests {
             enable_api_key: false,
             trusted_issuers: vec![],
             rate_limit: RateLimitConfig::default(),
-            accept_asserted_remote_channel_authors: true,
             config_path: PathBuf::from("/tmp/auth_config.toml"),
             api_keys_path: PathBuf::from("/tmp/api_keys.toml"),
             pekohub_path: PathBuf::from("/tmp/pekohub.toml"),
@@ -267,7 +251,6 @@ mod tests {
             enable_api_key: false,
             trusted_issuers: vec![],
             rate_limit: RateLimitConfig::default(),
-            accept_asserted_remote_channel_authors: true,
             config_path: PathBuf::from("/tmp/auth_config.toml"),
             api_keys_path: PathBuf::from("/tmp/api_keys.toml"),
             pekohub_path: PathBuf::from("/tmp/pekohub.toml"),
@@ -284,7 +267,6 @@ mod tests {
             enable_api_key: false,
             trusted_issuers: vec!["pekohub".to_string()],
             rate_limit: RateLimitConfig::default(),
-            accept_asserted_remote_channel_authors: true,
             config_path: PathBuf::from("/tmp/auth_config.toml"),
             api_keys_path: PathBuf::from("/tmp/api_keys.toml"),
             pekohub_path: PathBuf::from("/tmp/pekohub.toml"),
@@ -301,7 +283,6 @@ mod tests {
             enable_api_key: true,
             trusted_issuers: vec![],
             rate_limit: RateLimitConfig::default(),
-            accept_asserted_remote_channel_authors: true,
             config_path: PathBuf::from("/tmp/auth_config.toml"),
             api_keys_path: PathBuf::from("/tmp/api_keys.toml"),
             pekohub_path: PathBuf::from("/tmp/pekohub.toml"),

@@ -282,12 +282,19 @@ async fn handle_tunnel_setup(
     let credential = peko_core::tunnel::PekoHubCredential {
         url: hub_url.clone(),
         runtime_id: runtime_did.clone(),
-        owner_id: hub_owner_id,
+        owner_id: hub_owner_id.clone(),
         tls: None,
     };
 
     // Save credential to file
     credential.save_to_file(&cred_path)?;
+    if let Some(user_id) = hub_owner_id {
+        peko_core::tunnel::HubLogin {
+            user_id,
+            hub_url: http_url.clone(),
+        }
+        .save(&paths.config_dir)?;
+    }
 
     println!("✅ PekoHub tunnel configured successfully.");
     println!("   Credential file: {}", cred_path.display());

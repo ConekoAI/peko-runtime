@@ -159,7 +159,7 @@ async fn create_test_workspace(
 description = "E2E test principal"
 
 # PekoHub's `canChat` short-circuits to 503 Service Unavailable when
-# `instance.exposure === "unexposed"`. `InstanceExposure` defaults to
+# `instance.exposure === "local_only"`. `InstanceExposure` defaults to
 # Unexposed (`src/tunnel/protocol.rs:27-28`), so we must pin it to
 # Private here — otherwise the announce goes out as `unexposed` and
 # PekoHub rejects every chat attempt before the user/grant check.

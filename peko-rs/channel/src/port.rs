@@ -32,6 +32,88 @@ use thiserror::Error;
 /// for distributed deployments — slot in without changing call sites.
 #[async_trait]
 pub trait ChannelPort: Send + Sync + 'static {
+    /// Register local storage identity → canonical actor identity. Storage keys
+    /// remain authorization keys; callers see the returned canonical address.
+    async fn register_principal(&self, _id: &PrincipalId, _did: &str, _name: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
+        ActorInfo::local(subject, None)
+    }
+
+    /// Bind a verified Hub alias to an existing local actor. Signing keys are
+    /// transport credentials, never user-facing actor references.
+    async fn register_actor(
+        &self,
+        subject: &Subject,
+        hub_id: Option<&str>,
+        signing_did: Option<&str>,
+        identity_key: Option<&str>,
+        name: Option<&str>,
+        registration: &str,
+    ) -> Result<ActorInfo> {
+        let mut actor = ActorInfo::local(subject, name);
+        actor.hub_id = hub_id.map(str::to_owned);
+        actor.registration = registration.into();
+        actor.identity_key = identity_key
+            .or(signing_did)
+            .unwrap_or(&actor.address)
+            .into();
+        Ok(actor)
+    }
+
+    async fn known_actors(&self) -> Result<Vec<ActorInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
+        let subject: Subject = reference
+            .parse()
+            .map_err(|e| ChannelError::Adapter(format!("actor reference: {e}")))?;
+        Ok(self.actor_info(&subject).await)
+    }
+
+    async fn participants(&self, channel: &ChannelId) -> Result<Vec<ActorInfo>> {
+        let mut out = Vec::new();
+        for member in self.list_members(channel).await? {
+            out.push(self.actor_info(&member).await);
+        }
+        Ok(out)
+    }
+
+    /// A DM can bind independently to each locally hosted participant's session.
+    async fn binding_for(
+        &self,
+        channel: &ChannelId,
+        _principal: &PrincipalId,
+    ) -> Result<Option<String>> {
+        self.passive_binding(channel).await
+    }
+
+    /// Ensure an opaque pair DM and its principal-local session binding.
+    async fn ensure_dm(
+        &self,
+        principal: &PrincipalId,
+        peer: &Subject,
+        binding: &str,
+    ) -> Result<ChannelId> {
+        let me = self.actor_info(&Subject::from(principal)).await;
+        let other = self.actor_info(peer).await;
+        let id = dm_channel_id(&me.identity_key, &other.identity_key);
+        if !self.list_for_principal(principal).await?.contains(&id) {
+            self.create(
+                principal,
+                CreateOpts::runtime("direct conversation")
+                    .with_id(id.clone())
+                    .with_passive_binding(binding),
+            )
+            .await?;
+        }
+        self.invite(&id, principal, &other.subject()).await?;
+        Ok(id)
+    }
+
     /// Create a new channel. The creator is automatically added as the
     /// first member. Returns the generated [`ChannelId`].
     async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId>;
@@ -384,6 +466,91 @@ pub trait ChannelPort: Send + Sync + 'static {
         let (_tx, rx) = tokio::sync::broadcast::channel::<ChannelEvent>(1);
         rx
     }
+}
+
+/// Public, addressable identity in contact lists and channel rosters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActorInfo {
+    pub address: String,
+    pub local_id: String,
+    pub hub_id: Option<String>,
+    pub kind: String,
+    pub registration: String,
+    #[serde(skip)]
+    pub identity_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mention: Option<String>,
+}
+
+impl ActorInfo {
+    pub fn local(subject: &Subject, name: Option<&str>) -> Self {
+        let id = subject
+            .subject_id()
+            .strip_prefix("local:")
+            .unwrap_or(subject.subject_id());
+        let address = format!("{}:local:{id}", subject.kind());
+        Self {
+            local_id: id.into(),
+            hub_id: None,
+            kind: subject.kind().to_string(),
+            registration: "local_only".into(),
+            identity_key: address.clone(),
+            mention: matches!(subject, Subject::Principal(_)).then(|| format!("@{address}")),
+            address,
+            name: name.map(str::to_owned),
+        }
+    }
+    pub fn hub_address(&self) -> Option<String> {
+        self.hub_id
+            .as_ref()
+            .map(|id| format!("{}:hub:{id}", self.kind))
+    }
+    pub fn subject(&self) -> Subject {
+        format!("{}:{}", self.kind, self.local_id)
+            .parse()
+            .expect("registered actor kind")
+    }
+}
+
+/// A short mention is safe only when no other principal can own that name.
+pub fn short_name_unambiguous(roster: &[ActorInfo], name: &str, address: &str) -> bool {
+    let is_me = |p: &ActorInfo| {
+        p.address == address
+            || p.local_id
+                == address
+                    .strip_prefix("principal:local:")
+                    .or_else(|| address.strip_prefix("principal:"))
+                    .unwrap_or(address)
+    };
+    roster
+        .iter()
+        .filter(|p| p.address.starts_with("principal:"))
+        .all(|p| is_me(p) || p.name.is_some())
+        && roster
+            .iter()
+            .filter(|p| {
+                is_me(p)
+                    || p.name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+            .count()
+            == 1
+}
+
+/// Pair identity is order-independent and includes both complete addresses.
+pub fn dm_channel_id(a: &str, b: &str) -> ChannelId {
+    use sha2::{Digest, Sha256};
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    let mut hash = Sha256::new();
+    hash.update(b"peko-dm-v1\0");
+    for address in [a, b] {
+        hash.update((address.len() as u64).to_be_bytes());
+        hash.update(address.as_bytes());
+    }
+    ChannelId(format!("dm_{:x}", hash.finalize()))
 }
 
 // ---------------------------------------------------------------------------

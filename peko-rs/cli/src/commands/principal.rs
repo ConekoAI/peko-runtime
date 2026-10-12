@@ -100,6 +100,14 @@ pub enum PrincipalCommands {
         wait_timeout: u64,
     },
 
+    /// Register this local principal for Hub access (private by default).
+    Register {
+        name: String,
+        #[arg(long)]
+        public: bool,
+    },
+    /// Remove the Hub route and retain the local principal.
+    Unregister { name: String },
     /// List pekos
     List,
 
@@ -228,6 +236,17 @@ pub enum PrincipalCommands {
 
 /// Dispatch the peko lifecycle commands (the flattened top-level
 /// verbs: `peko create`, `peko list`, ...).
+async fn register_principal(name: &str, visibility: &str, _paths: &GlobalPaths) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    match client.principal_register(name, visibility).await? {
+        ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+        response => {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            Ok(())
+        }
+    }
+}
+
 pub async fn handle_principal(
     cmd: PrincipalCommands,
     paths: &GlobalPaths,
@@ -254,6 +273,12 @@ pub async fn handle_principal(
                 paths,
             )
             .await
+        }
+        PrincipalCommands::Register { name, public } => {
+            register_principal(&name, if public { "public" } else { "private" }, paths).await
+        }
+        PrincipalCommands::Unregister { name } => {
+            register_principal(&name, "local_only", paths).await
         }
         PrincipalCommands::List => list_principals(paths, json).await,
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
@@ -966,6 +991,9 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct ShowView<'a> {
+            local_id: &'a str,
+            hub_id: Option<&'a str>,
+            registration: &'a str,
             name: &'a str,
             display_name: &'a str,
             did: Option<&'a str>,
@@ -1002,6 +1030,13 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
                 .collect(),
         };
         let view = ShowView {
+            local_id: &principal.id.0,
+            hub_id: config.hub_id.as_deref(),
+            registration: if config.hub_id.is_none() {
+                "local_only"
+            } else {
+                config.exposure.as_str()
+            },
             name: &config.name,
             display_name: &display_name,
             did: did.as_ref().map(|d| d.0.as_str()),
@@ -1018,7 +1053,21 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     let did_str = did.map(|d| d.0).unwrap_or_else(|| "(none)".to_string());
 
     println!("Peko: {}", display_name);
-    println!("  DID:     {}", did_str);
+    let config = principal.config.read().await;
+    println!("  Local ID: principal:local:{}", principal.id.0);
+    if let Some(hub) = &config.hub_id {
+        println!("  Hub ID: principal:hub:{hub}");
+    }
+    println!(
+        "  Registration: {}",
+        if config.hub_id.is_none() {
+            "local_only"
+        } else {
+            config.exposure.as_str()
+        }
+    );
+    drop(config);
+    println!("  Signing DID: {}", did_str);
     println!("  Workspace: {}", principal.workspace_path.display());
 
     // Show where the root agent will route its LLM calls. Surface the
@@ -1524,6 +1573,8 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
+        hub_id: None,
+        actor_key: None,
         name: name.to_string(),
         id: None,
         did: None,

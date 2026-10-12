@@ -394,6 +394,8 @@ mod tests {
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),

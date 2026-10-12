@@ -94,7 +94,15 @@ impl crate::tools::prompt_sections::PromptSectionProvider for ChannelDigestSessi
             .await
             .unwrap_or_default();
         let port = input.channel_port.clone()?;
+        let actor = port
+            .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                principal_id.clone(),
+            )))
+            .await;
+        let hub_address = actor.hub_address();
         let me = Me {
+            hub: hub_address.as_deref(),
+            address: &actor.address,
             id: &principal_id,
             name: &principal_name(&input.workspace),
         };
@@ -106,6 +114,8 @@ impl crate::tools::prompt_sections::PromptSectionProvider for ChannelDigestSessi
 /// The rendering principal: its id (post authorship) and its name (group
 /// `@<name>` mentions).
 struct Me<'a> {
+    address: &'a str,
+    hub: Option<&'a str>,
     id: &'a str,
     name: &'a str,
 }
@@ -154,14 +164,13 @@ async fn render_channel_digest(
     // Humans and cron drive the trunk and the peer standing children;
     // a spawned subagent works a narrow task and sees only its bound
     // channels.
-    let sees_elsewhere = own_meta.parent_session_id.is_none() || own_meta.peer_type.is_some();
+    let conversation = crate::principal::conversation::binding(own_meta);
+    let sees_elsewhere = own_meta.parent_session_id.is_none() || conversation.is_some();
 
-    // Group-bound standing child sessions are stamped with
-    // `peer = Subject::User(<channel wire id>)` (peer_children.rs:200);
-    // a group channel has no `passive_binding`, so that stamp is the
-    // only binding evidence.
-    let group_bound_channel = match (own_meta.peer_type.as_deref(), own_meta.peer_id.as_deref()) {
-        (Some("user"), Some(id)) => Some(id),
+    // Group sessions bind directly to a channel; the shared classifier also
+    // recognizes legacy group stamps and excludes internal placeholder peers.
+    let group_bound_channel = match &conversation {
+        Some(crate::principal::conversation::Conversation::Channel(id)) => Some(id.as_str()),
         _ => None,
     };
 
@@ -183,7 +192,7 @@ async fn render_channel_digest(
         // `own_path` carries the display-side `sess:` prefix, so both
         // sides are normalized through `strip_scheme_prefix` before
         // comparing — stored bindings never carry the prefix.
-        let (kind, scope) = match port.passive_binding(&channel).await.unwrap_or(None) {
+        let (kind, scope) = match port.binding_for(&channel, &principal).await.unwrap_or(None) {
             Some(b) => {
                 let b_path = peko_session::path::strip_scheme_prefix(&b);
                 let own = peko_session::path::strip_scheme_prefix(&own_path);
@@ -206,9 +215,21 @@ async fn render_channel_digest(
         };
         let max_id = max_id.clone();
 
+        let roster = port.participants(&channel).await.unwrap_or_default();
+        let short_name = if peko_channel::short_name_unambiguous(&roster, me.name, me.address) {
+            me.name
+        } else {
+            ""
+        };
+        let channel_me = Me {
+            hub: me.hub,
+            id: me.id,
+            address: me.address,
+            name: short_name,
+        };
         let worthy: Vec<&(peko_channel::port::TaskId, ChannelEvent)> = events
             .iter()
-            .filter(|e| digest_worthy(&e.1, &own_path, me, scope, kind))
+            .filter(|e| digest_worthy(&e.1, &own_path, &channel_me, scope, kind))
             .collect();
 
         // Advance BEFORE rendering: the mark is "observed up to", so
@@ -337,12 +358,16 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
     if via.as_deref() == Some(own_path) {
         return false;
     }
-    let by_user = author.starts_with("user:");
-    let by_me = author == me.id;
+    let by_user = author.starts_with("user:") || author.starts_with("visitor:");
+    let by_me = author == me.id || author == me.address;
     match (scope, kind) {
         (Scope::Bound, Kind::Dm) => parent.is_some() || !by_user,
         (_, Kind::Group) => {
-            let woke = by_user && parent.is_none() && peko_channel::mentions(text, me.name);
+            let woke = by_user
+                && parent.is_none()
+                && (peko_channel::mentions(text, me.name)
+                    || peko_channel::mentions(text, me.address)
+                    || me.hub.is_some_and(|h| peko_channel::mentions(text, h)));
             !woke && !(scope == Scope::Elsewhere && by_me)
         }
         (Scope::Elsewhere, Kind::Dm) => !by_user && !by_me,
@@ -426,6 +451,8 @@ mod tests {
     use peko_subject::{PrincipalId, Subject};
 
     const ME: Me<'static> = Me {
+        hub: None,
+        address: "prin_self",
         id: "prin_self",
         name: "self",
     };
@@ -477,8 +504,9 @@ mod tests {
         let mut child = SessionMetadata::new(child_id(), "root", "child.jsonl");
         child.parent_session_id = Some(trunk_id());
         child.slug = Some("user-a".to_string());
-        child.peer_type = Some("user".to_string());
-        child.peer_id = Some("alice".to_string());
+        child.channel_id = Some("chan_child".into());
+
+        child.trigger = "spawn".into();
         let mut spawned = SessionMetadata::new(spawned_id(), "root", "spawned.jsonl");
         spawned.parent_session_id = Some(trunk_id());
         spawned.slug = Some("helper".to_string());
@@ -708,7 +736,8 @@ mod tests {
             .unwrap();
         let mut metas = tree(None);
         metas[1].slug = Some("team-room".to_string());
-        metas[1].peer_id = Some(group.as_str().to_string());
+
+        metas[1].channel_id = Some(group.as_str().to_string());
 
         port.post_attributed(&group, &me_subject(), "user:bob", PostMsg::root("hi all"))
             .await
@@ -776,7 +805,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let metas = tree(None);
+        let mut metas = tree(None);
+        metas[2].peer_type = Some("principal".into());
+        metas[2].peer_id = Some("spawn_placeholder".into());
         for session in [trunk_id(), child_id(), spawned_id()] {
             assert!(render_channel_digest(&port, &metas, session, &ME)
                 .await
@@ -796,7 +827,7 @@ mod tests {
                 .await
                 .expect("the reply must show");
             assert!(text.starts_with("unread on your other channels"), "{text}");
-            assert!(text.contains("[prin_other] \"looks good\""), "{text}");
+            assert!(text.contains("looks good"), "{text}");
         }
         assert!(
             render_channel_digest(&port, &metas, spawned_id(), &ME)

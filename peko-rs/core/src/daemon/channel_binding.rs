@@ -473,7 +473,10 @@ impl GroupWakeResponder {
                 parent,
                 ..
             } if parent.is_none()
-                && matches!(Subject::from_str(author), Ok(Subject::User(_)))
+                && matches!(
+                    Subject::from_str(author),
+                    Ok(Subject::User(_) | Subject::Visitor(_))
+                )
                 && peko_channel::mentions(text, name) =>
             {
                 Some(format!("{author}: {text}"))
@@ -486,7 +489,27 @@ impl GroupWakeResponder {
 #[async_trait]
 impl ChannelResponder for GroupWakeResponder {
     async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
-        let Some(input) = Self::response_trigger(&self.name, &ctx.event) else {
+        let me = self
+            .inner
+            .port
+            .actor_info(&Subject::from(&self.inner.principal))
+            .await;
+        let roster = self.inner.port.participants(&self.inner.channel).await?;
+        // Canonical mentions always identify one actor. Short names work only
+        // when the complete principal roster is known and the name is unique.
+        let short_is_unique =
+            peko_channel::short_name_unambiguous(&roster, &self.name, &me.address);
+        let input = Self::response_trigger(&me.address, &ctx.event)
+            .or_else(|| {
+                me.hub_address()
+                    .and_then(|h| Self::response_trigger(&h, &ctx.event))
+            })
+            .or_else(|| {
+                short_is_unique
+                    .then(|| Self::response_trigger(&self.name, &ctx.event))
+                    .flatten()
+            });
+        let Some(input) = input else {
             return Ok(());
         };
         spawn_turn(Arc::clone(&self.inner), ctx, input);
@@ -1228,7 +1251,7 @@ mod tests {
                     .iter()
                     .any(|ev| {
                         matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
-                    if *author == principal2.to_string()
+                    if *author == format!("principal:local:{}",principal2.0)
                         && text == "the reply"
                         && parent.as_deref() == Some(line2.as_str()))
                     })
@@ -1490,7 +1513,7 @@ mod tests {
                     .iter()
                     .any(|ev| {
                         matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
-                    if *author == principal2.to_string()
+                    if *author == format!("principal:local:{}",principal2.0)
                         && text == "the successor reply"
                         && parent.is_none())
                     })
@@ -1577,7 +1600,7 @@ mod tests {
             !events
                 .iter()
                 .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
-                if *author == principal.to_string())),
+                if *author == format!("principal:local:{}", principal.0))),
             "nothing may be posted when the steering was already drained; got {events:?}"
         );
     }
@@ -1649,7 +1672,7 @@ mod tests {
                 &principal,
                 &channel,
                 "3",
-                posted("user:alice", "@self hello group"),
+                posted("user:local:alice", "@self hello group"),
             ))
             .await
             .unwrap();
@@ -1738,10 +1761,10 @@ mod tests {
 
         // Fires: a user root post that mentions the principal (input
         // carries the speaker prefix).
-        let ev = posted("user:alice", "@self hello group");
+        let ev = posted("user:local:alice", "@self hello group");
         assert_eq!(
             GroupWakeResponder::response_trigger(principal, &ev),
-            Some("user:alice: @self hello group".to_string())
+            Some("user:local:alice: @self hello group".to_string())
         );
         // Never fires: a user post that doesn't mention it.
         let ev = posted("user:alice", "hello group");
@@ -1861,7 +1884,7 @@ mod tests {
             .unwrap();
         let (_, user_event) = events
             .into_iter()
-            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { author, .. } if author == "user:alice"))
+            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { author, .. } if author == "user:local:alice"))
             .expect("user post is in the log");
 
         responder
@@ -1875,7 +1898,7 @@ mod tests {
             calls.lock().unwrap()[0],
             (
                 "session-1".to_string(),
-                "user:alice: @self hello group".to_string()
+                "user:local:alice: @self hello group".to_string()
             )
         );
 
@@ -1894,7 +1917,7 @@ mod tests {
                     .iter()
                     .any(|ev| {
                         matches!(ev, ChannelEvent::Posted { author, text, parent, .. }
-                    if *author == principal2.to_string()
+                    if *author == format!("principal:local:{}",principal2.0)
                         && text == "the group reply"
                         && parent.as_deref() == Some(line2.as_str()))
                     })
@@ -1945,7 +1968,7 @@ mod tests {
                 &principal,
                 &channel,
                 &line,
-                posted("user:alice", "@self hello group"),
+                posted("user:local:alice", "@self hello group"),
             ))
             .await
             .unwrap();
@@ -1959,7 +1982,7 @@ mod tests {
             !events
                 .iter()
                 .any(|ev| matches!(ev, ChannelEvent::Posted { author, .. }
-                if *author == principal.to_string())),
+                if *author == format!("principal:local:{}", principal.0))),
             "a group failure posts nothing; got {events:?}"
         );
     }
@@ -2265,7 +2288,7 @@ mod tests {
         );
         assert!(matches!(
             delivered[0],
-            ChannelEvent::Posted { ref author, .. } if *author == principal.to_string()
+            ChannelEvent::Posted { ref author, .. } if *author == format!("principal:local:{}", principal.0)
         ));
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(

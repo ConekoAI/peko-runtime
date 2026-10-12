@@ -1374,8 +1374,9 @@ impl SessionManager {
         new_metadata.total_output_tokens = parent_metadata.total_output_tokens;
         // Carry the parent's peer attribution onto the branch so the
         // copy stays attributable to (and manageable by) the same peer.
-        new_metadata.peer_type = parent_metadata.peer_type.clone();
-        new_metadata.peer_id = parent_metadata.peer_id.clone();
+        new_metadata.peer_type = None;
+        new_metadata.peer_id = None;
+        new_metadata.channel_id = None;
         // Carry the compaction limits state: the branch's transcript
         // contains the parent's compaction boundary events, so the
         // per-session sequence (`compaction_number`) and the
@@ -1413,6 +1414,19 @@ impl SessionManager {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
         metadata.set_title(title);
+        controller.update_metadata(metadata).await
+    }
+
+    /// A conversation binds to a channel, never an actor identity.
+    pub async fn bind_session_channel(&self, session_id: &str, channel: &str) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut metadata = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        metadata.peer_type = None;
+        metadata.peer_id = None;
+        metadata.channel_id = Some(channel.to_string());
         controller.update_metadata(metadata).await
     }
 
@@ -3247,7 +3261,7 @@ mod tests {
     // ====================================================================================
 
     #[tokio::test]
-    async fn test_branch_session_by_id_copies_peer_attribution() {
+    async fn test_branch_session_by_id_does_not_copy_conversation_identity() {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
@@ -3259,7 +3273,15 @@ mod tests {
                 .create_session("test_agent", &peer, SessionCreateOptions::new())
                 .await
                 .unwrap();
-            handle.session_id().to_string()
+            let id = handle.session_id().to_string();
+            manager
+                .bind_session_channel(&id, "chan_conversation")
+                .await
+                .unwrap();
+            let meta = manager.get_session_metadata(&id).await.unwrap();
+            assert_eq!(meta.channel_id.as_deref(), Some("chan_conversation"));
+            assert!(meta.peer_type.is_none() && meta.peer_id.is_none());
+            id
         };
 
         // Branch through a fresh manager (mirrors the per-turn manager
@@ -3277,8 +3299,9 @@ mod tests {
             .get_session_metadata(&branch_id.to_string())
             .await
             .unwrap();
-        assert_eq!(branch_meta.peer_type.as_deref(), Some("user"));
-        assert_eq!(branch_meta.peer_id.as_deref(), Some("alice"));
+        assert!(branch_meta.peer_type.is_none());
+        assert!(branch_meta.peer_id.is_none());
+        assert!(branch_meta.channel_id.is_none());
         assert_eq!(
             branch_meta.parent_session_id.map(|id| id.to_string()),
             Some(parent_id.to_string())

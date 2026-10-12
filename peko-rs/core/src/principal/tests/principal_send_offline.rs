@@ -4,9 +4,8 @@
 //! (ADR-072), which reads the message on its DM channel.
 //!
 //! Same runtime: `LocalFirstAgentDirectory` resolves the target without
-//! the hub; the message is posted, under one message id, to the caller's
-//! DM channel (the caller's record) and the target's (where the target
-//! reads it).
+//! the hub; the message is posted once to their shared pair DM, with
+//! independent bindings to the caller's and target's peer sessions.
 //!
 //! Remote runtime: a `FakeAgentDirectory` resolves the target to another
 //! runtime and a captured `TunnelHandle` records outbound traffic.
@@ -27,7 +26,7 @@ use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
 use peko_auth::Subject;
-use peko_channel::{ChannelEvent, ChannelId, ChannelPort, Checkpoint};
+use peko_channel::{ChannelEvent, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
 
@@ -42,7 +41,7 @@ struct PanicDirectory;
 
 #[async_trait]
 impl AgentDirectory for PanicDirectory {
-    async fn resolve_by_did(&self, _did: &str) -> Result<AgentResolution, DirectoryError> {
+    async fn resolve_by_hub_id(&self, _did: &str) -> Result<AgentResolution, DirectoryError> {
         panic!("hub directory should not be consulted for same-runtime ChannelSend");
     }
 
@@ -71,6 +70,8 @@ async fn create_test_principal(
     tokio::fs::write(&prompt_path, prompt_body).await.unwrap();
 
     let config = PrincipalConfig {
+        hub_id: None,
+        actor_key: None,
         name: name.to_string(),
         id: None,
         did: None,
@@ -98,7 +99,8 @@ async fn posted_via(
     principal: &Arc<crate::principal::Principal>,
     peer: &Subject,
 ) -> Vec<(String, Option<String>)> {
-    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let peer = port.actor_info(peer).await.subject();
+    let slug = crate::principal::peer_children::peer_child_slug(&peer).unwrap();
     let channel =
         crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
             .await
@@ -119,6 +121,7 @@ async fn posted_via(
 /// shared channel port, wired like the daemon.
 struct Fixture {
     _temp: tempfile::TempDir,
+    vault: Arc<crate::common::vault::Vault>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     manager: Arc<PrincipalManager>,
     tunnel_port: TunnelChannelPort,
@@ -128,6 +131,24 @@ struct Fixture {
     target: Arc<crate::principal::Principal>,
     target_did: String,
     tool: Arc<dyn peko_tools_core::Tool>,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn local_directory_waits_for_busy_config_without_hub_fallback() {
+    let fx = Fixture::new().await;
+    let directory = Arc::new(LocalFirstAgentDirectory::new(
+        CALLER_RUNTIME,
+        fx.manager.clone(),
+        Arc::new(PanicDirectory),
+    ));
+    let id = fx.target.id.0.clone();
+    let guard = fx.target.config.write().await;
+    let lookup = tokio::spawn(async move { directory.resolve_by_handle("", &id).await });
+    tokio::task::yield_now().await;
+    assert!(!lookup.is_finished());
+    drop(guard);
+    assert_eq!(lookup.await.unwrap().unwrap().local_id, fx.target.id.0);
 }
 
 impl Fixture {
@@ -162,6 +183,7 @@ impl Fixture {
         let tunnel_port = TunnelChannelPort::new(store);
         let channel_port: Arc<dyn ChannelPort> = Arc::new(tunnel_port.clone());
 
+        let vault = Arc::new(crate::common::vault::Vault::load(path_resolver.vault()).unwrap());
         let manager = Arc::new(
             PrincipalManager::with_path_resolver(
                 path_resolver,
@@ -169,6 +191,7 @@ impl Fixture {
                 Arc::new(DefaultPrincipalRouterFactory),
                 crate::async_exec::executor::standalone_inbox_registry(),
             )
+            .with_identity_vault(vault.clone())
             .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(resolver)
             .with_channel_port(channel_port.clone()),
@@ -191,6 +214,7 @@ impl Fixture {
         let tool = build_channel_send_tool(&tooling, &caller_did).unwrap();
         Self {
             _temp: temp,
+            vault,
             tooling,
             manager,
             tunnel_port,
@@ -228,6 +252,18 @@ impl Fixture {
         &self,
         directory: Arc<crate::tunnel::hub_directory::FakeAgentDirectory>,
     ) -> tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage> {
+        self.channel_port
+            .register_actor(
+                &Subject::from(&self.caller.id),
+                Some("caller-hub"),
+                Some(&self.caller_did),
+                self.caller.config.read().await.actor_key.as_deref(),
+                Some("caller"),
+                "public",
+            )
+            .await
+            .unwrap();
+        self.caller.config.write().await.hub_id = Some("caller-hub".into());
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tunnel = Arc::new(tokio::sync::RwLock::new(Some(
             crate::tunnel::client::TunnelHandle::new(tx),
@@ -238,7 +274,25 @@ impl Fixture {
                 signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])),
                 caller_runtime_id: CALLER_RUNTIME.into(),
                 tunnel,
-                principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
+                principal_keys: {
+                    use base64::Engine;
+                    use secrecy::ExposeSecret;
+                    let secret = self
+                        .vault
+                        .get_principal_identity_private_key(&format!("{}#keys-1", self.caller_did))
+                        .unwrap();
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(secret.expose_secret())
+                        .unwrap();
+                    Arc::new(crate::tunnel::cross_runtime_channel::TestPrincipalKeys(
+                        vec![(
+                            self.caller.id.clone(),
+                            Arc::new(ed25519_dalek::SigningKey::from_bytes(
+                                &bytes.try_into().unwrap(),
+                            )),
+                        )],
+                    ))
+                },
             }))
             .await;
         self.tooling
@@ -260,12 +314,14 @@ impl Fixture {
         let ctx =
             peko_tools_core::ToolContext::for_hook_run("test-run", "test-tool", "ChannelSend")
                 .with_principal_id(self.caller.id.0.clone());
+        let reference = if let Some(principal) = self.manager.find_by_did(target_did).await {
+            format!("principal:local:{}", principal.id.0)
+        } else {
+            format!("principal:hub:{target_did}")
+        };
         let result = self
             .tool
-            .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{target_did}"), "text": text}),
-                &ctx,
-            )
+            .execute_with_context(serde_json::json!({"to": reference, "text": text}), &ctx)
             .await;
         match result {
             Ok(value) => serde_json::from_value(value).expect("parse result"),
@@ -284,7 +340,7 @@ impl Fixture {
                 .with_principal_id(self.caller.id.0.clone());
         self.tool
             .execute_with_context(
-                serde_json::json!({"channel": format!("principal:{}", self.target_did), "text": text}),
+                serde_json::json!({"to": format!("principal:local:{}", self.target.id.0), "text": text}),
                 &ctx,
             )
             .await
@@ -300,7 +356,8 @@ async fn root_ids(
     principal: &Arc<crate::principal::Principal>,
     peer: &Subject,
 ) -> Vec<(Option<String>, String)> {
-    let slug = crate::principal::peer_children::peer_child_slug(peer).unwrap();
+    let peer = port.actor_info(peer).await.subject();
+    let slug = crate::principal::peer_children::peer_child_slug(&peer).unwrap();
     let channel =
         crate::principal::peer_dm::find_peer_dm_channel(port, &principal.id, &format!("/{slug}"))
             .await
@@ -362,6 +419,89 @@ async fn same_runtime_send_records_and_delivers_and_returns_at_once() {
     assert!(record[0].0.is_some());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn three_local_principals_can_send_and_thread_replies_without_a_hub() {
+    let fx = Fixture::new().await;
+    fx.connect(); // local directory; the Hub fallback panics if called
+    let third = create_test_principal(
+        &fx.manager,
+        &fx._temp.path().join("principals"),
+        "third",
+        Subject::Public,
+    )
+    .await;
+    let third_tool = build_channel_send_tool(&fx.tooling, &third.did().await.0).unwrap();
+    let third_ctx = peko_tools_core::ToolContext::for_hook_run("test", "tool", "ChannelSend")
+        .with_principal_id(third.id.0.clone());
+    let first = fx.send_to(&fx.target_did, "first").await;
+    assert!(first.success);
+    let second = third_tool
+        .execute_with_context(
+            serde_json::json!({"to":format!("principal:local:{}", fx.target.id.0),"text":"second"}),
+            &third_ctx,
+        )
+        .await
+        .unwrap();
+    assert_ne!(first.channel, second["channel"].as_str().unwrap());
+    let target_tool = build_channel_send_tool(&fx.tooling, &fx.target_did).unwrap();
+    let target_ctx = peko_tools_core::ToolContext::for_hook_run("test", "reply", "ChannelSend")
+        .with_principal_id(fx.target.id.0.clone());
+    target_tool
+        .execute_with_context(
+            serde_json::json!({"to":first.channel,"parent":first.task_id,"text":"answer"}),
+            &target_ctx,
+        )
+        .await
+        .unwrap();
+    let events = fx
+        .channel_port
+        .peek(
+            &peko_channel::ChannelId(first.channel),
+            &Checkpoint::default(),
+        )
+        .await
+        .unwrap();
+    assert!(events.iter().any(|e|matches!(e,ChannelEvent::Posted{author,parent:Some(_),text,..} if author==&format!("principal:local:{}",fx.target.id.0) && text=="answer")));
+    assert_eq!(
+        root_ids(
+            &fx.channel_port,
+            &fx.caller,
+            &Subject::Principal(fx.target_did.into())
+        )
+        .await
+        .len(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn private_local_delivery_requires_the_canonical_principal_grant() {
+    let fx = Fixture::new().await;
+    fx.connect();
+    {
+        let mut config = fx.target.config.write().await;
+        config.exposure = Exposure::Private;
+        config.owner = Subject::User("other".into());
+        config.permissions.clear();
+    }
+    let denied = fx.send_to(&fx.target_did, "denied").await;
+    assert!(!denied.success);
+    fx.target
+        .config
+        .write()
+        .await
+        .permissions
+        .push(peko_auth::ownership::PermissionGrant {
+            subject: Subject::Principal(fx.caller_did.clone().into()),
+            permission: peko_auth::ownership::Permission::Chat,
+            granted_at: "2026-10-12T00:00:00Z".into(),
+            granted_by: Subject::User("other".into()),
+        });
+    assert!(fx.send_to(&fx.target_did, "allowed").await.success);
+}
+
 /// Every root post a call makes carries the calling session's slug path
 /// as `via` (attribution). Calls without a resolvable session stay
 /// unattributed.
@@ -385,7 +525,7 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
             let result: ChannelSendResult = serde_json::from_value(
                 fx.tool
                     .execute_with_context(
-                        serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": text}),
+                        serde_json::json!({"to": format!("principal:local:{}", fx.target.id.0), "text": text}),
                         &ctx,
                     )
                     .await
@@ -403,7 +543,7 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
     )
     .await;
 
-    let target_peer = Subject::Principal(PrincipalDID(fx.target_did.clone()));
+    let target_peer = Subject::from(&fx.target.id);
     let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
     let via = Some(format!("{}/{slug}", peko_session::path::SCHEME_PREFIX));
     let expected = vec![
@@ -415,7 +555,7 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
         posted_via(&fx.channel_port, &fx.caller, &target_peer).await,
         expected
     );
-    let caller_peer = Subject::Principal(PrincipalDID(fx.caller_did.clone()));
+    let caller_peer = Subject::from(&fx.caller.id);
     assert_eq!(
         posted_via(&fx.channel_port, &fx.target, &caller_peer).await,
         expected
@@ -434,7 +574,7 @@ async fn caller_not_loaded_on_this_runtime_is_an_error() {
         .with_principal_id("ghost");
     let error = ghost
         .execute_with_context(
-            serde_json::json!({"channel": format!("principal:{}", fx.target_did), "text": "hi"}),
+            serde_json::json!({"to": format!("principal:local:{}", fx.target.id.0), "text": "hi"}),
             &ctx,
         )
         .await
@@ -448,6 +588,10 @@ fn remote_resolution(
     agent_did: &str,
 ) -> crate::tunnel::hub_directory::AgentResolution {
     crate::tunnel::hub_directory::AgentResolution {
+        name: None,
+        hub_id: agent_did.into(),
+        local_id: "prin_remote".into(),
+        identity_key: "remote-actor-key".into(),
         runtime_id: REMOTE_RUNTIME.into(),
         instance_id: "inst-remote".into(),
         agent_did: agent_did.into(),
@@ -487,7 +631,7 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     use crate::tunnel::hub_directory::ResolvedExposure;
     let fx = Fixture::new().await;
     let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
-    directory.register_did(
+    directory.register_hub_id(
         REMOTE_TARGET,
         remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
     );
@@ -499,11 +643,12 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     // The captured tunnel never answers, so nothing confirms delivery.
     assert_eq!(first.delivery.as_deref(), Some("queued"));
     assert!(first.note.unwrap().contains("resent until it is delivered"));
-    assert_eq!(first.channel, format!("principal:{REMOTE_TARGET}"));
-    assert_eq!(
-        first.dm_channel.as_deref(),
-        Some(ChannelId::for_principal(REMOTE_TARGET).as_str())
+    let expected = peko_channel::dm_channel_id(
+        &fx.caller.config.read().await.actor_key.clone().unwrap(),
+        "remote-actor-key",
     );
+    assert_eq!(first.channel, expected.as_str());
+    assert_eq!(first.dm_channel.as_deref(), Some(expected.as_str()));
     let second = fx.send_to(REMOTE_TARGET, "again").await;
     assert!(second.success, "{:?}", second.error);
     // Let the captured tunnel drain.
@@ -523,7 +668,7 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     let remote_members = fx
         .tunnel_port
         .local()
-        .list_remote_members(&ChannelId::for_principal(REMOTE_TARGET))
+        .list_remote_members(&expected)
         .await
         .unwrap();
     assert_eq!(remote_members.len(), 1);
@@ -539,23 +684,27 @@ async fn remote_resolution_failures_are_errors() {
     use crate::tunnel::hub_directory::ResolvedExposure;
     let fx = Fixture::new().await;
     let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
-    directory.register_did_err("did:key:missing", DirectoryErrorKind::NotFound);
-    directory.register_did_err("did:key:forbidden", DirectoryErrorKind::Forbidden);
-    directory.register_did(
+    directory.register_hub_id_err("did:key:missing", DirectoryErrorKind::NotFound);
+    directory.register_hub_id_err("did:key:forbidden", DirectoryErrorKind::Forbidden);
+    directory.register_hub_id(
         "did:key:hidden",
-        remote_resolution(ResolvedExposure::Unexposed, "did:key:hidden"),
+        remote_resolution(ResolvedExposure::LocalOnly, "did:key:hidden"),
     );
-    directory.register_did(
-        "did:key:nodid",
-        remote_resolution(ResolvedExposure::Public, ""),
+    let mut missing_signer = remote_resolution(ResolvedExposure::Public, "");
+    missing_signer.hub_id = "did:key:nodid".into();
+    directory.register_hub_id("did:key:nodid", missing_signer);
+    directory.register_hub_id(
+        "did:key:requested",
+        remote_resolution(ResolvedExposure::Public, "did:key:substituted"),
     );
     let mut outbound = fx.connect_remote(directory).await;
 
     for (target, needle) in [
-        ("did:key:missing", "not found in hub directory"),
-        ("did:key:forbidden", "denied resolution"),
-        ("did:key:hidden", "unexposed"),
-        ("did:key:nodid", "empty target DID"),
+        ("did:key:missing", "target not found"),
+        ("did:key:forbidden", "not permitted"),
+        ("did:key:hidden", "local_only"),
+        ("did:key:nodid", "empty target signing DID"),
+        ("did:key:requested", "different Hub identity"),
     ] {
         let result = fx.send_to(target, "ping").await;
         assert!(!result.success, "{target}");

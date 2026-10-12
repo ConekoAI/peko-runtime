@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **19 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **20 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -39,7 +39,7 @@ installation phases, and the 19-name inventory. The complete inventory derives f
 | Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
-| Principal services | Task, Plan, ChannelSend, ModelList, Async | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async | When their session storage, plan, caller identity/channel, or inbox bindings become available |
 | Run bindings | Agent, Session | Private catalog overlay for caller execution dependencies |
 
 Each run inherits live runtime/principal registrations through its overlay.
@@ -290,24 +290,40 @@ subject to runtime ownership guards. Page retention prunes old pages permanently
 
 ## Channels
 
+### Contacts
+
+`list` returns known actors and the caller's channels. Each actor includes its local
+ID, optional Hub ID, kind, name, registration state, canonical local address, and
+mention token. `resolve` accepts a scoped local or Hub reference; registered remote
+principals are learned through the Hub directory. Discovery does not enumerate all
+Hub users. User and visitor contacts come from authenticated ingress or membership.
+
 ### ChannelSend
 
-Post to a channel/group, message a peer principal, or send a user a note. Every send returns at once.
+Send with `to` (the old `channel` input is a compatibility alias; do not supply both).
 
-[Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_send.rs)
+- `principal:local:<id> / principal:hub:<UUID>`, `principal:<local-name>`, `principal:<owner>/<name>` resolves
+  an actor and posts on its pair DM. Local messaging needs no Hub setup.
+- `user:local:<id>` / `user:hub:<UUID>` or `visitor:local:<id>` / `visitor:hub:<UUID>` delivers a labeled note to an existing conversation.
+- `dm_<hash>`, `chan_<id>`, or `group:<slug>` posts directly to a conversation;
+  `parent` threads a reply using an event's line id. Actor targets do not accept
+  `parent`; use the returned conversation ID. `label` applies only to human notes.
 
-| Parameter | Type | Required | Schema default / bounds |
-|---|---|---|---|
-| `channel` | string | yes | — |
-| `text` | string | yes | — |
-| `parent` | string | no | — |
-| `label` | string | no | — |
-
-channel selects dispatch: chan_<id> = post; principal:<did> = DM post; user:<id> = note; group:<slug> = post. parent (an event id from ChannelRead or a previous send's `id`) applies to bare/group posts; label applies to user notes and defaults to the agent name. Posts carry session attribution.
-
-Posting never starts a run in another principal (ADR-072): only humans (a user's DM) and cron start runs, and a group channel wakes a principal only for a user's root post mentioning `@<principal name>`. A principal:<did> message is posted on the pair's DM channel (on the same runtime, recorded on the caller's channel and delivered on the target's under one message id); the target sees it the next time it reads — in its session context's unread summary or with ChannelRead. An answer is a later post on the caller's `dm_channel`, read with ChannelRead or waited for with `watch: true`. The result reports `id`, `dm_channel`, and `delivery`: `delivered`, or `queued` when another runtime has not confirmed the message within a few seconds — it is kept in the runtime outbox and resent until it is.
+Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
+clients), `id`, and `delivery` (`delivered` or durably `queued`). Same-runtime pair
+DMs store each message once and bind independently to both principals' sessions.
+Principal posts never start runs (ADR-072). Read/watch the returned channel for an
+answer. Human group posts wake only the mentioned principal: `@principal:local:<id> / principal:hub:<UUID>`
+is canonical; `@name` works only with a complete, unambiguous principal roster.
 
 ### ChannelRead
+
+Accepts real conversation IDs including `dm_<hash>`. Each result includes current
+`participants` (canonical address, known name, mention token) and the caller's
+session `binding`. New and legacy histories remain readable; raw legacy local
+authors are normalized when their principal identity is known. Watches and unread
+summaries use the same human/group mention rules as turn admission.
+
 
 Read or search channel events with backward/forward pagination, or wait for the next post.
 

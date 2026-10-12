@@ -31,12 +31,9 @@ impl PrincipalId {
         Self(format!("prin_{}", uuid::Uuid::new_v4().simple()))
     }
 
-    /// Construct from a `PrincipalDID`. Both newtypes wrap the same
-    /// canonical DID string — `PrincipalId` is the cron/agent identity
-    /// key, `PrincipalDID` is the actor wire key, but their contents
-    /// are interchangeable in practice (a single principal has one
-    /// stable DID for both surfaces). Use this when bridging
-    /// `Principal::did()` to a `CronJob::principal_id`.
+    /// Wrap a DID for APIs that accept identity references in a PrincipalId
+    /// adapter. This does not resolve it to the principal's distinct `prin_*`
+    /// storage key; use the principal directory for that conversion.
     #[must_use]
     pub fn from_did(did: &PrincipalDID) -> Self {
         Self(did.0.clone())
@@ -138,10 +135,8 @@ impl Default for Subject {
 }
 
 impl From<&PrincipalId> for Subject {
-    /// Bridge a `PrincipalId` to its actor form. Both newtypes wrap the
-    /// same canonical id string (see [`PrincipalId::from_did`]) — this
-    /// is the inverse direction, needed wherever a principal-typed API
-    /// meets a `Subject`-typed one (ADR-049 channel membership).
+    /// Internal authorization adapter. Public addressing must resolve this
+    /// storage key through ChannelPort::actor_info before exposing it.
     fn from(id: &PrincipalId) -> Self {
         Subject::Principal(PrincipalDID(id.0.clone()))
     }
@@ -178,6 +173,26 @@ impl fmt::Display for SubjectKind {
 }
 
 impl Subject {
+    /// Read compatibility for the retired prefixed-user grant projection.
+    /// Authentication creates bare User ids; legacy grants may contain `user:`.
+    /// Other kinds are never coerced into the user namespace.
+    #[must_use]
+    pub fn normalized_for_auth(&self) -> Self {
+        let id = self
+            .subject_id()
+            .strip_prefix("local:")
+            .unwrap_or(self.subject_id());
+        let id = id
+            .strip_prefix("hub:")
+            .or_else(|| id.strip_prefix("local_"))
+            .unwrap_or(id);
+        match self {
+            Self::User(_) => Self::User(id.into()),
+            Self::Visitor(_) => Self::Visitor(id.into()),
+            Self::Principal(_) => Self::Principal(id.into()),
+            Self::Public => Self::Public,
+        }
+    }
     /// Get the kind tag for this subject.
     #[must_use]
     pub fn kind(&self) -> SubjectKind {
@@ -246,14 +261,14 @@ impl Subject {
             )));
         }
         match kind {
-            "user" => Ok(Self::User(sub.to_string())),
+            "user" => Ok(Self::User(format!("local_{sub}"))),
             "visitor" => {
                 if sub == "local" {
                     Err(SubjectParseError(
                         "visitor sub 'local' is reserved for the local owner".to_string(),
                     ))
                 } else {
-                    Ok(Self::Visitor(sub.to_string()))
+                    Ok(Self::Visitor(format!("local_{sub}")))
                 }
             }
             other => Err(SubjectParseError(format!(
@@ -503,15 +518,15 @@ mod tests {
     fn test_from_bridge_claim_happy_paths() {
         assert_eq!(
             Subject::from_bridge_claim("user", "39").unwrap(),
-            Subject::User("39".to_string())
+            Subject::User("local_39".to_string())
         );
         assert_eq!(
             Subject::from_bridge_claim("user", "user-42").unwrap(),
-            Subject::User("user-42".to_string())
+            Subject::User("local_user-42".to_string())
         );
         assert_eq!(
             Subject::from_bridge_claim("visitor", "vis_abc123").unwrap(),
-            Subject::Visitor("vis_abc123".to_string())
+            Subject::Visitor("local_vis_abc123".to_string())
         );
     }
 

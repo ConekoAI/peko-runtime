@@ -23,7 +23,6 @@
 use anyhow::Result;
 use peko_auth::Subject;
 use peko_session::events::MessageSource;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::principal::manager::PrincipalManager;
@@ -32,65 +31,6 @@ use crate::principal::manager::PrincipalManager;
 /// a deeply nested subagent session (cycle guard; spawn depth is
 /// capped well below this elsewhere).
 const MAX_PEER_WALK_DEPTH: usize = 8;
-
-/// Extract the peer from a session id/key WITHOUT touching the session
-/// store. Handles:
-/// - v2 keys `agent:{agent}:peer:{type}:{id}` (optional overlay
-///   suffix),
-/// - subagent keys (`…:subagent:{uuid}`, possibly nested) — stripped
-///   down to the base key.
-///
-/// Phase 7: the per-peer root-key forms (`root:{subject}`,
-/// `root:cron:{subject}`) are RETIRED and no longer parse — those ids
-/// are never created anymore. Peer-child sessions carry opaque ids;
-/// their peer is resolved from the stamped `peer_type`/`peer_id`
-/// metadata by the store-backed walk in
-/// [`PrincipalPeerMessenger::originating_peer`].
-///
-/// The principal trunk session `root:self` (Phase 3, 2026-08-15) is
-/// explicitly NOT a peer key: it has no external peer, so it resolves
-/// to `None` — never to a literal peer named "self". Spawn pseudo-peers
-/// (`principal:spawn_<uuid>` — the child base session's placeholder
-/// peer) are likewise NOT returned: they carry no originator, so
-/// callers must continue walking the parent linkage instead.
-#[must_use]
-pub fn peer_from_session_key(session_id: &str) -> Option<Subject> {
-    // Strip any `:subagent:{uuid}` trail first (possibly nested) — a
-    // subagent key's peer is always its base key's peer, and stripping
-    // first keeps `agent:root:peer:user:alice:subagent:uuid` from
-    // misparsing as a user named "alice:subagent:uuid".
-    let mut current = session_id;
-    while let Some((base, _)) = current.rsplit_once(":subagent:") {
-        current = base;
-    }
-    // The trunk has no external peer. Handled ahead of the v2 parse
-    // so `root:self` can never misparse as a peer named "self" even if
-    // Subject parsing changes (today `"self"` fails `Subject::from_str`
-    // anyway and would coincidentally return None — do not rely on it).
-    if current == crate::principal::routers::root::trunk_session_id() {
-        return None;
-    }
-    if let Some(parsed) = peko_session::key::parse_session_key_v2(current) {
-        let subject_str = format!("{}:{}", parsed.peer_type, parsed.peer_id);
-        return non_spawn_subject(&subject_str);
-    }
-    None
-}
-
-/// Parse a Subject string, rejecting spawn pseudo-peers and declared-
-/// standing-child placeholders (neither carries an originator — the
-/// caller must keep walking the parent linkage).
-fn non_spawn_subject(s: &str) -> Option<Subject> {
-    match Subject::from_str(s) {
-        Ok(Subject::Principal(id))
-            if id.0.starts_with("spawn_") || id.0.starts_with("standing_") =>
-        {
-            None
-        }
-        Ok(other) => Some(other),
-        Err(_) => None,
-    }
-}
 
 /// Port: deliver a note into a peer's conversational session (its
 /// standing child of the trunk), and resolve the originating peer of
@@ -186,7 +126,18 @@ impl PeerMessenger for PrincipalPeerMessenger {
         // child of the trunk. FIND-ONLY (see the trait docs): a note
         // never provisions a peer child.
         let metas = session_manager.list_all_sessions(false).await?;
-        let child = crate::principal::peer_children::find_peer_child(&metas, target);
+        let normalized = match self.principal_manager.channel_port() {
+            Some(port) => port.actor_info(target).await.subject(),
+            None => target.clone(),
+        };
+        let target = &normalized;
+        let port = self
+            .principal_manager
+            .channel_port()
+            .ok_or_else(|| anyhow::anyhow!("Channel store unavailable"))?;
+        let child =
+            crate::principal::peer_children::find_dm_child(&metas, &principal.id, target, &port)
+                .await;
         let appended = match &child {
             Some(child_id) => match session_manager.open_session(child_id).await {
                 Ok(Some(handle)) => {
@@ -319,18 +270,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
         principal_id: &str,
         session_id: &str,
     ) -> Result<Option<Subject>> {
-        // Store-free forms first (v2 keys, subagent-suffix stripping).
-        if let Some(peer) = peer_from_session_key(session_id) {
-            return Ok(Some(peer));
-        }
-        // Phase 7: peer-child sessions carry opaque ids — resolve via
-        // the STAMPED `peer_type`/`peer_id` metadata (the stamp is
-        // load-bearing: Phase 5 stamps the REAL peer on peer children),
-        // walking the persisted `parent_session_id` linkage for spawn
-        // overlays and subagent sessions whose placeholder peers
-        // (`principal:spawn_*` / `principal:standing_*`) carry no
-        // originator. The trunk (`root:self`) is peer-less: its owner
-        // stamp is a proxy-subject artifact, never an originator.
+        // Walk parent links until a channel binding provides the conversation roster.
         let sessions_dir = self.sessions_dir_for(principal_id).await?;
         let session_manager =
             peko_session::manager::SessionManager::new().with_sessions_dir_internal(sessions_dir);
@@ -341,20 +281,34 @@ impl PeerMessenger for PrincipalPeerMessenger {
                 return Ok(None);
             };
             if current != trunk {
-                if let (Some(kind), Some(id)) = (meta.peer_type.as_deref(), meta.peer_id.as_deref())
-                {
-                    if let Some(peer) = non_spawn_subject(&format!("{kind}:{id}")) {
-                        return Ok(Some(peer));
+                match crate::principal::conversation::binding(&meta) {
+                    Some(crate::principal::conversation::Conversation::Channel(channel)) => {
+                        if let Some(port) = self.principal_manager.channel_port() {
+                            if let Some(id) = peko_channel::ChannelId::parse(&channel) {
+                                if port.passive_binding(&id).await.ok().flatten().is_some() {
+                                    let members = port.participants(&id).await?;
+                                    let me = port
+                                        .actor_info(&Subject::Principal(principal_id.into()))
+                                        .await;
+                                    let peers = members
+                                        .into_iter()
+                                        .filter(|p| p.address != me.address)
+                                        .collect::<Vec<_>>();
+                                    if peers.len() == 1 {
+                                        return Ok(Some(peers[0].subject()));
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(None);
                     }
+                    None => {}
                 }
             }
             let Some(parent) = meta.parent_session_id else {
                 return Ok(None);
             };
             let parent_str = parent.to_string();
-            if let Some(peer) = peer_from_session_key(&parent_str) {
-                return Ok(Some(peer));
-            }
             current = parent_str;
         }
         Ok(None)
@@ -384,77 +338,6 @@ pub fn global_messenger() -> Option<Arc<dyn PeerMessenger>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn retired_root_forms_do_not_parse() {
-        // Phase 7: `root:{peer}` / `root:cron:{peer}` ids are retired —
-        // they are never created anymore and no longer parse as peer
-        // keys. (Legacy on-disk ids from before the prelaunch break
-        // simply resolve to None.)
-        assert_eq!(peer_from_session_key("root:user:local"), None);
-        assert_eq!(peer_from_session_key("root:cron:user:local"), None);
-    }
-
-    #[test]
-    fn v2_key_resolves_peer() {
-        assert_eq!(
-            peer_from_session_key("agent:root:peer:user:alice"),
-            Some(Subject::User("alice".to_string()))
-        );
-    }
-
-    #[test]
-    fn subagent_suffix_strips_to_parent_peer() {
-        assert_eq!(
-            peer_from_session_key("agent:root:peer:user:alice:subagent:uuid-1"),
-            Some(Subject::User("alice".to_string()))
-        );
-    }
-
-    #[test]
-    fn spawn_and_standing_pseudo_peers_are_not_originators() {
-        // The spawn placeholder peer must NOT be accepted — the
-        // originator is only reachable via the parent-linkage walk
-        // (needs the session store; covered by the `originating_peer`
-        // integration path). Same for the `standing_*` placeholder
-        // the retired declared-children path stamped on its children
-        // (legacy sessions may still carry it).
-        assert_eq!(
-            peer_from_session_key("agent:x:peer:principal:spawn_abc123"),
-            None
-        );
-        assert_eq!(
-            non_spawn_subject("principal:standing_memory"),
-            None,
-            "declared-child placeholder carries no originator"
-        );
-    }
-
-    #[test]
-    fn trunk_session_has_no_peer() {
-        // The principal trunk `root:self` (Phase 3) is a self session:
-        // it must never misparse as a peer literally named "self".
-        // Callers (`originating_peer`) fall through to the parent-linkage
-        // walk, which bottoms out at None — a graceful "no originator".
-        assert_eq!(peer_from_session_key("root:self"), None);
-        assert_eq!(peer_from_session_key("root:self:subagent:uuid-1"), None);
-    }
-
-    #[test]
-    fn garbage_resolves_to_none() {
-        assert_eq!(peer_from_session_key("some:random:key"), None);
-        assert_eq!(peer_from_session_key(""), None);
-    }
-
-    // --------------------------------------------------------------
-    // Phase 12b: deliver_note posts to the peer's DM channel (not the
-    // retired chat log) alongside the child-JSONL row and the trunk
-    // `[notify]` self-view.
-    // --------------------------------------------------------------
-
-    /// A delivered note lands in all three homes — the peer child's
-    /// session JSONL (working memory), the peer's DM channel (the
-    /// durable record `peko log` reads), and the trunk `[notify]`
-    /// self-view.
     #[tokio::test(flavor = "multi_thread")]
     // This test mutates process-global state (PEKO_HOME,
     // runtime injection). All such tests share the plain `serial`
@@ -520,6 +403,8 @@ mod tests {
         let owner = Subject::User("local".to_string());
         let principal = manager
             .create(crate::principal::PrincipalConfig {
+                hub_id: None,
+                actor_key: None,
                 name: "boss".to_string(),
                 id: None,
                 did: None,
@@ -603,11 +488,12 @@ mod tests {
             .peek(&channel, &Checkpoint::default())
             .await
             .expect("peek");
+        let principal_address = format!("principal:local:{}", principal.id.0);
         assert!(
             events.iter().any(|ev| matches!(
                 ev,
                 ChannelEvent::Posted { author, parent: None, text, .. }
-                    if *author == principal.id.0 && text == "📨 [root] the report is ready"
+                    if *author == principal_address && text == "📨 [root] the report is ready"
             )),
             "note must land on the DM channel as a principal-authored root post: {events:?}"
         );
@@ -625,6 +511,28 @@ mod tests {
         assert!(
             trunk_jsonl.contains("[notify] 📨 agent some-session sent to user:local"),
             "trunk must carry the notify self-view: {trunk_jsonl}"
+        );
+        assert_eq!(
+            messenger
+                .originating_peer(&principal.id.0, &child_id)
+                .await
+                .unwrap(),
+            Some(owner)
+        );
+        let group_id = crate::principal::peer_children::ensure_group_child(
+            &trunk_id,
+            "group:team",
+            &Arc::new(tokio::sync::RwLock::new(sm)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            messenger
+                .originating_peer(&principal.id.0, &group_id)
+                .await
+                .unwrap(),
+            None,
+            "a group conversation has no single originating actor"
         );
     }
 }

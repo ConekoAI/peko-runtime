@@ -61,13 +61,57 @@ use tokio::sync::broadcast;
 
 use crate::fs::channel_dir_name;
 use crate::port::{
-    query_matches, ChannelError, ChannelPort, ChannelQuery, Checkpoint, CreateOpts, PostMsg,
-    RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
+    dm_channel_id, query_matches, ActorInfo, ChannelError, ChannelPort, ChannelQuery, Checkpoint,
+    CreateOpts, PostMsg, RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
 };
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActorRecord {
+    info: ActorInfo,
+    identity_key: String,
+    signing_did: Option<String>,
+}
+impl ActorRecord {
+    fn info(&self) -> ActorInfo {
+        let mut info = self.info.clone();
+        info.identity_key = self.identity_key.clone();
+        info
+    }
+    fn aliases(&self) -> Vec<String> {
+        let mut out = vec![
+            self.info.address.clone(),
+            format!("{}:{}", self.info.kind, self.info.local_id),
+        ];
+        if self.info.kind == "principal" {
+            out.push(self.info.local_id.clone());
+        }
+        if let Some(id) = &self.info.hub_id {
+            out.push(format!("{}:hub:{id}", self.info.kind));
+            out.push(format!("{}:{id}", self.info.kind));
+        }
+        if let Some(did) = &self.signing_did {
+            out.extend([did.clone(), format!("principal:{did}")]);
+        }
+        out
+    }
+}
+fn actor_index(records: Vec<ActorRecord>) -> HashMap<String, ActorRecord> {
+    records
+        .into_iter()
+        .flat_map(|r| r.aliases().into_iter().map(move |a| (a, r.clone())))
+        .collect()
+}
+fn load_actors(path: &Path) -> Result<Vec<ActorRecord>> {
+    match std::fs::read(path) {
+        Ok(data) => Ok(serde_json::from_slice(&data)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
 
 /// Hard cap on PRINCIPAL members per channel. PR-1 default. PR-3 may
 /// make this configurable on the channel.
@@ -263,6 +307,10 @@ pub struct MetaJson {
     /// byte-for-byte.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passive_binding: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub bindings: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<String>,
 }
 
 impl MetaJson {
@@ -415,6 +463,8 @@ pub fn subject_wire_form(subject: &Subject) -> String {
 #[derive(Debug, Clone)]
 pub struct ChannelStore {
     cfg: ChannelConfig,
+    actors: Arc<Mutex<HashMap<String, ActorRecord>>>,
+    dm_lock: Arc<tokio::sync::Mutex<()>>,
     /// PR-2b: per-channel event broadcast registry. Each entry holds
     /// a `broadcast::Sender` whose `Receiver`s are leased by
     /// [`ChannelPort::subscribe_events`] callers. The capacity is
@@ -448,11 +498,44 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
+    fn canonical_address(&self, address: &str) -> String {
+        let actors = self.actors.lock().expect("actor directory mutex");
+        actors
+            .get(address)
+            .map(|p| p.info.address.clone())
+            .unwrap_or_else(|| {
+                if address.starts_with("did:") {
+                    format!("principal:{address}")
+                } else {
+                    address
+                        .parse::<Subject>()
+                        .map(|s| ActorInfo::local(&s, None).address)
+                        .unwrap_or_else(|_| address.to_string())
+                }
+            })
+    }
+
+    fn normalize_event(&self, mut event: ChannelEvent) -> ChannelEvent {
+        match &mut event {
+            ChannelEvent::Posted { author, .. } => *author = self.canonical_address(author),
+            ChannelEvent::Created { creator, .. } => *creator = self.canonical_address(creator),
+            ChannelEvent::MemberJoined { member, .. } | ChannelEvent::MemberLeft { member, .. } => {
+                *member = self.canonical_address(member)
+            }
+            _ => {}
+        }
+        event
+    }
     /// Construct a store rooted at the given [`ChannelConfig`].
     #[must_use]
     pub fn new(cfg: ChannelConfig) -> Self {
         Self {
+            actors: Arc::new(Mutex::new(actor_index(
+                load_actors(&cfg.runtime_dir.join("actors.json"))
+                    .expect("actor registry must be readable"),
+            ))),
             cfg,
+            dm_lock: Arc::new(tokio::sync::Mutex::new(())),
             notifiers: Arc::new(Mutex::new(HashMap::new())),
             line_counts: Arc::new(Mutex::new(HashMap::new())),
             rotate_bytes: DEFAULT_ROTATE_BYTES,
@@ -766,6 +849,8 @@ impl ChannelStore {
         ev: &ChannelEvent,
         origin: EventOrigin,
     ) -> Result<u64> {
+        let local_event = (origin == EventOrigin::Local).then(|| self.normalize_event(ev.clone()));
+        let ev = local_event.as_ref().unwrap_or(ev);
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         fs::create_dir_all(&chan_dir).await?;
         let path = self.events_path_for(tier, channel);
@@ -850,7 +935,7 @@ impl ChannelStore {
             .insert(path.clone(), (cur_lines + 1, cur_len + bytes.len() as u64));
         // Notify live subscribers only after the durable append
         // succeeds (see the method docs — single chokepoint).
-        self.notify_event(channel, ev);
+        self.notify_event(channel, &self.normalize_event(ev.clone()));
         Ok(line_number)
     }
 
@@ -912,7 +997,7 @@ impl ChannelStore {
                         let (_origin, ev) = parse_event_line(content).map_err(|e| {
                             ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
                         })?;
-                        out.push((idx.to_string(), ev));
+                        out.push((idx.to_string(), self.normalize_event(ev)));
                     }
                     idx += 1;
                     line_start = i + 1;
@@ -992,7 +1077,7 @@ impl ChannelStore {
                         let (_origin, ev) = parse_event_line(content).map_err(|e| {
                             ChannelError::Adapter(format!("decode event at line {idx}: {e}"))
                         })?;
-                        out.push((idx.to_string(), ev));
+                        out.push((idx.to_string(), self.normalize_event(ev)));
                     }
                     idx += 1;
                     line_start = i + 1;
@@ -1109,6 +1194,7 @@ impl ChannelStore {
                 let (_origin, ev) = parse_event_line(content).map_err(|e| {
                     ChannelError::Adapter(format!("decode event at line {gidx}: {e}"))
                 })?;
+                let ev = self.normalize_event(ev);
                 if query_matches(&ev, needle.as_deref(), query.author.as_deref()) {
                     matches.push((gidx, ev));
                     if matches.len() >= limit {
@@ -1153,10 +1239,10 @@ impl ChannelStore {
     ) -> Result<bool> {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
-        Ok(members
-            .members
-            .iter()
-            .any(|m| member_subject(m) == *subject))
+        Ok(members.members.iter().any(|m| {
+            self.canonical_address(&member_subject(m).to_string())
+                == self.canonical_address(&subject.to_string())
+        }))
     }
 
     /// Lock `members.json` for a read-modify-write cycle (invite /
@@ -1165,6 +1251,20 @@ impl ChannelStore {
     /// and the later save clobbers the earlier one. The lock is on
     /// the members file itself (FileLock derives `<path>.lock`), so
     /// it never contends with the `events.jsonl` append lock.
+    async fn lock_dm(&self, channel: &ChannelId) -> Result<FileLock> {
+        fs::create_dir_all(self.cfg.channels_dir())
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("DM directory: {e}")))?;
+        FileLock::acquire(
+            self.cfg
+                .channels_dir()
+                .join(format!(".{}.provision", channel_dir_name(channel))),
+            CHANNEL_LOCK_TIMEOUT_MS,
+        )
+        .await
+        .map_err(|e| ChannelError::Adapter(format!("DM provisioning lock: {e}")))
+    }
+
     async fn lock_members(&self, chan_dir: &Path) -> Result<FileLock> {
         FileLock::acquire(MembersJson::path_in(chan_dir), CHANNEL_LOCK_TIMEOUT_MS)
             .await
@@ -1262,6 +1362,29 @@ impl ChannelStore {
         ev: &ChannelEvent,
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
+        if let ChannelEvent::MemberLeft { member, .. } = ev {
+            let leaving = self.actor_info(&member_subject(member)).await;
+            let chan_dir = self.channel_dir_for_tier(tier, channel);
+            let _guard = self.lock_members(&chan_dir).await?;
+            let mut members = MembersJson::load(&chan_dir).await?;
+            let mut retained = Vec::new();
+            for remote in members.remote_members {
+                let actor = self.actor_info(&member_subject(&remote.principal_id)).await;
+                if actor.kind != leaving.kind || actor.identity_key != leaving.identity_key {
+                    retained.push(remote);
+                }
+            }
+            members.remote_members = retained;
+            let mut retained = Vec::new();
+            for member in members.members {
+                let actor = self.actor_info(&member_subject(&member)).await;
+                if actor.kind != leaving.kind || actor.identity_key != leaving.identity_key {
+                    retained.push(member);
+                }
+            }
+            members.members = retained;
+            members.save(&chan_dir).await?;
+        }
         let line = self
             .append_event(tier, channel, ev, EventOrigin::VerifiedRemote)
             .await?;
@@ -1365,6 +1488,37 @@ impl ChannelStore {
         Ok(())
     }
 
+    /// A pair DM addresses one peer identity even when its host changes.
+    pub async fn replace_dm_peer_route(
+        &self,
+        channel: &ChannelId,
+        did: &str,
+        runtime: &str,
+    ) -> Result<Vec<String>> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut members = MembersJson::load(&dir).await?;
+        let old = members
+            .remote_members
+            .iter()
+            .filter(|m| m.principal_id == did && m.runtime_id != runtime)
+            .map(|m| m.runtime_id.clone())
+            .collect::<Vec<_>>();
+        members
+            .remote_members
+            .retain(|m| m.principal_id != did || m.runtime_id == runtime);
+        let current = RemoteMember {
+            principal_id: did.into(),
+            runtime_id: runtime.into(),
+        };
+        if !members.remote_members.contains(&current) {
+            members.remote_members.push(current);
+        }
+        members.save(&dir).await?;
+        Ok(old)
+    }
+
     /// Bootstrap a local mirror of a cross-runtime channel the
     /// receiver was invited to. Called by the dispatcher on inbound
     /// `TunnelChannelInvite` envelopes (peko-channel cross-runtime
@@ -1443,6 +1597,8 @@ impl ChannelStore {
         source_runtime_id: &str,
         passive_binding: Option<String>,
     ) -> Result<()> {
+        let _dm_guard = self.dm_lock.lock().await;
+        let _provision_guard = self.lock_dm(channel).await?;
         let chan_dir = self.cfg.channel_dir(channel);
         let meta_path = chan_dir.join(META_FILE);
 
@@ -1450,6 +1606,41 @@ impl ChannelStore {
         // If it exists, the previous `join_remote` (or a local
         // `create`) already completed; do nothing.
         if meta_path.exists() {
+            let _members_guard = self.lock_members(&chan_dir).await?;
+            let mut meta = MetaJson::load(&chan_dir, channel).await?;
+            let mut meta_changed = false;
+            if let Some(binding) = passive_binding {
+                if !meta.bindings.contains_key(&self_principal.0) {
+                    meta.bindings.insert(self_principal.0.clone(), binding);
+                    meta_changed = true;
+                }
+            }
+            let mut members = MembersJson::load(&chan_dir).await?;
+            let mut members_changed = false;
+            if !members.members.contains(&self_principal.0) {
+                members.members.push(self_principal.0.clone());
+                members_changed = true;
+            }
+            for member in initial_members.iter().filter(|m| m.runtime_id.is_some()) {
+                let runtime_id = member.runtime_id.clone().unwrap_or_default();
+                if !members
+                    .remote_members
+                    .iter()
+                    .any(|m| m.runtime_id == runtime_id && m.principal_id == member.principal_did)
+                {
+                    members.remote_members.push(RemoteMember {
+                        runtime_id,
+                        principal_id: member.principal_did.clone(),
+                    });
+                    members_changed = true;
+                }
+            }
+            if members_changed {
+                members.save(&chan_dir).await?;
+            }
+            if meta_changed {
+                meta.save(&chan_dir).await?;
+            }
             return Ok(());
         }
 
@@ -1505,7 +1696,21 @@ impl ChannelStore {
             // the caller (the wire marker's value is never adopted
             // verbatim — see the doc comment).
             passive_binding,
+            bindings: HashMap::new(),
+            participants: {
+                let mut addresses = initial_members
+                    .iter()
+                    .map(|m| member_subject(&m.principal_did).to_string())
+                    .collect::<Vec<_>>();
+                addresses.sort();
+                addresses.dedup();
+                addresses
+            },
         };
+        let mut meta = meta;
+        if let Some(binding) = meta.passive_binding.clone() {
+            meta.bindings.insert(self_principal.0.clone(), binding);
+        }
         meta.save(&chan_dir).await?;
 
         // Append the synthetic Created event. `append_event` uses the
@@ -1547,7 +1752,8 @@ impl ChannelStore {
         sender: &Subject,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
-        self.post_attributed_with_event(channel, sender, &subject_wire_form(sender), msg)
+        let author = self.canonical_address(&subject_wire_form(sender));
+        self.post_attributed_with_event(channel, sender, &author, msg)
             .await
     }
 
@@ -1607,7 +1813,7 @@ impl ChannelStore {
         };
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
-            author: author.to_string(),
+            author: self.canonical_address(author),
             parent: msg.parent.clone(),
             text: msg.text,
             at: Utc::now().to_rfc3339(),
@@ -1655,7 +1861,247 @@ pub fn new_msg_id() -> String {
 
 #[async_trait]
 impl ChannelPort for ChannelStore {
+    async fn register_principal(&self, id: &PrincipalId, did: &str, name: &str) -> Result<()> {
+        self.register_actor(
+            &Subject::from(id),
+            None,
+            Some(did),
+            Some(did),
+            Some(name),
+            "local_only",
+        )
+        .await?;
+        Ok(())
+    }
+    async fn register_actor(
+        &self,
+        subject: &Subject,
+        hub_id: Option<&str>,
+        signing_did: Option<&str>,
+        identity_key: Option<&str>,
+        name: Option<&str>,
+        registration: &str,
+    ) -> Result<ActorInfo> {
+        let path = self.cfg.runtime_dir.join("actors.json");
+        fs::create_dir_all(&self.cfg.runtime_dir).await?;
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut records = load_actors(&path)?;
+        let info = ActorInfo::local(subject, name);
+        let old = records.iter().position(|r| r.info.address == info.address);
+        if identity_key.is_some_and(|key| {
+            records
+                .iter()
+                .any(|r| r.identity_key == key && r.info.address != info.address)
+        }) {
+            return Err(ChannelError::Adapter(
+                "Actor key already belongs to another local actor".into(),
+            ));
+        }
+
+        if let Some(hub_id) = hub_id {
+            if records.iter().any(|r| {
+                r.info.kind == info.kind
+                    && r.info.hub_id.as_deref() == Some(hub_id)
+                    && r.info.local_id != info.local_id
+            }) {
+                return Err(ChannelError::Adapter(
+                    "Hub identity already belongs to a different local actor".into(),
+                ));
+            }
+        }
+        if let Some(index) = old {
+            let record = &records[index];
+            if identity_key.is_some_and(|key| key != record.identity_key) {
+                return Err(ChannelError::Adapter(
+                    "Actor identity key cannot change".into(),
+                ));
+            }
+            if record.signing_did.as_deref().is_some_and(|old| {
+                old.starts_with("did:key:") && signing_did.is_some_and(|new| new != old)
+            }) {
+                return Err(ChannelError::Adapter(
+                    "Actor signing identity cannot change".into(),
+                ));
+            }
+        }
+        let mut record = old
+            .map(|i| records.remove(i))
+            .unwrap_or_else(|| ActorRecord {
+                identity_key: identity_key
+                    .or(signing_did)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        hub_id
+                            .map(|h| format!("{}:hub:{h}", info.kind))
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+                    }),
+                info,
+                signing_did: signing_did.map(str::to_owned),
+            });
+        record.info.hub_id = hub_id.map(str::to_owned);
+        if let Some(name) = name {
+            record.info.name = Some(name.into());
+        }
+        if let Some(did) = signing_did {
+            record.signing_did = Some(did.into());
+        }
+        record.info.registration = registration.into();
+        let answer = record.info();
+        records.push(record);
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
+        fs::rename(temp, path).await?;
+        *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        Ok(answer)
+    }
+    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
+        *self.actors.lock().expect("actor registry mutex") = actor_index(
+            load_actors(&self.cfg.runtime_dir.join("actors.json"))
+                .expect("actor registry must be readable"),
+        );
+        self.actors
+            .lock()
+            .expect("actor registry mutex")
+            .get(&subject.to_string())
+            .map(ActorRecord::info)
+            .unwrap_or_else(|| ActorInfo::local(subject, None))
+    }
+    async fn known_actors(&self) -> Result<Vec<ActorInfo>> {
+        let mut actors = load_actors(&self.cfg.runtime_dir.join("actors.json"))?
+            .into_iter()
+            .map(|r| r.info())
+            .collect::<Vec<_>>();
+        actors.sort_by(|a, b| a.address.cmp(&b.address));
+        Ok(actors)
+    }
+    async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
+        let subject: Subject = reference
+            .parse()
+            .map_err(|e| ChannelError::Adapter(format!("actor reference: {e}")))?;
+        if !(subject.subject_id().starts_with("local:") || subject.subject_id().starts_with("hub:"))
+        {
+            return Err(ChannelError::Adapter(
+                "Use kind:local:<id> or kind:hub:<id>".into(),
+            ));
+        }
+        *self.actors.lock().expect("actor registry mutex") =
+            actor_index(load_actors(&self.cfg.runtime_dir.join("actors.json"))?);
+        self.actors
+            .lock()
+            .expect("actor registry mutex")
+            .get(reference)
+            .map(ActorRecord::info)
+            .ok_or_else(|| {
+                ChannelError::Adapter(format!(
+                    "Unknown actor {reference}; resolve it through Contacts"
+                ))
+            })
+    }
+
+    async fn binding_for(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+    ) -> Result<Option<String>> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let meta = MetaJson::load(&dir, channel).await?;
+        Ok(meta.bindings.get(&principal.0).cloned())
+    }
+
+    async fn ensure_dm(
+        &self,
+        principal: &PrincipalId,
+        peer: &Subject,
+        binding: &str,
+    ) -> Result<ChannelId> {
+        for actor in [Subject::from(principal), peer.clone()] {
+            let info = self.actor_info(&actor).await;
+            if info.identity_key == info.address {
+                self.register_actor(&actor, None, None, None, None, "local_only")
+                    .await?;
+            }
+        }
+        let me = self.actor_info(&Subject::from(principal)).await;
+        let other = self.actor_info(peer).await;
+        let channel = dm_channel_id(&me.identity_key, &other.identity_key);
+        let _guard = self.dm_lock.lock().await;
+        let _provision_guard = self.lock_dm(&channel).await?;
+        let dir = self.cfg.channel_dir(&channel);
+        if !dir.join(META_FILE).exists() {
+            self.create(
+                principal,
+                CreateOpts::runtime(format!("dm-{}", binding.trim_start_matches('/')))
+                    .with_id(channel.clone())
+                    .with_passive_binding(binding),
+            )
+            .await?;
+        }
+        let _members_guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, &channel).await?;
+        let mut expected = vec![me.address.clone(), other.address.clone()];
+        expected.sort();
+        expected.dedup();
+        if !meta.participants.is_empty() && meta.participants != expected {
+            return Err(ChannelError::Adapter(
+                "DM participant identity conflicts with stored channel".into(),
+            ));
+        }
+        meta.bindings
+            .insert(principal.0.clone(), binding.to_string());
+        meta.participants = expected;
+        meta.save(&dir).await?;
+        let mut members = MembersJson::load(&dir).await?;
+        for member in [principal.0.clone(), subject_wire_form(&other.subject())] {
+            if !members.members.contains(&member) {
+                members.members.push(member);
+            }
+        }
+        members.save(&dir).await?;
+        Ok(channel)
+    }
+
+    async fn participants(&self, channel: &ChannelId) -> Result<Vec<ActorInfo>> {
+        let tier = self.resolve_tier(channel).await?;
+        let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
+        let mut subjects = self.list_members(channel).await?;
+        subjects.extend(
+            self.list_remote_members(channel)
+                .await?
+                .into_iter()
+                .map(|m| member_subject(&m.principal_id)),
+        );
+        if meta.passive_binding.is_some() {
+            // A human DM peer has no membership row. Group rosters come only
+            // from current membership, never from an old invitation snapshot.
+            subjects.extend(meta.participants.iter().filter_map(|s| s.parse().ok()));
+        }
+        let mut out = Vec::new();
+        for subject in subjects {
+            let info = self.actor_info(&subject).await;
+            if !out.iter().any(|p: &ActorInfo| p.address == info.address) {
+                out.push(info);
+            }
+        }
+        out.sort_by(|a, b| a.address.cmp(&b.address));
+        Ok(out)
+    }
+
     async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
+        let actor = self.actor_info(&Subject::from(creator)).await;
+        if actor.identity_key == actor.address {
+            self.register_actor(
+                &Subject::from(creator),
+                None,
+                None,
+                None,
+                None,
+                "local_only",
+            )
+            .await?;
+        }
         // Sprint 4: honor `opts.id` (set by the peer-DM auto-provisioning
         // path) when supplied; otherwise mint a fresh `chan_<8 base36>`
         // as before. Both paths converge through the same
@@ -1683,6 +2129,12 @@ impl ChannelPort for ChannelStore {
             created_at: now,
             tier: opts.tier,
             passive_binding: opts.passive_binding.clone(),
+            bindings: opts
+                .passive_binding
+                .as_ref()
+                .map(|b| HashMap::from([(creator.0.clone(), b.clone())]))
+                .unwrap_or_default(),
+            participants: Vec::new(),
         };
         meta.save(&chan_dir).await?;
 
@@ -1710,6 +2162,34 @@ impl ChannelPort for ChannelStore {
         inviter: &PrincipalId,
         invitee: &Subject,
     ) -> Result<()> {
+        let info = self.actor_info(invitee).await;
+        let info = if info.identity_key == info.address {
+            let raw = invitee.subject_id();
+            let (id, hub) = if let Some(hub) = raw.strip_prefix("hub:") {
+                (format!("local_{hub}"), Some(hub))
+            } else {
+                (raw.strip_prefix("local:").unwrap_or(raw).to_string(), None)
+            };
+            let local = format!("{}:{id}", invitee.kind())
+                .parse::<Subject>()
+                .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+            self.register_actor(
+                &local,
+                hub,
+                None,
+                None,
+                None,
+                if hub.is_some() {
+                    "registered"
+                } else {
+                    "local_only"
+                },
+            )
+            .await?
+        } else {
+            info
+        };
+        let invitee = &info.subject();
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
@@ -2152,7 +2632,7 @@ mod tests {
             })
             .collect();
         assert_eq!(posted.len(), 1);
-        assert_eq!(posted[0].0, "user:alice");
+        assert_eq!(posted[0].0, "user:local:alice");
         assert_eq!(posted[0].1, "hello from alice");
     }
 
@@ -2697,7 +3177,7 @@ mod tests {
 
         // Author match is exact.
         let page = store
-            .search(&channel, &q(None, Some("user:alice"), None, 10))
+            .search(&channel, &q(None, Some("user:local:alice"), None, 10))
             .await
             .unwrap();
         assert_eq!(page.events.len(), 1);
@@ -2924,6 +3404,8 @@ mod tests {
             created_at: Utc::now(),
             tier: Tier::Runtime,
             passive_binding: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            bindings: HashMap::new(),
+            participants: Vec::new(),
         };
         let bytes = serde_json::to_vec(&m).unwrap();
         let parsed: MetaJson = serde_json::from_slice(&bytes).unwrap();
@@ -3400,7 +3882,7 @@ mod tests {
             })
             .collect();
         assert_eq!(posted.len(), 1);
-        assert_eq!(posted[0].0, "user:alice");
+        assert_eq!(posted[0].0, "user:local:alice");
         assert_eq!(posted[0].1, "hi from alice");
         assert_eq!(line, "1", "Created is line 0; first post is line 1");
     }
@@ -3505,7 +3987,7 @@ mod tests {
             .unwrap();
         match ev {
             ChannelEvent::Posted { author, .. } => {
-                assert_eq!(author, "prin_self");
+                assert_eq!(author, "principal:local:prin_self");
             }
             other => panic!("expected Posted event; got {other:?}"),
         }
@@ -3611,12 +4093,18 @@ mod tests {
         let initial_members = vec![
             // The source's own row — filed as remote on the mirror.
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "prin_alice".to_string(),
                 runtime_id: Some("did:key:zRuntimeA".to_string()),
             },
             // The invitee row addressed to the receiver — dropped in
             // favor of `self_principal`.
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "did:peko:principal:self".to_string(),
                 runtime_id: None,
             },
@@ -3749,6 +4237,9 @@ mod tests {
         let channel = ChannelId::generate();
         let receiver = pid("prin_self_local");
         let initial_members = vec![InitialMember {
+            hub_id: None,
+            identity_key: None,
+            name: None,
             principal_did: "did:peko:principal:self".to_string(),
             runtime_id: None,
         }];

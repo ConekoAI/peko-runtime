@@ -29,9 +29,9 @@ pub enum InstanceStatus {
 pub enum InstanceExposure {
     Private,
     Public,
-    Unlisted,
+
     #[default]
-    Unexposed,
+    LocalOnly,
 }
 
 /// Type of an instance.
@@ -52,8 +52,18 @@ impl From<peko_auth::Exposure> for InstanceExposure {
         match e {
             peko_auth::Exposure::Private => Self::Private,
             peko_auth::Exposure::Public => Self::Public,
-            peko_auth::Exposure::Unlisted => Self::Unlisted,
-            peko_auth::Exposure::Unexposed => Self::Unexposed,
+
+            peko_auth::Exposure::LocalOnly => Self::LocalOnly,
+        }
+    }
+}
+
+impl From<InstanceExposure> for peko_auth::Exposure {
+    fn from(e: InstanceExposure) -> Self {
+        match e {
+            InstanceExposure::Public => Self::Public,
+            InstanceExposure::Private => Self::Private,
+            InstanceExposure::LocalOnly => Self::LocalOnly,
         }
     }
 }
@@ -77,6 +87,10 @@ pub struct InstanceAnnouncePayload {
     #[serde(rename = "type")]
     pub instance_type: InstanceType,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_id: Option<String>,
+    pub local_id: String,
+    pub identity_key: String,
     /// Stable per-agent identifier (DID) — issue #28.
     ///
     /// Populated from `AgentConfig.agent_did` when the agent has been
@@ -123,6 +137,11 @@ pub struct InstanceAnnouncePayload {
     // cross-runtime traffic flows through the tunnel relay, not a
     // direct endpoint). Fields dropped from the struct, host accessor
     // dropped, and announce sites stopped reading them.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceDeregisterPayload {
+    pub id: String,
 }
 
 /// Payload for `instance_heartbeat` messages.
@@ -257,6 +276,25 @@ pub enum TunnelMessage {
 
     // --- Instance lifecycle ---
     /// Instance announcement
+    #[serde(rename = "principal_registration_rejected")]
+    PrincipalRegistrationRejected {
+        #[serde(rename = "registrationId")]
+        registration_id: String,
+        message: String,
+    },
+    #[serde(rename = "principal_registered")]
+    PrincipalRegistered {
+        #[serde(rename = "registrationId")]
+        registration_id: Option<String>,
+        #[serde(rename = "localId")]
+        local_id: String,
+        #[serde(rename = "hubId")]
+        hub_id: String,
+        #[serde(rename = "signingDid")]
+        signing_did: String,
+    },
+    #[serde(rename = "instance_deregister")]
+    InstanceDeregister { payload: InstanceDeregisterPayload },
     #[serde(rename = "instance_announce")]
     InstanceAnnounce { payload: InstanceAnnouncePayload },
 
@@ -595,6 +633,9 @@ mod tests {
         );
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-1".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "test-agent".to_string(),
@@ -649,6 +690,9 @@ mod tests {
     fn test_instance_announce_minimal_roundtrip() {
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-2".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "minimal".to_string(),
@@ -689,6 +733,9 @@ mod tests {
     fn test_instance_announce_agent_did_roundtrip() {
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-3".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "helper".to_string(),
@@ -729,6 +776,9 @@ mod tests {
     fn test_instance_announce_principal_pop_wire_shape() {
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-5".to_string(),
                 instance_type: InstanceType::Principal,
                 name: "helper".to_string(),
@@ -761,6 +811,9 @@ mod tests {
         // None → the key is absent from the wire form.
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-6".to_string(),
                 instance_type: InstanceType::Principal,
                 name: "legacy".to_string(),
@@ -792,6 +845,9 @@ mod tests {
         // skip annotation keeps the contract explicit).
         let msg = TunnelMessage::InstanceAnnounce {
             payload: InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: String::new(),
+                identity_key: String::new(),
                 id: "inst-4".to_string(),
                 instance_type: InstanceType::Agent,
                 name: "legacy-helper".to_string(),
@@ -1093,10 +1149,16 @@ mod tests {
     fn test_tunnel_channel_invite_roundtrip() {
         let initial_members = vec![
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "prin_alice".to_string(),
                 runtime_id: None,
             },
             InitialMember {
+                hub_id: None,
+                identity_key: None,
+                name: None,
                 principal_did: "prin_bob".to_string(),
                 runtime_id: Some("did:key:zRuntimeB".to_string()),
             },

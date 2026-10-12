@@ -1740,12 +1740,13 @@ mod tests {
             ..Default::default()
         };
 
-        let agent = Agent::new(config, tooling).await;
+        let temp = tempfile::tempdir().unwrap();
+        let agent = Agent::new_for_test(config, temp.path(), tooling).await;
         assert!(agent.is_ok());
 
         let agent = agent.unwrap();
         assert_eq!(agent.name(), "test-agent");
-        assert!(agent.did().starts_with("did:peko:"));
+        assert!(agent.did().starts_with("did:key:"));
     }
 
     #[tokio::test]
@@ -1927,8 +1928,8 @@ mod tests {
         );
 
         // Both must be well-formed peko DIDs.
-        assert!(did_a.starts_with("did:peko:"));
-        assert!(did_b.starts_with("did:peko:"));
+        assert!(did_a.starts_with("did:key:"));
+        assert!(did_b.starts_with("did:key:"));
     }
 
     /// Phase 2: every new `with_*` setter returns `Self` and the

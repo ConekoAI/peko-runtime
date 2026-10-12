@@ -3,6 +3,7 @@
 //! Bridges proxied requests from the PekoHub tunnel to the daemon's service layer.
 //! Handles chat execution, streaming responses, and instance lifecycle messages.
 
+use peko_channel::ChannelPort;
 use std::sync::Arc;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -184,6 +185,8 @@ impl Default for InstanceState {
 #[derive(Debug, Default)]
 pub struct TunnelDispatcherState {
     /// Whether the tunnel is authenticated and ready
+    pub registration_receipts: std::collections::HashMap<String, Result<String, String>>,
+    pub pending_registrations: std::collections::HashMap<String, String>,
     pub ready: bool,
     /// Heartbeat interval from server (seconds)
     pub heartbeat_interval_secs: u32,
@@ -215,6 +218,7 @@ pub struct TunnelDispatcher {
     /// into its task) so the cap is global, not per-task. See
     /// [`MAX_CONCURRENT_DISPATCHES`].
     inbound_semaphore: Arc<Semaphore>,
+    registration_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl TunnelDispatcher {
@@ -236,6 +240,7 @@ impl TunnelDispatcher {
             // cloning it here is a no-op refcount bump.
             tunnel_handle_slot,
             inbound_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES)),
+            registration_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -397,6 +402,9 @@ impl TunnelDispatcher {
         let principals = principal_manager.list_all().await;
 
         for principal in principals {
+            if principal.config.read().await.hub_id.is_none() {
+                continue;
+            }
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure: InstanceExposure = principal.exposure().await.into();
@@ -406,6 +414,14 @@ impl TunnelDispatcher {
             };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
+                registration_id: None,
+                local_id: principal.id.0.clone(),
+                identity_key: self
+                    .host
+                    .tunnel_channel_port()
+                    .actor_info(&Subject::from(&principal.id))
+                    .await
+                    .identity_key,
                 id: instance_id.clone(),
                 instance_type: InstanceType::Principal,
                 name: name.clone(),
@@ -449,6 +465,14 @@ impl TunnelDispatcher {
     ///
     /// Used when a new Principal is created after the tunnel is already connected.
     pub async fn announce_single_instance(&self, principal_name: &str) -> anyhow::Result<()> {
+        self.announce_registration(principal_name, None).await
+    }
+
+    async fn announce_registration(
+        &self,
+        principal_name: &str,
+        registration_id: Option<String>,
+    ) -> anyhow::Result<()> {
         let handle = {
             let state = self.state.read().await;
             match state.tunnel_handle.clone() {
@@ -475,6 +499,9 @@ impl TunnelDispatcher {
             }
         };
 
+        if registration_id.is_none() && principal.config.read().await.hub_id.is_none() {
+            return Ok(());
+        }
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure: InstanceExposure = principal.exposure().await.into();
@@ -484,6 +511,14 @@ impl TunnelDispatcher {
         };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
+            registration_id,
+            local_id: principal.id.0.clone(),
+            identity_key: self
+                .host
+                .tunnel_channel_port()
+                .actor_info(&Subject::from(&principal.id))
+                .await
+                .identity_key,
             id: instance_id.clone(),
             instance_type: InstanceType::Principal,
             name: name.clone(),
@@ -570,6 +605,75 @@ impl TunnelDispatcher {
                 self.handle_proxied_request(request_id, principal, payload, handle)
                     .await?;
             }
+            TunnelMessage::PrincipalRegistrationRejected {
+                registration_id,
+                message,
+            } => {
+                self.state
+                    .write()
+                    .await
+                    .registration_receipts
+                    .insert(registration_id, Err(message));
+            }
+            TunnelMessage::PrincipalRegistered {
+                registration_id,
+                local_id,
+                hub_id,
+                signing_did,
+            } => {
+                let manager = self.host.principal_manager();
+                let principal = manager
+                    .get(peko_subject::PrincipalId(local_id))
+                    .await
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("registration receipt names an unknown principal")
+                    })?;
+                anyhow::ensure!(
+                    principal.did().await.0 == signing_did,
+                    "registration receipt signing identity mismatch"
+                );
+                let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+                let existing = port.actor_info(&Subject::from(&principal.id)).await;
+                // Keep receipt validation and durable identity commit in one nonce lifecycle.
+                let mut state = self.state.write().await;
+                let pending = state.pending_registrations.get(&principal.id.0);
+                let acknowledged = registration_id
+                    .as_ref()
+                    .is_some_and(|id| Some(id) == pending);
+                anyhow::ensure!(
+                    acknowledged || existing.hub_id.as_deref() == Some(&hub_id),
+                    "Unsolicited registration receipt"
+                );
+                let config = principal.config.read().await;
+                port.register_actor(
+                    &Subject::from(&principal.id),
+                    Some(&hub_id),
+                    config.did.as_ref().map(|d| d.0.as_str()),
+                    config.actor_key.as_deref(),
+                    Some(&config.name),
+                    if config.exposure == peko_auth::Exposure::Public {
+                        "public"
+                    } else {
+                        "private"
+                    },
+                )
+                .await?;
+                let name = config.name.clone();
+                drop(config);
+                if let Err(error) = manager
+                    .update_config(&name, |config| config.hub_id = Some(hub_id.clone()))
+                    .await
+                {
+                    // actors.json is the authority; principal.toml is its projection.
+                    warn!(%error, "Hub identity committed; config projection will be repaired on load");
+                }
+                if acknowledged {
+                    state
+                        .registration_receipts
+                        .insert(registration_id.expect("matching nonce"), Ok(hub_id));
+                }
+            }
+
             TunnelMessage::ExposureUpdate { payload } => {
                 self.handle_exposure_update(payload).await?;
             }
@@ -979,6 +1083,107 @@ impl TunnelDispatcher {
             .unwrap_or(InstanceStatus::Online)
     }
 
+    pub async fn register_principal(
+        &self,
+        name: &str,
+        exposure: InstanceExposure,
+    ) -> anyhow::Result<Option<String>> {
+        let _registration = self.registration_lock.lock().await;
+        let manager = self.host.principal_manager();
+        let principal = manager
+            .get_by_name(name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
+        if exposure == InstanceExposure::LocalOnly {
+            if let Some(handle) = self.state.read().await.tunnel_handle.clone() {
+                handle.send(TunnelMessage::InstanceDeregister {
+                    payload: super::protocol::InstanceDeregisterPayload {
+                        id: self.instance_id(name),
+                    },
+                })?;
+            }
+            let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+            let config = principal.config.read().await;
+            port.register_actor(
+                &Subject::from(&principal.id),
+                None,
+                config.did.as_ref().map(|did| did.0.as_str()),
+                config.actor_key.as_deref(),
+                Some(name),
+                "local_only",
+            )
+            .await?;
+            drop(config);
+            manager
+                .update_config(name, |c| {
+                    c.hub_id = None;
+                    c.exposure = peko_auth::Exposure::LocalOnly;
+                })
+                .await?;
+        } else {
+            anyhow::ensure!(
+                self.state.read().await.ready,
+                "Hub registration requires a connected, authenticated tunnel"
+            );
+            let old = principal.config.read().await.exposure;
+            let id = uuid::Uuid::new_v4().to_string();
+            self.state
+                .write()
+                .await
+                .pending_registrations
+                .insert(principal.id.0.clone(), id.clone());
+            let announce = async {
+                manager
+                    .prepare_hub_registration(name, exposure.into())
+                    .await?;
+                self.announce_registration(name, Some(id.clone())).await
+            }
+            .await;
+            if let Err(error) = announce {
+                self.state
+                    .write()
+                    .await
+                    .pending_registrations
+                    .remove(&principal.id.0);
+                manager.update_config(name, |c| c.exposure = old).await?;
+                anyhow::bail!("Hub registration failed: {error}");
+            }
+            let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                loop {
+                    if let Some(result) = self.state.write().await.registration_receipts.remove(&id)
+                    {
+                        break result;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            let mut state = self.state.write().await;
+            state.pending_registrations.remove(&principal.id.0);
+            // A receipt already committing when the wait elapsed still has a definitive result.
+            let result = match result {
+                Err(elapsed) => state
+                    .registration_receipts
+                    .remove(&id)
+                    .map(Ok)
+                    .unwrap_or(Err(elapsed)),
+                completed => completed,
+            };
+            drop(state);
+            match result {
+                Ok(Ok(_)) => {}
+                other => {
+                    manager.update_config(name, |c| c.exposure = old).await?;
+                    anyhow::bail!("Hub registration failed: {:?}", other);
+                }
+            }
+        }
+        let port: std::sync::Arc<dyn peko_channel::ChannelPort> = self.host.tunnel_channel_port();
+        manager.register_actor_identity(&principal, &port).await?;
+        let hub_id = principal.config.read().await.hub_id.clone();
+        Ok(hub_id)
+    }
+
     /// Set the exposure of an instance and send an exposure_update message to the hub.
     pub async fn set_instance_exposure(
         &self,
@@ -1159,6 +1364,14 @@ impl TunnelDispatcher {
                     let status = self.get_instance_status(&name).await;
                     let principal_pop = self.principal_pop(&did.0).await;
                     let announce_payload = InstanceAnnouncePayload {
+                        registration_id: None,
+                        local_id: principal.id.0.clone(),
+                        identity_key: self
+                            .host
+                            .tunnel_channel_port()
+                            .actor_info(&Subject::from(&principal.id))
+                            .await
+                            .identity_key,
                         id: instance_id,
                         instance_type: InstanceType::Principal,
                         name: name.clone(),
@@ -1364,6 +1577,19 @@ impl TunnelDispatcher {
             return Ok(());
         }
 
+        // A previously applied, runtime-signed delivery needs only its receipt.
+        // This also confirms a resent leave after its author has left membership.
+        let port = self.host.tunnel_channel_port();
+        if port.already_applied(&request_id).await {
+            port.send_receipt(
+                &source_runtime_id,
+                &peko_protocol::channel::ChannelId(channel_id.clone()),
+                vec![request_id.clone()],
+            )
+            .await;
+            return Ok(());
+        }
+
         // 3. ADR-058 D2 author gate. A `did:key` author must prove
         // possession of the DID's key AND be a registered remote
         // member of the channel mirror; anything else is accepted as
@@ -1414,22 +1640,60 @@ impl TunnelDispatcher {
                 }
             }
         } else {
-            // ADR-058 post-review cutoff gate: a non-`did:key` author
-            // is "asserted-remote" — the runtime vouches, the author
-            // proves nothing. Accepted during rollout only; the
-            // `accept_asserted_remote_channel_authors` config flip
-            // (auth_config.toml) enforces the post-migration refusal.
-            if !self.host.accept_asserted_remote_channel_authors() {
+            let human = payload.source_principal_did.parse::<Subject>();
+            let Ok(human) = human else {
+                return Ok(());
+            };
+            if !matches!(human, Subject::User(_) | Subject::Visitor(_))
+                || !human.subject_id().starts_with("hub:")
+            {
                 warn!(
-                    "inbound TunnelChannelEvent: dropping asserted-remote (non-did:key) author {} — accept_asserted_remote_channel_authors=false (request_id={request_id})",
-                    payload.source_principal_did
+                    request_id,
+                    "Channel author must be a registered principal or a Hub human actor"
                 );
                 return Ok(());
             }
-            debug!(
-                "inbound TunnelChannelEvent: non-did:key author {} accepted as runtime-vouched (request_id={request_id})",
-                payload.source_principal_did
-            );
+            if !self
+                .host
+                .tunnel_channel_port()
+                .is_remote_member(
+                    &channel_id_typed,
+                    &source_runtime_id,
+                    &payload.source_principal_did,
+                )
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        let claimed_actor = match &event {
+            peko_protocol::channel::ChannelEvent::Posted { author, .. } => Some(author),
+            peko_protocol::channel::ChannelEvent::MemberLeft { member, .. } => Some(member),
+            _ => None,
+        };
+        if let Some(author) = claimed_actor {
+            let source_subject = payload
+                .source_principal_did
+                .parse::<Subject>()
+                .unwrap_or_else(|_| {
+                    Subject::Principal(payload.source_principal_did.clone().into())
+                });
+            let port = self.host.tunnel_channel_port();
+            let source_actor = port.actor_info(&source_subject).await;
+            let author_actor = match port.resolve_actor(author).await {
+                Ok(actor) => actor,
+                Err(_) => return Ok(()),
+            };
+            if source_actor.hub_id.is_none()
+                || author_actor.identity_key != source_actor.identity_key
+                || author_actor.kind != source_actor.kind
+            {
+                warn!(
+                    request_id,
+                    "Posted author does not match its authenticated actor"
+                );
+                return Ok(());
+            }
         }
 
         // 4. Audit. Always emit a row, regardless of whether the
@@ -1663,19 +1927,8 @@ impl TunnelDispatcher {
                 return Ok(());
             }
         } else {
-            // ADR-058 post-review cutoff gate (mirrors the event
-            // handler): a non-`did:key` creator is asserted-remote.
-            if !self.host.accept_asserted_remote_channel_authors() {
-                warn!(
-                    "inbound TunnelChannelInvite: dropping asserted-remote (non-did:key) creator_did {} — accept_asserted_remote_channel_authors=false (request_id={request_id})",
-                    payload.creator_did
-                );
-                return Ok(());
-            }
-            debug!(
-                "inbound TunnelChannelInvite: non-did:key creator_did {} accepted as runtime-vouched (request_id={request_id})",
-                payload.creator_did
-            );
+            warn!(request_id, "Principal invites require a signing key proof");
+            return Ok(());
         }
 
         // 4. Audit. Always emit, regardless of whether the
@@ -1751,6 +2004,21 @@ impl TunnelDispatcher {
         bridge_payload: &serde_json::Value,
         caller: &peko_auth::Subject,
     ) -> anyhow::Result<()> {
+        let principal = self
+            .host
+            .principal_manager()
+            .get_by_name(agent_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Principal not loaded"))?;
+        let actor = self
+            .host
+            .tunnel_channel_port()
+            .actor_info(&Subject::from(&principal.id))
+            .await;
+        anyhow::ensure!(
+            actor.hub_id.is_some() && principal.exposure().await != peko_auth::Exposure::LocalOnly,
+            "Principal is local-only; register it before Hub access"
+        );
         let instance_id = self.instance_id(agent_name);
 
         let state = self.state.read().await;
@@ -1825,8 +2093,8 @@ impl TunnelDispatcher {
             // public`. PR #11 introduces invite tokens for scoped
             // access — until then, Unlisted == Public at the runtime
             // ACL level.
-            InstanceExposure::Public | InstanceExposure::Unlisted => Ok(()),
-            InstanceExposure::Unexposed => {
+            InstanceExposure::Public => Ok(()),
+            InstanceExposure::LocalOnly => {
                 anyhow::bail!("Agent is not exposed")
             }
             InstanceExposure::Private => {
@@ -1848,7 +2116,7 @@ impl TunnelDispatcher {
                 if instance_state
                     .allowed_principals
                     .iter()
-                    .any(|s| s == caller)
+                    .any(|s| s.normalized_for_auth() == caller.normalized_for_auth())
                 {
                     Ok(())
                 } else {
@@ -1873,7 +2141,7 @@ mod tests {
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalMemoryConfig, PrincipalRoutingConfig,
     };
-    use crate::tunnel::protocol::{InstanceExposure, InstanceType};
+    use crate::tunnel::protocol::InstanceExposure;
     use peko_auth::{Permission, PermissionGrant, Subject};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -1898,6 +2166,35 @@ mod tests {
         .unwrap()
     }
 
+    async fn seed_registered(dispatcher: &TunnelDispatcher, name: &str) {
+        let manager = dispatcher.host.principal_manager();
+        let principal = manager
+            .create(test_principal_config(
+                name,
+                Subject::User("local".into()),
+                vec![],
+                peko_auth::Exposure::Public,
+            ))
+            .await
+            .unwrap();
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let config = principal.config.read().await;
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .register_actor(
+                &Subject::from(&principal.id),
+                Some(&hub_id),
+                config.did.as_ref().map(|d| d.0.as_str()),
+                config.actor_key.as_deref(),
+                Some(name),
+                "public",
+            )
+            .await
+            .unwrap();
+        drop(config);
+        principal.config.write().await.hub_id = Some(hub_id);
+    }
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::Receiver<TunnelMessage>) {
         let (tx, rx) = mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
         (TunnelHandle::new(tx), rx)
@@ -1968,6 +2265,8 @@ mod tests {
         exposure: peko_auth::Exposure,
     ) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
@@ -2129,7 +2428,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("user-jwt".to_string())
+            Subject::User("local_user-jwt".to_string())
         );
     }
 
@@ -2147,7 +2446,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::Visitor("vis_abc123".to_string())
+            Subject::Visitor("local_vis_abc123".to_string())
         );
     }
 
@@ -2179,7 +2478,7 @@ mod tests {
             });
             assert_eq!(
                 resolve_bridge_caller(&payload, Some(&validator)).await,
-                Err(BridgeCallerError::InvalidKind),
+                Err(BridgeCallerError::InvalidJwt),
                 "kind {kind:?} must be rejected"
             );
         }
@@ -2203,7 +2502,7 @@ mod tests {
             });
             assert_eq!(
                 resolve_bridge_caller(&payload, Some(&validator)).await,
-                Err(BridgeCallerError::InvalidKind),
+                Err(BridgeCallerError::InvalidJwt),
                 "(kind={kind:?}, sub={sub:?}) must be rejected"
             );
         }
@@ -2292,7 +2591,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("user-jwt".to_string())
+            Subject::User("local_user-jwt".to_string())
         );
     }
 
@@ -2509,14 +2808,14 @@ mod tests {
         }
 
         dispatcher
-            .set_instance_exposure("my-agent", InstanceExposure::Unexposed)
+            .set_instance_exposure("my-agent", InstanceExposure::LocalOnly)
             .await
             .unwrap();
 
         let instance_id = dispatcher.instance_id("my-agent");
         let state = dispatcher.state.read().await;
         let entry = state.instance_state.get(&instance_id).unwrap();
-        assert_eq!(entry.exposure, InstanceExposure::Unexposed);
+        assert_eq!(entry.exposure, InstanceExposure::LocalOnly);
     }
 
     #[tokio::test]
@@ -2524,6 +2823,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "public-agent").await;
         let instance_id = dispatcher.instance_id("public-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2553,13 +2853,14 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "unexposed-agent").await;
         let instance_id = dispatcher.instance_id("unexposed-agent");
         {
             let mut state = dispatcher.state.write().await;
             state.instance_state.insert(
                 instance_id,
                 InstanceState {
-                    exposure: InstanceExposure::Unexposed,
+                    exposure: InstanceExposure::LocalOnly,
                     allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
@@ -2584,6 +2885,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "private-agent").await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2613,6 +2915,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "private-agent").await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2640,6 +2943,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "private-agent").await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2674,6 +2978,7 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "private-agent").await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2742,7 +3047,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Instance state not yet available"));
+        assert!(err.contains("Principal not loaded"));
     }
 
     // PR #2: `Unlisted` is reachable via the public URL with no
@@ -2753,13 +3058,14 @@ mod tests {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
+        seed_registered(&dispatcher, "unlisted-agent").await;
         let instance_id = dispatcher.instance_id("unlisted-agent");
         {
             let mut state = dispatcher.state.write().await;
             state.instance_state.insert(
                 instance_id,
                 InstanceState {
-                    exposure: InstanceExposure::Unlisted,
+                    exposure: InstanceExposure::Public,
                     allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
@@ -2806,46 +3112,66 @@ mod tests {
 
     // ─── Phase 2: Principal tunnel exposure tests ─────────────────────────
 
-    /// Principals are announced over the tunnel as `InstanceType::Principal`
-    /// with their stable DID populated.
     #[tokio::test]
-    async fn announce_principal_instance() {
+    async fn local_principals_are_not_announced_and_receipts_require_matching_request() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
-
         let principal = create_test_principal(
             &app_state,
             "announce-me",
-            Subject::User("user:owner".to_string()),
+            Subject::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
         .await;
-        let did = principal.did().await;
-
         dispatcher.announce_instances(&handle).await.unwrap();
-
-        let msg = rx.recv().await.expect("announce message must be sent");
-        let TunnelMessage::InstanceAnnounce { payload } = msg else {
-            panic!("expected InstanceAnnounce, got: {msg:?}");
+        assert!(rx.try_recv().is_err());
+        let hub = uuid::Uuid::new_v4().to_string();
+        let receipt = TunnelMessage::PrincipalRegistered {
+            registration_id: Some("request".into()),
+            local_id: principal.id.0.clone(),
+            hub_id: hub.clone(),
+            signing_did: principal.did().await.0,
         };
-        assert_eq!(payload.instance_type, InstanceType::Principal);
-        assert_eq!(payload.name, "announce-me");
-        assert_eq!(payload.principal_did, Some(did.0));
-        assert_eq!(payload.agent_did, None);
-
-        let instance_id = dispatcher.instance_id("announce-me");
-        let state = dispatcher.state.read().await;
-        let cached = state
-            .instance_state
-            .get(&instance_id)
-            .expect("state seeded");
-        assert_eq!(cached.exposure, InstanceExposure::Public);
+        assert!(dispatcher
+            .dispatch(receipt.clone(), handle.clone())
+            .await
+            .is_err());
+        assert!(principal.config.read().await.hub_id.is_none());
+        dispatcher
+            .state
+            .write()
+            .await
+            .pending_registrations
+            .insert(principal.id.0.clone(), "request".into());
+        dispatcher.dispatch(receipt, handle.clone()).await.unwrap();
+        let profile = app_state
+            .tunnel_channel_port()
+            .resolve_actor(&format!("principal:hub:{hub}"))
+            .await
+            .unwrap();
+        assert_eq!(profile.local_id, principal.id.0);
+        assert_eq!(
+            dispatcher
+                .state
+                .write()
+                .await
+                .registration_receipts
+                .remove("request"),
+            Some(Ok(hub))
+        );
+        dispatcher.announce_instances(&handle).await.unwrap();
+        let TunnelMessage::InstanceAnnounce { payload } = rx.try_recv().unwrap() else {
+            panic!("expected registered announcement")
+        };
+        assert_eq!(payload.local_id, principal.id.0);
+        assert_eq!(
+            payload.identity_key,
+            principal.config.read().await.actor_key.clone().unwrap()
+        );
     }
 
-    /// A `ProxiedRequest` from PekoHub is routed to the matching Principal
-    /// and the response (or execution error) is streamed back.
     #[tokio::test]
     async fn proxied_request_routes_to_principal() {
         let app_state = create_test_app_state().await;
@@ -3161,18 +3487,10 @@ mod tests {
             .iter()
             .filter(|ev| matches!(ev, peko_protocol::channel::ChannelEvent::Posted { .. }))
             .collect();
-        assert_eq!(
-            posted.len(),
-            1,
-            "remote Posted event must be visible in local peek"
+        assert!(
+            posted.is_empty(),
+            "Retired asserted principal identities must not be accepted"
         );
-        match &posted[0] {
-            peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
-                assert_eq!(author, "prin_bob@runtime-B");
-                assert_eq!(text, "hello from B");
-            }
-            other => panic!("expected Posted, got: {other:?}"),
-        }
     }
 
     /// Delivery receipts: an inbound envelope is applied once and
@@ -3196,6 +3514,19 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let port = dispatcher.host.tunnel_channel_port();
 
+        let author_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        port.register_actor(
+            &Subject::from(&creator),
+            Some("hub-creator"),
+            Some(&crate::tunnel::verifying_key_to_did_key(
+                &author_key.verifying_key(),
+            )),
+            None,
+            None,
+            "public",
+        )
+        .await
+        .unwrap();
         // A live (captured) tunnel so receipts and posts leave the runtime.
         let (tx, mut outbound) = tokio::sync::mpsc::channel::<TunnelMessage>(16);
         port.set_ctx(Arc::new(crate::tunnel::CrossRuntimeChannelCtx {
@@ -3203,19 +3534,37 @@ mod tests {
             signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])),
             caller_runtime_id: local_runtime_id.clone(),
             tunnel: Arc::new(tokio::sync::RwLock::new(Some(TunnelHandle::new(tx)))),
-            principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::NoPrincipalKeys),
+            principal_keys: Arc::new(crate::tunnel::cross_runtime_channel::TestPrincipalKeys(
+                vec![(
+                    creator.clone(),
+                    Arc::new(ed25519_dalek::SigningKey::from_bytes(&[8; 32])),
+                )],
+            )),
         }))
         .await;
 
         let kp = peko_identity::keys::KeyPair::generate();
         let source = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
+        port.register_actor(
+            &Subject::User("local_bob".into()),
+            Some("bob"),
+            None,
+            None,
+            None,
+            "registered",
+        )
+        .await
+        .unwrap();
+        port.add_remote_member(&channel, &source, "user:hub:bob")
+            .await
+            .unwrap();
         let deliver = |request_id: &'static str, event: ChannelEvent| {
             let (signature, event) = build_signed_tunnel_channel_event(
                 &kp,
                 request_id,
                 &source,
                 &local_runtime_id,
-                "prin_bob",
+                "user:hub:bob",
                 &channel_id,
                 &event,
             );
@@ -3223,7 +3572,7 @@ mod tests {
                 request_id.to_string(),
                 source.clone(),
                 local_runtime_id.clone(),
-                "prin_bob".to_string(),
+                "user:hub:bob".to_string(),
                 channel_id.clone(),
                 event,
                 signature,
@@ -3241,7 +3590,7 @@ mod tests {
 
         let post = ChannelEvent::Posted {
             channel: channel.clone(),
-            author: "prin_bob".into(),
+            author: "user:hub:bob".into(),
             parent: None,
             text: "hello".into(),
             at: "2026-10-12T00:00:00Z".into(),
@@ -3267,7 +3616,7 @@ mod tests {
 
         // Our own post to the source runtime waits in the outbox until the
         // source confirms it; the receipt itself is not logged.
-        port.add_remote_member(&channel, &source, "prin_bob")
+        port.add_remote_member(&channel, &source, "user:hub:bob")
             .await
             .unwrap();
         port.post(
@@ -3395,10 +3744,23 @@ mod tests {
 
         // Build a dual-signed (runtime + author) envelope for the
         // did:key author, mirroring the production outbound path.
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .register_actor(
+                &Subject::Principal("local_author".into()),
+                Some("author-hub"),
+                Some(&author_did),
+                Some("author-key"),
+                Some("Author"),
+                "public",
+            )
+            .await
+            .unwrap();
         let build = |request_id: &str| {
             let event = peko_protocol::channel::ChannelEvent::Posted {
                 channel: channel.clone(),
-                author: author_did.clone(),
+                author: "principal:hub:author-hub".into(),
                 parent: None,
                 text: "hello from the did:key author".to_string(),
                 at: "2026-09-16T00:00:00Z".to_string(),
@@ -3561,122 +3923,221 @@ mod tests {
     /// as remote — so the receiver can post to its own mirror and its
     /// posts fan back out. The synthetic Created event keeps PR-2b's
     /// `peko-stream` desktop listener firing.
-    #[tokio::test]
-    async fn inbound_invite_creates_local_mirror_and_emits_created_event() {
-        use peko_channel::ChannelPort;
-        let app_state = create_test_app_state().await;
-        let local_runtime_id = app_state.runtime_did();
-
-        // The invited local principal: created in the receiver's
-        // registry so the bootstrap's `find_by_did` resolves it.
-        let principal = app_state
-            .principal_manager()
-            .create(test_principal_config(
-                "invitee",
-                Subject::User("user:owner".to_string()),
-                vec![],
-                peko_auth::Exposure::Private,
-            ))
-            .await
-            .expect("principal create must succeed");
-        let invitee_did = principal.did().await.0;
-
-        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
-        let (_handle, _rx) = mock_tunnel_handle();
-
-        let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
-        let channel_id = "chan_invite01";
-        let initial_members = vec![
-            // The source's own row — remote from the receiver's view.
-            peko_protocol::channel::InitialMember {
-                principal_did: "prin_alice".to_string(),
-                runtime_id: Some(source_runtime_id.clone()),
-            },
-            // The invitee row addressed to the receiver ("this is
-            // you") — carries the invited principal's DID.
-            peko_protocol::channel::InitialMember {
-                principal_did: invitee_did.clone(),
-                runtime_id: None,
-            },
-        ];
-        let (signature, initial_members) = build_signed_tunnel_channel_invite(
-            &kp,
-            "chan-invite-1",
-            &source_runtime_id,
-            &local_runtime_id,
-            "prin_alice",
-            channel_id,
-            "prin_alice",
-            "did:peko:principal:alice",
-            "team-chat",
-            None,
-            &initial_members,
-        );
-
-        dispatcher
-            .handle_inbound_tunnel_channel_invite(
-                "chan-invite-1".to_string(),
-                source_runtime_id.clone(),
-                local_runtime_id,
-                "prin_alice".to_string(),
-                channel_id.to_string(),
-                "prin_alice".to_string(),
-                "did:peko:principal:alice".to_string(),
-                "team-chat".to_string(),
-                None,
-                initial_members,
-                signature,
-                String::new(),
+    async fn registered_invite_roundtrip(dm: bool) {
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_channel::{ChannelEvent, Checkpoint};
+        let app = create_test_app_state().await;
+        let principal = create_test_principal(
+            &app,
+            "invitee",
+            Subject::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Public,
+        )
+        .await;
+        let target_hub = uuid::Uuid::new_v4().to_string();
+        let source_hub = uuid::Uuid::new_v4().to_string();
+        let config = principal.config.read().await;
+        app.tunnel_channel_port()
+            .register_actor(
+                &Subject::from(&principal.id),
+                Some(&target_hub),
+                config.did.as_ref().map(|d| d.0.as_str()),
+                config.actor_key.as_deref(),
+                Some("invitee"),
+                "public",
             )
-            .await
-            .expect("valid signed invite must not error");
-
-        // Verify the local mirror got bootstrapped by reading the
-        // channel events back. The receiver-side AppState is the one
-        // we just constructed (no tunnel), so it has a fresh
-        // ChannelStore rooted at the data dir; the events.jsonl
-        // should have one synthetic Created entry.
-        let store = dispatcher.host.tunnel_channel_port();
-        let local_store: &peko_channel::ChannelStore = &**store.local();
-        let events = local_store
-            .peek(
-                &peko_protocol::channel::ChannelId(channel_id.to_string()),
-                &peko_channel::Checkpoint::default(),
-            )
-            .await
-            .expect("peek must succeed on the bootstrapped mirror");
-        assert_eq!(events.len(), 1, "synthetic Created at line 0");
-        match &events[0] {
-            peko_protocol::channel::ChannelEvent::Created { creator, name, .. } => {
-                assert_eq!(creator, "prin_alice");
-                assert_eq!(name, "team-chat");
-            }
-            other => panic!("expected Created, got {other:?}"),
-        }
-
-        // Members (Phase 12a re-partition): the invited LOCAL
-        // principal is the only local row (its posts pass the
-        // membership check; the mirror shows in `list_for_principal`);
-        // the creator is remote on the source runtime.
-        let channel_typed = peko_protocol::channel::ChannelId(channel_id.to_string());
-        let local_members = local_store.list_members(&channel_typed).await.unwrap();
-        assert_eq!(
-            local_members,
-            vec![peko_subject::Subject::from(&principal.id)]
-        );
-        let remote_members = local_store
-            .list_remote_members(&channel_typed)
             .await
             .unwrap();
-        assert_eq!(remote_members.len(), 1);
-        assert_eq!(remote_members[0].runtime_id, source_runtime_id);
-        assert_eq!(remote_members[0].principal_id, "prin_alice");
-        let listed = local_store.list_for_principal(&principal.id).await.unwrap();
-        assert!(
-            listed.contains(&channel_typed),
-            "the mirror must be visible to the receiver's boot sweep; got {listed:?}"
+        let target_key = config.actor_key.clone().unwrap();
+        drop(config);
+        principal.config.write().await.hub_id = Some(target_hub.clone());
+        let runtime = peko_identity::keys::KeyPair::generate();
+        let signer = peko_identity::keys::KeyPair::generate();
+        let source_runtime = crate::tunnel::verifying_key_to_did_key(&runtime.verifying_key);
+        let source_did = crate::tunnel::verifying_key_to_did_key(&signer.verifying_key);
+        let source_key = "immutable-source-key";
+        let directory = Arc::new(FakeAgentDirectory::new());
+        directory.register_hub_id(
+            &source_hub,
+            AgentResolution {
+                name: None,
+                hub_id: source_hub.clone(),
+                local_id: "prin_source".into(),
+                identity_key: source_key.into(),
+                runtime_id: source_runtime.clone(),
+                instance_id: "source-instance".into(),
+                agent_did: source_did.clone(),
+                owner_principal: Subject::Public,
+                exposure: ResolvedExposure::Public,
+            },
         );
+        app.tool_runtime
+            .tooling()
+            .services()
+            .set_cross_runtime_a2a_ctx(Arc::new(crate::tunnel::CrossRuntimeA2aCtx {
+                directory,
+                caller_runtime_id: app.runtime_did(),
+                principal_manager: app.principal_manager().clone(),
+                channel_port: app.tunnel_channel_port(),
+            }));
+        let channel = if dm {
+            peko_channel::dm_channel_id(&target_key, source_key)
+        } else {
+            peko_channel::ChannelId::generate()
+        };
+        let creator = format!("principal:hub:{source_hub}");
+        let members = vec![
+            peko_protocol::channel::InitialMember {
+                principal_did: source_did.clone(),
+                runtime_id: Some(source_runtime.clone()),
+                hub_id: Some(source_hub.clone()),
+                identity_key: Some(source_key.into()),
+                name: Some("source".into()),
+            },
+            peko_protocol::channel::InitialMember {
+                principal_did: principal.did().await.0,
+                runtime_id: None,
+                hub_id: Some(target_hub),
+                identity_key: Some(target_key),
+                name: Some("invitee".into()),
+            },
+        ];
+        let bytes = serde_json::to_vec(&members).unwrap();
+        let binding = dm.then_some("/source-side-path");
+        let now = chrono::Utc::now().timestamp();
+        let fields = crate::tunnel::ChannelInviteSignedFields {
+            request_id: "registered-invite",
+            source_runtime_id: &source_runtime,
+            recipient_runtime_id: &app.runtime_did(),
+            source_principal_did: &source_did,
+            channel_id: channel.as_str(),
+            creator: &creator,
+            creator_did: &source_did,
+            name: "registered conversation",
+            passive_binding: binding.unwrap_or(""),
+            initial_members_bytes: &bytes,
+        };
+        let (signature, author_signature) = crate::tunnel::sign_channel_invite(
+            &runtime.signing_key,
+            Some(&signer.signing_key),
+            fields,
+            now,
+            now + 300,
+        );
+        let dispatcher = TunnelDispatcher::new(Arc::new(app.clone()));
+        dispatcher
+            .handle_inbound_tunnel_channel_invite(
+                "registered-invite".into(),
+                source_runtime.clone(),
+                app.runtime_did(),
+                source_did.clone(),
+                channel.0.clone(),
+                creator.clone(),
+                source_did.clone(),
+                "registered conversation".into(),
+                binding.map(str::to_owned),
+                members,
+                signature,
+                author_signature,
+            )
+            .await
+            .unwrap();
+        let port = app.tunnel_channel_port();
+        assert_eq!(
+            port.peek(&channel, &Checkpoint::default())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let profile = port.resolve_actor(&creator).await.unwrap();
+        assert_eq!(profile.local_id, format!("local_{source_hub}"));
+        assert_eq!(port.participants(&channel).await.unwrap().len(), 2);
+        if dm {
+            assert!(app
+                .channel_binding_supervisor()
+                .has_subscriber(&principal.id, &channel));
+            let receiver_binding = port
+                .binding_for(&channel, &principal.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_ne!(receiver_binding, "/source-side-path");
+            let metas = peko_session::manager::SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir())
+                .list_all_sessions(false)
+                .await
+                .unwrap();
+            let meta = metas
+                .iter()
+                .find(|m| m.channel_id.as_deref() == Some(channel.as_str()))
+                .unwrap();
+            assert!(meta.peer_id.is_none() && meta.peer_type.is_none());
+        }
+        for (request, author) in [
+            ("authentic-post", creator),
+            (
+                "spoofed-post",
+                format!("principal:hub:{}", uuid::Uuid::new_v4()),
+            ),
+        ] {
+            let event = ChannelEvent::Posted {
+                channel: channel.clone(),
+                author,
+                parent: None,
+                text: request.into(),
+                at: chrono::Utc::now().to_rfc3339(),
+                via: None,
+                msg_id: Some(request.into()),
+                reply_to: None,
+            };
+            let bytes = serde_json::to_vec(&event).unwrap();
+            let fields = crate::tunnel::ChannelSignedFields {
+                request_id: request,
+                source_runtime_id: &source_runtime,
+                recipient_runtime_id: &app.runtime_did(),
+                source_principal_did: &source_did,
+                channel_id: channel.as_str(),
+                event_bytes: &bytes,
+            };
+            let (signature, author_signature) = crate::tunnel::sign_channel_event(
+                &runtime.signing_key,
+                Some(&signer.signing_key),
+                fields,
+                now,
+                now + 300,
+            );
+            dispatcher
+                .handle_inbound_tunnel_channel_event(
+                    request.into(),
+                    source_runtime.clone(),
+                    app.runtime_did(),
+                    source_did.clone(),
+                    channel.0.clone(),
+                    event,
+                    signature,
+                    author_signature,
+                )
+                .await
+                .unwrap();
+        }
+        let events = port.peek(&channel, &Checkpoint::default()).await.unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "only the authenticated author's post is accepted"
+        );
+        assert!(matches!(&events[1], ChannelEvent::Posted {author,..} if author==&profile.address));
+    }
+
+    #[tokio::test]
+    async fn inbound_registered_group_invite_and_message_verify_both_ids() {
+        registered_invite_roundtrip(false).await;
+    }
+    #[tokio::test]
+    async fn inbound_registered_dm_invite_binds_only_the_channel() {
+        registered_invite_roundtrip(true).await;
     }
 
     /// Phase 12a: an inbound DM invite (`passive_binding: Some`)
@@ -3686,124 +4147,6 @@ mod tests {
     /// the receiver-LOCAL derived binding (`/<child slug>`, NOT the
     /// wire value), and the mirror gets a live subscriber without
     /// waiting for the next boot sweep.
-    #[tokio::test]
-    async fn inbound_dm_invite_binds_mirror_and_ensures_subscriber() {
-        use peko_channel::ChannelPort;
-        let app_state = Arc::new(create_test_app_state().await);
-        let local_runtime_id = app_state.runtime_did();
-
-        let principal = app_state
-            .principal_manager()
-            .create(test_principal_config(
-                "invitee",
-                Subject::User("user:owner".to_string()),
-                vec![],
-                peko_auth::Exposure::Private,
-            ))
-            .await
-            .expect("principal create must succeed");
-        let invitee_did = principal.did().await.0;
-
-        let host: Arc<dyn TunnelHost> = app_state.clone();
-        let dispatcher = TunnelDispatcher::new(host);
-        let kp = peko_identity::keys::KeyPair::generate();
-        let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
-        let channel_id = "chan_dminvite";
-        let creator_did = "did:peko:principal:aaaabbbbccccdddd";
-        let initial_members = vec![
-            peko_protocol::channel::InitialMember {
-                principal_did: "prin_alice".to_string(),
-                runtime_id: Some(source_runtime_id.clone()),
-            },
-            peko_protocol::channel::InitialMember {
-                principal_did: invitee_did.clone(),
-                runtime_id: None,
-            },
-        ];
-        let (signature, initial_members) = build_signed_tunnel_channel_invite(
-            &kp,
-            "chan-invite-dm",
-            &source_runtime_id,
-            &local_runtime_id,
-            "prin_alice",
-            channel_id,
-            "prin_alice",
-            creator_did,
-            // The wire value is the SOURCE's binding — the receiver
-            // must NOT adopt it verbatim.
-            "dm-principal-zzz9",
-            Some("/source-side-slug-zzz9"),
-            &initial_members,
-        );
-
-        dispatcher
-            .handle_inbound_tunnel_channel_invite(
-                "chan-invite-dm".to_string(),
-                source_runtime_id,
-                local_runtime_id,
-                "prin_alice".to_string(),
-                channel_id.to_string(),
-                "prin_alice".to_string(),
-                creator_did.to_string(),
-                "dm-principal-zzz9".to_string(),
-                Some("/source-side-slug-zzz9".to_string()),
-                initial_members,
-                signature,
-                String::new(),
-            )
-            .await
-            .expect("valid signed DM invite must not error");
-
-        // The mirror's binding is derived from the receiver's OWN
-        // peer child for the creator — the child's real slug, not the
-        // wire value.
-        let expected_slug = crate::principal::peer_children::peer_child_slug(&Subject::Principal(
-            creator_did.to_string().into(),
-        ))
-        .expect("creator DID yields a peer child slug");
-        let expected_binding = format!("/{expected_slug}");
-        let channel_typed = peko_channel::ChannelId(channel_id.to_string());
-        let binding = dispatcher
-            .host
-            .tunnel_channel_port()
-            .passive_binding(&channel_typed)
-            .await
-            .expect("binding read must succeed");
-        assert_eq!(
-            binding.as_deref(),
-            Some(expected_binding.as_str()),
-            "receiver-local binding derived from its own child slug"
-        );
-
-        // CHILD-ONLY ensure: the peer child session exists but NO
-        // local-only DM channel was provisioned (that would be a
-        // second, non-mirrored channel). The only channel the
-        // principal lists is the mirror itself.
-        let port = dispatcher.host.tunnel_channel_port();
-        let local_store: &peko_channel::ChannelStore = port.local();
-        let listed = local_store.list_for_principal(&principal.id).await.unwrap();
-        assert_eq!(
-            listed,
-            vec![channel_typed.clone()],
-            "only the mirror channel exists for the receiver"
-        );
-
-        // Live subscriber without a boot sweep (the Phase 10 gap,
-        // closed). `ensure_subscriber` is fire-and-forget, so poll.
-        let supervisor = app_state.channel_binding_supervisor();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while tokio::time::Instant::now() < deadline {
-            if supervisor.has_subscriber(&principal.id, &channel_typed) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(
-            supervisor.has_subscriber(&principal.id, &channel_typed),
-            "the DM mirror must get its subscriber immediately"
-        );
-    }
-
     /// An invite whose invitee row matches NO loaded principal is
     /// logged and skipped (no mirror, no error) — invites are
     /// push-only and the receiver may simply not host the addressee.
@@ -3818,6 +4161,9 @@ mod tests {
         let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         let channel_id = "chan_unknown01";
         let initial_members = vec![peko_protocol::channel::InitialMember {
+            hub_id: None,
+            identity_key: None,
+            name: None,
             principal_did: "did:peko:principal:nobody".to_string(),
             runtime_id: None,
         }];
