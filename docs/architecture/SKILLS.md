@@ -1,11 +1,12 @@
 # Skills
 
-**Status:** Canonical reference for the skills surface; codebase-audited 2026-09-18
-**Date:** 2026-09-18
+**Status:** Canonical reference for the skills surface; codebase-audited 2026-10-13
+**Date:** 2026-10-13
 **Related:** [PRINCIPAL_WORKSPACE.md](PRINCIPAL_WORKSPACE.md) (workspace layout),
 [ADR-047](adr/ADR-047-principal-workspace-as-tooling-trust-boundary.md) (workspace as trust boundary),
 [ADR-050](adr/ADR-050-capabilities-as-workspace-files.md) (capabilities as files),
-[ADR-052](adr/ADR-052-tiered-system-prompt.md) (per-turn prompt sections)
+[ADR-052](adr/ADR-052-tiered-system-prompt.md) (per-turn prompt sections),
+[ADR-076](adr/ADR-076-principal-skill-isolation-and-portability.md) (isolation and portability)
 
 ---
 
@@ -93,8 +94,12 @@ Properties of the catalog:
   procedure.
 - **Presence = visibility.** Every well-formed `SKILL.md` in the
   workspace appears. There is no capability or activation filter on
-  *listing* (invocation is gated separately — see *Trust model*).
-- **Fresh next turn.** The scan is cached on a per-file `(mtime, len)`
+  listing or invocation (ADR-066).
+- **Principal-scoped.** Invocation uses the owner’s workspace binding. The shared
+  discovery cache includes the workspace path, so matching file metadata in
+  another principal cannot reuse its catalog. A principal moved to a different
+  workspace refreshes its tool binding within the same daemon.
+- **Fresh next turn.** The scan is cached on the workspace path and a per-file `(mtime, len)`
   fingerprint, so creating or editing a `SKILL.md` is visible on the
   next loop iteration — no restart, no reload command.
 - **Capped at 8 KB.** On overflow, whole lines are truncated from the
@@ -129,11 +134,14 @@ git status --short
 ```
 ````
 
-…are executed and replaced by their stdout. Commands run via `sh -c`
+…are executed in source order and replaced by their stdout. Commands run via `bash -c`
 with the working directory set to the **workspace root** — not the
 skill directory — so reference sibling files as
 `skills/<name>/scripts/foo.sh`, never `./scripts/foo.sh`. Limits: 5 s
-timeout, 30 KB cap per stream (then `...(truncated)`). On non-zero
+timeout, 30 KB retained per stream (then `...(truncated)`). Both pipes drain
+concurrently; excess output is discarded while reading. Cancellation kills the
+command process tree. Bash must be installed on the destination host, including
+Windows; the runtime never interprets Bash commands as PowerShell. On non-zero
 exit the stdout is inlined verbatim plus a `stderr: <stderr>` line; on
 timeout, `stderr: command timed out after 5000 ms`; commands rejected
 by `allowed-tools` leave the placeholder literal behind a
@@ -145,18 +153,23 @@ model call `Bash` first.
 **2. Argument substitution** (Claude-compatible):
 
 - `$ARGUMENTS` — the full `args` array joined with spaces
-- `$0`, `$1`, … — positional, 0-indexed (high indices substituted
-  first, so `$10` survives `$1`)
+- `$0`, `$1`, … — positional, 0-indexed; each numeric token is parsed once
 - `$name` — names from the frontmatter `arguments:` list, mapped to
   positions in order
 - `\$` — escape: renders a literal `$`
 
 Placeholders with no matching argument are left literal, so the model
-can see what it failed to supply and re-invoke.
+can see what it failed to supply and re-invoke. Names match whole tokens:
+`$issue` never alters `$issue_id`. Argument values are inserted literally and
+are never scanned as additional placeholders. Numeric values do not control
+iteration count. Definitions and rendered bodies are limited to 1 MiB. Limits apply while
+reading and appending, including repeated argument expansions; oversized
+procedures fail instead of returning a truncated set of instructions.
 
-Errors are structured: `unknown_skill` (no such directory, or a name
-that isn't a plain path component), `skill_not_enabled` (capability
-gate), `skill_unreadable` (file unreadable or frontmatter malformed).
+Unknown skills (including invalid names or linked definitions) return a tool
+error listing available directory names. `skill_unreadable` covers unreadable,
+oversized, invalid UTF-8, or malformed definitions. Cancelled invocations return
+an aborted tool error.
 
 ---
 
@@ -211,19 +224,33 @@ has never seen it before.
   surface.
 - **Malformed = invisible, not fatal.** A broken `SKILL.md` drops out
   of the catalog with a log warning; nothing else is affected.
-- **Invocation is capability-gated, listing is not.** Every skill shows
-  up in the catalog; *running* one requires the `tool:Skill` grant (the
-  tool itself) plus a matching `skill:<name>` grant. Fresh pekos carry
-  the starter bundle's `tool:*` / `skill:*` wildcards, so everything
-  works out of the box; a human can restrict either by editing
-  `[capabilities].grants` in the peko's `principal.toml` (ADR-046/047).
+- **Presence = executability.** There is no capability grant check. Skills
+  belong to the principal whose workspace contains them; all its sessions
+  share the same skill binding.
 - **Names can't escape `skills/`.** A skill name must be a single plain
   path component — anything containing `/` or `\`, or equal to `.` /
-  `..`, is refused and reports as `unknown_skill`.
+  `..`, is refused. Linked `skills/` roots, skill directories, and `SKILL.md`
+  definitions are excluded by both discovery and invocation.
 - **Dynamic context is shell access.** `` !`cmd` `` blocks run real
   commands as the daemon user with the workspace as cwd. Treat
   `allowed-tools` as the skill author's self-imposed leash, and
   remember the default (absent/empty) is *allow all*.
+
+## Snapshot portability
+
+A `.peko` export includes the entire `skills/<name>/` tree: definitions, scripts,
+references, and assets. A renamed import restores it under the destination
+principal, and the next turn discovers it without reinstallation. Unix
+executable files are recorded in the optional manifest `executable_files` list
+and restored as `0755`; other workspace files restore as `0644`. Special mode
+bits and original ownership are not transported. Older v1 snapshots remain
+readable, but cannot recover executable bits they never recorded.
+
+Snapshots reject symbolic links and special files rather than dereferencing
+them or silently dropping assets. Force import also rejects linked destination
+paths. Bundle ordinary files under the skill directory; external programs,
+credentials, absolute host paths, and operating-system behavior remain host
+dependencies. On Windows, use an explicit interpreter for bundled scripts.
 
 ---
 

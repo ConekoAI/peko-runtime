@@ -15,8 +15,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use glob::Pattern as GlobPattern;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
+use super::{append_skill_text, MAX_SKILL_BODY_BYTES};
 use crate::tools::builtin::skill::frontmatter::SkillFrontmatter;
 
 /// Per-call timeout for injected commands (ms). Shorter than
@@ -51,13 +53,18 @@ async fn run_shell_blocking(
     cmd.current_dir(working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let (child, tree) = crate::tools::builtin::process::spawn_in_own_group(&mut cmd)
+    let (mut child, tree) = crate::tools::builtin::process::spawn_in_own_group(&mut cmd)
         .map_err(|e| anyhow::anyhow!("failed to execute shell: {e}"))?;
+    let stdout = child.stdout.take().expect("stdout was piped");
+    let stderr = child.stderr.take().expect("stderr was piped");
 
-    let output = match tokio::time::timeout(
-        tokio::time::Duration::from_millis(timeout_ms),
-        child.wait_with_output(),
-    )
+    let output = match tokio::time::timeout(tokio::time::Duration::from_millis(timeout_ms), async {
+        tokio::try_join!(
+            child.wait(),
+            read_capped_stream(stdout, max_output_bytes),
+            read_capped_stream(stderr, max_output_bytes),
+        )
+    })
     .await
     {
         Ok(Ok(o)) => {
@@ -75,9 +82,10 @@ async fn run_shell_blocking(
         }
     };
 
-    let stdout = normalize_crlf(&truncate_bytes(&output.stdout, max_output_bytes));
-    let stderr = normalize_crlf(&truncate_bytes(&output.stderr, max_output_bytes));
-    let exit_code = output.status.code().unwrap_or(-1);
+    let (status, stdout, stderr) = output;
+    let stdout = normalize_crlf(&stdout);
+    let stderr = normalize_crlf(&stderr);
+    let exit_code = status.code().unwrap_or(-1);
 
     Ok(ShellOutput {
         stdout,
@@ -87,18 +95,29 @@ async fn run_shell_blocking(
     })
 }
 
-/// Build a platform-appropriate shell invocation for `command`.
-#[cfg(unix)]
-fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-c").arg(command);
-    cmd
+/// Drain both pipes concurrently to avoid deadlock, retaining only a bounded
+/// prefix. The timeout still applies to a command producing endless output.
+async fn read_capped_stream(
+    mut stream: impl AsyncRead + Unpin,
+    max: usize,
+) -> std::io::Result<String> {
+    let mut prefix = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = stream.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        let retained = count.min((max + 1).saturating_sub(prefix.len()));
+        prefix.extend_from_slice(&buffer[..retained]);
+    }
+    Ok(truncate_bytes(&prefix, max))
 }
 
-#[cfg(windows)]
+/// Build a platform-appropriate shell invocation for `command`.
 fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("powershell");
-    cmd.arg("-Command").arg(command);
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(command);
     cmd
 }
 
@@ -170,12 +189,9 @@ fn is_command_allowed(frontmatter: &SkillFrontmatter, command: &str) -> bool {
 /// inlining their output. Single pass — substituted output is not
 /// re-scanned for further placeholders.
 ///
-/// The preprocessor runs in two phases for clarity:
-/// 1. Fenced blocks first (multi-line commands).
-/// 2. Inline blocks second (single-line commands).
-///
-/// Phases are independent; the output of phase 1 is the input of
-/// phase 2. Neither output is re-scanned.
+/// Walk the source in order. Resolve inline commands only in original lines
+/// outside dynamic fences; fence output and blocked/unclosed fences remain
+/// opaque to the inline parser.
 ///
 /// ## Failure handling
 /// - Command exits 0: stdout inlined verbatim.
@@ -195,8 +211,7 @@ pub async fn preprocess_dynamic_context(
     frontmatter: &SkillFrontmatter,
     workspace_dir: &Path,
 ) -> Result<String> {
-    let after_fenced = resolve_fenced(body, frontmatter, workspace_dir).await?;
-    resolve_inline(&after_fenced, frontmatter, workspace_dir).await
+    resolve_fenced(body, frontmatter, workspace_dir).await
 }
 
 /// Resolve fenced `` ```! `` … `` ``` `` blocks in `body`. Each block
@@ -211,7 +226,8 @@ async fn resolve_fenced(
     workspace_dir: &Path,
 ) -> Result<String> {
     let lines: Vec<&str> = body.split('\n').collect();
-    let mut out_lines: Vec<String> = Vec::with_capacity(lines.len());
+    let mut output = String::with_capacity(body.len().min(MAX_SKILL_BODY_BYTES));
+    let mut first_line = true;
     let mut fence_buffer: Vec<String> = Vec::new();
 
     for line in lines {
@@ -241,7 +257,7 @@ async fn resolve_fenced(
                     &closer_line,
                 )
                 .await?;
-                out_lines.push(result);
+                append_line(&mut output, &mut first_line, &result)?;
                 fence_buffer.clear();
                 continue;
             }
@@ -250,19 +266,31 @@ async fn resolve_fenced(
             continue;
         }
 
-        // Outside any fence — copy verbatim.
-        out_lines.push(line.to_string());
+        // Only source lines are parsed. Never feed fence output to this pass.
+        append_line(
+            &mut output,
+            &mut first_line,
+            &resolve_inline(line, frontmatter, workspace_dir).await?,
+        )?;
     }
 
     // Unclosed fence: emit the buffered lines literally so the
     // author can see what was left unprocessed.
     if !fence_buffer.is_empty() {
         for line in &fence_buffer {
-            out_lines.push(line.clone());
+            append_line(&mut output, &mut first_line, line)?;
         }
     }
 
-    Ok(out_lines.join("\n"))
+    Ok(output)
+}
+
+fn append_line(output: &mut String, first: &mut bool, line: &str) -> Result<()> {
+    if !*first {
+        append_skill_text(output, "\n")?;
+    }
+    *first = false;
+    append_skill_text(output, line)
 }
 
 /// Run the command in `command` (the body of a fenced block) and
@@ -302,7 +330,7 @@ async fn resolve_inline(
     workspace_dir: &Path,
 ) -> Result<String> {
     let bytes = body.as_bytes();
-    let mut out = String::with_capacity(body.len());
+    let mut out = String::with_capacity(body.len().min(MAX_SKILL_BODY_BYTES));
     let mut i = 0;
 
     while i < bytes.len() {
@@ -325,8 +353,8 @@ async fn resolve_inline(
                         let marker = format!(
                             "[shell blocked: shell \"{shell}\" not supported, only \"bash\"]"
                         );
-                        out.push_str(&marker);
-                        out.push_str(placeholder);
+                        append_skill_text(&mut out, &marker)?;
+                        append_skill_text(&mut out, placeholder)?;
                         i += placeholder_len;
                         continue;
                     }
@@ -335,8 +363,8 @@ async fn resolve_inline(
                 // Allowed-tools glob allowlist.
                 if !is_command_allowed(frontmatter, &cmd) {
                     let marker = "[shell blocked: command not in allowed-tools]";
-                    out.push_str(marker);
-                    out.push_str(placeholder);
+                    append_skill_text(&mut out, marker)?;
+                    append_skill_text(&mut out, placeholder)?;
                     i += placeholder_len;
                     continue;
                 }
@@ -345,14 +373,14 @@ async fn resolve_inline(
                     run_shell_blocking(&cmd, workspace_dir, SHELL_TIMEOUT_MS, MAX_OUTPUT_BYTES)
                         .await?;
                 let formatted = format_output(&out_run, SHELL_TIMEOUT_MS);
-                out.push_str(&formatted);
+                append_skill_text(&mut out, &formatted)?;
                 i += placeholder_len;
                 continue;
             }
             // No closing backtick → the `!` is literal.
         }
 
-        out.push(ch);
+        append_skill_text(&mut out, &body[i..i + ch_len])?;
         i += ch_len;
     }
 
@@ -410,6 +438,62 @@ fn parse_inline_command(s: &str) -> Option<(String, usize)> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn blocked_and_unclosed_fences_do_not_execute_embedded_inline_syntax() {
+        let ws = tmp_workspace();
+        let mut fm = empty_frontmatter();
+        fm.allowed_tools = vec!["touch *".into()];
+        for body in [
+            "```!\nfalse !`touch unintended`\n```",
+            "```!\n!`touch unintended`",
+        ] {
+            preprocess_dynamic_context(body, &fm, ws.path())
+                .await
+                .unwrap();
+            assert!(!ws.path().join("unintended").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn large_stdout_and_stderr_are_drained_with_bounded_prefixes() {
+        let ws = tmp_workspace();
+        let command = "for ((i=0; i<5000; i++)); do printf 1234567890; printf abcdefghij >&2; done; touch completed";
+        let out = run_shell_blocking(command, ws.path(), 5000, 1024)
+            .await
+            .unwrap();
+        assert_eq!(out.exit_code, 0);
+        assert!(!out.timed_out);
+        for stream in [out.stdout, out.stderr] {
+            assert_eq!(stream.len(), 1024 + "...(truncated)".len());
+            assert!(stream.ends_with("...(truncated)"));
+        }
+        assert!(ws.path().join("completed").exists());
+    }
+
+    #[tokio::test]
+    async fn bash_selector_uses_bash_syntax() {
+        let ws = tmp_workspace();
+        let output = preprocess_dynamic_context(
+            "!`[[ -d . ]] && printf bash-ok`",
+            &empty_frontmatter(),
+            ws.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, "bash-ok");
+    }
+
+    #[tokio::test]
+    async fn combined_dynamic_output_cannot_exceed_the_body_budget() {
+        let ws = tmp_workspace();
+        let body = "x".repeat(MAX_SKILL_BODY_BYTES - 100) + " !`printf '%01000d' 0`";
+        let error = preprocess_dynamic_context(&body, &empty_frontmatter(), ws.path())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("rendered skill body exceeds"));
+    }
 
     fn empty_frontmatter() -> SkillFrontmatter {
         SkillFrontmatter {
@@ -973,8 +1057,8 @@ mod tests {
     #[cfg(windows)]
     async fn run_shell_blocking_runs_in_workspace() {
         let ws = tmp_workspace();
-        // PowerShell's `pwd` formats as a table; use the raw path provider.
-        let out = run_shell_blocking("$PWD.Path", ws.path(), 5_000, 100)
+        // Git Bash exposes the native Windows spelling with -W.
+        let out = run_shell_blocking("pwd -W", ws.path(), 5_000, 100)
             .await
             .unwrap();
         let pwd = out.stdout.trim();
@@ -986,5 +1070,19 @@ mod tests {
             .canonicalize()
             .unwrap_or_else(|_| PathBuf::from(pwd));
         assert_eq!(canonical_pwd, canonical_ws);
+    }
+
+    #[tokio::test]
+    async fn fenced_output_is_not_executed_by_inline_parser() {
+        let ws = tmp_workspace();
+        let source = "```!\nprintf '%s' '!`touch unintended`'\n```";
+        let rendered = preprocess_dynamic_context(source, &empty_frontmatter(), ws.path())
+            .await
+            .unwrap();
+        assert!(
+            !ws.path().join("unintended").exists(),
+            "fenced stdout was executed by inline pass; rendered={rendered:?}"
+        );
+        assert_eq!(rendered, "!`touch unintended`");
     }
 }

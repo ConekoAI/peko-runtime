@@ -421,4 +421,33 @@ mod tests {
             .await
             .is_none());
     }
+
+    #[tokio::test]
+    async fn same_name_skill_invocation_is_principal_scoped() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let catalog = ToolCatalog::new();
+        let pa = PrincipalId::generate();
+        let pb = PrincipalId::generate();
+        for (root, body, owner) in [(a.path(), "Owner A", &pa), (b.path(), "Owner B", &pb)] {
+            std::fs::create_dir_all(root.join("skills/same")).unwrap();
+            std::fs::write(
+                root.join("skills/same/SKILL.md"),
+                format!("---\nname: same\ndescription: Test\n---\n{body}"),
+            )
+            .unwrap();
+            install_workspace(&catalog, root, owner).await.unwrap();
+            let tool = catalog.get("Skill", owner).await.unwrap().0;
+            assert_eq!(
+                tool.execute(serde_json::json!({"name":"same"}))
+                    .await
+                    .unwrap()["body"],
+                body
+            );
+        }
+        assert!(catalog
+            .get("Skill", &PrincipalId::generate())
+            .await
+            .is_none());
+    }
 }

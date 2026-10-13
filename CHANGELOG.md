@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Principal skill isolation and portability (0.1.0, 2026-10-13)
+
+- Scope skill discovery caches by workspace and use the same non-link lookup
+  policy for catalogs and invocation. Refresh workspace tools and hooks when
+  a transported principal moves. Bound definition reads and rendered bodies
+  to 1 MiB.
+- Resolve dynamic context once in source order, keep command output literal,
+  cap output during concurrent pipe reads, honor cancellation, and use Bash
+  consistently with the declared shell. Tokenize argument substitution once.
+- Preserve executable workspace assets through snapshot export/import, including
+  renamed principals. Show executable paths in previews and security audits;
+  reject linked/special source files and linked restore destinations. Older v1
+  snapshots remain readable with no inferred executable permissions.
+- Add regressions for principal scope, literal rendering, process cleanup,
+  oversized definitions, and skill asset execution after snapshot transport.
+
 ### Principal-owned MCP (0.1.0, 2026-10-13)
 
 - Implement ADR-075: each principal shares its own MCP connections, scoped vault

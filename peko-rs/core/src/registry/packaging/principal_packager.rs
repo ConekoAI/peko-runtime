@@ -3,6 +3,8 @@
 //! Exports Principals to `.peko` files (tar.gz archives with manifest).
 
 use crate::principal::config::PrincipalConfig;
+#[cfg(unix)]
+use crate::registry::packaging::principal_manifest::is_workspace_payload;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use anyhow::Context;
 use peko_identity::Identity;
@@ -107,8 +109,8 @@ impl PrincipalPackager {
     /// Export the Principal to a `.peko` package — a
     /// full-existence snapshot (ADR-056).
     pub async fn export(&self, options: PrincipalExportOptions) -> anyhow::Result<PathBuf> {
-        let (files, _manifest) = self.collect_files(options.clone()).await?;
-        self.create_archive(&files, &options).await
+        let (files, manifest) = self.collect_files(options.clone()).await?;
+        self.create_archive(&files, &manifest, &options).await
     }
 
     /// The stripped seed TOML (ADR-056): a `principal.toml` whose
@@ -277,11 +279,20 @@ impl PrincipalPackager {
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
         if let Some(workspace_dir) = &self.workspace_dir {
+            anyhow::ensure!(
+                tokio::fs::symlink_metadata(workspace_dir).await?.is_dir(),
+                "Snapshot workspace must be an ordinary directory: {}",
+                workspace_dir.display()
+            );
             for dir_name in ["tools", "skills", "mcp", "hooks", "kb"] {
                 let dir = workspace_dir.join(dir_name);
-                if dir.exists() {
-                    self.export_dir_recursive(&dir, dir_name, files, manifest)
-                        .await?;
+                match tokio::fs::symlink_metadata(&dir).await {
+                    Ok(_) => {
+                        self.export_dir_recursive(&dir, dir_name, files, manifest)
+                            .await?
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
         }
@@ -307,6 +318,12 @@ impl PrincipalPackager {
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
+        let root_meta = tokio::fs::symlink_metadata(src_dir).await?;
+        anyhow::ensure!(
+            root_meta.is_dir(),
+            "Snapshot directories must be ordinary directories, not links: {}",
+            src_dir.display()
+        );
         let mut entries = tokio::fs::read_dir(src_dir).await?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -317,11 +334,31 @@ impl PrincipalPackager {
             }
             let package_path = format!("{package_prefix}/{file_name}");
 
-            if src_path.is_dir() {
+            let metadata = tokio::fs::symlink_metadata(&src_path).await?;
+            anyhow::ensure!(
+                !metadata.file_type().is_symlink(),
+                "Snapshot cannot include symbolic links: {}",
+                src_path.display()
+            );
+            if metadata.is_dir() {
                 Box::pin(self.export_dir_recursive(&src_path, &package_path, files, manifest))
                     .await?;
             } else {
+                anyhow::ensure!(
+                    metadata.is_file(),
+                    "Snapshot cannot include special files: {}",
+                    src_path.display()
+                );
                 let content = tokio::fs::read(&src_path).await?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if is_workspace_payload(&package_path)
+                        && metadata.permissions().mode() & 0o111 != 0
+                    {
+                        manifest.executable_files.insert(package_path.clone());
+                    }
+                }
                 files.insert(package_path.clone(), content);
                 manifest.add_file(&package_path, &files[&package_path]);
             }
@@ -333,6 +370,7 @@ impl PrincipalPackager {
     async fn create_archive(
         &self,
         files: &HashMap<String, Vec<u8>>,
+        manifest: &PrincipalManifest,
         options: &PrincipalExportOptions,
     ) -> anyhow::Result<PathBuf> {
         let output_path = if let Some(path) = &options.output_path {
@@ -357,7 +395,11 @@ impl PrincipalPackager {
             let mut header = tar::Header::new_gnu();
             header.set_path(path)?;
             header.set_size(content.len() as u64);
-            header.set_mode(0o644);
+            header.set_mode(if manifest.executable_files.contains(path.as_str()) {
+                0o755
+            } else {
+                0o644
+            });
             header.set_cksum();
             tar.append(&header, content.as_slice())?;
         }
@@ -578,5 +620,27 @@ mod tests {
         assert!(!artifact.contains("prin_template_src"), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(!artifact.contains("keys"), "{artifact}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn export_rejects_external_skill_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("principal-a");
+        let outside = tmp.path().join("principal-b");
+        std::fs::create_dir_all(source.join("skills")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("SKILL.md"), "foreign skill").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("skills/linked")).unwrap();
+        let identity = Identity::new("review-links", DIDScope::Local)
+            .await
+            .unwrap();
+        let config = sample_config("review-links", &identity.did);
+        let packager = PrincipalPackager::new(config, identity).with_workspace_dir(&source);
+        let error = packager
+            .collect_files(PrincipalExportOptions::default())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("symbolic links"));
     }
 }

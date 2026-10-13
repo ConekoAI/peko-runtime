@@ -26,6 +26,13 @@ use async_trait::async_trait;
 
 use crate::tools::builtin::skill::{SkillEntry, SkillRuntime};
 
+/// Skill definitions must be ordinary workspace files. Linked roots or
+/// definitions make discovery depend on another workspace and cannot be
+/// transported faithfully in a principal snapshot.
+pub(crate) fn is_skill_directory(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
 /// Per-principal skill lookup backed by `<workspace>/skills/`.
 pub struct WorkspaceSkillRuntime {
     skills_dir: PathBuf,
@@ -47,6 +54,15 @@ impl WorkspaceSkillRuntime {
     pub fn skills_dir(&self) -> &std::path::Path {
         &self.skills_dir
     }
+
+    fn has_ordinary_root(&self) -> bool {
+        is_skill_directory(&self.skills_dir)
+            && self
+                .skills_dir
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .is_none_or(is_skill_directory)
+    }
 }
 
 #[async_trait]
@@ -66,8 +82,12 @@ impl SkillRuntime for WorkspaceSkillRuntime {
         {
             return None;
         }
-        let skill_md = self.skills_dir.join(name).join("SKILL.md");
-        if !skill_md.is_file() {
+        let skill_dir = self.skills_dir.join(name);
+        let skill_md = skill_dir.join("SKILL.md");
+        if !self.has_ordinary_root()
+            || !is_skill_directory(&skill_dir)
+            || !std::fs::symlink_metadata(&skill_md).is_ok_and(|meta| meta.is_file())
+        {
             return None;
         }
         Some(SkillEntry {
@@ -77,6 +97,9 @@ impl SkillRuntime for WorkspaceSkillRuntime {
     }
 
     fn list_skills(&self) -> Vec<String> {
+        if !self.has_ordinary_root() {
+            return Vec::new();
+        }
         let read = match std::fs::read_dir(&self.skills_dir) {
             Ok(it) => it,
             Err(_) => return Vec::new(),
@@ -84,14 +107,8 @@ impl SkillRuntime for WorkspaceSkillRuntime {
         let mut names: Vec<String> = read
             .flatten()
             .filter_map(|entry| {
-                let path = entry.path();
-                if !path.is_dir() {
-                    return None;
-                }
-                if !path.join("SKILL.md").is_file() {
-                    return None;
-                }
-                entry.file_name().to_str().map(str::to_string)
+                let name = entry.file_name().to_str()?.to_string();
+                self.resolve_skill(&name).map(|_| name)
             })
             .collect();
         names.sort();
@@ -102,6 +119,31 @@ impl SkillRuntime for WorkspaceSkillRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_roots_directories_and_definitions_are_not_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        make_skill(outside.path(), "external", "Other principal");
+        let external = outside.path().join("external");
+        std::os::unix::fs::symlink(&external, tmp.path().join("linked")).unwrap();
+        std::fs::create_dir(tmp.path().join("definition")).unwrap();
+        std::os::unix::fs::symlink(
+            external.join("SKILL.md"),
+            tmp.path().join("definition/SKILL.md"),
+        )
+        .unwrap();
+        let runtime = WorkspaceSkillRuntime::new(tmp.path().to_path_buf());
+        assert!(runtime.list_skills().is_empty());
+        assert!(runtime.resolve_skill("linked").is_none());
+        assert!(runtime.resolve_skill("definition").is_none());
+        let linked_root = tmp.path().join("skills");
+        std::os::unix::fs::symlink(outside.path(), &linked_root).unwrap();
+        let runtime = WorkspaceSkillRuntime::new(linked_root);
+        assert!(runtime.list_skills().is_empty());
+        assert!(runtime.resolve_skill("external").is_none());
+    }
 
     fn make_skill(dir: &std::path::Path, id: &str, body: &str) {
         let skill_dir = dir.join(id);

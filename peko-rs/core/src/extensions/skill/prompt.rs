@@ -14,21 +14,24 @@
 //! uses — so every rendered line is invocable via the `Skill` tool.
 //!
 //! The scan result is cached in a `Mutex` keyed on a per-file
-//! `(mtime, len)` fingerprint of every `<name>/SKILL.md` — each call
+//! workspace path and a `(mtime, len)` fingerprint of every `<name>/SKILL.md` — each call
 //! `stat`s the scanned files (a handful; cheap) and only re-reads them
 //! when the fingerprint changed. Unlike the previous dir-mtime key,
 //! in-place edits to an existing SKILL.md invalidate the catalog on
 //! the next iteration (ADR-052 D2). That keeps the handler well within
 //! the renderer's 2-second hook timeout.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 use tracing::warn;
 
-use crate::tools::builtin::skill::{parse_yaml_frontmatter_typed, SkillFrontmatter};
+use super::reader::{is_skill_directory, WorkspaceSkillRuntime};
+use crate::tools::builtin::skill::{
+    parse_yaml_frontmatter_typed, read_skill_file, SkillFrontmatter, SkillRuntime,
+};
 
 /// Default priority for the skills-catalog prompt section.
 pub const SKILL_CATALOG_HOOK_PRIORITY: i32 = 90;
@@ -45,6 +48,12 @@ const SKILLS_CATALOG_MAX_BYTES: usize = 8 * 1024;
 /// invalidate the cache (ADR-052 D2).
 type DirFingerprint = Vec<(String, SystemTime, u64)>;
 
+#[derive(Debug, PartialEq, Eq)]
+struct CatalogCacheKey {
+    workspace: PathBuf,
+    files: DirFingerprint,
+}
+
 /// Workspace-scanning handler for the `skills` prompt section.
 ///
 /// See the module doc for the scanning/caching contract. A missing
@@ -53,7 +62,7 @@ type DirFingerprint = Vec<(String, SystemTime, u64)>;
 /// prompt.
 #[derive(Debug, Default)]
 pub struct WorkspaceSkillsPromptHandler {
-    cache: Mutex<Option<(DirFingerprint, String)>>,
+    cache: Mutex<Option<(CatalogCacheKey, String)>>,
 }
 
 impl WorkspaceSkillsPromptHandler {
@@ -74,7 +83,10 @@ impl WorkspaceSkillsPromptHandler {
     /// doesn't move on content writes).
     fn render_catalog(&self, workspace: &str) -> Option<String> {
         let skills_dir = Path::new(workspace).join("skills");
-        let key = skills_dir_fingerprint(&skills_dir)?;
+        let key = CatalogCacheKey {
+            workspace: PathBuf::from(workspace),
+            files: skills_dir_fingerprint(&skills_dir)?,
+        };
 
         {
             let cache = self.cache.lock().expect("skills catalog cache poisoned");
@@ -99,9 +111,16 @@ impl WorkspaceSkillsPromptHandler {
 /// the dir doesn't exist. Files whose metadata can't be read are
 /// skipped, mirroring the scanner's skip-unreadable behavior.
 fn skills_dir_fingerprint(skills_dir: &Path) -> Option<DirFingerprint> {
+    if !is_skill_directory(skills_dir) {
+        return None;
+    }
     let mut stats = Vec::new();
-    for entry in std::fs::read_dir(skills_dir).ok()?.flatten() {
-        let skill_md = entry.path().join("SKILL.md");
+    let runtime = WorkspaceSkillRuntime::new(skills_dir.to_path_buf());
+    for name in runtime.list_skills() {
+        let Some(entry) = runtime.resolve_skill(&name) else {
+            continue;
+        };
+        let skill_md = entry.path;
         let Ok(meta) = std::fs::metadata(&skill_md) else {
             continue;
         };
@@ -147,31 +166,14 @@ impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceSkillsPro
 /// capped at [`SKILLS_CATALOG_MAX_BYTES`]. Skills whose frontmatter
 /// fails to parse are skipped with a warning.
 fn scan_skills_dir(skills_dir: &Path, workspace: &str) -> String {
-    let entries = match std::fs::read_dir(skills_dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            warn!(
-                "Failed to read skills directory {}: {e}",
-                skills_dir.display()
-            );
-            return String::new();
-        }
-    };
-
+    let runtime = WorkspaceSkillRuntime::new(skills_dir.to_path_buf());
     let mut lines = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let skill_md = dir.join("SKILL.md");
-        if !skill_md.is_file() {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+    for name in runtime.list_skills() {
+        let Some(entry) = runtime.resolve_skill(&name) else {
             continue;
         };
-        let content = match std::fs::read_to_string(&skill_md) {
+        let skill_md = entry.path;
+        let content = match read_skill_file(&skill_md) {
             Ok(content) => content,
             Err(e) => {
                 warn!("Failed to read {}: {e}; skipping skill", skill_md.display());
@@ -207,6 +209,32 @@ mod tests {
     use crate::tools::prompt_sections::PromptSectionProvider;
 
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn oversized_definition_is_not_advertised_or_invocable() {
+        use crate::tools::builtin::skill::{SkillTool, MAX_SKILL_FILE_BYTES};
+        use peko_tools_core::Tool;
+        let workspace = TempDir::new().unwrap();
+        let skills = workspace.path().join("skills");
+        make_skill(&skills, "large", "Large skill");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(skills.join("large/SKILL.md"))
+            .unwrap()
+            .set_len((MAX_SKILL_FILE_BYTES + 1) as u64)
+            .unwrap();
+        assert!(WorkspaceSkillsPromptHandler::new()
+            .render(&skills_input(workspace.path()))
+            .await
+            .is_none());
+        let tool = SkillTool::new(std::sync::Arc::new(WorkspaceSkillRuntime::new(skills)));
+        assert!(tool
+            .execute(serde_json::json!({"name":"large"}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("skill_unreadable"));
+    }
 
     fn make_skill(skills_dir: &Path, name: &str, description: &str) {
         let skill_dir = skills_dir.join(name);
@@ -382,5 +410,30 @@ mod tests {
         let out = scan_skills_dir(&skills_dir, &ws);
 
         assert_eq!(out, "- docker: Docker ops (skills/docker/SKILL.md)");
+    }
+
+    #[tokio::test]
+    async fn catalog_cache_is_scoped_even_when_file_metadata_matches() {
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        make_skill(&a.path().join("skills"), "same", "Owner A");
+        make_skill(&b.path().join("skills"), "same", "Owner B");
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_234_567);
+        for root in [a.path(), b.path()] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("skills/same/SKILL.md"))
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(stamp))
+                .unwrap();
+        }
+        let handler = WorkspaceSkillsPromptHandler::new();
+        assert!(handler
+            .render(&skills_input(a.path()))
+            .await
+            .unwrap()
+            .contains("Owner A"));
+        let result = handler.render(&skills_input(b.path())).await.unwrap();
+        assert!(result.contains("Owner B"), "principal B received: {result}");
     }
 }

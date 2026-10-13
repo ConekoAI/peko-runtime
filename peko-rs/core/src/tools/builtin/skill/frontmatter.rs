@@ -26,9 +26,9 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub arguments: Vec<String>,
     /// Shell selector for injected `` !`cmd` `` / `` ```! `` blocks.
-    /// Today: `"bash"` (default) only. Powershell deferred — no
-    /// cross-platform shell runner exists in Peko today. Any other
-    /// value is fail-closed: the preprocessor refuses to run.
+    /// `"bash"` (default) only, on every platform. Bash must be installed;
+    /// commands are never reinterpreted in another shell. Any other value
+    /// is fail-closed: the preprocessor refuses to run.
     #[serde(default, rename = "shell")]
     pub shell: Option<String>,
     /// Glob allowlist for shell commands the preprocessor may run

@@ -5,8 +5,8 @@
 use crate::common::authority::{RuntimeAuthority, TierPath};
 use crate::common::paths::PathResolver;
 use crate::principal::config::PrincipalConfig;
-use crate::registry::packaging::path_safety::safe_join;
-use crate::registry::packaging::principal_manifest::PrincipalManifest;
+use crate::registry::packaging::path_safety::{reject_destination_links, safe_join};
+use crate::registry::packaging::principal_manifest::{is_workspace_payload, PrincipalManifest};
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
 use peko_identity::{Identity, KeyPairExport};
@@ -221,6 +221,12 @@ impl PrincipalUnpackager {
         crate::common::identifiers::validate_agent_name(&name)
             .map_err(|e| anyhow::anyhow!("[unsafe_name] {e}"))?;
 
+        // Preflight before installing keys or writing any snapshot payload.
+        let workspace = self.config_dir.join("principals").join(&name);
+        for path in files.keys().filter(|path| is_workspace_payload(path)) {
+            reject_destination_links(&workspace, &safe_join(&workspace, path)?)?;
+        }
+
         // Build a per-call authority that projects the IPC
         // caller's subject. The agent prompt
         // and identity writes (Shared tier) gate on ownership via this
@@ -345,7 +351,8 @@ impl PrincipalUnpackager {
             self.import_sessions(&files, &name).await?;
         }
 
-        self.import_workspace_tooling(&files, &name).await?;
+        self.import_workspace_tooling(&files, &manifest, &name)
+            .await?;
         if carried_local_state && options.import_local_state {
             let effective_principal_id = config
                 .id
@@ -561,6 +568,7 @@ impl PrincipalUnpackager {
     async fn import_workspace_tooling(
         &self,
         files: &HashMap<String, Vec<u8>>,
+        manifest: &PrincipalManifest,
         principal_name: &str,
     ) -> anyhow::Result<()> {
         let resolver = PathResolver::with_dirs(
@@ -577,10 +585,24 @@ impl PrincipalUnpackager {
             };
             let dest_dir = workspace_root.join(prefix);
             let dest_path = safe_join(&dest_dir, rest)?;
+            reject_destination_links(&workspace_root, &dest_path)?;
             if let Some(parent) = dest_path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::write(dest_path, content).await?;
+            tokio::fs::write(&dest_path, content).await?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if manifest.executable_files.contains(path) {
+                    0o755
+                } else {
+                    0o644
+                };
+                tokio::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(mode))
+                    .await?;
+            }
+            #[cfg(not(unix))]
+            let _ = manifest;
         }
         Ok(())
     }
@@ -739,6 +761,14 @@ fn validate_package_for_principal(
     use crate::registry::packaging::validation::ValidationError;
 
     let mut result = ValidationResult::success();
+
+    for path in &manifest.executable_files {
+        if !manifest.files.contains_key(path) || !is_workspace_payload(path) {
+            result.add_error(ValidationError::InvalidManifest(format!(
+                "Executable file must be a declared workspace payload: {path}"
+            )));
+        }
+    }
 
     // Required files for a `.peko` package.
     let required_files = [
@@ -1309,6 +1339,73 @@ principal_id = "prin_old"
             .0
     }
 
+    #[tokio::test]
+    async fn executable_metadata_must_reference_declared_workspace_files() {
+        let files = valid_snapshot_files().await;
+        for path in ["skills/missing/script.sh", "identity/keys.enc"] {
+            let mut files = files.clone();
+            let mut manifest =
+                PrincipalManifest::from_toml(std::str::from_utf8(&files["manifest.toml"]).unwrap())
+                    .unwrap();
+            manifest.executable_files.insert(path.into());
+            files.insert(
+                "manifest.toml".into(),
+                manifest.to_toml().unwrap().into_bytes(),
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let config = temp.path().join("cfg");
+            let unpackager =
+                PrincipalUnpackager::new("unused", config.clone(), temp.path().join("data"));
+            let error = unpackager
+                .import_from_files(
+                    files,
+                    PrincipalImportOptions {
+                        force: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("declared workspace payload"));
+            assert!(!config.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn force_import_rejects_linked_skill_destinations_before_writes() {
+        let mut files = valid_snapshot_files().await;
+        files.insert("skills/check/SKILL.md".into(), b"definition".to_vec());
+        refresh_manifest(&mut files);
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("cfg");
+        let workspace = config.join("principals/checked");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = temp.path().join("other-principal");
+        std::fs::create_dir_all(outside.join("check")).unwrap();
+        std::fs::write(outside.join("check/SKILL.md"), "original").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join("skills")).unwrap();
+        let unpackager =
+            PrincipalUnpackager::new("unused", config.clone(), temp.path().join("data"));
+        let error = unpackager
+            .import_from_files(
+                files,
+                PrincipalImportOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(
+            std::fs::read_to_string(outside.join("check/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert!(!config.join("vault.enc").exists());
+        assert!(!workspace.join("principal.toml").exists());
+    }
+
     fn refresh_manifest(files: &mut HashMap<String, Vec<u8>>) {
         let mut manifest =
             PrincipalManifest::from_toml(std::str::from_utf8(&files["manifest.toml"]).unwrap())
@@ -1485,5 +1582,98 @@ principal_id = "prin_old"
             );
             assert!(!temp.path().join("cfg").exists());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn skill_roundtrip_preserves_assets_and_execution_after_rename() {
+        use crate::extensions::skill::WorkspaceSkillRuntime;
+        use crate::tools::builtin::skill::{SkillRuntime, SkillTool};
+        use peko_tools_core::{Tool, ToolContext};
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let script_rel = "skills/check/scripts/check.sh";
+        std::fs::create_dir_all(source.join("skills/check/scripts")).unwrap();
+        let definition =
+            "---\nname: check\ndescription: Check assets\n---\n!`skills/check/scripts/check.sh`";
+        std::fs::write(source.join("skills/check/SKILL.md"), definition).unwrap();
+        std::fs::write(source.join(script_rel), "#!/bin/sh\nprintf portable").unwrap();
+        std::fs::set_permissions(
+            source.join(script_rel),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("skills/check/references")).unwrap();
+        std::fs::write(
+            source.join("skills/check/references/info.txt"),
+            "reference data",
+        )
+        .unwrap();
+        let identity = Identity::new("review-skill", DIDScope::Local)
+            .await
+            .unwrap();
+        let config = sample_config("review-skill", &identity.did);
+        let out = tmp.path().join("skill.peko");
+        let packager = PrincipalPackager::new(config, identity).with_workspace_dir(&source);
+        packager
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config_dir = tmp.path().join("imported");
+        let unpackager =
+            PrincipalUnpackager::new(&out, config_dir.clone(), tmp.path().join("data"));
+        let (manifest, files, validation) = unpackager.inspect_detailed().await.unwrap();
+        assert!(validation.is_valid());
+        assert!(manifest.executable_files.contains(script_rel));
+        let inventory = crate::registry::packaging::inventory::ExecutableInventory::from_files(
+            &manifest.did,
+            &files,
+        );
+        assert_eq!(inventory.executable_files, [script_rel]);
+        assert!(inventory.render().contains(script_rel));
+        unpackager
+            .import(PrincipalImportOptions {
+                new_name: Some("renamed".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let dest = config_dir.join("principals/renamed");
+        for rel in [
+            "skills/check/SKILL.md",
+            script_rel,
+            "skills/check/references/info.txt",
+        ] {
+            assert_eq!(
+                std::fs::read(source.join(rel)).unwrap(),
+                std::fs::read(dest.join(rel)).unwrap()
+            );
+        }
+        std::fs::remove_dir_all(&source).unwrap();
+        let runtime = WorkspaceSkillRuntime::new(dest.join("skills"));
+        assert!(runtime.resolve_skill("check").is_some());
+        let tool = SkillTool::new(Arc::new(runtime));
+        let mut ctx = ToolContext::default_for_tool("Skill");
+        ctx.workspace = Some(dest.display().to_string());
+        let actual = tool
+            .execute_with_context(serde_json::json!({"name":"check"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(dest.join(script_rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            actual["body"], "portable",
+            "script bytes survived but execution did not"
+        );
     }
 }

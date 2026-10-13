@@ -1,7 +1,7 @@
 //! Flat snapshot inventory (ADR-066 D6). Checksums detect corruption;
 //! snapshots are local artifacts and carry no signatures or registry layers.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The supported runtime-local snapshot container.
 pub const SNAPSHOT_FORMAT: &str = "peko-snapshot-v1";
@@ -17,6 +17,10 @@ pub struct PrincipalManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub files: BTreeMap<String, String>,
+    /// Workspace payloads restored with executable permission on Unix.
+    /// Old v1 snapshots omit this field and restore ordinary files.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub executable_files: BTreeSet<String>,
 }
 
 impl PrincipalManifest {
@@ -29,6 +33,7 @@ impl PrincipalManifest {
             peko_version: crate::VERSION.into(),
             description: None,
             files: BTreeMap::new(),
+            executable_files: BTreeSet::new(),
         }
     }
 
@@ -60,6 +65,12 @@ impl PrincipalManifest {
     }
 }
 
+pub(crate) fn is_workspace_payload(path: &str) -> bool {
+    path.split_once('/').is_some_and(|(prefix, rest)| {
+        matches!(prefix, "tools" | "skills" | "mcp" | "hooks" | "kb") && !rest.is_empty()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,13 +78,28 @@ mod tests {
     fn flat_manifest_roundtrip() {
         let mut m = PrincipalManifest::new("test", "did:peko:test");
         m.add_file("config/principal.toml", b"config");
+        m.add_file("skills/check/scripts/check.sh", b"script");
+        m.executable_files
+            .insert("skills/check/scripts/check.sh".into());
         let text = m.to_toml().unwrap();
         assert!(text.contains("[files]"));
         assert!(!text.contains("layers"));
         assert!(!text.contains("signatures"));
         let parsed = PrincipalManifest::from_toml(&text).unwrap();
         assert_eq!(parsed.files, m.files);
+        assert_eq!(parsed.executable_files, m.executable_files);
         assert_eq!(parsed.name, "test");
+    }
+
+    #[test]
+    fn old_v1_manifest_defaults_to_no_executable_files() {
+        let manifest = PrincipalManifest::new("test", "did:peko:test");
+        let text = manifest.to_toml().unwrap();
+        assert!(!text.contains("executable_files"));
+        assert!(PrincipalManifest::from_toml(&text)
+            .unwrap()
+            .executable_files
+            .is_empty());
     }
     #[test]
     fn rejects_legacy_with_reexport_guidance() {

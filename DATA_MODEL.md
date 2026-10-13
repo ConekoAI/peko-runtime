@@ -2146,6 +2146,8 @@ did = "did:peko:local:researcher:0123456789abcdef"
 created_at = "2026-10-02T08:00:00Z"
 peko_version = "0.1.0"
 description = "Optional description"
+# Optional; omitted when empty in older and current snapshots.
+executable_files = ["skills/check/scripts/check.sh"]
 
 [files]
 "config/principal.toml" = "sha256:<64 lowercase hex digits>"
@@ -2157,6 +2159,13 @@ Every payload file must appear exactly once in `files`; `manifest.toml` itself i
 excluded. Missing files, checksum mismatches, undeclared payload files, unsafe
 paths, duplicate archive entries, and non-file entries fail before restore.
 Directories in a tar are skipped. `--force` permits overwrites, never corruption.
+The optional `executable_files` list contains only declared files under
+`tools/`, `skills/`, `mcp/`, `hooks/`, or `kb/`. It is bound by the preview’s
+manifest checksum and included in the executable inventory. On Unix these
+files restore as `0755`; other workspace files restore as `0644`. Original
+ownership and special mode bits are discarded. Missing metadata means no
+executable files. Collection rejects links and special files; linked workspace
+restore destinations are rejected before writes.
 `PrincipalManifest::from_toml` rejects old `[principal]`/`[layers]` manifests with
 “re-export from the source runtime” guidance. No layer tarballs, signatures,
 TOFU pins, registry blobs, or embedded `.ext` archives are consumed.
