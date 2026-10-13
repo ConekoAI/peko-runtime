@@ -247,6 +247,96 @@ fn pair_ids_are_opaque_order_independent_and_collision_resistant() {
 }
 
 #[tokio::test]
+async fn learned_contacts_are_durable_scoped_and_survive_profile_updates() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    let a = PrincipalId("prin_a".into());
+    let b = PrincipalId("prin_b".into());
+    let unrelated = PrincipalId("prin_unrelated".into());
+    let peer = Subject::Principal("local_peer".into());
+    port.register_actor(
+        &peer,
+        Some("peer-hub"),
+        Some("did:key:peer"),
+        Some("peer-key"),
+        Some("Peer"),
+        "public",
+    )
+    .await
+    .unwrap();
+    assert!(port.known_contacts(&a).await.unwrap().is_empty());
+    // Different store handles contend on the same actor file, without losing an owner.
+    let other = store(temp.path());
+    let (left, right) = tokio::join!(
+        port.remember_contact(&a, &peer),
+        other.remember_contact(&b, &peer)
+    );
+    left.unwrap();
+    right.unwrap();
+    port.remember_contact(&a, &"principal:hub:peer-hub".parse().unwrap())
+        .await
+        .unwrap();
+    port.register_actor(
+        &peer,
+        Some("peer-hub"),
+        Some("did:key:peer"),
+        Some("peer-key"),
+        Some("Renamed"),
+        "private",
+    )
+    .await
+    .unwrap();
+    let restarted = store(temp.path());
+    for principal in [&a, &b] {
+        let contacts = restarted.known_contacts(principal).await.unwrap();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].name.as_deref(), Some("Renamed"));
+        assert_eq!(contacts[0].registration, "private");
+    }
+    assert!(restarted
+        .known_contacts(&unrelated)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(restarted
+        .remember_contact(&a, &Subject::User("missing".into()))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn legacy_actor_registry_does_not_grant_runtime_wide_contacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    port.register_actor(
+        &Subject::Principal("prin_legacy".into()),
+        None,
+        None,
+        Some("legacy-key"),
+        None,
+        "local_only",
+    )
+    .await
+    .unwrap();
+    let mut records: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("actors.json")).unwrap()).unwrap();
+    for record in records.as_array_mut().unwrap() {
+        record.as_object_mut().unwrap().remove("known_by");
+    }
+    std::fs::write(
+        temp.path().join("actors.json"),
+        serde_json::to_vec(&records).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(port.known_actors().await.unwrap().len(), 1);
+    assert!(port
+        .known_contacts(&PrincipalId("prin_other".into()))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn verified_remote_leave_removes_all_aliases_from_current_roster() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());

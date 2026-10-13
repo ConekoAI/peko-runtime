@@ -120,6 +120,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-070](architecture/adr/ADR-070-exact-unfiltered-tool-contracts.md) | Exact tool names, unfiltered availability, and retired compatibility wrappers |
 | [ADR-075](architecture/adr/ADR-075-principal-owned-mcp-runtime.md) | Principal-owned MCP runtime: Codex source study, shared principal connections, scoped credentials/quota, workspace refresh, and consistent catalog bindings |
 | [ADR-072](architecture/adr/ADR-072-human-started-runs-and-durable-delivery.md) | Only humans and cron start runs; groups wake on `@<name>`; ChannelRead watch + unread summary; durable cross-runtime delivery |
+| [ADR-074](architecture/adr/ADR-074-per-principal-contact-discovery.md) | Per-principal contact discovery: caller-scoped lists, durable learned contacts, and validated directory results |
 | [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
 

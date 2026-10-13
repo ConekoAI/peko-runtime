@@ -80,9 +80,11 @@ cannot change this pair ID. Each locally hosted principal has its own session pa
 in the channel's `bindings` map. Human and visitor peers are explicit members.
 Groups expose their current member roster rather than an invitation-time snapshot.
 
-`Contacts list` exposes known local actors and channel rosters, including both IDs,
-names, registration states, and mention tokens. It is not a global user directory.
-`Contacts resolve` learns a registered remote principal. `ChannelSend.to` accepts
+`Contacts list` exposes the caller's own actor, its current channel rosters, and
+principals explicitly learned by that caller, including both IDs, names,
+registration states, and mention tokens. Discovery is per-principal (ADR-074).
+`Contacts resolve` learns a registered remote principal or an exactly addressed
+locally hosted principal. `ChannelSend.to` accepts
 either scoped actor reference or an actual channel ID. `ChannelRead` exposes current
 participants and resolves either actor alias in author filters. Turn context shows
 one's own two identities and the participants of known channels. Local, Hub, and

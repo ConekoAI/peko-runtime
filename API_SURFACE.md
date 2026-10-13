@@ -1091,8 +1091,16 @@ The following operations must be tested:
   Signing DIDs and immutable actor keys remain internal.
 - `ChannelPort::{ensure_dm, binding_for}` and `dm_channel_id(a,b)` use immutable actor
   keys and independent principal-local session bindings. Membership includes humans.
-- `Contacts (list/resolve)` supplies local discovery and verified remote principal
-  profiles. `ChannelSend.to` accepts either actor alias or a channel ID. The old
+- `ChannelPort::{known_contacts, remember_contact}` persists explicitly learned
+  actor relationships per principal; `known_actors` remains a runtime administration
+  inventory, not the Contacts discovery surface.
+- `Contacts (list/resolve)` supplies the caller's own profile, current channel
+  participants, and explicitly learned principal profiles. Exact local IDs can
+  learn hosted principals; unfamiliar Hub principals require a caller-specific
+  directory lookup. User/visitor resolution stays within the caller's current
+  channel participants. Arguments are strict per action and incomplete or
+  local-only Hub directory identities are rejected before registration.
+  `ChannelSend.to` accepts either actor alias or a channel ID. The old
   `channel` argument is rejected. Results separate canonical `to` and actual `channel`.
   `ChannelRead.author` accepts either alias and results expose participant profiles.
 - `AgentDirectory::{resolve_by_hub_id_as, resolve_by_handle_as}` resolves routing as

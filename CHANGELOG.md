@@ -35,6 +35,17 @@ All notable changes to Peko.
 - Check mock response sequencing directly over HTTP. Real-provider tests stay
   in the local opt-in tier; the tunnel lib slice targets only the core package.
 
+### Contacts fixes and coverage (0.1.0, 2026-10-13)
+
+- Scope Contacts discovery to the caller, its current channel participants, and
+  its durably learned principal contacts. Another principal's cached Hub contact
+  cannot bypass caller-specific directory resolution.
+- Reject unknown and action-inappropriate arguments and incomplete directory
+  identities before actor registration, preventing permanently invalid actor keys.
+- Cover caller isolation, aliases, channel bindings and membership changes,
+  authenticated/anonymous lookups, malformed responses, and contact persistence
+  across restarts and concurrent profile updates.
+
 ### Dual actor identities (ADR-073, 2026-10-13)
 
 - Give every actor a stable local ID and optional verified Hub ID; resolve either

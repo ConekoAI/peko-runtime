@@ -305,6 +305,12 @@ fn schemas_accept_valid_calls_and_reject_incomplete_or_conflicting_calls() {
 fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
     let tools = tools();
     let cases = [
+        ("Contacts", json!({"action":"list"}), "reference"),
+        (
+            "Contacts",
+            json!({"action":"resolve", "reference":"principal:hub:target"}),
+            "limit",
+        ),
         (
             "Task",
             json!({"action":"create", "subject":"review"}),
