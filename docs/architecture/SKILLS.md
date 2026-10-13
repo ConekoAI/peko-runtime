@@ -141,7 +141,9 @@ skill directory — so reference sibling files as
 timeout, 30 KB retained per stream (then `...(truncated)`). Both pipes drain
 concurrently; excess output is discarded while reading. Cancellation kills the
 command process tree. Bash must be installed on the destination host, including
-Windows; the runtime never interprets Bash commands as PowerShell. On non-zero
+Windows. On Windows, native Bash on PATH or in a Git for Windows installation
+is selected; the WSL launcher is excluded because it cannot honor native
+workspace paths. The runtime never interprets Bash commands as PowerShell. On non-zero
 exit the stdout is inlined verbatim plus a `stderr: <stderr>` line; on
 timeout, `stderr: command timed out after 5000 ms`; commands rejected
 by `allowed-tools` leave the placeholder literal behind a

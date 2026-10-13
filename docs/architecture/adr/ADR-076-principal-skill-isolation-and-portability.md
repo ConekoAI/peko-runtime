@@ -49,7 +49,9 @@ precedence, cloud resources, enablement policy, or executor namespaces into Peko
    values are literal and complete tokens are replaced in one traversal. The
    combined rendered body is limited to 1 MiB while appending, so repeated
    command output or argument references cannot multiply memory without bound.
-4. `shell: bash` executes Bash on every supported platform. Both command pipes
+4. `shell: bash` executes Bash on every supported platform. Windows resolves
+   native Bash from PATH or Git installations and excludes the WSL launcher.
+   Both command pipes
    drain concurrently, retaining at most 30 KB plus the truncation marker per
    stream. The existing five-second command timeout and process-tree guard
    remain; cancellation drops the in-flight command and kills its process tree.

@@ -49,7 +49,7 @@ async fn run_shell_blocking(
     timeout_ms: u64,
     max_output_bytes: usize,
 ) -> Result<ShellOutput> {
-    let mut cmd = shell_command(command);
+    let mut cmd = shell_command(command)?;
     cmd.current_dir(working_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -115,10 +115,79 @@ async fn read_capped_stream(
 }
 
 /// Build a platform-appropriate shell invocation for `command`.
-fn shell_command(command: &str) -> Command {
-    let mut cmd = Command::new("bash");
+fn shell_command(command: &str) -> Result<Command> {
+    #[cfg(windows)]
+    let executable = windows_bash_path()?;
+    #[cfg(not(windows))]
+    let executable = std::path::PathBuf::from("bash");
+    let mut cmd = Command::new(executable);
     cmd.arg("-c").arg(command);
-    cmd
+    Ok(cmd)
+}
+
+/// Windows' System32 bash.exe launches WSL rather than a native shell. It
+/// cannot honor native workspace paths and may have no distribution installed.
+#[cfg(any(windows, test))]
+fn is_wsl_launcher(path: &Path) -> bool {
+    let path = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    [
+        "/system32/bash.exe",
+        "/syswow64/bash.exe",
+        "/sysnative/bash.exe",
+        "/windowsapps/bash.exe",
+    ]
+    .iter()
+    .any(|suffix| path.ends_with(suffix))
+}
+
+#[cfg(any(windows, test))]
+fn select_native_bash(
+    path_candidates: impl IntoIterator<Item = std::path::PathBuf>,
+    git_roots: impl IntoIterator<Item = std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    path_candidates
+        .into_iter()
+        .chain(
+            git_roots
+                .into_iter()
+                .flat_map(|root| [root.join("bin/bash.exe"), root.join("usr/bin/bash.exe")]),
+        )
+        .find(|path| !is_wsl_launcher(path) && path.is_file())
+}
+
+#[cfg(any(windows, test))]
+fn windows_bash_path() -> Result<std::path::PathBuf> {
+    let path_candidates: Vec<_> = which::which_all("bash")
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    // Git commonly exposes only its cmd/ directory in PATH. Resolve its
+    // installation root from git.exe, including mingw64/bin installations.
+    let mut git_roots: Vec<_> = which::which_all("git")
+        .into_iter()
+        .flatten()
+        .flat_map(|path| {
+            path.ancestors()
+                .skip(2)
+                .take(3)
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (variable, suffix) in [
+        ("ProgramFiles", "Git"),
+        ("ProgramFiles(x86)", "Git"),
+        ("LOCALAPPDATA", "Programs/Git"),
+    ] {
+        if let Some(root) = std::env::var_os(variable) {
+            git_roots.push(std::path::PathBuf::from(root).join(suffix));
+        }
+    }
+    select_native_bash(path_candidates, git_roots).ok_or_else(|| anyhow::anyhow!(
+        "Skill dynamic context requires native Bash (for example Git for Windows); the WSL bash.exe launcher is not supported"
+    ))
 }
 
 /// Normalize Windows CRLF line endings to LF so the preprocessor output
@@ -438,6 +507,69 @@ fn parse_inline_command(s: &str) -> Option<(String, usize)> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn native_bash_environment_lookup_can_execute_bash() {
+        let executable = windows_bash_path().unwrap();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Command::new(executable)
+                .arg("-c")
+                .arg("[[ -n native ]] && printf native-bash")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"native-bash");
+    }
+
+    #[test]
+    fn native_bash_selection_skips_wsl_and_finds_git_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let wsl = temp.path().join("Windows/System32/bash.exe");
+        let git = temp.path().join("Program Files/Git");
+        let native = git.join("bin/bash.exe");
+        for path in [&wsl, &native] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        assert_eq!(
+            select_native_bash([wsl.clone(), native.clone()], []),
+            Some(native.clone())
+        );
+        assert_eq!(select_native_bash([wsl.clone()], [git]), Some(native));
+        assert!(select_native_bash([wsl], []).is_none());
+        for path in [
+            r"C:\WINDOWS\SYSTEM32\bash.exe",
+            r"C:\Windows\SysWOW64\bash.exe",
+            r"C:\Windows\Sysnative\bash.exe",
+            r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\bash.exe",
+        ] {
+            assert!(is_wsl_launcher(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn native_bash_selection_supports_usr_bin_and_respects_path_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let git = temp.path().join("Git");
+        let first = git.join("usr/bin/bash.exe");
+        let second = temp.path().join("MSYS2/bash.exe");
+        for path in [&first, &second] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        assert_eq!(select_native_bash([], [git]), Some(first.clone()));
+        assert_eq!(select_native_bash([first.clone(), second], []), Some(first));
+        assert!(select_native_bash([temp.path().join("missing/bash.exe")], []).is_none());
+    }
 
     #[tokio::test]
     async fn blocked_and_unclosed_fences_do_not_execute_embedded_inline_syntax() {

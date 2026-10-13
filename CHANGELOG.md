@@ -19,6 +19,10 @@ All notable changes to Peko.
   snapshots remain readable with no inferred executable permissions.
 - Add regressions for principal scope, literal rendering, process cleanup,
   oversized definitions, and skill asset execution after snapshot transport.
+- Stabilize async completion CI tests with isolated task storage and bounded
+  inbox waits instead of fixed latency sleeps.
+- Resolve native Bash on Windows through PATH or Git installations, excluding
+  the WSL launcher that cannot honor native workspace paths.
 
 ### Principal-owned MCP (0.1.0, 2026-10-13)
 
