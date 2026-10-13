@@ -5,13 +5,9 @@
 //! `LlmResolver` / `Provider::chat_with_tools` path and the response is mapped
 //! back to the MCP `CreateMessageResult` format.
 //!
-//! F19: `SamplingRequestHandler` carries the principal's quota meter
-//! (captured at server-start time) and opens a `QuotaScope::with`
-//! around the LLM call so a `StackedMeteredProvider` constructed
-//! inside auto-charges the right principal. Daemon-level auto-start
-//! passes an unlimited meter (no principal); tool-call-driven auto-start
-//! captures the principal from `ToolContext::principal_id` and passes
-//! the matching `Arc<QuotaMeter>`.
+//! Sampling binds the owner meter and an explicit principal/server model.
+//! Missing model configuration fails closed; native callbacks require an active
+//! owner request and never start principal runs.
 //!
 //! 2026-09 cleanup: migrated from `MeteredProvider` to
 //! `StackedMeteredProvider` so cost folding into `budget_per_cycle`
@@ -37,18 +33,32 @@ use tracing::debug;
 /// Handles MCP `sampling/createMessage` requests from an MCP server.
 pub struct SamplingRequestHandler {
     resolver: Arc<LlmResolver>,
-    /// F19: principal's quota meter for this server. Built once at
-    /// `McpManager::start_server` time — either the principal's real
-    /// meter (tool-call-driven auto-start with a `principal_id`) or an
-    /// unlimited meter (daemon-level auto-start with `None`).
+    /// The actual owner meter, supplied explicitly at connection startup.
     meter: Arc<QuotaMeter>,
+    model: Arc<std::sync::RwLock<Option<String>>>,
+    max_output_tokens: u32,
 }
 
 impl SamplingRequestHandler {
     /// Create a new sampling handler backed by the given resolver.
     #[must_use]
     pub fn new(resolver: Arc<LlmResolver>, meter: Arc<QuotaMeter>) -> Self {
-        Self { resolver, meter }
+        Self {
+            resolver,
+            meter,
+            model: Arc::new(std::sync::RwLock::new(None)),
+            max_output_tokens: 4096,
+        }
+    }
+
+    pub fn with_model(
+        mut self,
+        model: Arc<std::sync::RwLock<Option<String>>>,
+        max_output_tokens: u32,
+    ) -> Self {
+        self.model = model;
+        self.max_output_tokens = max_output_tokens;
+        self
     }
 }
 
@@ -121,20 +131,21 @@ impl ServerRequestHandler for SamplingRequestHandler {
             .map(convert_mcp_tool)
             .collect();
 
-        // Resolve a host model. MCP sampling has no per-request model
-        // selector, so we fall back to the first enabled model in the
-        // catalog. This is a pragmatic default for the pre-launch MCP
-        // bridge; future work can thread an explicit model preference
-        // through the MCP request.
-        let models = self.resolver.catalog().list_enabled().await;
-        if models.is_empty() {
-            return Err(JsonRpcError {
+        // Use the explicitly bound model; server preferences cannot select another account.
+        let agent_model = self
+            .model
+            .read()
+            .map_err(|_| JsonRpcError {
                 code: JsonRpcError::INTERNAL_ERROR,
-                message: "No enabled model in the catalog for MCP sampling".to_string(),
+                message: "Sampling model lock unavailable".into(),
                 data: None,
-            });
-        }
-        let agent_model = models[0].id.clone();
+            })?
+            .clone()
+            .ok_or_else(|| JsonRpcError {
+                code: JsonRpcError::INTERNAL_ERROR,
+                message: "No principal model configured for MCP sampling".to_string(),
+                data: None,
+            })?;
         let (provider, choice) = self
             .resolver
             .build_view(ResolveRequest {
@@ -149,13 +160,46 @@ impl ServerRequestHandler for SamplingRequestHandler {
             })?;
         let model_id = choice.model_id.clone();
 
+        if let Some(ceiling) = self.meter.config().cost_per_call_max {
+            if let Some(pricing) = self
+                .resolver
+                .catalog()
+                .get(&agent_model)
+                .await
+                .and_then(|config| config.spec.and_then(|spec| spec.pricing))
+            {
+                let input_bound = serde_json::to_vec(&(&messages, &tools))
+                    .map_or(4096, |messages| messages.len() as u64)
+                    .max(4096);
+                let output_bound = u64::from(
+                    req.max_tokens
+                        .unwrap_or(self.max_output_tokens)
+                        .min(self.max_output_tokens),
+                )
+                .max(1000);
+                let estimated =
+                    peko_engine::compute_cost_usd(Some(pricing), input_bound, output_bound);
+                if estimated > ceiling {
+                    return Err(JsonRpcError {
+                        code: JsonRpcError::INTERNAL_ERROR,
+                        message: "MCP sampling refused by cost_per_call_max".into(),
+                        data: None,
+                    });
+                }
+            }
+        }
+
         // F19: open `QuotaScope::with` so the `StackedMeteredProvider`
         // built below auto-charges this server's principal. We move the
         // provider into the closure (consumed) and rebuild it as
         // metered; the unwrapped response is what we return.
         let meter = Arc::clone(&self.meter);
         let options = ChatOptions {
-            max_tokens: req.max_tokens,
+            max_tokens: Some(
+                req.max_tokens
+                    .unwrap_or(self.max_output_tokens)
+                    .min(self.max_output_tokens),
+            ),
             ..Default::default()
         };
 
@@ -263,8 +307,10 @@ mod tests {
         let catalog_path = tmp.path().join("models.toml");
         let (resolver, _adapter) = LlmResolver::mock(adapter, &catalog_path).await;
 
+        let model = resolver.catalog().list_enabled().await[0].id.clone();
         let handler =
-            SamplingRequestHandler::new(resolver, Arc::new(peko_quota::QuotaMeter::unlimited()));
+            SamplingRequestHandler::new(resolver, Arc::new(peko_quota::QuotaMeter::unlimited()))
+                .with_model(Arc::new(std::sync::RwLock::new(Some(model))), 4096);
         let req = CreateMessageRequest {
             messages: vec![SamplingMessage {
                 role: SamplingRole::User,
@@ -347,7 +393,9 @@ mod tests {
             .unwrap(),
         );
 
-        let handler = SamplingRequestHandler::new(Arc::clone(&resolver), Arc::clone(&meter));
+        let model = resolver.catalog().list_enabled().await[0].id.clone();
+        let handler = SamplingRequestHandler::new(Arc::clone(&resolver), Arc::clone(&meter))
+            .with_model(Arc::new(std::sync::RwLock::new(Some(model))), 4096);
         let req = CreateMessageRequest {
             messages: vec![SamplingMessage {
                 role: SamplingRole::User,

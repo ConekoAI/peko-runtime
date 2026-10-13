@@ -355,12 +355,6 @@ pub enum RequestPacket {
     #[serde(rename = "model_remove")]
     ModelRemove { request_id: u64, id: String },
 
-    /// Re-read the MCP server configuration from `mcp.toml` and the
-    /// credential vault from disk. Sent by `peko ext mcp {add,auth,remove}`
-    /// so the long-running daemon observes CLI mutations without a restart.
-    #[serde(rename = "mcp_reload")]
-    McpReload { request_id: u64 },
-
     // ─── Quota (F18) ───────────────────────────────────────────────────
     /// Read the principal's current quota status (used + limits +
     /// window bounds). Unauthenticated: any local caller can query
@@ -853,7 +847,6 @@ impl RequestPacket {
             | Self::ModelUpdate { request_id, .. }
             | Self::ModelRemove { request_id, .. }
             | Self::ModelTest { request_id, .. }
-            | Self::McpReload { request_id }
             | Self::CredentialList { request_id, .. }
             | Self::CredentialGet { request_id, .. }
             | Self::CredentialGetMaterial { request_id, .. }
@@ -1485,14 +1478,6 @@ pub enum ResponsePacket {
         request_id: u64,
         id: String,
         removed: bool,
-    },
-
-    /// MCP configuration reload response. Reports the post-reload server
-    /// count so the CLI can confirm the daemon picked up the change.
-    #[serde(rename = "mcp_reloaded")]
-    McpReloaded {
-        request_id: u64,
-        servers_count: usize,
     },
 
     /// System clean response
@@ -2271,7 +2256,6 @@ impl ResponsePacket {
             | Self::ModelUpdated { request_id, .. }
             | Self::ModelRemoved { request_id, .. }
             | Self::ModelTested { request_id, .. }
-            | Self::McpReloaded { request_id, .. }
             | Self::CredentialsListed { request_id, .. }
             | Self::CredentialSetDone { request_id, .. }
             | Self::CredentialDeleted { request_id, .. }
@@ -2347,7 +2331,6 @@ impl ResponsePacket {
             Self::ModelUpdated { .. } => "ModelUpdated",
             Self::ModelRemoved { .. } => "ModelRemoved",
             Self::ModelTested { .. } => "ModelTested",
-            Self::McpReloaded { .. } => "McpReloaded",
             Self::CredentialsListed { .. } => "CredentialsListed",
             Self::CredentialSetDone { .. } => "CredentialSetDone",
             Self::CredentialDeleted { .. } => "CredentialDeleted",

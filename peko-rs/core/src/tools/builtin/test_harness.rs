@@ -163,6 +163,17 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(SkillTool::new(Arc::new(
             crate::extensions::skill::WorkspaceSkillRuntime::new(workspace.join("skills")),
         ))),
+        Arc::new(mcp::McpTool::new(
+            crate::extensions::mcp::service::PrincipalMcpRuntime::new(
+                PrincipalId(PRINCIPAL.into()),
+                workspace.clone(),
+                workspace.join("local/mcp_cache"),
+                None,
+                None,
+                Arc::new(peko_quota::QuotaMeter::unlimited()),
+                None,
+            ),
+        )),
         Arc::new(ModelListTool::new(backends.models.clone())),
         Arc::new(ModelCallTool::new(Weak::new())),
         Arc::new(WorkflowTool::new(
@@ -452,6 +463,7 @@ mod tests {
             ("ChannelRead", json!({"channel": channel}), "ping"),
             ("Contacts", json!({"action":"list"}), "participants"),
             ("ModelList", json!({}), ""),
+            ("MCP", json!({"action":"status"}), "servers"),
             (
                 "Task",
                 json!({"action":"create", "subject":"smoke"}),

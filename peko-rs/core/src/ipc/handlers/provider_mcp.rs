@@ -1,12 +1,7 @@
 //! `provider_mcp` domain request handler (F6 step 12).
 //!
-//! Owns the small leftover misc IPC variants that don't fit cleanly
-//! into another domain: `ModelList`, `ModelReload`,
-//! `McpReload`. These power `peko model list / reload` and
-//! `peko mcp reload` — the live reload of the model catalog from
-//! disk and the live reload of the MCP config from disk, both
-//! followed by a fresh daemon-side re-read so the next request sees
-//! the new state.
+//! Handles `ModelList` and `ModelReload`. MCP configuration is reconciled by
+//! each principal service; the global MCP reload IPC path is retired.
 //!
 //! The handler holds a narrow [`ModelMcpHost`] port; the daemon-side
 //! implementation (`AppState`) is reached only through the trait, so
@@ -20,11 +15,6 @@
 //!   F6/F7 handler family).
 //! - F6: this module must not import any other `ipc::handlers::*` module.
 //!
-//! `ModelList` does not actually need any daemon state — it builds
-//! a fresh view from the on-disk model catalog every
-//! call (matching the prior inlined behavior). The trait only carries
-//! the two reload accessors used by `ModelReload` / `McpReload`.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,20 +28,13 @@ use peko_auth::caller::CallerContext;
 
 /// Narrow port the `provider_mcp` handler uses to reach daemon state.
 ///
-/// `AppState` is the sole implementor. All three methods are async
-/// because they drive live config-file reads and reloads (model
-/// catalog + MCP config); the trait needs `async_trait` for that
-/// reason.
+/// `AppState` is the sole implementor. Methods read and reload the model catalog.
 #[async_trait::async_trait]
 pub(crate) trait ModelMcpHost: Send + Sync {
     /// Live reload the model catalog from disk, returning
     /// `(models_count, keys_count)` on success. Powers
     /// `ModelReload`.
     async fn reload_models(&self) -> anyhow::Result<(usize, usize)>;
-
-    /// Live reload the MCP config from disk, returning the count of
-    /// configured MCP servers on success. Powers `McpReload`.
-    async fn reload_mcp_config(&self) -> anyhow::Result<usize>;
 
     /// Snapshot every catalog entry (enabled + disabled) as the
     /// `ModelSummary` wire shape. Powers `ModelList`. Reads go
@@ -83,9 +66,7 @@ impl RequestHandler for ProviderMcpHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::ModelList { .. }
-                | RequestPacket::ModelReload { .. }
-                | RequestPacket::McpReload { .. }
+            RequestPacket::ModelList { .. } | RequestPacket::ModelReload { .. }
         )
     }
 
@@ -124,23 +105,6 @@ impl RequestHandler for ProviderMcpHandler {
                 }
             },
 
-            RequestPacket::McpReload { request_id } => match self.host.reload_mcp_config().await {
-                Ok(servers_count) => {
-                    let response = ResponsePacket::McpReloaded {
-                        request_id,
-                        servers_count,
-                    };
-                    send_response(sink, response).await?;
-                }
-                Err(e) => {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("mcp reload failed: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                }
-            },
-
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
             _ => unreachable!("ProviderMcpHandler::matches allowed an unhandled variant"),
@@ -169,9 +133,6 @@ mod tests {
     impl ModelMcpHost for StubHost {
         async fn reload_models(&self) -> anyhow::Result<(usize, usize)> {
             Ok((self.0.len(), 0))
-        }
-        async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
-            Ok(0)
         }
         async fn list_catalog_models(&self) -> Vec<ModelSummary> {
             self.0.clone()

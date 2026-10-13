@@ -60,7 +60,7 @@ builtin_manifest! {
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
-        "Task", "Plan", "ChannelSend", "Contacts", "ModelList"
+        "Task", "Plan", "ChannelSend", "Contacts", "ModelList", "MCP"
     ];
     ASYNC_TOOL_NAMES: Principal, Async, false => ["Async"];
 }

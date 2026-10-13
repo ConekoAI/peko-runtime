@@ -148,8 +148,7 @@ pub struct McpManager {
     /// F19: principal manager for per-server sampling attribution.
     /// When set, `sampling_handler_for(principal_id)` looks up the
     /// principal's quota meter and binds it to the
-    /// `SamplingRequestHandler`. When unset, all sampling runs
-    /// against an unlimited meter (no charging).
+    /// `SamplingRequestHandler`. Missing owner dependencies disable sampling.
     principal_manager: Option<Arc<crate::principal::manager::PrincipalManager>>,
     /// Optional encrypted vault used for OAuth token storage.
     vault: Option<Arc<Vault>>,
@@ -299,38 +298,21 @@ impl McpManager {
 
     /// Build a server-request handler for sampling when a resolver is configured.
     ///
-    /// F19: per-server handler. The meter is resolved from the
-    /// principal when `principal_id` is `Some`; otherwise an
-    /// unlimited meter is used (daemon-level auto-start). The
-    /// handler is constructed fresh on every call so each server
-    /// gets its own binding.
+    /// Requires a typed owner lookup and its actual meter/model.
     async fn sampling_handler(
         &self,
         principal_id: Option<&str>,
     ) -> Option<Arc<dyn ServerRequestHandler>> {
         let resolver = self.llm_resolver.as_ref()?;
-        let meter = self.resolve_quota_meter(principal_id).await;
-        Some(
-            Arc::new(SamplingRequestHandler::new(Arc::clone(resolver), meter))
-                as Arc<dyn ServerRequestHandler>,
-        )
-    }
-
-    /// F19: resolve the principal's quota meter from
-    /// `principal_manager`. When the manager isn't configured, or the
-    /// principal can't be found, fall back to an unlimited meter so
-    /// sampling keeps working without charging.
-    async fn resolve_quota_meter(&self, principal_id: Option<&str>) -> Arc<peko_quota::QuotaMeter> {
-        let Some(pm) = &self.principal_manager else {
-            return Arc::new(peko_quota::QuotaMeter::unlimited());
-        };
-        let Some(pid) = principal_id else {
-            return Arc::new(peko_quota::QuotaMeter::unlimited());
-        };
-        match pm.get_by_name(pid).await {
-            Some(p) => Arc::clone(&p.quota_meter),
-            None => Arc::new(peko_quota::QuotaMeter::unlimited()),
-        }
+        let pm = self.principal_manager.as_ref()?;
+        let principal = pm
+            .get(peko_subject::PrincipalId(principal_id?.into()))
+            .await?;
+        let model = principal.config.read().await.preferred_model_id.clone();
+        Some(Arc::new(
+            SamplingRequestHandler::new(Arc::clone(resolver), principal.quota_meter.clone())
+                .with_model(Arc::new(std::sync::RwLock::new(model)), 4096),
+        ) as Arc<dyn ServerRequestHandler>)
     }
 
     /// F19: bind a principal manager so the manager can resolve per-
@@ -400,10 +382,7 @@ impl McpManager {
         info!("Auto-starting {} MCP servers...", servers_to_start.len());
         for name in servers_to_start {
             info!("Starting MCP server '{}'...", name);
-            // F19: daemon-level auto-start has no principal scope, so
-            // sampling runs with an unlimited meter. Tool-call-driven
-            // auto-start (McpToolProxy / McpToolExecuteHandler) passes
-            // a `Some(principal_id)` instead.
+            // Legacy unowned startup does not enable sampling.
             if let Err(e) = self.start_server(&name, None).await {
                 warn!("Failed to auto-start server '{}': {}", name, e);
             } else {

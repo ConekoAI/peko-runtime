@@ -1,13 +1,8 @@
-//! MCP Extension Type Implementation
+//! Principal-owned MCP service (ADR-075).
 //!
-//! This module contains all MCP-specific code:
-//! - `global`: Process-global `McpManager` accessor + daemon-shared
-//!   resource initialiser
-//! - `runtime`: Runtime adapters and starters bridging to background_runtime
-//! - `protocol`: MCP protocol implementation (client, transport, types, etc.)
-//! - `workspace`: Workspace scanner that registers `<workspace>/mcp/`
-//!   servers with the global `McpManager`, plus the prompt-context
-//!   text renderer that replaces the deleted framework hook
+//! `service` drives native workspace discovery, connections, OAuth and scoped calls.
+//! `protocol`, `runtime`, and `workspace` retain legacy adapter APIs; native
+//! principal wiring does not use their shared-manager installation path.
 //!
 //! Phase 2 PR 2 (ADR-047 §2.3) removed the framework-side
 //! `ExtensionTypeAdapter` for MCP. The previous `adapter` submodule
@@ -18,13 +13,12 @@
 //! all of that has been replaced by direct calls to the
 //! [`McpManager`] runtime API plus the workspace scanner.
 
-pub mod global;
 pub mod protocol;
 pub mod runtime;
+pub mod service;
 pub mod workspace;
 
 // Re-export key types for convenience
-pub use global::{global_mcp_manager, init_global_mcp_manager_with_shared_resources};
 pub use protocol::{
     client::{ClientError, McpClient},
     config::{ConfigFormat, McpConfig, McpServerConfig, TransportType},

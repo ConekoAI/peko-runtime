@@ -12,7 +12,7 @@ use peko_subject::Subject;
 // `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
 // ingress flows exclusively through per-peer standing children under
 // the agent-session paradigm (Phase 7 of sprint 2).
-use crate::extensions::mcp::runtime::{McpClientRegistry, McpRuntimeStarter};
+use crate::extensions::mcp::runtime::McpClientRegistry;
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::async_exec::inbox::SessionInbox;
@@ -705,17 +705,9 @@ impl AppState {
         // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
         let mcp_client_registry = Arc::new(McpClientRegistry::new());
 
-        // Ensure the global MCP manager uses the daemon-wide shared resources.
-        // This unifies the runtime paths so `ext start` / `ext stop` control the
-        // same processes that agent-init and tool-proxy code paths see.
-        // F19: we forward the principal_manager so MCP sampling can charge
-        // the calling principal's quota meter. The MCP init is wired below
-        // (after `principal_manager` is built) for this reason.
-
         // ADR-025/026: Extension runtime starter registry.
-        // Sprint 9 Commit 3: only MCP starters register now.
-        let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
-        runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
+        // Native MCP lifetimes are managed by each principal service (ADR-075).
+        let runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
         let runtime_starter_registry = Arc::new(runtime_starter_registry);
 
         // Observability hub is constructed early so it can be shared with the
@@ -813,17 +805,6 @@ impl AppState {
                         .expect("channel port constructed above"),
                 ),
             }));
-
-        // F19: now that `principal_manager` is built, wire it into the
-        // global MCP manager so MCP sampling can resolve per-principal
-        // quota meters for the server's `SamplingRequestHandler`.
-        crate::extensions::mcp::init_global_mcp_manager_with_shared_resources(
-            Arc::clone(&background_runtime_manager),
-            Arc::clone(&mcp_client_registry),
-            Some(Arc::clone(&resolver)),
-            Some(Arc::clone(&vault)),
-            Some(Arc::clone(&principal_manager)),
-        );
 
         // Daemon services are installed after their manager dependencies exist.
         let run_token_registry = Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new());
@@ -1069,65 +1050,6 @@ impl AppState {
         Ok((models_count, keys_count))
     }
 
-    /// Re-read the MCP server configuration from `mcp.toml` and the
-    /// credential vault from disk. Called by the IPC `McpReload` handler
-    /// so CLI mutations (`peko ext mcp {add,auth,remove}`) are visible to the
-    /// long-running daemon without a restart.
-    pub async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
-        let keys_count = self
-            .vault
-            .reload()
-            .map_err(|e| anyhow::anyhow!("vault reload failed: {e}"))?;
-        tracing::info!("MCP reload: {keys_count} vault entries reloaded");
-
-        let mcp_config_path = self.config_dir.join("mcp.toml");
-        // Phase 2 PR 2 (ADR-047 §2.3): the framework-coupled
-        // `McpAdapter` is gone; the global `McpManager` (installed by
-        // `init_global_mcp_manager_with_shared_resources` at daemon
-        // startup) is the canonical owner of MCP server configs.
-        let manager = crate::extensions::mcp::global_mcp_manager()
-            .ok_or_else(|| anyhow::anyhow!("global MCP manager is not initialised"))?;
-        let servers_count = manager
-            .read()
-            .await
-            .reload_config(&mcp_config_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("mcp config reload failed: {e}"))?;
-        tracing::info!(
-            "MCP reload: {servers_count} servers from {}",
-            mcp_config_path.display()
-        );
-
-        // Auto-start any newly-added servers that request it.
-        let auto_start_names: Vec<String> = {
-            let mgr = manager.read().await;
-            let mut names = Vec::new();
-            for state in mgr.list_server_prompt_context().await {
-                if !state.running {
-                    if let Some(cfg) = mgr.get_server_config(&state.name).await {
-                        if cfg.auto_start {
-                            names.push(state.name);
-                        }
-                    }
-                }
-            }
-            names
-        };
-        for name in auto_start_names {
-            let m = manager.clone();
-            let name_owned = name.clone();
-            if let Err(e) =
-                async move { m.read().await.start_server(&name_owned, None).await }.await
-            {
-                tracing::warn!(server = %name, error = %e, "Failed to auto-start MCP server after reload");
-            } else {
-                tracing::info!(server = %name, "Auto-started MCP server after reload");
-            }
-        }
-
-        Ok(servers_count)
-    }
-
     /// Subscribe to shutdown signals
     pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown_tx.subscribe()
@@ -1135,6 +1057,9 @@ impl AppState {
 
     /// Request graceful shutdown
     pub async fn request_shutdown(&self, _force: bool) {
+        for principal in self.principal_manager.list_all().await {
+            principal.mcp.shutdown().await;
+        }
         // Note: force parameter reserved for future use
         let _ = self.shutdown_tx.send(());
     }
@@ -2618,10 +2543,6 @@ fn model_spec_from_wire(spec: crate::ipc::packet::ModelSpec) -> peko_providers::
 impl crate::ipc::handlers::provider_mcp::ModelMcpHost for AppState {
     async fn reload_models(&self) -> anyhow::Result<(usize, usize)> {
         AppState::reload_models(self).await
-    }
-
-    async fn reload_mcp_config(&self) -> anyhow::Result<usize> {
-        AppState::reload_mcp_config(self).await
     }
 
     /// Snapshot every catalog entry (enabled + disabled) as the

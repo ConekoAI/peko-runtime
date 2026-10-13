@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **20 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **21 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -32,14 +32,14 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 19-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 21-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
 | Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
-| Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP | When their session storage, plan, caller identity/channel, or inbox bindings become available |
 | Run bindings | Agent, Session | Private catalog overlay for caller execution dependencies |
 
 Each run inherits live runtime/principal registrations through its overlay.
@@ -709,6 +709,36 @@ Fetch a job’s recent run history.
 
 Supply exactly one of id or label. limit defaults to 10, caps at 50, and returns newest runs first. Fired one-shot jobs delete themselves but keep their runs: read them by the job_id returned at creation (labels resolve live jobs only).
 
+## MCP integrations
+
+### MCP
+
+Principal-owned connections and credentials are shared by all of that principal's
+sessions. Configuration is `mcp/<id>/server.json` in its workspace. `Write`/`Edit`
+and normal filesystem operations manage those definitions; the runtime reconciles
+them before each model request. Cold servers discover tools automatically.
+Discovered methods appear as `mcp__<server>__<method>` with their server schemas.
+Calls preserve the advertised catalog binding and return an error if an unsent
+call's definition changes. Started calls retain their original connection.
+
+| action | Additional fields | Behavior |
+|---|---|---|
+| `status` | none | Own servers, source paths, connection/catalog state, tool counts, sanitized errors; does not connect |
+| `refresh` | optional `server` | Scan files and fetch live catalogs for one or all configured servers |
+| `reconnect` | required `server` | Replace the connection, reset retry backoff, and discover again |
+| `authenticate` | required `server` | Return a browser authorization URL for OAuth; owner-bound callback completes without starting a run |
+| `resources` | required `server` | List all resource pages |
+| `resource_templates` | required `server` | List all template pages |
+| `read_resource` | required `server`, `uri` | Read structured resource contents |
+| `prompts` | required `server` | List all prompt pages |
+| `get_prompt` | required `server`, `name`; optional string-map `arguments` | Retrieve prompt messages as tool data |
+
+`MCP` is not parallelizable. Fields irrelevant to an action fail validation.
+Stdio and Streamable HTTP use the MCP SDK; SSE remains a compatibility transport.
+Sampling is opt-in and uses the principal's actual model/meter. See
+[ADR-075](adr/ADR-075-principal-owned-mcp-runtime.md) and the
+[quick start](../mcp/QUICK_START.md).
+
 ## Testing
 
 Three tiers cover the built-in tools; put a test in the lowest tier that can
@@ -720,7 +750,7 @@ observe the behavior.
 | Harness | [`ToolHarness`](../../peko-rs/core/src/tools/builtin/test_harness.rs) | `cargo test --lib` | Dispatch semantics (validation, workspace injection, audit), multi-tool flows, caller/principal scoping |
 | Daemon | [`cli_tools.rs`](../../peko-rs/core/tests/cli_tools.rs) | `make test-cli-tools` (mock LLM) | Daemon wiring only: workspace resolution, process spawning, result persistence |
 
-`ToolHarness::new()` registers all 19 tools behind the production dispatcher,
+`ToolHarness::new()` registers all 21 tools behind the production dispatcher,
 backed by tempdir storage where it is cheap (workspace files, ChannelStore,
 CronScheduler, ModelCatalog, AsyncExecutor) and fakes where the real backend
 is a daemon (Task, Plan, Agent, Session). ModelCall and Workflow stay unbound

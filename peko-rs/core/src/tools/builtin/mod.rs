@@ -47,3 +47,4 @@ pub use workflow::{
 // callers can keep importing them through `crate::tools::builtin::*`
 // without caring which side of the fold line they're on.
 pub use paths as paths_reexport;
+pub mod mcp;

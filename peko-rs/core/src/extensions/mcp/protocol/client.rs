@@ -92,6 +92,30 @@ pub struct McpClient {
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
+/// Dropping an invocation removes correlation state and cancels only that request.
+struct PendingRequestGuard {
+    id: RequestId,
+    pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<JsonRpcResponse>>>>,
+    transport: Arc<dyn McpTransport>,
+}
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        let id = self.id.clone();
+        let pending = self.pending.clone();
+        let transport = self.transport.clone();
+        tokio::spawn(async move {
+            if pending.lock().await.remove(&id).is_some() {
+                let _ = transport
+                    .send(JsonRpcMessage::Notification(JsonRpcNotification::new(
+                        "notifications/cancelled",
+                        Some(serde_json::json!({"requestId":id,"reason":"Peko invocation ended"})),
+                    )))
+                    .await;
+            }
+        });
+    }
+}
+
 impl std::fmt::Debug for McpClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpClient")
@@ -164,9 +188,12 @@ impl McpClient {
     fn with_handler_and_capabilities(
         transport: Box<dyn McpTransport>,
         handler: Option<Arc<dyn ServerRequestHandler>>,
-        capabilities: ClientCapabilities,
+        mut capabilities: ClientCapabilities,
         client_info: Implementation,
     ) -> Self {
+        if handler.is_none() {
+            capabilities.sampling = None;
+        }
         let transport = Arc::from(transport);
         let pending: Arc<Mutex<HashMap<RequestId, tokio::sync::oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -547,13 +574,37 @@ impl McpClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<T> {
+        let value = self
+            .request_json(
+                method,
+                params.unwrap_or_default(),
+                Some(Duration::from_secs(30)),
+            )
+            .await?;
+        serde_json::from_value(value)
+            .map_err(|_| ClientError::InvalidResponse(format!("Invalid response for {method}")))
+    }
+
+    /// Compatibility transport operation with an explicit, optional deadline.
+    pub(crate) async fn request_json(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Option<Duration>,
+    ) -> Result<serde_json::Value> {
         let id = self.next_request_id();
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Register pending request before sending so the receive loop can route the response.
         self.pending.lock().await.insert(id.clone(), tx);
+        let _pending = PendingRequestGuard {
+            id: id.clone(),
+            pending: self.pending.clone(),
+            transport: self.transport.clone(),
+        };
 
-        let request = JsonRpcMessage::Request(JsonRpcRequest::new(id.clone(), method, params));
+        let request =
+            JsonRpcMessage::Request(JsonRpcRequest::new(id.clone(), method, Some(params)));
         trace!("Sending request {}: {}", id, method);
 
         if let Err(e) = self.transport.send(request).await {
@@ -561,14 +612,15 @@ impl McpClient {
             return Err(ClientError::Transport(e));
         }
 
-        let timeout = Duration::from_secs(30);
-        match tokio::time::timeout(timeout, rx).await {
+        let response = async {
+            match timeout {
+                Some(timeout) => tokio::time::timeout(timeout, rx).await,
+                None => Ok(rx.await),
+            }
+        };
+        match response.await {
             Ok(Ok(response)) => match response.into_result() {
-                Ok(result) => serde_json::from_value(result).map_err(|e| {
-                    ClientError::InvalidResponse(format!(
-                        "Failed to deserialize response for {method}: {e}"
-                    ))
-                }),
+                Ok(result) => Ok(result),
                 Err(error) => Err(ClientError::JsonRpc(error.code, error.message)),
             },
             Ok(Err(_)) => {
@@ -650,8 +702,10 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        // Try to shut down gracefully
-        // Note: We can't use async here, so we rely on the transport's Drop impl
+        // Abort the receive task so retired client generations release transports.
+        if let Some(task) = self.receive_task.take() {
+            task.abort();
+        }
         if self.server_info.is_some() {
             debug!("McpClient dropped without explicit shutdown");
         }

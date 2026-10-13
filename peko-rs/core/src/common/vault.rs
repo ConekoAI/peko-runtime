@@ -978,6 +978,30 @@ impl Vault {
         Ok(count)
     }
 
+    /// Reload credential changes using the already-unlocked key, without consulting
+    /// process environment or the OS keychain. A changed encryption key requires
+    /// an explicit re-unlock. Holding the state lock also serializes local writes.
+    pub fn reload_unlocked(&self) -> Result<usize> {
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("vault state unavailable"))?;
+        let bytes = std::fs::read(&self.path).context("failed to read unlocked vault")?;
+        let envelope: VaultEnvelope =
+            serde_json::from_slice(&bytes).context("invalid vault envelope")?;
+        anyhow::ensure!(
+            envelope.version == VAULT_VERSION,
+            "unsupported vault version"
+        );
+        let plaintext = Self::decrypt(&envelope, &state.dek)
+            .context("vault encryption key changed; explicitly re-unlock the vault")?;
+        let file = Self::parse_vault_file(&plaintext)?;
+        let count = file.credentials.len() + file.legacy_entries.len();
+        state.file = file;
+        state.salt = envelope.salt;
+        Ok(count)
+    }
+
     /// Return how the vault was unlocked.
     #[must_use]
     pub fn unlock_method(&self) -> UnlockMethod {

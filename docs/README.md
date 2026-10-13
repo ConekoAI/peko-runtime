@@ -26,7 +26,7 @@ Complete documentation for the Peko multi-agent runtime.
 - **[Prompt Model](architecture/PROMPT_MODEL.md)** — How every prompt is assembled: tiers, frozen prefix, `<runtime-context>` tail sections, placeholder contract (ADR-050/052/055/064)
 - **[Skills](architecture/SKILLS.md)** — Skills as workspace files: SKILL.md format, per-turn catalog, invocation, authoring
 - **[Agent–Session Paradigm](architecture/AGENT_SESSION_PARADIGM.md)** — Target mental model: agent = session, principal as session tree, channels, cron heartbeat
-- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-072
+- **[Architecture Decision Records](architecture/adr/)** — ADR-001 through ADR-075
 - **[Public API Surface](../API_SURFACE.md)** — Rust public API contracts
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
@@ -35,8 +35,9 @@ Complete documentation for the Peko multi-agent runtime.
 
 ### 🔌 MCP
 
+- **[Principal-owned MCP design](architecture/adr/ADR-075-principal-owned-mcp-runtime.md)** — Implemented: Codex source study, principal ownership, startup, refresh, credentials, and consistent calls
 - **[MCP Overview](mcp/MCP.md)** — Model Context Protocol integration
-- **[MCP Quick Start](mcp/QUICK_START.md)** — Install and enable an MCP server
+- **[MCP Quick Start](mcp/QUICK_START.md)** — Configure a principal-owned MCP server
 - **[MCP Migration Guide](mcp/MIGRATION_GUIDE.md)** — Moving tools to MCP
 - **[Reserved Parameters Guide](mcp/mcp_reserved_params_guide.md)** — Runtime context injection
 - **[Reserved Parameters Proposal](mcp/mcp_reserved_params_proposal.md)** — Design proposal
@@ -61,7 +62,7 @@ docs/
 │   ├── PRINCIPAL_WORKSPACE.md      # ADR-047 — replaces EXTENSION_SYSTEM.md
 │   ├── SKILLS.md                   # skills as workspace files (SKILL.md format + catalog)
 │   ├── builtin-tools.md
-│   └── adr/                         # ADR-001 through ADR-072
+│   └── adr/                         # ADR-001 through ADR-075
 └── mcp/
     ├── MCP.md
     ├── QUICK_START.md
@@ -117,6 +118,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-064](architecture/adr/ADR-064-agents-to-roles-terminology.md) | `agents/` → `roles/` terminology unification: agent = live session actor, role = the initiating template; `role_catalog`, `role` param, `role:*` capabilities, packaging layer rename |
 | [ADR-069](architecture/adr/ADR-069-builtin-tool-installation-lifetimes.md) | Explicit built-in installation phases, private run bindings, and principal-owned async services |
 | [ADR-070](architecture/adr/ADR-070-exact-unfiltered-tool-contracts.md) | Exact tool names, unfiltered availability, and retired compatibility wrappers |
+| [ADR-075](architecture/adr/ADR-075-principal-owned-mcp-runtime.md) | Principal-owned MCP runtime: Codex source study, shared principal connections, scoped credentials/quota, workspace refresh, and consistent catalog bindings |
 | [ADR-072](architecture/adr/ADR-072-human-started-runs-and-durable-delivery.md) | Only humans and cron start runs; groups wake on `@<name>`; ChannelRead watch + unread summary; durable cross-runtime delivery |
 | [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |

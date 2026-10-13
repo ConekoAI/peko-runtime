@@ -3,11 +3,25 @@
 
 use anyhow::Result;
 
+/// A host-owned immutable catalog lease; the engine cannot inspect its bindings.
+pub trait ToolCatalogBinding: std::fmt::Debug + Send + Sync + 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolCatalogSnapshot {
+    pub definitions: Vec<peko_provider_api::ToolDefinition>,
+    pub binding: Option<std::sync::Arc<dyn ToolCatalogBinding>>,
+}
+
 /// One tool call, fully attributed (ADR-066 D2). Identity fields feed
 /// audit, reserved-param injection, and the D9 ownership boundary —
 /// never a capability gate (deleted in P2).
 #[derive(Debug)]
 pub struct ToolCallSpec {
+    pub run_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub catalog_binding: Option<std::sync::Arc<dyn ToolCatalogBinding>>,
     /// The tool to execute (catalog name).
     pub tool_name: String,
     /// JSON parameters from the LLM.
@@ -42,6 +56,9 @@ impl ToolCallSpec {
     #[must_use]
     pub fn new(tool_name: impl Into<String>, params: serde_json::Value) -> Self {
         Self {
+            run_id: None,
+            tool_call_id: None,
+            catalog_binding: None,
             tool_name: tool_name.into(),
             params,
             workspace: None,
@@ -60,6 +77,7 @@ impl ToolCallSpec {
 /// rendering context the providers resolve against.
 #[derive(Debug, Clone)]
 pub struct PromptSectionRequest {
+    pub catalog_binding: Option<std::sync::Arc<dyn ToolCatalogBinding>>,
     /// Owning principal id.
     pub principal_id: String,
     /// The principal's workspace path (providers scan
@@ -107,7 +125,7 @@ pub trait ToolFunnel: Send + Sync + 'static {
     async fn list_tool_definitions(
         &self,
         principal_id: &peko_subject::PrincipalId,
-    ) -> Vec<peko_provider_api::ToolDefinition>;
+    ) -> ToolCatalogSnapshot;
 
     /// Render the per-turn prompt tail sections (identity, workspace
     /// catalogs, session context, plus workspace-hook `PromptSection`
@@ -151,3 +169,47 @@ pub trait EngineHooks: Send + Sync + 'static {
 pub trait ToolingSeam: ToolFunnel + EngineHooks {}
 
 impl<T: ToolFunnel + EngineHooks> ToolingSeam for T {}
+
+/// Bind all calls and prompt sections for one model request to its advertised catalog.
+pub struct CatalogBoundTooling {
+    inner: std::sync::Arc<dyn ToolingSeam>,
+    snapshot: ToolCatalogSnapshot,
+}
+impl CatalogBoundTooling {
+    pub fn new(
+        inner: std::sync::Arc<dyn ToolingSeam>,
+        snapshot: ToolCatalogSnapshot,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { inner, snapshot })
+    }
+}
+#[async_trait::async_trait]
+impl ToolFunnel for CatalogBoundTooling {
+    async fn execute(&self, mut call: ToolCallSpec) -> Result<(String, serde_json::Value, bool)> {
+        call.catalog_binding = self.snapshot.binding.clone();
+        self.inner.execute(call).await
+    }
+    async fn list_tool_definitions(&self, _: &peko_subject::PrincipalId) -> ToolCatalogSnapshot {
+        self.snapshot.clone()
+    }
+    async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections {
+        let mut request = request.clone();
+        request.catalog_binding = self.snapshot.binding.clone();
+        self.inner.render_prompt_sections(&request).await
+    }
+}
+#[async_trait::async_trait]
+impl EngineHooks for CatalogBoundTooling {
+    async fn is_parallelizable(&self, name: &str, owner: &peko_subject::PrincipalId) -> bool {
+        self.inner.is_parallelizable(name, owner).await
+    }
+    async fn fire_stop_hook(&self, payload: serde_json::Value) {
+        self.inner.fire_stop_hook(payload).await;
+    }
+    async fn fire_after_agent_hook(&self, payload: serde_json::Value) {
+        self.inner.fire_after_agent_hook(payload).await;
+    }
+    async fn set_session_key(&self, agent_id: &str, key: Option<String>) {
+        self.inner.set_session_key(agent_id, key).await;
+    }
+}

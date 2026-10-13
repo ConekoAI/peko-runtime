@@ -55,6 +55,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("Skill", true),
         ("RoleCatalog", true),
         ("ModelList", true),
+        ("MCP", false),
         ("ModelCall", true),
     ]
     .into_iter()
@@ -79,7 +80,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 20);
+    assert_eq!(actual.len(), 21);
     for retired in [
         "TaskCreate",
         "TaskGet",

@@ -1,121 +1,54 @@
-# MCP Quick Start Guide
+# MCP quick start
 
-Get started with MCP servers in 5 minutes.
+Create `<principal-workspace>/mcp/notes/server.json` alongside an existing MCP
+server executable or script. Dependencies are installed through ordinary shell
+operations; Peko does not install packages automatically.
 
-## Prerequisites
-
-- Peko built from source
-- MCP server binaries or extension packages
-
-## 1. Install MCP Servers
-
-MCP servers are installed as extensions via the unified extension system:
-
-```bash
-# Install an MCP server extension
-peko ext install ./mcp-filesystem-server
-
-# Or from a remote source
-peko ext install ./mcp-web-server
+```json
+{
+  "schema_version": 1,
+  "transport": { "type": "stdio", "command": "python3", "args": ["server.py"] },
+  "cwd": ".",
+  "startup": "auto"
+}
 ```
 
-## 2. Verify Installation
+Put `server.py` beside the manifest or use an absolute script path. Relative `cwd`
+resolves from the manifest directory. Stdio receives the minimal process environment
+plus explicitly declared `env` values.
 
-```bash
-# List installed extensions
-peko ext list
+The next model request discovers the server's methods. The principal can also call:
 
-# Show MCP extension details
-peko ext info filesystem-mcp
+```json
+{"action":"refresh","server":"notes"}
 ```
 
-You should see the extension listed with type `mcp`.
+on `MCP`, then use the individual `mcp__notes__<method>` tools on its next iteration.
+Use the exact advertised name; long or unsafe component names carry a stable digest suffix.
+`MCP {"action":"status"}` reports source paths, readiness, cached/fresh catalogs,
+tool counts and errors. Edits/removal take effect without restarting the daemon.
 
-## 3. Grant the Capability
+For Streamable HTTP with a bearer token:
 
-```bash
-# Grant the MCP capability to a Principal
-peko capability grant --principal <principal-name> filesystem-mcp
+```json
+{
+  "schema_version": 1,
+  "transport": { "type": "streamable_http", "url": "https://example.com/mcp" },
+  "auth": { "type": "bearer", "credential": "api_token" }
+}
 ```
 
-## 4. Use with Agent
+Provision `api_token` through the existing credential command under
+`mcp:principal:<local-principal-id>:notes`. Use a prompted/secure material input;
+keep the token out of the manifest. Stdio secrets use
+`"env": { "SERVICE_TOKEN": { "credential": "api_token" } }` instead.
 
-MCP tools are automatically available to a Principal once the capability is granted:
+For OAuth, use `"auth": { "type": "oauth" }`, call
+`MCP {"action":"authenticate","server":"notes"}`, and open the returned URL.
+After consent, call refresh or allow the next model iteration to reconcile.
+Tokens belong to this principal/server only.
 
-```bash
-peko send <principal-name> "Read the file README.md"
-```
-
-## Common Tasks
-
-### List Available Extensions
-
-```bash
-peko ext list --type mcp
-```
-
-### Test Extension Health
-
-```bash
-# Check extension status
-peko ext info filesystem-mcp
-
-# Debug extension
-peko ext debug filesystem-mcp
-```
-
-### View Extension Configuration
-
-```bash
-# Show config
-peko ext config filesystem-mcp --show
-
-# Set config value
-peko ext config filesystem-mcp --set timeout=30
-```
-
-### Reinstall an Extension
-
-```bash
-# Uninstall and reinstall
-peko ext uninstall filesystem-mcp
-peko ext install ./mcp-filesystem-server
-```
-
-## Troubleshooting
-
-### Extension Not Found
-
-```bash
-# Check if extension is installed
-peko ext list
-
-# Reinstall if missing
-peko ext install ./mcp-filesystem-server
-```
-
-### Connection Failed
-
-```bash
-# Check extension status
-peko ext info filesystem-mcp
-
-# Check daemon logs
-peko daemon start --foreground
-```
-
-### Tools Not Appearing
-
-```bash
-# Ensure the capability is granted to the Principal
-peko capability grant --principal <principal-name> filesystem-mcp
-
-# Validate extension manifest
-peko ext validate ./mcp-filesystem-server
-```
-
-## Next Steps
-
-- Read the [MCP Overview](MCP.md)
-- Read the [Migration Guide](MIGRATION_GUIDE.md)
-- Learn about the [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) (ADR-047)
+`resources`, `resource_templates` and `prompts` require `server`.
+`read_resource` also requires `uri`; `get_prompt` requires `name` and accepts an
+optional string-map `arguments`. `reconnect` resets connection retry backoff.
+See [DATA_MODEL](../../DATA_MODEL.md#12-workspace-mcp-server-definitions) for all fields.

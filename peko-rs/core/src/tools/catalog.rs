@@ -29,7 +29,6 @@ struct CatalogEntry {
     tool: Arc<dyn Tool>,
     metadata: ToolMetadata,
 }
-
 impl std::fmt::Debug for CatalogEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CatalogEntry")
@@ -45,6 +44,42 @@ impl std::fmt::Debug for CatalogEntry {
 pub struct ToolCatalog {
     tools: SharedRegistry<(String, PrincipalId), CatalogEntry>,
     parent: Option<Arc<ToolCatalog>>,
+    mcp: Arc<std::sync::RwLock<std::collections::HashMap<PrincipalId, McpPartition>>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct McpPartition {
+    entries: std::collections::BTreeMap<String, CatalogEntry>,
+    context: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct CatalogBinding {
+    pub owner: PrincipalId,
+    entries: std::collections::BTreeMap<String, CatalogEntry>,
+    pub mcp_context: String,
+}
+impl std::fmt::Debug for CatalogBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CatalogBinding")
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+impl peko_engine::tooling::ToolCatalogBinding for CatalogBinding {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl CatalogBinding {
+    pub fn get(&self, name: &str, owner: &PrincipalId) -> Option<(Arc<dyn Tool>, ToolMetadata)> {
+        if &self.owner != owner {
+            return None;
+        }
+        self.entries
+            .get(name)
+            .map(|entry| (entry.tool.clone(), entry.metadata.clone()))
+    }
 }
 
 impl ToolCatalog {
@@ -61,6 +96,7 @@ impl ToolCatalog {
         Self {
             tools: SharedRegistry::default(),
             parent: Some(parent),
+            mcp: Default::default(),
         }
     }
 
@@ -145,6 +181,16 @@ impl ToolCatalog {
             let mut layer = Some(self);
             while let Some(catalog) = layer {
                 if let Some(entry) = catalog
+                    .mcp
+                    .read()
+                    .expect("MCP catalog lock poisoned")
+                    .get(scope)
+                    .and_then(|partition| partition.entries.get(tool_name))
+                    .cloned()
+                {
+                    return Some((entry.tool, entry.metadata));
+                }
+                if let Some(entry) = catalog
                     .tools
                     .get(&(tool_name.to_string(), scope.clone()))
                     .await
@@ -178,6 +224,14 @@ impl ToolCatalog {
         let mut names = Vec::new();
         let mut layer = Some(self);
         while let Some(catalog) = layer {
+            if let Some(partition) = catalog
+                .mcp
+                .read()
+                .expect("MCP catalog lock poisoned")
+                .get(principal_id)
+            {
+                names.extend(partition.entries.keys().cloned());
+            }
             names.extend(
                 catalog
                     .tools
@@ -209,11 +263,83 @@ impl ToolCatalog {
     /// The native wire catalog (`tools[]` JSON-schema array) for
     /// `principal_id`: every tool registered in its scope.
     pub async fn tool_definitions(&self, principal_id: &PrincipalId) -> Vec<ToolDefinition> {
-        self.list_tools(principal_id)
-            .await
+        self.snapshot(principal_id).await.definitions
+    }
+
+    /// Replace all native MCP bindings for one owner in one publication.
+    pub(crate) fn replace_mcp(
+        &self,
+        owner: &PrincipalId,
+        tools: Vec<(String, Arc<dyn Tool>)>,
+        context: String,
+    ) {
+        let entries = tools
             .into_iter()
-            .map(|m| m.to_tool_definition())
-            .collect()
+            .map(|(server, tool)| {
+                let metadata = ToolMetadata::new(
+                    tool.name(),
+                    tool.description(),
+                    tool.parameters(),
+                    crate::tools::metadata::ToolSource::Mcp { server },
+                );
+                (metadata.name.clone(), CatalogEntry { tool, metadata })
+            })
+            .collect();
+        self.mcp
+            .write()
+            .expect("MCP catalog lock poisoned")
+            .insert(owner.clone(), McpPartition { entries, context });
+    }
+
+    pub(crate) async fn snapshot(
+        &self,
+        owner: &PrincipalId,
+    ) -> peko_engine::tooling::ToolCatalogSnapshot {
+        let mut layers = Vec::new();
+        let mut layer = Some(self);
+        while let Some(catalog) = layer {
+            layers.push(catalog);
+            layer = catalog.parent.as_deref();
+        }
+        let mut entries = std::collections::BTreeMap::new();
+        let mut mcp_context = String::new();
+        for scope in [PrincipalId::system(), owner] {
+            for catalog in layers.iter().rev() {
+                entries.extend(
+                    catalog
+                        .tools
+                        .read(|entries| {
+                            entries
+                                .iter()
+                                .filter(|((_, principal), _)| principal == scope)
+                                .map(|((name, _), entry)| (name.clone(), entry.clone()))
+                                .collect::<Vec<_>>()
+                        })
+                        .await,
+                );
+                if let Some(partition) = catalog
+                    .mcp
+                    .read()
+                    .expect("MCP catalog lock poisoned")
+                    .get(scope)
+                {
+                    entries.extend(partition.entries.clone());
+                    mcp_context = partition.context.clone();
+                }
+            }
+        }
+        let definitions = entries
+            .values()
+            .map(|entry| entry.metadata.to_tool_definition())
+            .collect();
+        peko_engine::tooling::ToolCatalogSnapshot {
+            definitions,
+            binding: Some(Arc::new(CatalogBinding {
+                owner: owner.clone(),
+                entries,
+                mcp_context,
+            })),
+        }
     }
 
     /// Number of tools visible to `principal_id`.
