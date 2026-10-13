@@ -31,6 +31,7 @@ Complete documentation for the Peko multi-agent runtime.
 - **[Data Model](../DATA_MODEL.md)** — On-disk and in-memory data formats
 - **[Changelog](../CHANGELOG.md)** — Version history
 - **[Agent Guide](../AGENTS.md)** — Build instructions, code style, CI tiers
+- **[CI Tests](testing/CI.md)** — Native/mock tiers, suite selection and fixtures
 
 ### 🔌 MCP
 

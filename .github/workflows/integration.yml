@@ -1,13 +1,13 @@
 name: Integration Tests
 
-# Tiered CI per docs/integration/TESTING.md §9 and PLAN.md §7:
+# Tiered CI per docs/testing/CI.md:
 #
 # Tier        Trigger                               Wall-clock (warm)  Notes
 # ──────────── ──────────────────────────────────── ─────────────────── ─────────────────────
 # lint         every PR that touches peko-rs/core/src/  < 1 min       scripts/check_*.sh
-# unit-linux   every PR that triggers the workflow  ~3 min              cargo test --lib
+# unit-linux   source/tests/build changes           native tests        lib + shutdown + test-native
 # unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner
-# integration  PR that touches integration paths    ~10-15 min          docker compose + PekoHub
+# integration  PR that touches integration paths    mock/Hub tests      docker compose + PekoHub
 #
 # Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
 # this workflow at all — see the workflow-level `paths` filter below.
@@ -97,6 +97,7 @@ jobs:
       src: ${{ steps.filter.outputs.src }}
       crates: ${{ steps.filter.outputs.crates }}
       tests: ${{ steps.filter.outputs.tests }}
+      mock_tests: ${{ steps.filter.outputs.mock_tests }}
       tools: ${{ steps.filter.outputs.tools }}
       docker: ${{ steps.filter.outputs.docker }}
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
@@ -136,6 +137,16 @@ jobs:
             tests:
               # Phase 0.Z-D: tests/ moved to peko-rs/core/tests/.
               - 'peko-rs/core/tests/**'
+            mock_tests:
+              - 'peko-rs/core/tests/common/**'
+              - 'peko-rs/core/tests/cli_send.rs'
+              - 'peko-rs/core/tests/cli_subagent.rs'
+              - 'peko-rs/core/tests/cli_tools.rs'
+              - 'peko-rs/core/tests/cli_genesis.rs'
+              - 'peko-rs/core/tests/mock_llm_sequence.rs'
+              - 'peko-rs/core/tests/tunnel_integration.rs'
+              - 'peko-rs/core/tests/scenarios/s4_publish_running_agent_with_permission.rs'
+              - 'peko-rs/core/src/daemon/e2e_tests/**'
             tools:
               # Built-in tool implementations and their installation. The
               # unit tier covers them in-process (tools::builtin::test_harness);
@@ -152,6 +163,7 @@ jobs:
               - 'peko-rs/core/tests/docker/**'
             workflow:
               - '.github/workflows/integration.yml'
+              - 'Makefile'
             windows_code:
               # Phase 0.Z-D: src/ → peko-rs/core/src/.
               - 'peko-rs/core/src/common/process/**'
@@ -230,7 +242,13 @@ jobs:
     name: Unit Tests (ubuntu-latest)
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.src == 'true' || needs.changes.outputs.tests == 'true'
+    if: >-
+      needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.tests == 'true'
+      || needs.changes.outputs.crates == 'true'
+      || needs.changes.outputs.workflow == 'true'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -242,6 +260,8 @@ jobs:
         run: |
           cargo test --lib
           cargo test -p peko-daemon --test shutdown
+      - name: Run native integration tests
+        run: make test-native
 
   # ── Tier 0d: Windows unit tests, gated ───────────────────────────────
   # Gates (existing):
@@ -274,15 +294,15 @@ jobs:
         run: cargo test --lib
 
   # ── Tier 1: PR gate — Docker + PekoHub + mock LLM ─────────────────────
-  # Path-aware gate: only run when peko-rs/core/tests/, built-in tool
-  # sources, Docker assets, or this workflow changed. Other source-only
-  # refactors skip this tier but still run lint + unit-linux.
+  # Path-aware gate: mock/Hub tests, shared fixtures, built-in tools, Docker
+  # assets, and workflow changes. Native-only test edits skip Docker.
   integration:
     name: Integration (mock LLM)
     runs-on: ubuntu-latest
     needs: [changes, unit-linux]
     if: >-
-      (needs.changes.outputs.tests == 'true'
+      !cancelled() && !failure() &&
+      (needs.changes.outputs.mock_tests == 'true'
        || needs.changes.outputs.tools == 'true'
        || needs.changes.outputs.docker == 'true'
        || needs.changes.outputs.dockerfile == 'true'
@@ -332,7 +352,7 @@ jobs:
         working-directory: peko-runtime
         # Make recipe enforces `env -u LLM_API_KEY` so a leaking key
         # in the runner env can't switch dual-mode tests to the real provider.
-        run: make test-integration
+        run: make -o docker-up test-integration-mock
       - name: Dump container logs on failure
         if: failure()
         run: |

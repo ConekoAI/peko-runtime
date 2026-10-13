@@ -1,7 +1,8 @@
-# Peko Test Targets — see docs/testing/MANUAL_TEST_PLAN.md
+# Peko Test Targets — see docs/testing/CI.md
 #
-# Four canonical targets:
+# Test targets:
 #   test                  — fast unit tests, no Docker, no LLM
+#   test-native           — offline CLI/IPC/provider/storage integration tests
 #   test-integration      — PR gate, Docker + PekoHub + mock LLM
 #   test-integration-llm  — tier above + tests that need a real model (local only)
 #   test-all              — everything
@@ -10,32 +11,27 @@
 # change-isolated dev loops. All mock-tier targets unset LLM_API_KEY
 # so they cannot silently leak to the real provider.
 
-.PHONY: help test test-integration test-integration-llm test-all \
+.PHONY: help test test-native test-binaries test-integration test-integration-mock test-integration-llm test-all \
         docker-build docker-up docker-down \
         test-lib test-subagent \
         test-tunnel test-tunnel-e2e test-packaging \
         test-cli-send test-cli-session test-cli-basics \
         test-cli-subagent test-cli-tools \
-        test-cli-providers \
+        test-cli-providers test-tiered-prompt \
         test-scenarios-s4 test-scenarios-s6 \
         test-mock-llm-sequence \
         coverage require-real-llm ci
 
-# All integration test crates (live in peko-rs/core/tests/*.rs and
-# peko-rs/core/tests/scenarios/*.rs after Phase 0.Z-D moved tests/).
-# Kept in sync with `cargo metadata` (targets of kind = ["test"]); the
-# Principal migration dropped the cli_compaction / cli_a2a /
-# s3_agent_registry_roundtrip suites. ADR-066 P5 replaced OCI/signature
-# suites with local snapshot tests.
-INTEGRATION_TESTS := tunnel_integration \
-                     packaging_integration \
-                     cli_send cli_basics cli_subagent \
-                     cli_tools cli_principal_import \
-                     cli_providers \
-                     s4_publish_running_agent_with_permission \
-                     s6_principal_grant_revoke_roundtrip \
-                     mock_llm_sequence
-CARGO_TEST_FLAGS  := $(addprefix --test ,$(INTEGRATION_TESTS))
+# Offline integration coverage runs in the native Linux job, without Docker.
+NATIVE_TESTS := cli_basics packaging_integration cli_principal_import \
+                s6_principal_grant_revoke_roundtrip cli_send_streaming \
+                provider_stream_terminates tunnel_security
+NATIVE_TEST_FLAGS := $(addprefix --test ,$(NATIVE_TESTS))
+
+# Only suites that need the shared mock server or PekoHub.
+MOCK_TESTS := tunnel_integration cli_send cli_subagent cli_tools cli_genesis \
+              s4_publish_running_agent_with_permission mock_llm_sequence
+MOCK_TEST_FLAGS := $(addprefix --test ,$(MOCK_TESTS))
 
 # Inline lib tests gated by `--features test-utils` (F9.4 moved tunnel_e2e
 # inline so `AppState` / `daemon::*` could narrow to `pub(crate)` without a
@@ -59,10 +55,12 @@ export PEKOHUB_URL
 export MOCK_LLM_URL
 
 help:
-	@echo "Peko Test Targets (see docs/testing/MANUAL_TEST_PLAN.md)"
+	@echo "Peko Test Targets (see docs/testing/CI.md)"
 	@echo ""
 	@echo "  test                      Fast unit tests (cargo test --lib, no Docker, no LLM)"
-	@echo "  test-integration          PR gate: all tests/*.rs against PekoHub + mock LLM"
+	@echo "  test-native               Offline integration tests (no Docker)"
+	@echo "  test-integration-mock     Docker mock-LLM integration only"
+	@echo "  test-integration          Native coverage + Docker mock-LLM integration"
 	@echo "  test-integration-llm      Tier above + real-LLM tests (local; needs LLM_API_KEY/LLM_BASE_URL/LLM_MODEL)"
 	@echo "  test-all                  Everything (unit + mock-LLM + real-LLM)"
 	@echo ""
@@ -125,59 +123,43 @@ docker-up: docker-build
 docker-down:
 	docker compose -f peko-rs/core/tests/docker/docker-compose.integration.yml down -v
 
-# ── Tier 1: PR gate — Docker + PekoHub + mock LLM ────────────────────────
-# LLM_API_KEY is unset so a leaking env doesn't silently switch the
-# dual-mode tests to the real provider.
-#
-# --include-ignored runs BOTH the hub-gated #[ignore] tests AND the
-# always-on pure-Rust tests in cli_basics (6). Plain --ignored would
-# skip those offline tests entirely.
+# Build both satellite binaries before tests that spawn the CLI/daemon.
+# They cannot be core dev-dependencies because they depend on core themselves.
+test-binaries:
+	cargo build -p peko-cli -p peko-daemon --bins
 
-test-integration: docker-up
-	# Phase 0.Z-B: `peko` bin lives in the `peko-cli` satellite. Cargo
-	# doesn't auto-build it for peko's integration tests because peko
-	# can't list peko-cli as a dev-dep (circular — peko-cli depends on
-	# peko_core). Pre-build here so peko-rs/core/tests/common/cli.rs's
-	# CARGO_BIN_EXE_peko fallback resolves to a real binary.
-	cargo build -p peko-cli --bin peko
-	# Phase 12 (PR #264): `peko-daemon` was lifted into
-	# peko-rs/peko-daemon/. cli_cron (and any test that spawns `peko
-	# daemon start --foreground`) resolves the daemon via
-	# `DaemonProcessService::peko_daemon_binary()`, which looks for a
-	# `peko-daemon` sibling of the CLI binary. Without this pre-build,
-	# the rust-cache restore of an older `target/debug/peko-daemon` is
-	# the only thing keeping the daemon around — and that restore is
-	# invalidated whenever Cargo.lock changes (e.g. cargo-machete dead
-	# deps removal), which silently breaks every test that uses
-	# CronDaemonGuard until the cache catches up.
-	cargo build -p peko-daemon --bin peko-daemon
+test-native: test-binaries
+	@env -u LLM_API_KEY -u MOCK_LLM_URL -u PEKOHUB_URL \
+	    cargo test -p peko $(NATIVE_TEST_FLAGS) -- --include-ignored
+
+# ── Tier 1: Docker + PekoHub + mock LLM ──────────────────────────────
+# Full local entry preserves native coverage. CI runs native tests in the
+# Linux job and invokes just test-integration-mock in the Docker job.
+test-integration: test-native test-integration-mock
+
+test-integration-mock: docker-up test-binaries
 	@env -u LLM_API_KEY \
-	    PEKOHUB_URL=$(PEKOHUB_URL) \
-	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
+	    PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test -p peko $(MOCK_TEST_FLAGS) -- --include-ignored
 	@env -u LLM_API_KEY \
-	    PEKOHUB_URL=$(PEKOHUB_URL) \
-	    MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
+	    PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
+	    cargo test -p peko --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
 
 # ── Tier 2: real-LLM tests (local, opt-in; not run in CI) ────────────────
 # MOCK_LLM_URL is unset so dual-mode tests (e.g. the inline
 # `daemon::e2e_tests::tunnel_e2e`) fall through to the real endpoint
 # described by LLM_API_KEY / LLM_BASE_URL / LLM_MODEL [/ LLM_API_FORMAT]
-# (see peko-rs/core/tests/common/real_llm.rs). Mock-only tests skip.
+# (see peko-rs/core/tests/common/real_llm.rs). Only real-provider and Hub
+# suites are selected; mock-only suites belong to test-integration-mock.
 
-test-integration-llm: docker-up
-	# See test-integration for the rationale (Phase 0.Z-B pre-build +
-	# Phase 12 pre-build).
-	cargo build -p peko-cli --bin peko
-	cargo build -p peko-daemon --bin peko-daemon
+test-integration-llm: test-native docker-up test-binaries
 	@$(MAKE) --no-print-directory require-real-llm
 	@env -u MOCK_LLM_URL \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
-	    cargo test $(CARGO_TEST_FLAGS) -- --include-ignored
+	    cargo test -p peko --test cli_providers --test tunnel_integration -- --include-ignored
 	@env -u MOCK_LLM_URL \
 	    PEKOHUB_URL=$(PEKOHUB_URL) \
-	    cargo test --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
+	    cargo test -p peko --lib --features test-utils $(INTEGRATION_LIB_TESTS) -- --include-ignored
 
 # ── Everything ───────────────────────────────────────────────────────────
 
@@ -194,25 +176,24 @@ test-tunnel-e2e: docker-up
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --lib --features test-utils daemon::e2e_tests::tunnel_e2e -- --ignored
 
-test-packaging: docker-up
-	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test packaging_integration -- --ignored
+test-packaging:
+	cargo test -p peko --test packaging_integration
 
 # ── Phase B CLI tests (mock-LLM tier) ──────────────────────────────────────
 
-test-cli-send: docker-up
+test-cli-send: docker-up test-binaries
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_send -- --ignored
 
-test-cli-basics: docker-up
-	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test cli_basics -- --include-ignored
+test-cli-basics: test-binaries
+	@env -u LLM_API_KEY -u MOCK_LLM_URL -u PEKOHUB_URL \
+	    cargo test -p peko --test cli_basics -- --include-ignored
 
 # `peko subagent` / `agent_spawn` slice. Uses plain `DaemonGuard::spawn`
 # (no `--interval`) — subagent tests don't poll. All multi-turn tests
 # in this file are `#[serial]` because they share the mock LLM's
 # per-substring counter (see .github/docker/mock-llm/mock_llm_server.py).
-test-cli-subagent: docker-up
+test-cli-subagent: docker-up test-binaries
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_subagent -- --include-ignored
 
@@ -221,7 +202,7 @@ test-cli-subagent: docker-up
 # wire-recording tests (D3 spawn + peer_agent) briefly override the
 # process-wide MOCK_LLM_URL to route the daemon through an in-process
 # recording proxy.
-test-tiered-prompt: docker-up
+test-tiered-prompt: docker-up test-binaries
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test tiered_prompt -- --include-ignored --test-threads=1
 
@@ -229,7 +210,7 @@ test-tiered-prompt: docker-up
 # Write/Edit/Bash through `peko send` and checks files + the persisted
 # transcript. In-process coverage of all 19 tools lives in `make test`
 # (tools::builtin::test_harness).
-test-cli-tools: docker-up
+test-cli-tools: docker-up test-binaries
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test cli_tools -- --include-ignored
 
@@ -244,7 +225,7 @@ test-mock-llm-sequence: docker-up
 
 # `peko send` against the env-described real LLM (common::real_llm).
 # Local, opt-in: CI does not run the real-LLM tier.
-test-cli-providers: docker-up
+test-cli-providers: docker-up test-binaries
 	@$(MAKE) --no-print-directory require-real-llm
 	@env -u MOCK_LLM_URL PEKOHUB_URL=$(PEKOHUB_URL) \
 	    cargo test --test cli_providers -- --include-ignored
@@ -271,15 +252,15 @@ require-real-llm:
 
 # D4: Publish running agent behind tunnel with permission (flow 6).
 # Lands in D4's PR.
-test-scenarios-s4: docker-up
+test-scenarios-s4: docker-up test-binaries
 	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
 	    cargo test --test s4_publish_running_agent_with_permission -- --include-ignored
 
 # D6: Inline `Principal` grant/revoke round-trips via IPC (ADR-039,
 # post issue #30). Replaces the removed s6_revoke_principal_collapse_e2e.
-test-scenarios-s6: docker-up
-	@env -u LLM_API_KEY PEKOHUB_URL=$(PEKOHUB_URL) MOCK_LLM_URL=$(MOCK_LLM_URL) \
-	    cargo test --test s6_principal_grant_revoke_roundtrip -- --include-ignored
+test-scenarios-s6: test-binaries
+	@env -u LLM_API_KEY -u MOCK_LLM_URL -u PEKOHUB_URL \
+	    cargo test -p peko --test s6_principal_grant_revoke_roundtrip -- --include-ignored
 
 # ── CI entry ─────────────────────────────────────────────────────────────
 

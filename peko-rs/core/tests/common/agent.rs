@@ -6,33 +6,10 @@
 use super::cli::PekoCli;
 use std::path::Path;
 
-/// Create a Principal wired to the mock LLM provider and ready to receive
-/// `peko send` from the CLI caller (`user:default`).
-///
-/// Since the "Principal as the single actor" migration, `peko send <name>`
-/// targets a Principal (`PrincipalSend` → `PrincipalManager::receive`), not
-/// a legacy `~/.peko/agents/<name>/` config. Tests that drive the LLM call
-/// path must therefore create a Principal, not an agent.
-///
-/// Steps:
-///  1. Seed `mock-llm` as the sole catalog entry and pin the Principal
-///     to it via `peko create --model mock-llm` (model-first:
-///     there is no resolver fallback — an unpinned principal fails every
-///     send with "no model configured").
-///  2. Run the real `peko create <name>` command, exercising the
-///     actual framework: it writes the workspace, `agents/root/AGENT.md`
-///     prompt, identity, and `principal.toml`.
-///
-/// No owner rewrite is needed: `peko create` stamps the
-/// owner from the real caller (`caller.subject()` — ADR-057), which
-/// for the local CLI is `user:local`, and the caller `peko send`
-/// presents is the same derived identity (`user:local`, or the hub
-/// owner when the runtime is logged into pekohub), so the
-/// `Permission::Chat` owner-check in `PrincipalManager::receive`
-/// passes.
-///
-/// Must be called BEFORE `DaemonGuard::spawn`:
-/// `peko create` writes files directly and needs no daemon.
+/// Write a ready principal fixture before starting its guarded daemon.
+/// Production loading creates and persists its identity in the isolated vault.
+/// `Organized` prevents bootstrap cron jobs from consuming scripted mock calls.
+/// CLI creation and genesis are covered separately by `cli_basics`/`cli_genesis`.
 pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     create_mock_principal_with_tools(cli, name, mock_llm_url, &[]);
 }
@@ -49,17 +26,19 @@ pub fn create_mock_principal_with_tools(
 ) {
     seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
 
-    let output = cli
-        .cmd()
-        .args(["create", name, "--model", "mock-llm"])
-        .output()
-        .expect("run `peko create`");
-    assert!(
-        output.status.success(),
-        "`peko create {name} --model mock-llm` failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    let root = cli.peko_dir().join("principals").join(name);
+    std::fs::create_dir_all(&root).expect("create principal fixture directory");
+    peko_core::principal::genesis::seed_default_root_role(&root).expect("seed root role");
+    let mut config: peko_core::principal::config::PrincipalConfig =
+        toml::from_str(&format!("name = {name:?}\n")).expect("fixture config");
+    config.owner = peko_auth::Subject::User("local".into());
+    config.preferred_model_id = Some("mock-llm".into());
+    config.set_boot_state(peko_core::principal::config::BootState::Organized);
+    std::fs::write(
+        root.join("principal.toml"),
+        toml::to_string_pretty(&config).expect("serialize fixture config"),
+    )
+    .expect("write fixture config");
 
     // ADR-066 P2: grants are ignored on load and never persisted, so
     // there is nothing to patch. The parameter exists for call-site

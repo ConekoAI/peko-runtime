@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### CI integration tier (0.1.0, 2026-10-13)
+
+- Run offline CLI, permission IPC, snapshot, streaming and credential tests in
+  the native Linux job; native-only test edits no longer start the Docker tier.
+- Load ready principal fixtures without bootstrap sidecars or repeated genesis
+  waits. Keep one dedicated blocking-create/genesis test in the mock tier.
+- Reduce eight Agent daemon cases to three with filesystem effects and persisted
+  successful child receipts; remove retired isolation and sentinel-only cases.
+- Check mock response sequencing directly over HTTP. Real-provider tests stay
+  in the local opt-in tier; the tunnel lib slice targets only the core package.
+
 ### Dual actor identities (ADR-073, 2026-10-13)
 
 - Give every actor a stable local ID and optional verified Hub ID; resolve either
