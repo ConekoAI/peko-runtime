@@ -144,16 +144,25 @@ exports one full-existence `.peko` tar.gz; `PrincipalUnpackager` restores the sa
 identity, sessions, authored cron/plans, and workspace tooling. The constructor
 `PrincipalManifest::new(name, did)` creates a flat inventory with `format`, `name`,
 `did`, `created_at`, `peko_version`, optional `description`, and a sorted `files`
-map of archive path to SHA-256. Legacy OCI snapshots fail with re-export guidance.
+map of archive path to SHA-256. Optional `executable_files: BTreeSet<String>`
+records executable workspace payloads; old v1 manifests default to an empty set.
+Legacy OCI snapshots fail with re-export guidance.
 
 `PrincipalImportOptions` retains rename, rotation, session/local-state selection,
 caller, and observability; `force` permits overwriting existing principals, never
 checksum bypass. Optional `expected_manifest_checksum` binds a displayed preview
 to the manifest that is actually imported. `ExecutableInventory` contains DID,
 payload file count, hook and MCP ids/paths/verbatim definitions, and sorted skill
-ids. `principal.snapshot_import` records this inventory durably at Security
+ids, and executable file paths. `principal.snapshot_import` records this inventory durably at Security
 severity before writes; the CLI prints it before import without a confirmation
 prompt. The boot-time drift canary remains.
+
+ADR-076: `SkillRuntime` resolves only ordinary workspace definitions. The
+`Skill` tool remains principal-owned; discovery cache identity includes the
+workspace path. `tools::builtin::skill::{MAX_SKILL_FILE_BYTES, MAX_SKILL_BODY_BYTES, read_skill_file}`
+provides the shared 1 MiB bounded read used by discovery and invocation.
+Arguments are tokenized once; dynamic output is opaque to the command parser.
+The combined rendered body is capped at 1 MiB while appending.
 
 Deleted: registry client/config/cache, OCI manifests/media types/blob layers,
 `PrincipalLayers`, signatures/trust stores, embedded-extension packaging, registry
@@ -883,7 +892,7 @@ items:
 | `ExecutionConfig.role_prompt` | `agents::subagent_executor` | ✅ New | D3: the resolved role Markdown body (`SpawnRequest.subagent_config.body`) threaded config → run closure → `execute_subagent_task`, where it replaces the child `AgentConfig.prompt` (spawn + resume). `None` inherits the parent persona |
 | `RuntimeContextState` (D2 notice semantics) | `peko_engine::prompt::renderer` | ⚠️ Changed | `take_changed` now decorates re-injections with an `_Updated — replaces the previous "…" section._` notice and retracts a newly-empty section once with `_The "…" section no longer applies._`; `CurrentTime` exempt. Signature unchanged |
 | `WorkspaceIdentityPromptHandler` / `IDENTITY_HOOK_PRIORITY` | `principal::identity_prompt` | ✅ New | D4: renders `[identity]` + `[intent]` from `<workspace>/principal.toml` into the `identity` prompt section; cached on the file's `(path, mtime, len)`; registered on the daemon-global core next to the agents/skills catalog handlers |
-| `WorkspaceAgentsPromptHandler` / `WorkspaceSkillsPromptHandler` cache keys | `extensions::agent::adapter`, `extensions::skill::prompt` | ⚠️ Changed | D2 cache fix: per-file `(relative_path, mtime, len)` fingerprints replace `(dir_mtime, child_count)` — in-place content edits now invalidate the catalogs |
+| `WorkspaceAgentsPromptHandler` / `WorkspaceSkillsPromptHandler` cache keys | `extensions::agent::adapter`, `extensions::skill::prompt` | ⚠️ Changed | Skills additionally key by workspace (ADR-076). D2 cache fix: per-file `(relative_path, mtime, len)` fingerprints replace `(dir_mtime, child_count)` — in-place content edits now invalidate the catalogs |
 | `SelfPositionSessionContextHandler` | `principal::child_turns` | ✅ New (crate-internal) | D5: renders the agent's own session slug path + role line into `{{session_context}}`, aggregated above the peers list (priority 110 vs 100) |
 | `PrincipalRoutingConfig.peer_agent` / `principal::agent_prompt::resolve_agent_prompt` | `principal::config`, `principal::agent_prompt` | ✅ New | D3: opt-in T1 role for peer-facing turns — names a workspace role file (`agents/<name>.md` / `agents/<name>/AGENT.md`) whose body replaces the root persona in `peer_child_agent_config`; only the prompt body swaps (registry-key invariant kept); unresolvable roles warn + fall back to the root persona |
 | `discover_project_instructions` / `PROJECT_INSTRUCTIONS_MAX_BYTES` | `peko_engine::prompt::memory` | ✅ New | D5 (T2): walk up from the run's focus directory to the nearest `AGENTS.md` — no workspace cap; stops after a `.git`-owning directory or at the filesystem root; non-empty only; 32 KiB cap with notice |

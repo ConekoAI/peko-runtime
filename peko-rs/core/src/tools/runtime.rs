@@ -89,7 +89,7 @@ pub struct ToolingRuntime {
     /// guard below so a second principal gets its own workspace bag.
     tool_bag_installed: Arc<AtomicBool>,
     pub(crate) installed_principals:
-        Arc<tokio::sync::Mutex<std::collections::HashSet<PrincipalId>>>,
+        Arc<tokio::sync::Mutex<std::collections::HashMap<PrincipalId, std::path::PathBuf>>>,
 }
 
 impl std::fmt::Debug for ToolingRuntime {
@@ -180,7 +180,7 @@ impl ToolingRuntime {
             prompt_providers: Arc::new(std::sync::RwLock::new(Vec::new())),
             tool_bag_installed: Arc::new(AtomicBool::new(false)),
             installed_principals: Arc::new(tokio::sync::Mutex::new(
-                std::collections::HashSet::new(),
+                std::collections::HashMap::new(),
             )),
         }
     }

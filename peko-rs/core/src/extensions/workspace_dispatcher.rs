@@ -149,6 +149,13 @@ impl WorkspaceHookDispatcher {
         self.bindings.read().await.len()
     }
 
+    pub(crate) async fn forget_owner(&self, owner: &PrincipalId) {
+        self.bindings
+            .write()
+            .await
+            .retain(|binding| binding.principal_id != *owner);
+    }
+
     pub async fn prompt_sections(&self, principal_id: &PrincipalId) -> Vec<String> {
         self.bindings
             .read()

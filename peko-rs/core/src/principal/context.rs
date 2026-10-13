@@ -439,7 +439,19 @@ pub(crate) async fn ensure_principal_tool_bag(
 ) -> Arc<crate::tools::runtime::ToolingRuntime> {
     let core = runtime;
     let mut installed = core.installed_principals.lock().await;
-    if !installed.contains(principal_id) {
+    if installed
+        .get(principal_id)
+        .is_none_or(|root| root != workspace_path)
+    {
+        // A transported principal can retain its owner id while its workspace
+        // changes. Drop the old workspace bag before installing the new one.
+        if installed.contains_key(principal_id) {
+            for tool in ["Skill", "RoleCatalog"] {
+                core.catalog().unregister(tool, principal_id).await;
+            }
+            core.hooks().forget_owner(principal_id).await;
+            installed.remove(principal_id);
+        }
         // Phase 2 PR 1 (ADR-047): skills live under
         // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
         // runtime reads from that directory.
@@ -466,7 +478,7 @@ pub(crate) async fn ensure_principal_tool_bag(
                  Falling back to built-in tools only."
             );
         } else {
-            installed.insert(principal_id.clone());
+            installed.insert(principal_id.clone(), workspace_path.to_path_buf());
         }
     }
     drop(installed);
@@ -909,6 +921,56 @@ mod tests {
 mod tooling_install_tests {
     use super::*;
     use peko_engine::{PromptSectionRequest, ToolFunnel};
+
+    #[tokio::test]
+    async fn moved_principal_rebinds_its_workspace_skill_and_role_tools() {
+        let runtime = crate::tools::runtime::ToolingRuntime::standalone();
+        let owner = PrincipalId::generate();
+        let original = tempfile::tempdir().unwrap();
+        let moved = tempfile::tempdir().unwrap();
+        for (workspace, body) in [(original.path(), "Original"), (moved.path(), "Moved")] {
+            std::fs::create_dir_all(workspace.join("skills/same")).unwrap();
+            std::fs::write(
+                workspace.join("skills/same/SKILL.md"),
+                format!("---\nname: same\ndescription: Test\n---\n{body}"),
+            )
+            .unwrap();
+        }
+        ensure_principal_tool_bag(runtime.clone(), original.path(), &owner).await;
+        let old_role_tool = runtime
+            .catalog()
+            .get("RoleCatalog", &owner)
+            .await
+            .unwrap()
+            .0;
+        std::fs::remove_dir_all(original.path()).unwrap();
+        ensure_principal_tool_bag(runtime.clone(), moved.path(), &owner).await;
+        let skill = runtime.catalog().get("Skill", &owner).await.unwrap().0;
+        assert_eq!(
+            skill
+                .execute(serde_json::json!({"name":"same"}))
+                .await
+                .unwrap()["body"],
+            "Moved"
+        );
+        let new_role_tool = runtime
+            .catalog()
+            .get("RoleCatalog", &owner)
+            .await
+            .unwrap()
+            .0;
+        assert!(!Arc::ptr_eq(&old_role_tool, &new_role_tool));
+        ensure_principal_tool_bag(runtime.clone(), moved.path(), &owner).await;
+        assert!(Arc::ptr_eq(
+            &new_role_tool,
+            &runtime
+                .catalog()
+                .get("RoleCatalog", &owner)
+                .await
+                .unwrap()
+                .0
+        ));
+    }
 
     #[tokio::test]
     async fn shared_runtime_installs_each_principal_without_duplicate_prompt_sections() {

@@ -1475,17 +1475,39 @@ mod completion_queue_fan_out_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>) {
+    fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>, tempfile::TempDir) {
         let registry = Arc::new(InboxRegistry::new(
             super::super::executor::default_inbox_factory(),
         ));
-        let exec = AsyncExecutor::new(registry.clone());
-        (exec, registry)
+        let task_dir = tempfile::tempdir().unwrap();
+        let exec = AsyncExecutor::new(registry.clone())
+            .with_task_file_writer(TaskFileWriter::new(task_dir.path().to_path_buf()));
+        (exec, registry, task_dir)
+    }
+
+    // Delivery follows asynchronous task-file writes. Await observable inbox
+    // state instead of assuming those writes finish within a latency budget.
+    async fn wait_for_inbox_items(
+        registry: &InboxRegistry,
+        session: &str,
+    ) -> Vec<peko_session::AsyncInboxItem> {
+        let inbox = registry.get_or_create(session).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let items = inbox.drain_all().await;
+                if !items.is_empty() {
+                    return items;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for delivery to {session}"))
     }
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_success() {
-        let (exec, registry) = make_executor_with_registry();
+        let (exec, registry, _task_dir) = make_executor_with_registry();
         let task_id = "shell:test-success".to_string();
 
         let receipt = exec
@@ -1502,11 +1524,7 @@ mod completion_queue_fan_out_tests {
 
         assert_eq!(receipt.task_id, task_id);
 
-        // Wait for the spawned task to complete.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let inbox = registry.get_or_create("session_1").await;
-        let items = inbox.drain_all().await;
+        let items = wait_for_inbox_items(&registry, "session_1").await;
         assert_eq!(items.len(), 1, "expected one completion event");
         match &items[0] {
             peko_session::AsyncInboxItem::Completion(e) => {
@@ -1521,7 +1539,7 @@ mod completion_queue_fan_out_tests {
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_failure() {
-        let (exec, registry) = make_executor_with_registry();
+        let (exec, registry, _task_dir) = make_executor_with_registry();
         let task_id = "shell:test-fail".to_string();
 
         let _ = exec
@@ -1536,35 +1554,21 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        // Poll up to 2s instead of a fixed 100ms sleep: the failure path
-        // goes through `delivery.deliver` before the inbox push, which can
-        // blow past 100ms on a loaded CI runner. The success-path sibling
-        // (`test_completion_event_pushed_on_success`) is tighter and
-        // historically passes the 100ms budget, so it keeps the original
-        // sleep to avoid masking regressions that would slow the hot path.
-        for _ in 0..200 {
-            let inbox = registry.get_or_create("session_1").await;
-            if !inbox.is_empty().await {
-                let items = inbox.drain_all().await;
-                assert_eq!(items.len(), 1);
-                match &items[0] {
-                    peko_session::AsyncInboxItem::Completion(e) => {
-                        assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
-                    }
-                    other => panic!("expected AsyncInboxItem::Completion, got {other:?}"),
-                }
-                return;
+        let items = wait_for_inbox_items(&registry, "session_1").await;
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            peko_session::AsyncInboxItem::Completion(e) => {
+                assert!(matches!(e.status, AsyncTaskStatus::Failed { .. }));
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            other => panic!("expected AsyncInboxItem::Completion, got {other:?}"),
         }
-        panic!("timed out waiting for completion event in session_1 inbox");
     }
 
     #[tokio::test]
     async fn test_completion_event_routed_by_parent_session_key() {
         // Tasks with different parent_session_keys land in different
         // inboxes in the same registry.
-        let (exec, registry) = make_executor_with_registry();
+        let (exec, registry, _task_dir) = make_executor_with_registry();
         let task_a = "shell:a".to_string();
         let task_b = "shell:b".to_string();
 
@@ -1591,18 +1595,14 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let inbox_a = registry.get_or_create("session_alpha").await;
-        let items_a = inbox_a.drain_all().await;
+        let items_a = wait_for_inbox_items(&registry, "session_alpha").await;
         assert_eq!(items_a.len(), 1);
         match &items_a[0] {
             peko_session::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_a),
             other => panic!("expected Completion, got {other:?}"),
         }
 
-        let inbox_b = registry.get_or_create("session_beta").await;
-        let items_b = inbox_b.drain_all().await;
+        let items_b = wait_for_inbox_items(&registry, "session_beta").await;
         assert_eq!(items_b.len(), 1);
         match &items_b[0] {
             peko_session::AsyncInboxItem::Completion(e) => assert_eq!(e.task_id, task_b),
@@ -1616,7 +1616,7 @@ mod completion_queue_fan_out_tests {
     /// The agent picks the message up at the next iteration start.
     #[tokio::test]
     async fn test_wake_on_completion_delivers_steer_to_principal_inbox() {
-        let (exec, registry) = make_executor_with_registry();
+        let (exec, registry, _task_dir) = make_executor_with_registry();
         let task_id = "shell:cron-wake".to_string();
         let principal_root = "root:alice".to_string();
 
@@ -1641,38 +1641,26 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        // Poll up to 2s for the steer message to land (CI flake fix; see
-        // `test_completion_event_pushed_on_failure` above for the rationale).
-        for _ in 0..200 {
-            let root_inbox = registry.get_or_create(&principal_root).await;
-            if !root_inbox.is_empty().await {
-                let root_items = root_inbox.drain_all().await;
-                assert_eq!(
-                    root_items.len(),
-                    1,
-                    "expected exactly one steer message in principal root inbox"
-                );
-                match &root_items[0] {
-                    peko_session::AsyncInboxItem::Steering(s) => {
-                        assert!(s.content.contains("daily-summary"));
-                        assert!(s.content.contains("Async"));
-                        assert!(s.content.contains(&task_id));
-                    }
-                    other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
-                }
-
-                // Completion event did NOT land in the executor's parent inbox.
-                let worker_inbox = registry.get_or_create("session_worker_1").await;
-                let worker_items = worker_inbox.drain_all().await;
-                assert!(
-                    worker_items.is_empty(),
-                    "worker inbox should be untouched when wake_on_completion=true, got {worker_items:?}"
-                );
-                return;
+        let root_items = wait_for_inbox_items(&registry, &principal_root).await;
+        assert_eq!(
+            root_items.len(),
+            1,
+            "expected exactly one steer message in principal root inbox"
+        );
+        match &root_items[0] {
+            peko_session::AsyncInboxItem::Steering(s) => {
+                assert!(s.content.contains("daily-summary"));
+                assert!(s.content.contains("Async"));
+                assert!(s.content.contains(&task_id));
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            other => panic!("expected AsyncInboxItem::Steering, got {other:?}"),
         }
-        panic!("timed out waiting for steer message in {principal_root} inbox");
+        let worker_inbox = registry.get_or_create("session_worker_1").await;
+        let worker_items = worker_inbox.drain_all().await;
+        assert!(
+            worker_items.is_empty(),
+            "worker inbox should be untouched when wake_on_completion=true, got {worker_items:?}"
+        );
     }
 
     /// Cron-spawned runs with `wake_on_completion=false` keep the
@@ -1680,7 +1668,7 @@ mod completion_queue_fan_out_tests {
     /// is ignored when wake is off.
     #[tokio::test]
     async fn test_no_wake_keeps_completion_event_delivery() {
-        let (exec, registry) = make_executor_with_registry();
+        let (exec, registry, _task_dir) = make_executor_with_registry();
         let task_id = "shell:cron-no-wake".to_string();
 
         let config = AsyncToolConfig {
@@ -1701,16 +1689,17 @@ mod completion_queue_fan_out_tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
         // Only the worker inbox should hold the CompletionEvent.
-        let worker_inbox = registry.get_or_create("session_worker_2").await;
-        let items = worker_inbox.drain_all().await;
+        let items = wait_for_inbox_items(&registry, "session_worker_2").await;
         assert_eq!(items.len(), 1);
-        assert!(matches!(
-            items[0],
-            peko_session::AsyncInboxItem::Completion(_)
-        ));
+        match &items[0] {
+            peko_session::AsyncInboxItem::Completion(event) => {
+                assert_eq!(event.task_id, task_id);
+                assert_eq!(event.parent_session_key, "session_worker_2");
+                assert!(matches!(event.status, AsyncTaskStatus::Completed { .. }));
+            }
+            other => panic!("expected Completion, got {other:?}"),
+        }
 
         // principal_root inbox stays empty.
         let root_inbox = registry.get_or_create("root:alice").await;

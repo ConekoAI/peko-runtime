@@ -31,43 +31,16 @@ use serde_json::json;
 
 use crate::tools::builtin::skill::body::preprocess_dynamic_context;
 use crate::tools::builtin::skill::frontmatter::{parse_yaml_frontmatter_typed, SkillFrontmatter};
-use crate::tools::builtin::skill::SharedSkillRuntime;
+use crate::tools::builtin::skill::{
+    append_skill_text, read_skill_file, SharedSkillRuntime, MAX_SKILL_BODY_BYTES,
+};
 
 /// Error variant returned when a skill's SKILL.md cannot be read or parsed.
 const SKILL_UNREADABLE: &str = "skill_unreadable";
 
-/// Sentinel used to escape `\$` placeholders during substitution.
+/// Legacy escape marker retained for source compatibility. The renderer now
+/// scans escapes directly and never inserts this sentinel.
 pub const ESCAPE_SENTINEL: &str = "\x00ESCAPED_DOLLAR\x00";
-
-/// Scan `body` for the largest `$N` (where N is a sequence of digits)
-/// that appears as a positional placeholder. Used to bound the
-/// high-to-low positional-substitution loop so that e.g. `$10` is
-/// handled even when the caller only passed 2 args.
-///
-/// Must be called on `body` *after* the escape pass has stripped `\$`,
-/// otherwise it could mistake a literal `\$10` for a positional.
-fn scan_max_positional_index(body: &str) -> usize {
-    let bytes = body.as_bytes();
-    let mut max_idx = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if let Ok(n) = body[i + 1..j].parse::<usize>() {
-                if n > max_idx {
-                    max_idx = n;
-                }
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-    max_idx
-}
 
 /// Tool for invoking a SKILL.md body with argument substitution.
 ///
@@ -187,7 +160,7 @@ Returns:
             );
         };
 
-        let content = std::fs::read_to_string(&entry.path).map_err(|e| {
+        let content = read_skill_file(&entry.path).map_err(|e| {
             anyhow::anyhow!("{SKILL_UNREADABLE}: failed to read SKILL.md for skill {name}: {e}")
         })?;
 
@@ -210,9 +183,18 @@ Returns:
             .as_ref()
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let body = preprocess_dynamic_context(body, &frontmatter, &workspace).await?;
+        let mut abort = ctx.abort_signal();
+        anyhow::ensure!(!ctx.is_aborted(), "Skill invocation aborted");
+        let body = tokio::select! {
+            result = preprocess_dynamic_context(body, &frontmatter, &workspace) => result?,
+            () = async {
+                if abort.wait_for(|aborted| *aborted).await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            } => anyhow::bail!("Skill invocation aborted"),
+        };
 
-        let rendered = substitute_args(&body, &frontmatter.arguments, &args);
+        let rendered = substitute_args(&body, &frontmatter.arguments, &args)?;
 
         // Files a skill mentions (scripts, references) live beside its
         // SKILL.md; the caller needs the directory to open them.
@@ -229,93 +211,126 @@ Returns:
     }
 }
 
-/// Substitute Claude-style placeholders in `body`:
-/// 1. `\$` is preserved as a literal `$` (escape rule).
-/// 2. `$name` — declared names from the frontmatter `arguments:` list.
-///    Names map to positional indices by their order in the list.
-/// 3. `$0`, `$1`, … `$N` — positional, 0-indexed. Substitution runs
-///    high-to-low so `$10` isn't eaten by `$1`.
-/// 4. `$ARGUMENTS` — full args joined with single spaces.
-///
-/// Undeclared `$name` placeholders are left unsubstituted verbatim.
-fn substitute_args(body: &str, named: &[String], args: &[String]) -> String {
-    // Escape pass: replace every \$ with a sentinel so the substitution
-    // passes below don't touch it. Restore at the end.
-    let mut out = body.replace("\\$", ESCAPE_SENTINEL);
-
-    // Named placeholders. Iterate by index so we can map name → args[i].
-    // When the named index is past args.len(), leave the placeholder
-    // literal (Claude-compatible: the LLM sees the unsubstituted $name
-    // and can re-invoke with the right arg).
-    for (i, name) in named.iter().enumerate() {
-        let placeholder = format!("${name}");
-        if let Some(value) = args.get(i) {
-            out = out.replace(&placeholder, value);
+/// Substitute placeholders from the source once. Replacement values are
+/// literal, undeclared names and missing positions survive unchanged, and
+/// work is bounded by source length rather than the numeric value of `$N`.
+fn substitute_args(body: &str, named: &[String], args: &[String]) -> anyhow::Result<String> {
+    let mut out = String::with_capacity(body.len().min(MAX_SKILL_BODY_BYTES));
+    let mut cursor = 0;
+    while cursor < body.len() {
+        let rest = &body[cursor..];
+        if rest.starts_with("\\$") {
+            append_skill_text(&mut out, "$")?;
+            cursor += 2;
+            continue;
         }
-    }
-
-    // Positional placeholders ($0..$N where N is the highest index
-    // referenced in the body). Iterate high-to-low so e.g. $10 isn't
-    // matched greedily by $1. Positions beyond args.len() are left
-    // literal (the LLM will see the unsubstituted placeholder).
-    let max_positional = scan_max_positional_index(&out);
-    for i in (0..=max_positional).rev() {
-        // Replace `${i}` only when it is NOT followed by another digit —
-        // otherwise `$1` would corrupt `$10`. The negative-lookahead
-        // is implemented by walking the string and replacing exact matches.
-        let needle = format!("${i}");
-        let mut rebuilt = String::with_capacity(out.len());
-        let mut cursor = 0;
-        while cursor < out.len() {
-            // Match `${i}` only if the placeholder fits AND is followed by
-            // a non-digit (or end-of-string). This prevents `$1` from
-            // matching the first two chars of `$10`.
-            let end = cursor + needle.len();
-            if end <= out.len() && out.get(cursor..end) == Some(needle.as_str()) {
-                let next_is_digit = out[end..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_digit());
-                if !next_is_digit {
-                    if let Some(value) = args.get(i) {
-                        rebuilt.push_str(value);
-                    } else {
-                        rebuilt.push_str(&needle);
+        if rest.starts_with('$') {
+            let suffix = &rest[1..];
+            let length = if suffix.starts_with(|c: char| c.is_ascii_digit()) {
+                suffix.bytes().take_while(u8::is_ascii_digit).count()
+            } else {
+                suffix
+                    .char_indices()
+                    .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+                    .map(|(i, c)| i + c.len_utf8())
+                    .last()
+                    .unwrap_or(0)
+            };
+            if length > 0 {
+                let token = &suffix[..length];
+                if token == "ARGUMENTS" {
+                    for (i, value) in args.iter().enumerate() {
+                        if i > 0 {
+                            append_skill_text(&mut out, " ")?;
+                        }
+                        append_skill_text(&mut out, value)?;
                     }
-                    cursor = end;
-                    continue;
+                } else {
+                    let index = if token.starts_with(|c: char| c.is_ascii_digit()) {
+                        token.parse::<usize>().ok()
+                    } else {
+                        named.iter().position(|name| name == token)
+                    };
+                    match index.and_then(|i| args.get(i)) {
+                        Some(value) => append_skill_text(&mut out, value)?,
+                        None => append_skill_text(&mut out, &rest[..=length])?,
+                    }
                 }
+                cursor += length + 1;
+                continue;
             }
-            // Skip one char (handles multi-byte UTF-8 in body content).
-            let ch = out[cursor..].chars().next().unwrap();
-            rebuilt.push(ch);
-            cursor += ch.len_utf8();
         }
-        out = rebuilt;
+        let ch = rest.chars().next().expect("cursor is before end of body");
+        append_skill_text(&mut out, &rest[..ch.len_utf8()])?;
+        cursor += ch.len_utf8();
     }
-
-    // $ARGUMENTS last so it never collides with positional or named.
-    let joined = args.join(" ");
-    out = out.replace("$ARGUMENTS", &joined);
-
-    // Restore escaped dollars.
-    out.replace(ESCAPE_SENTINEL, "$")
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    /// The highest `$N` placeholder bounds positional substitution; a
-    /// trailing or digit-less `$` is not one (and must not panic).
-    #[test]
-    fn max_positional_index_finds_the_largest_placeholder() {
-        assert_eq!(scan_max_positional_index("$10 and $2"), 10);
-        assert_eq!(scan_max_positional_index("costs $"), 0);
-        assert_eq!(scan_max_positional_index("$ $x"), 0);
-        assert_eq!(scan_max_positional_index("a1 b22"), 0);
-        assert_eq!(scan_max_positional_index("$3$"), 3);
+    fn render_args(body: &str, named: &[String], args: &[String]) -> String {
+        super::substitute_args(body, named, args).unwrap()
     }
+
+    #[test]
+    fn argument_expansion_is_bounded_before_allocating_the_result() {
+        let value = "a".repeat(MAX_SKILL_BODY_BYTES / 2 + 1);
+        let error = super::substitute_args("$0$0", &[], &[value]).unwrap_err();
+        assert!(error.to_string().contains("rendered skill body exceeds"));
+    }
+
+    #[test]
+    fn replacement_values_are_literal_even_when_they_look_like_placeholders() {
+        assert_eq!(
+            render_args(
+                "$first $0 $1 $ARGUMENTS",
+                &["first".into()],
+                &["$1".into(), "$ARGUMENTS".into()]
+            ),
+            "$1 $1 $ARGUMENTS $1 $ARGUMENTS"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_skill_kills_dynamic_context_process_tree() {
+        use crate::tools::builtin::process::tests::{
+            long_lived_child, still_running_after_grace, wait_for_pid_file,
+        };
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join("skills/slow");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = ws.path().join("child.pid");
+        let body = format!(
+            "---\nname: slow\ndescription: slow\n---\n```!\n{}\n```",
+            long_lived_child(&pid_file)
+        );
+        std::fs::write(dir.join("SKILL.md"), body).unwrap();
+        let tool = SkillTool::new(Arc::new(WorkspaceSkillRuntime::new(
+            ws.path().join("skills"),
+        )));
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let context = ToolContext::default_for_tool("Skill")
+            .with_workspace(ws.path().to_str().unwrap())
+            .with_abort_signal(receiver);
+        let run = tokio::spawn(async move {
+            tool.execute_with_context(json!({"name":"slow"}), &context)
+                .await
+        });
+        wait_for_pid_file(&pid_file).await;
+        sender.send(true).unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.unwrap_err().to_string().contains("aborted"));
+        assert!(!still_running_after_grace(&pid_file).await);
+    }
+
     use crate::extensions::skill::WorkspaceSkillRuntime;
     use peko_tools_core::ToolContext;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -323,13 +338,13 @@ mod tests {
 
     #[test]
     fn substitute_no_args_no_placeholders() {
-        assert_eq!(substitute_args("hello world", &[], &[]), "hello world");
+        assert_eq!(render_args("hello world", &[], &[]), "hello world");
     }
 
     #[test]
     fn substitute_arguments_full() {
         assert_eq!(
-            substitute_args("Full: $ARGUMENTS", &[], &["a".into(), "b".into()]),
+            render_args("Full: $ARGUMENTS", &[], &["a".into(), "b".into()]),
             "Full: a b"
         );
     }
@@ -337,7 +352,7 @@ mod tests {
     #[test]
     fn substitute_positional() {
         assert_eq!(
-            substitute_args("Issue $0 on $1", &[], &["42".into(), "main".into()]),
+            render_args("Issue $0 on $1", &[], &["42".into(), "main".into()]),
             "Issue 42 on main"
         );
     }
@@ -347,11 +362,11 @@ mod tests {
         // $10 must not become "<value of $1>0". With args of length 11,
         // $10 should map to args[10] and $1 to args[1].
         let args: Vec<String> = (0..11).map(|i| format!("v{i}")).collect();
-        let rendered = substitute_args("$10 then $1", &[], &args);
+        let rendered = render_args("$10 then $1", &[], &args);
         assert_eq!(rendered, "v10 then v1");
         // When the user only passes 2 args, $10 should be left literal
         // (no positional at index 10) and $1 should map to args[1].
-        let rendered = substitute_args("$10 then $1", &[], &["a".into(), "b".into()]);
+        let rendered = render_args("$10 then $1", &[], &["a".into(), "b".into()]);
         assert_eq!(rendered, "$10 then b");
     }
 
@@ -359,7 +374,7 @@ mod tests {
     fn substitute_named_by_position() {
         // `arguments: [issue, branch]` → $issue = args[0], $branch = args[1].
         let named = vec!["issue".to_string(), "branch".to_string()];
-        let rendered = substitute_args(
+        let rendered = render_args(
             "Open $issue on $branch.",
             &named,
             &["42".into(), "main".into()],
@@ -373,7 +388,7 @@ mod tests {
         // The body has only $issue and $0; named=["issue"] but with one
         // arg passed, so $issue maps to args[0] = "42".
         let named = vec!["issue".to_string()];
-        let rendered = substitute_args("Issue $issue and again $issue", &named, &["42".into()]);
+        let rendered = render_args("Issue $issue and again $issue", &named, &["42".into()]);
         assert_eq!(rendered, "Issue 42 and again 42");
     }
 
@@ -384,7 +399,7 @@ mod tests {
         // to args[1] which doesn't exist → left literal. `$issue`
         // (named[0]) maps to args[0] = "42".
         let named = vec!["issue".to_string(), "branch".to_string()];
-        let rendered = substitute_args("Open $issue on $branch.", &named, &["42".into()]);
+        let rendered = render_args("Open $issue on $branch.", &named, &["42".into()]);
         assert_eq!(rendered, "Open 42 on $branch.");
     }
 
@@ -392,14 +407,14 @@ mod tests {
     fn substitute_escape_preserves_literal_dollar() {
         // `\$1` is the literal string "$1" — no substitution.
         // `$0` does substitute because args has length 1.
-        let rendered = substitute_args("Cost \\$1.00 or $0", &[], &["free".into()]);
+        let rendered = render_args("Cost \\$1.00 or $0", &[], &["free".into()]);
         assert_eq!(rendered, "Cost $1.00 or free");
     }
 
     #[test]
     fn substitute_escape_preserves_named_and_arguments() {
         let named = vec!["price".to_string()];
-        let rendered = substitute_args(
+        let rendered = render_args(
             "Cost \\$price, actual $price, full: $ARGUMENTS",
             &named,
             &["9.99".into()],
@@ -413,7 +428,7 @@ mod tests {
         // ($branch, named[1]) has no args[1] to map to, so it is
         // left literal (Claude-compatible).
         let named = vec!["issue".to_string(), "branch".to_string()];
-        let rendered = substitute_args("Open $issue on $branch.", &named, &["42".into()]);
+        let rendered = render_args("Open $issue on $branch.", &named, &["42".into()]);
         assert_eq!(rendered, "Open 42 on $branch.");
     }
 
@@ -702,6 +717,22 @@ mod tests {
         assert!(
             result.to_string().starts_with("unknown skill '../secret'"),
             "{result}"
+        );
+    }
+
+    #[test]
+    fn declared_names_do_not_replace_longer_undeclared_names() {
+        assert_eq!(
+            render_args("$issue_id", &["issue".into()], &["42".into()]),
+            "$issue_id"
+        );
+    }
+    #[test]
+    fn huge_numeric_placeholders_remain_literal_without_index_iteration() {
+        assert_eq!(render_args("Budget $100000", &[], &[]), "Budget $100000");
+        assert_eq!(
+            render_args("$18446744073709551615 $999999999999999999999999", &[], &[]),
+            "$18446744073709551615 $999999999999999999999999"
         );
     }
 }

@@ -57,6 +57,29 @@ pub fn safe_join(parent: &Path, rel: &str) -> anyhow::Result<PathBuf> {
     Ok(joined)
 }
 
+/// Reject existing links from a principal root down to the payload. A force
+/// import may overwrite ordinary files, but must not follow a linked directory
+/// or file into another principal. Missing components will be created later.
+pub(crate) fn reject_destination_links(root: &Path, destination: &Path) -> anyhow::Result<()> {
+    let relative = destination.strip_prefix(root)?;
+    let mut path = root.to_path_buf();
+    for component in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(component) = component {
+            path.push(component.as_os_str());
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) => anyhow::ensure!(
+                !meta.file_type().is_symlink(),
+                "[unsafe_path] snapshot destination contains a symbolic link: {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

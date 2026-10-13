@@ -19,6 +19,8 @@ pub struct ExecutableInventory {
     pub hooks: Vec<ExecutableDefinition>,
     pub mcp_servers: Vec<ExecutableDefinition>,
     pub skills: Vec<String>,
+    #[serde(default)]
+    pub executable_files: Vec<String>,
 }
 
 impl ExecutableInventory {
@@ -59,6 +61,12 @@ impl ExecutableInventory {
             hooks,
             mcp_servers,
             skills: skills.into_iter().collect(),
+            executable_files: files
+                .get("manifest.toml")
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .and_then(|text| super::principal_manifest::PrincipalManifest::from_toml(text).ok())
+                .map(|manifest| manifest.executable_files.into_iter().collect())
+                .unwrap_or_default(),
         }
     }
 
@@ -77,6 +85,10 @@ impl ExecutableInventory {
             }
         }
         text.push_str(&format!("  Skills: {}\n", self.skills.join(", ")));
+        text.push_str(&format!(
+            "  Executable files: {}\n",
+            self.executable_files.join(", ")
+        ));
         text
     }
 }
