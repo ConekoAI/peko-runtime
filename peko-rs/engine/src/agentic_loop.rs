@@ -1227,7 +1227,13 @@ impl AgenticLoop {
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration.
             // The list is sent on the wire as `tools[]`; the renderer
             // never references it (F36 wire-only catalogs).
-            let tool_defs = self.build_tool_definitions().await;
+            let snapshot = self
+                .tooling
+                .list_tool_definitions(&peko_subject::PrincipalId(self.agent_principal_id.clone()))
+                .await;
+            let tool_defs = snapshot.definitions.clone();
+            let iteration_tooling: Arc<dyn crate::tooling::ToolingSeam> =
+                crate::tooling::CatalogBoundTooling::new(Arc::clone(&self.tooling), snapshot);
 
             // Compact before assembling fresh runtime sections. The
             // summary can omit unchanged identity, conventions or memory,
@@ -1268,7 +1274,7 @@ impl AgenticLoop {
                     focus_dir.as_deref(),
                 );
                 let renderer = PromptRenderer::with_mcp_context_provider(
-                    Arc::clone(&self.tooling),
+                    Arc::clone(&iteration_tooling),
                     Arc::clone(&self.mcp_context_provider),
                 );
 
@@ -1984,7 +1990,7 @@ impl AgenticLoop {
                             tc,
                             // Phase 9b.N.3: route through `&dyn
                             // ToolFunnel`. `&self.extension_core` is
-                            &*self.tooling,
+                            &*iteration_tooling,
                             self.agent.identity_did(),
                             // **Track B**: per-agent `workspace`
                             // was removed from `AgentConfig`. The
@@ -2266,7 +2272,11 @@ impl AgenticLoop {
     ///
     pub async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         let principal_id = peko_subject::PrincipalId(self.agent_principal_id.clone());
-        let defs = self.tooling.list_tool_definitions(&principal_id).await;
+        let defs = self
+            .tooling
+            .list_tool_definitions(&principal_id)
+            .await
+            .definitions;
 
         info!(
             "Dynamically built {} tool definitions from ToolingRuntime: {:?}",

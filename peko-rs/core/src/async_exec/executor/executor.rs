@@ -828,6 +828,9 @@ impl AsyncExecutor {
         let boxed_fn: BoxedExecutionFn = Box::new(move || {
             Box::pin(async move {
                 let spec = peko_engine::ToolCallSpec {
+                    run_id: None,
+                    tool_call_id: None,
+                    catalog_binding: None,
                     tool_name: context.tool_name.clone(),
                     params: context.params,
                     workspace: context.workspace,

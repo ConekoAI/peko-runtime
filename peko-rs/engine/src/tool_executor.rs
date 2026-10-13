@@ -254,7 +254,7 @@ impl ToolExecutor {
         // dispatcher (ADR-066 P3), not here.
 
         let (tool_result_str, tool_result_json, success) =
-            match crate::funnel::execute_tool_via_core_with_context(
+            match crate::funnel::execute_tool_via_core_with_invocation(
                 tool_funnel,
                 name,
                 arguments.clone(),
@@ -265,6 +265,7 @@ impl ToolExecutor {
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
                 cancel,
+                Some((run_id, id)),
             )
             .await
             {

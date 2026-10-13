@@ -1,22 +1,8 @@
-//! Workspace-resident MCP server scanner (ADR-047 §2.3).
+//! Legacy workspace-to-manager compatibility adapter.
 //!
-//! Phase 2 PR 2 deletes the framework-coupled `McpAdapter`. The
-//! per-extension `register_adapter` path is gone — MCP servers are now
-//! files inside the principal's workspace
-//! (`<workspace>/mcp/<id>/server.json` or
-//! `<workspace>/mcp/<id>/manifest.yaml`). The
-//! [`load_workspace_mcp_servers`] walker reads each server's config
-//! and registers it with the global [`McpManager`].
-//!
-//! No caching of the tool list: a single MCP server can add or remove
-//! tools at runtime, so the agent always asks the manager for the
-//! current set when assembling its tool bag.
-//!
-//! Server lifecycle is unchanged from the framework path — the
-//! framework's `McpServerInitHandler` did *not* auto-start servers
-//! (the comment on `McpServerInitHandler::handle` explains why);
-//! `McpToolProxy::call_with_auto_start` starts the server on first
-//! tool call.
+//! Native principal integration uses `service::config` and `PrincipalMcpRuntime`
+//! (ADR-075), which preserve complete fields and reconcile every model request.
+//! This adapter is retained for callers of the former manager API.
 
 use crate::extensions::mcp::protocol::config::McpServerConfig;
 use crate::extensions::mcp::protocol::manager::McpManager;

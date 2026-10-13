@@ -207,7 +207,7 @@ task statuses remain unchanged and are owned by `peko-tools-core`.
 9. [Local Registry Store (RETIRED)](#9-local-registry-store-retired)
 10. [Instance State](#10-instance-state)
 11. [Markdown Files](#11-markdown-files)
-12. [mcp.json — MCP Server Config](#12-mcpjson--mcp-server-config)
+12. [Workspace MCP server definitions](#12-workspace-mcp-server-definitions)
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
    13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
@@ -2463,49 +2463,64 @@ When a base image is used, markdown files from the base are loaded first. If the
 
 ---
 
-## 12. mcp.json — MCP Server Config
+## 12. Workspace MCP server definitions
 
-Declares MCP servers available to the agent. The runtime starts these processes and proxies tool calls to them.
-
-**Location:** `<agent-image-root>/mcp.json`
-
-### 9.1 Schema
+**Location:** `<principal-workspace>/mcp/<server-id>/server.json` (ADR-075).
+The directory ID is canonical. Native definitions use `schema_version: 1`;
+unknown fields and invalid transport combinations fail explicitly.
 
 ```json
 {
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "env": {}
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
-      }
-    },
-    "vector-memory": {
-      "command": "peko-mcp-proxy",
-      "args": ["vector-store-memory"],
-      "env": {}
-    }
+  "schema_version": 1,
+  "transport": { "type": "stdio", "command": "python3", "args": ["server.py"] },
+  "cwd": ".",
+  "env": { "SERVICE_TOKEN": { "credential": "api_token" } },
+  "startup": "auto",
+  "startup_timeout_ms": 30000,
+  "tool_timeout_ms": null,
+  "health_check_interval_secs": 30,
+  "max_restarts": 0,
+  "reserved_parameters": {
+    "principal_id": { "source": "runtime", "field": "principal_id" },
+    "session_id": { "source": "runtime", "field": "session_id" }
   }
 }
 ```
 
-### 9.2 Field Reference
+| Field | Contract/default |
+|---|---|
+| `transport` | `stdio` with `command`/`args`; `streamable_http` with `url`; compatibility `sse` with `endpoint` |
+| `cwd` | Stdio working directory; relative to the manifest directory; defaults there |
+| `env`, `headers` | String values bound as `{ "value": "literal" }` or `{ "credential": "local_slot" }`; env is stdio-only, headers HTTP-only |
+| `auth` | Default `{ "type": "none" }`; HTTP bearer `{ "type": "bearer", "credential": "slot" }`; OAuth `{ "type": "oauth" }` with optional client_id/authorization_endpoint/token_endpoint/scopes/resource |
+| `startup` | `auto` (default), `eager`, `lazy`; cold catalogs always discover; valid cached auto/lazy catalogs defer connection |
+| `startup_timeout_ms` | 30000; discovery also has a bounded aggregate deadline |
+| `tool_timeout_ms` | Optional; absent/null means no additional MCP method deadline |
+| `health_check_interval_secs` | 30; zero disables periodic health checks |
+| `max_restarts` | Zero has no attempt cap; positive values cap automatic retries after the initial attempt; reconnect resets it; failures back off 2–64 seconds |
+| `reserved_parameters` | Runtime identity/context, static JSON values, or local credential slots; removed from model schemas and injected at execution |
+| `sampling` | Opt-in `{ "model": "optional-model-id", "max_output_tokens": 4096 }`; otherwise uses current principal model and actual owner quota; legacy SSE sampling is unsupported |
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `command` | string | Yes | Executable to run |
-| `args` | string[] | No | Arguments passed to the command |
-| `env` | object | No | Environment variables. Values starting with `${` are substituted from the runtime environment |
+Runtime fields are principal_id/principal_name/session_id/agent_id/workspace/run_id/tool_call_id.
+Missing runtime values and caller overrides fail. Child processes receive the minimal
+runtime process environment plus declared values, with no `${ENV}` substitution.
 
-### 9.3 Environment Variable Substitution
+Credential slots expand only to `mcp:principal:<local-principal-id>:<server-id>`.
+OAuth uses slot `oauth_token`, material access token and metadata refresh_token,
+expires_at, client_id and endpoint/auth binding. Secrets remain in the encrypted
+vault. Workspace snapshots contain definitions/slot names, never these vault entries.
 
-Values in `env` support `${VAR_NAME}` substitution. The variable is resolved from the process environment at instance startup. If the variable is not set, the field is set to an empty string and a warning is logged.
+Local metadata cache: `<principal-local-root>/mcp_cache/<server-id>.json`, version 1,
+owner, configuration/credential revision digest and inventory (tools/resources/prompts,
+server instructions, fetched_at). Reuse expires after 30 minutes and rejects a changed
+owner or identity; files are bounded to 8 MiB. Cache is excluded from workspace snapshots.
+
+Legacy unversioned JSON and single-entry `manifest.yaml` with `mcp_servers` normalize
+to the same typed definition. Flat JSON/YAML files use their stem as ID. Duplicate
+files/IDs, mismatched legacy names, multiple YAML servers, unknown fields, binary
+bundles and unscoped raw-secret references require explicit migration. Daemon-global
+MCP configuration and reload IPC no longer install servers; move definitions and
+credential slots into the selected principal explicitly.
 
 ---
 

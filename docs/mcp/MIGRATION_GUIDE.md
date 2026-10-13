@@ -1,226 +1,31 @@
-# MCP Migration Guide
-
-## Overview
-
-Peko supports the Model Context Protocol (MCP) for external tool integration. MCP servers are managed through the Unified Extension Architecture (ADR-017) as extensions.
-
-> **Note:** MCP servers are not built into Peko core. They are provided as external extensions that can be installed and enabled through the extension system.
-
-## What Changed
-
-### Before (Legacy)
-
-Some tools were built into Peko core:
-
-```
-peko (single binary)
-├── filesystem
-├── shell
-├── cron
-└── session
-```
-
-### After (Current)
-
-Core tools remain minimal; extended capabilities come via MCP extensions:
-
-```
-peko (core binary)
-├── filesystem (built-in)
-├── shell (built-in)
-├── cron (built-in)
-└── session (built-in)
-
-MCP Extensions (installed separately)
-├── filesystem-mcp
-├── browser-mcp
-├── sqlite-mcp
-└── community MCP servers
-```
-
-## Migration Steps
-
-### 1. Install MCP Server Extensions
-
-MCP servers are packaged as extensions:
-
-```bash
-# Install an MCP server extension
-peko ext install ./mcp-filesystem-extension
-
-# Or create your own with an extension.yaml
-```
-
-### 2. Verify Installation
-
-```bash
-# List installed extensions
-peko ext list
-
-# Show MCP extension details
-peko ext info filesystem-mcp
-```
-
-### 3. Grant the Capability
-
-```bash
-peko capability grant --principal <principal-name> filesystem-mcp
-```
-
-### 4. Use with Agent
-
-MCP tools are automatically available once the capability is granted:
-
-```bash
-peko send my-principal "Read the file README.md"
-```
-
-## Configuration
-
-### Extension Manifest
-
-MCP extensions use `extension.yaml`:
-
-```yaml
----
-id: "filesystem-mcp"
-name: "Filesystem MCP Server"
-version: "1.0.0"
-extension_type: "mcp"
-
-hooks:
-  - point: "tool.register"
-    handler: "register_mcp_tools"
-  - point: "tool.execute"
-    handler: "execute_mcp_tool"
-  - point: "agent.init"
-    handler: "init_mcp_client"
-  - point: "agent.shutdown"
-    handler: "shutdown_mcp_client"
-```
-
-### MCP Server Config
-
-The extension adapter reads MCP server configuration:
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
-    }
-  }
-}
-```
-
-## CLI Commands
-
-MCP servers are managed through the extension system:
-
-```bash
-# Install an MCP extension
-peko ext install ./my-mcp-extension
-
-# Grant the capability to a Principal
-peko capability grant --principal <principal-name> my-mcp-extension
-
-# Check status
-peko ext info my-mcp-extension
-
-# Debug
-peko ext debug my-mcp-extension
-
-# Revoke the capability
-peko capability revoke --principal <principal-name> my-mcp-extension
-
-# Uninstall
-peko ext uninstall my-mcp-extension
-```
-
-## Troubleshooting
-
-### "Extension not found"
-
-**Problem**: MCP extension is not installed.
-
-**Solution**:
-```bash
-peko ext list
-peko ext install ./my-mcp-extension
-```
-
-### "No MCP tools loaded"
-
-**Problem**: Extension is installed but the capability has not been granted.
-
-**Solution**:
-```bash
-peko capability grant --principal <principal-name> my-mcp-extension
-peko ext info my-mcp-extension
-```
-
-### "Failed to initialize MCP client"
-
-**Problem**: MCP server binary is missing or crashing.
-
-**Solution**:
-1. Check the server binary works directly:
-   ```bash
-   npx -y @modelcontextprotocol/server-filesystem --help
-   ```
-2. Check extension logs via daemon foreground mode
-3. Validate extension manifest:
-   ```bash
-   peko ext validate ./my-mcp-extension
-   ```
-
-### Backward Compatibility
-
-**Problem**: Existing agents expect certain tools.
-
-**Solution**: Built-in tools (filesystem, shell, cron, session) are always available. MCP tools are additive.
-
-## FAQ
-
-### Q: Do I have to use MCP servers?
-
-**A**: No. Core built-in tools work without MCP. MCP extensions are optional for extended functionality.
-
-### Q: Can I mix MCP and built-in tools?
-
-**A**: Yes. Built-in tools are always available. MCP tools are loaded through extensions and add to the tool set.
-
-### Q: What if an MCP server crashes?
-
-**A**: The extension adapter handles errors gracefully. The agent continues with remaining tools.
-
-### Q: Can I add custom MCP servers?
-
-**A**: Yes! Package them as extensions with `extension.yaml` and install via `peko ext install`.
-
-### Q: Where are MCP binaries stored?
-
-**A**: MCP binaries are managed by the extension. They may be installed via npm, cargo, etc. and referenced in the extension manifest.
-
-## Performance Impact
-
-| Metric | Built-in Only | With MCP Extensions |
-|--------|---------------|---------------------|
-| Core binary size | ~5-8MB | Same |
-| Startup time | ~50ms | ~50ms + extension init |
-| Tool latency | 1-10ms | 5-50ms (cross-process) |
-
-## Benefits of MCP Architecture
-
-1. **Modularity**: Install only tools you need
-2. **Isolation**: MCP crashes don't affect core
-3. **Updates**: Update servers independently
-4. **Language**: Servers can be written in any language
-5. **Ecosystem**: Compatible with community MCP servers
-
-## See Also
-
-- [MCP Specification](https://modelcontextprotocol.io/)
-- [MCP Overview](MCP.md)
-- [Principal Workspace](../architecture/PRINCIPAL_WORKSPACE.md) (ADR-047; file-based management per ADR-050)
+# MCP migration to principal ownership
+
+ADR-075 replaces the process-global MCP installation path. Move each desired
+server into the selected principal's `mcp/<id>/server.json`; no global definition
+is automatically copied into every principal. The retired MCP CLI management and
+McpReload IPC paths are replaced by file edits and owner-scoped `MCP` actions.
+
+Native manifests use `schema_version: 1` and typed transport/auth/env/header fields.
+See [Quick start](QUICK_START.md) and [DATA_MODEL](../../DATA_MODEL.md#12-workspace-mcp-server-definitions).
+Unversioned JSON transport objects and single-entry YAML `mcp_servers` definitions
+remain readable through one normalizer. Supported auth/env/timeouts/reserved fields
+are preserved; unsupported fields fail with migration guidance.
+
+Keep one definition per ID. If both server.json and manifest.yaml exist, retain one.
+Split multi-server YAML into directories. A legacy name must match the directory
+ID; rename explicitly to preserve `mcp:<id>:<method>` call names. Flat compatibility
+files use their filename stem as ID. Binary bundles require ordinary workspace files.
+
+Move raw bearer tokens and arbitrary vault/env references into local credential
+slots under `mcp:principal:<local-principal-id>:<server-id>`. Configure
+`{"credential":"slot"}` or bearer auth with `credential`. There is no global
+credential fallback or `${ENV}` substitution. Reauthorize OAuth for each owner.
+
+Use `streamable_http` with `url` for current HTTP servers. Compatibility `sse` uses
+`endpoint` and honors the server-advertised message endpoint; sampling requires
+stdio or Streamable HTTP. Sampling is explicitly enabled with `sampling` and uses
+the principal/server model and actual owner quota, never a global default model.
+
+After edits call `MCP refresh`, inspect `MCP status`, and use discovered tools on the
+next model iteration. Workspace snapshots carry definitions/slot names, not vault
+tokens or catalog cache; provision credentials again at the destination.

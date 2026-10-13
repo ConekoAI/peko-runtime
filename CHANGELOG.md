@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Principal-owned MCP (0.1.0, 2026-10-13)
+
+- Implement ADR-075: each principal shares its own MCP connections, scoped vault
+  credentials, catalog cache, model and quota across all sessions. Retire the
+  global MCP accessor and global MCP reload IPC operation.
+- Discover cold servers, reconcile workspace definitions before model requests,
+  publish owner catalogs atomically, and bind execution to the advertised schema.
+  Removed/changed definitions reject unsent calls; started calls retain their
+  original client; principal teardown also cancels retained generations.
+- Use `rmcp` for stdio and Streamable HTTP, with cancellation, progress,
+  list-change notifications, bounded pagination, structured errors, and no
+  automatic replay of business calls. Retain legacy SSE endpoint compatibility.
+- Add `MCP` status/refresh/reconnect/authenticate and resource/prompt actions.
+  Versioned manifests and explicit legacy normalization preserve supported
+  fields; OAuth supports owner-bound discovery, registration, PKCE and refresh.
+- Bind opt-in sampling to the actual owner model/meter, remove secret trace
+  values, and cover local stdio/HTTP/OAuth/SSE fixtures without live accounts.
+
 ### CI integration tier (0.1.0, 2026-10-13)
 
 - Run offline CLI, permission IPC, snapshot, streaming and credential tests in

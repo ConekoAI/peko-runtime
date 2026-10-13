@@ -129,7 +129,11 @@ async fn main() -> Result<()> {
 /// the log file; the default would silently drop them.
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // SDK wire-event Debug records contain resolved credentials and tool arguments.
+    // Peko emits its own attributed, sanitized MCP diagnostics instead.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("rmcp=off".parse().expect("static tracing directive"));
     // Strip ANSI escape codes when stderr isn't a terminal — the
     // daemon writes its log file via stderr, and any `\x1b[…m`
     // sequences in `daemon.log` would corrupt downstream tools

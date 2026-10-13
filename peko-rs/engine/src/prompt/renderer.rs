@@ -178,6 +178,7 @@ impl PromptRenderer {
         // Phase 2 PR 2: `mcp_context` is sourced from the provider
         // field on the renderer, not from a hook.
         let section_request = PromptSectionRequest {
+            catalog_binding: None,
             principal_id: ctx.principal_id.clone(),
             workspace: ctx.workspace.to_string_lossy().to_string(),
             session_id: ctx.session_id.clone(),
@@ -298,6 +299,7 @@ impl PromptRenderer {
         let rendered = self
             .tooling
             .render_prompt_sections(&PromptSectionRequest {
+                catalog_binding: None,
                 principal_id: ctx.principal_id.clone(),
                 workspace: ctx.workspace.to_string_lossy().to_string(),
                 session_id: ctx.session_id.clone(),
@@ -1109,8 +1111,8 @@ mod tests {
         async fn list_tool_definitions(
             &self,
             _principal_id: &PrincipalId,
-        ) -> Vec<peko_provider_api::ToolDefinition> {
-            Vec::new()
+        ) -> crate::tooling::ToolCatalogSnapshot {
+            crate::tooling::ToolCatalogSnapshot::default()
         }
         async fn render_prompt_sections(
             &self,

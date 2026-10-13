@@ -198,15 +198,29 @@ the dispatcher runs it inline, skipping the foreground timeout router.
 `SpawnRequest.timeout_millis` (internal) carries millisecond task lifetimes.
 `AsyncExecutionRouter::tool_timeout(secs)` overrides the foreground timeout.
 ModelList is a stable principal service; AgentConfig has no tool visibility toggle.
-McpManager::get_tool_bindings returns server/tool pairs for MCP catalog attribution.
+`Principal::mcp` owns `Arc<extensions::mcp::service::PrincipalMcpRuntime>`.
+Its explicit constructor binds owner/workspace/local cache/vault/resolver/meter/model.
+`reconcile`, `prepare_catalog`, `catalog`, `status`, `operate`, and `shutdown`
+provide workspace reconciliation, owner inventory, operational actions and teardown.
+`ToolingRuntime::{bind_mcp, unbind_mcp}` binds the principal service;
+`ToolCatalog::replace_mcp` atomically replaces only that owner's MCP partition.
+The process-global MCP accessor and `McpReload`/`McpReloaded` IPC contracts are retired.
+Legacy manager APIs remain compatibility adapters, outside native principal wiring.
+`Vault::reload_unlocked` reloads credentials with the already-held vault key.
 
 `peko_engine::tooling::ToolFunnel` has exactly three methods:
 `execute(ToolCallSpec)`, `list_tool_definitions(&PrincipalId)`, and
-`render_prompt_sections(&PromptSectionRequest)`. `EngineHooks` carries
+`render_prompt_sections(&PromptSectionRequest)`. Catalog listing returns
+`ToolCatalogSnapshot { definitions, binding }`, where the optional opaque
+`Arc<dyn ToolCatalogBinding>` pins executable bindings and MCP context.
+`ToolCallSpec` and `PromptSectionRequest` carry `catalog_binding`;
+`CatalogBoundTooling` freezes the snapshot for one model request and forwards it
+to execution and prompt rendering. Foreign owner bindings fail closed.
+`EngineHooks` carries
 Stop/AfterAgent hooks, session-key bookkeeping, and the parallel-execution probe;
 `ToolingSeam` combines both traits without a root dependency in the engine.
 `ToolCallSpec` carries tool name, params, workspace, agent/session/caller/
-principal identity, principal name, and abort receiver. Execution returns
+principal identity, principal name, optional real run/tool-call identifiers, and abort receiver. Execution returns
 `Result<(String, Value, bool)>`; tool failures are data with `false`.
 
 The generated stable runtime prompt includes the principal workspace and its

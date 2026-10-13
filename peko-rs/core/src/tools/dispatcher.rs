@@ -173,7 +173,19 @@ impl ToolDispatcher {
 
         // 1. Resolve the tool from the catalog (presence =
         //    executability — ADR-066 D1).
-        let Some((tool, metadata)) = self.catalog.get(&tool_name, &principal_id).await else {
+        let binding = call.catalog_binding.as_ref().and_then(|binding| {
+            binding
+                .as_any()
+                .downcast_ref::<crate::tools::catalog::CatalogBinding>()
+        });
+        let resolved = if let Some(binding) = binding {
+            binding.get(&tool_name, &principal_id)
+        } else if call.catalog_binding.is_some() {
+            None
+        } else {
+            self.catalog.get(&tool_name, &principal_id).await
+        };
+        let Some((tool, metadata)) = resolved else {
             let text = format!("Tool '{tool_name}' not available");
             return Ok((text.clone(), Value::String(text), false));
         };
@@ -209,10 +221,15 @@ impl ToolDispatcher {
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
         //    fields.
-        let mut base_ctx =
-            peko_tools_core::ToolContext::for_hook_run("hook_run", "hook", &tool_name)
-                .with_agent_id(call.agent_id.clone().unwrap_or_default())
-                .with_session_id(call.session_id.clone().unwrap_or_default());
+        let mut base_ctx = peko_tools_core::ToolContext::for_hook_run(
+            call.run_id.clone().unwrap_or_default(),
+            call.tool_call_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            &tool_name,
+        )
+        .with_agent_id(call.agent_id.clone().unwrap_or_default())
+        .with_session_id(call.session_id.clone().unwrap_or_default());
         // No workspace stays `None`: an empty one would be copied into a
         // background task's dispatch and injected as `cwd: ""`.
         if let Some(workspace) = call.workspace.as_deref().filter(|w| !w.is_empty()) {
@@ -340,8 +357,12 @@ impl ToolDispatcher {
                     };
                     // Agent admission refusals retain their structured envelope,
                     // but are failures for audit, async dispatch and cron history.
-                    let success =
-                        !(tool_name == "Agent" && value["error_type"] == "ConcurrentLimitExceeded");
+                    let success = !(tool_name == "Agent"
+                        && value["error_type"] == "ConcurrentLimitExceeded")
+                        && !(matches!(
+                            metadata.source,
+                            crate::tools::metadata::ToolSource::Mcp { .. }
+                        ) && value["isError"] == true);
                     (text, value, success)
                 }
                 Err(e) => {

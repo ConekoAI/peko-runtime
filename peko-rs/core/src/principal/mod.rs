@@ -86,6 +86,7 @@ use peko_quota::QuotaMeter;
 
 /// Runtime representation of a Principal.
 pub struct Principal {
+    pub mcp: Arc<crate::extensions::mcp::service::PrincipalMcpRuntime>,
     pub id: PrincipalId,
     pub config: RwLock<PrincipalConfig>,
     pub workspace_path: PathBuf,

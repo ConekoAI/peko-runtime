@@ -76,6 +76,37 @@ pub async fn execute_tool_via_core_with_context(
     principal_name: Option<String>,
     cancel: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(String, serde_json::Value, bool)> {
+    execute_tool_via_core_with_invocation(
+        core,
+        tool_name,
+        params,
+        workspace,
+        agent_id,
+        session_id,
+        caller_id,
+        principal_id,
+        principal_name,
+        cancel,
+        None,
+    )
+    .await
+}
+
+/// Execute with the engine's real run and model tool-call identifiers.
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_tool_via_core_with_invocation(
+    core: &dyn ToolFunnel,
+    tool_name: &str,
+    params: serde_json::Value,
+    workspace: Option<String>,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+    caller_id: Option<String>,
+    principal_id: Option<String>,
+    principal_name: Option<String>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+    invocation: Option<(&str, &str)>,
+) -> Result<(String, serde_json::Value, bool)> {
     let (abort_signal, _abort_guard) = match cancel {
         Some(token) => {
             let (signal, guard) = bridge_from_cancellation_token(token);
@@ -85,6 +116,9 @@ pub async fn execute_tool_via_core_with_context(
     };
 
     let spec = ToolCallSpec {
+        run_id: invocation.map(|(run, _)| run.to_string()),
+        tool_call_id: invocation.map(|(_, call)| call.to_string()),
+        catalog_binding: None,
         tool_name: tool_name.to_string(),
         params,
         workspace,

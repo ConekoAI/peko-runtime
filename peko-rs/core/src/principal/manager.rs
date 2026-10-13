@@ -449,7 +449,19 @@ impl PrincipalManager {
 
         let agent_prompts = discover_role_prompts(&layout.shared.roles_dir).await?;
 
+        let mcp = crate::extensions::mcp::service::PrincipalMcpRuntime::new(
+            id.clone(),
+            layout.shared.root.clone(),
+            layout.local.root.join("mcp_cache"),
+            self.signing_vault().ok(),
+            self.resolver.clone(),
+            quota_meter.clone(),
+            config.preferred_model_id.clone(),
+        );
+        self.tooling.bind_mcp(mcp.clone()).await;
+
         let principal = Arc::new(Principal {
+            mcp,
             id: id.clone(),
             config: RwLock::new(config),
             workspace_path: layout.shared.root.clone(),
@@ -588,7 +600,19 @@ impl PrincipalManager {
             .await;
         let agent_prompts = discover_role_prompts(&layout.shared.roles_dir).await?;
 
+        let mcp = crate::extensions::mcp::service::PrincipalMcpRuntime::new(
+            id.clone(),
+            workspace_path.clone(),
+            layout.local.root.join("mcp_cache"),
+            self.signing_vault().ok(),
+            self.resolver.clone(),
+            quota_meter.clone(),
+            config.preferred_model_id.clone(),
+        );
+        self.tooling.bind_mcp(mcp.clone()).await;
+
         let principal = Arc::new(Principal {
+            mcp,
             id: id.clone(),
             config: RwLock::new(config),
             workspace_path,
@@ -745,6 +769,10 @@ impl PrincipalManager {
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
         let layout = self.path_resolver.principal_layout(name);
+        if let Some(principal) = self.get(id.clone()).await {
+            principal.mcp.shutdown().await;
+        }
+        self.tooling.unbind_mcp(&id).await;
 
         // Remove from in-memory indexes first.
         {
@@ -807,6 +835,7 @@ impl PrincipalManager {
             update(&mut config);
             config.clone()
         };
+        principal.mcp.set_model(snapshot.preferred_model_id.clone());
         self.persist_config(&principal.workspace_path, &snapshot)
             .await?;
         if let Some(port) = self.channel_port() {

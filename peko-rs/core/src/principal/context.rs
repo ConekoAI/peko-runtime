@@ -424,7 +424,7 @@ impl PrincipalContext {
 
 /// Ensure the shared [`crate::tools::runtime::ToolingRuntime`] carries the principal
 /// tool bag: built-ins, the principal-scoped `Skill` tool, workspace
-/// MCP servers / hooks, and the `{{agents}}` /
+/// hooks, and the `{{agents}}` /
 /// `{{skills}}` prompt-section handlers.
 ///
 /// Shared by [`PrincipalContext::tooling`] (the root-agent path) and
@@ -444,14 +444,7 @@ pub(crate) async fn ensure_principal_tool_bag(
         // `<workspace>/skills/<id>/SKILL.md`; the SkillTool's
         // runtime reads from that directory.
         let skills_dir = workspace_path.join("skills");
-        // Phase 2 PR 2 (ADR-047 §2.3): MCP servers live under
-        // `<workspace>/mcp/<id>/server.json`. The workspace
-        // scanner registers each server config with the global
-        // `McpManager` (lazy — servers start on first tool call)
-        // and wraps the manager's running tools as
-        // `McpToolProxy` / `InjectableMcpToolProxy` instances
-        // onto the shared catalog under this principal's scope.
-        let mcp_dir = workspace_path.join("mcp");
+        // MCP is reconciled per model request by the principal-owned service.
         // Phase 4 (ADR-047 §5): workspace hooks live under
         // `<workspace>/hooks/<id>/hook.toml`. See
         // `extensions::workspace_hooks::load_workspace_hooks`.
@@ -462,7 +455,6 @@ pub(crate) async fn ensure_principal_tool_bag(
         if let Err(e) = install_principal_tool_bag(
             Arc::clone(&core),
             &skills_dir,
-            &mcp_dir,
             &hooks_dir,
             principal_id,
             channel_port,
@@ -505,12 +497,7 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 /// so one registration serves all principals. `RoleCatalog` is installed
 /// once per principal and reads the workspace roles on invocation.
 ///
-/// Phase 2 PR 2 (ADR-047 §2.3) also takes the typed `mcp_dir` and
-/// scans `<workspace>/mcp/<id>/server.json` (or `manifest.yaml`) for
-/// MCP servers. Each server is registered with the global
-/// `McpManager`; the manager's running tools are wrapped as
-/// `McpToolProxy` / `InjectableMcpToolProxy` and registered on the
-/// global core under the principal's scope.
+/// MCP connections and catalogs belong to `PrincipalMcpRuntime` (ADR-075).
 ///
 /// `channel_port` is the `ChannelPort` used for the `ChannelRead` /
 /// `ChannelSend` tool registrations. Production callers pass
@@ -521,7 +508,6 @@ fn resolve_channel_port() -> Arc<dyn peko_channel::ChannelPort> {
 async fn install_principal_tool_bag(
     core: Arc<crate::tools::runtime::ToolingRuntime>,
     skills_dir: &Path,
-    mcp_dir: &Path,
     hooks_dir: &Path,
     principal_id: &peko_subject::PrincipalId,
     channel_port: Arc<dyn peko_channel::ChannelPort>,
@@ -577,61 +563,6 @@ async fn install_principal_tool_bag(
         ));
 
         core.mark_tool_bag_installed();
-    }
-
-    // Phase 2 PR 2 (ADR-047 §2.3): MCP servers are workspace-resident.
-    // The scanner walks `<workspace>/mcp/<id>/server.json` and
-    // registers each with the global McpManager. After that, every
-    // running MCP tool becomes a `McpToolProxy` /
-    // `InjectableMcpToolProxy` tool on the principal's core so the
-    // agent sees them in its tool catalog.
-    //
-    // Servers themselves stay lazy — `McpToolProxy::call_with_auto_start`
-    // starts the process on first tool call (matching the framework's
-    // prior "do NOT auto-start on AgentInit" behaviour, which existed
-    // because the framework hook fires for every agent and starting
-    // there races `peko ext start`).
-    if let Some(mcp_manager) = crate::extensions::mcp::global_mcp_manager() {
-        if mcp_dir.exists() {
-            match crate::extensions::mcp::load_workspace_mcp_servers(mcp_dir, &mcp_manager).await {
-                Ok(loaded) => {
-                    if loaded > 0 {
-                        tracing::info!(
-                            "registered {loaded} MCP server(s) from {}",
-                            mcp_dir.display()
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("MCP workspace scan failed for {}: {e}", mcp_dir.display())
-                }
-            }
-        }
-
-        // Wrap each running MCP tool as a McpToolProxy / InjectableMcpToolProxy
-        // and register it on the principal's core. The `Injectable…` variant
-        // is used when the server has `reserved_parameters` configured so
-        // the LLM never sees (and the runtime always injects) vault-backed
-        // secret params.
-        let manager_arc = mcp_manager.clone();
-        let mgr = manager_arc.read().await;
-        let proxy_tools = mgr.get_tool_bindings().await;
-        drop(mgr);
-        for (server, tool) in proxy_tools {
-            core.catalog()
-                .register(
-                    tool,
-                    crate::tools::metadata::ToolSource::Mcp { server },
-                    principal_id,
-                )
-                .await;
-        }
-    } else if mcp_dir.exists() {
-        tracing::warn!(
-            "MCP workspace dir {} exists but no global McpManager is \
-             installed; MCP tools will not be registered for this principal",
-            mcp_dir.display()
-        );
     }
 
     // Phase 4 (ADR-047 §5): workspace-resident hooks live under
@@ -1017,6 +948,7 @@ mod tooling_install_tests {
             ensure_principal_tool_bag(runtime.clone(), dir, principal_id).await;
             let sections = runtime
                 .render_prompt_sections(&PromptSectionRequest {
+                    catalog_binding: None,
                     principal_id: principal_id.to_string(),
                     workspace: dir.to_string_lossy().into_owned(),
                     session_id: String::new(),

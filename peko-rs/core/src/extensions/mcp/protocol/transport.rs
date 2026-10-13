@@ -268,7 +268,7 @@ impl McpTransport for StdioTransport {
 
         // Serialize the message
         let json = serde_json::to_string(&message)?;
-        trace!("MCP[{}] sending: {}", self.pid, json);
+        trace!("MCP[{}] sending an MCP message", self.pid);
 
         // Write the message followed by a newline (as per MCP spec)
         let mut stdin = self.stdin.lock().await;
@@ -295,7 +295,7 @@ impl McpTransport for StdioTransport {
                     Err(TransportError::ConnectionClosed)
                 }
                 Ok(n) => {
-                    trace!("MCP[{}] received {} bytes: {}", self.pid, n, line.trim());
+                    trace!("MCP[{}] received {} bytes", self.pid, n);
 
                     // Parse the JSON message
                     match serde_json::from_str::<JsonRpcMessage>(&line) {
@@ -496,6 +496,7 @@ pub struct SseTransport {
     client: Client,
     /// Server endpoint URL
     endpoint: Url,
+    message_endpoint: Arc<Mutex<Option<Url>>>,
     /// Session ID for stateful connections
     session_id: Mutex<Option<String>>,
     /// Message receiver channel
@@ -516,6 +517,16 @@ pub struct SseTransport {
 }
 
 impl SseTransport {
+    /// Classic HTTP/SSE announces a separate POST endpoint on its GET stream.
+    pub(crate) async fn require_message_endpoint(&self) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while self.message_endpoint.lock().await.is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| TransportError::Sse("SSE server did not announce a message endpoint".into()))
+    }
     /// Create a new SSE transport and establish connection
     ///
     /// # Arguments
@@ -527,7 +538,10 @@ impl SseTransport {
         let endpoint = Url::parse(endpoint.as_ref())?;
         debug!("Connecting to MCP server at: {}", endpoint);
 
-        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+            .build()?;
 
         // Create channel for receiving messages from SSE stream
         let (tx, rx) = tokio::sync::mpsc::channel(100);
@@ -535,6 +549,7 @@ impl SseTransport {
         let transport = Self {
             client: client.clone(),
             endpoint: endpoint.clone(),
+            message_endpoint: Arc::new(Mutex::new(None)),
             session_id: Mutex::new(None),
             receiver: Arc::new(Mutex::new(rx)),
             sender: Arc::new(Mutex::new(tx.clone())),
@@ -552,6 +567,7 @@ impl SseTransport {
             tx,
             transport.healthy.clone(),
             transport.auth_headers()?,
+            transport.message_endpoint.clone(),
         ));
 
         *transport.receive_task.lock().await = Some(task);
@@ -579,7 +595,10 @@ impl SseTransport {
         let endpoint = Url::parse(endpoint.as_ref())?;
         debug!("Connecting to authenticated MCP server at: {}", endpoint);
 
-        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(30))
+            .build()?;
 
         // Create channel for receiving messages from SSE stream
         let (tx, rx) = tokio::sync::mpsc::channel(100);
@@ -589,6 +608,7 @@ impl SseTransport {
         let transport = Self {
             client: client.clone(),
             endpoint: endpoint.clone(),
+            message_endpoint: Arc::new(Mutex::new(None)),
             session_id: Mutex::new(None),
             receiver: Arc::new(Mutex::new(rx)),
             sender: Arc::new(Mutex::new(tx.clone())),
@@ -605,6 +625,7 @@ impl SseTransport {
             tx,
             transport.healthy.clone(),
             transport.auth_headers()?,
+            transport.message_endpoint.clone(),
         ));
 
         *transport.receive_task.lock().await = Some(task);
@@ -632,6 +653,7 @@ impl SseTransport {
         let transport = Self {
             client: client.clone(),
             endpoint: endpoint.clone(),
+            message_endpoint: Arc::new(Mutex::new(None)),
             session_id: Mutex::new(None),
             receiver: Arc::new(Mutex::new(rx)),
             sender: Arc::new(Mutex::new(tx.clone())),
@@ -648,6 +670,7 @@ impl SseTransport {
             tx,
             transport.healthy.clone(),
             transport.auth_headers()?,
+            transport.message_endpoint.clone(),
         ));
 
         *transport.receive_task.lock().await = Some(task);
@@ -662,12 +685,21 @@ impl SseTransport {
         sender: tokio::sync::mpsc::Sender<JsonRpcMessage>,
         healthy: Arc<std::sync::atomic::AtomicBool>,
         auth_headers: HeaderMap,
+        message_endpoint: Arc<Mutex<Option<Url>>>,
     ) {
         let mut backoff = Duration::from_secs(1);
         const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
         while healthy.load(std::sync::atomic::Ordering::SeqCst) {
-            match Self::connect_sse(&client, &endpoint, &sender, &auth_headers).await {
+            match Self::connect_sse(
+                &client,
+                &endpoint,
+                &sender,
+                &auth_headers,
+                &message_endpoint,
+            )
+            .await
+            {
                 Ok(()) => {
                     // Connection closed normally
                     debug!("SSE connection closed");
@@ -690,6 +722,7 @@ impl SseTransport {
         endpoint: &Url,
         sender: &tokio::sync::mpsc::Sender<JsonRpcMessage>,
         auth_headers: &HeaderMap,
+        message_endpoint: &Arc<Mutex<Option<Url>>>,
     ) -> Result<()> {
         let mut headers = auth_headers.clone();
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
@@ -711,24 +744,46 @@ impl SseTransport {
 
         debug!("SSE stream connected");
 
-        // Read SSE stream
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
-
+        let mut buffer = Vec::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(TransportError::Http)?;
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
-
-            // Process complete SSE events
-            while let Some(pos) = buffer.find("\n\n") {
-                let event = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
-
-                if let Some(message) = Self::parse_sse_event(&event) {
-                    trace!("Received SSE message: {:?}", message);
+            buffer.extend_from_slice(&chunk.map_err(TransportError::Http)?);
+            if buffer.len() > 8 * 1024 * 1024 {
+                return Err(TransportError::Sse("SSE event exceeds 8 MiB".into()));
+            }
+            loop {
+                let lf = buffer
+                    .windows(2)
+                    .position(|bytes| bytes == b"\n\n")
+                    .map(|pos| (pos, 2));
+                let crlf = buffer
+                    .windows(4)
+                    .position(|bytes| bytes == b"\r\n\r\n")
+                    .map(|pos| (pos, 4));
+                let Some((pos, delimiter)) = (match (lf, crlf) {
+                    (Some(a), Some(b)) => Some(if a.0 < b.0 { a } else { b }),
+                    (a, b) => a.or(b),
+                }) else {
+                    break;
+                };
+                let event = String::from_utf8(buffer.drain(..pos + delimiter).collect())
+                    .map_err(|_| TransportError::Sse("SSE event is not UTF-8".into()))?;
+                if event.lines().any(|line| line.trim() == "event: endpoint") {
+                    let data = event
+                        .lines()
+                        .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let post = endpoint.join(&data)?;
+                    if post.origin() != endpoint.origin() {
+                        return Err(TransportError::Sse(
+                            "SSE message endpoint changed origin".into(),
+                        ));
+                    }
+                    *message_endpoint.lock().await = Some(post);
+                } else if let Some(message) = Self::parse_sse_event(&event) {
                     if sender.send(message).await.is_err() {
-                        return Ok(()); // Receiver closed
+                        return Ok(());
                     }
                 }
             }
@@ -739,16 +794,13 @@ impl SseTransport {
 
     /// Parse an SSE event into a `JsonRpcMessage`
     fn parse_sse_event(event: &str) -> Option<JsonRpcMessage> {
-        let mut data = None;
-
-        for line in event.lines() {
-            if line.starts_with("data: ") {
-                data = Some(&line[6..]);
-            }
-        }
-
-        if let Some(data) = data {
-            match serde_json::from_str::<JsonRpcMessage>(data) {
+        let data = event
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !data.is_empty() {
+            match serde_json::from_str::<JsonRpcMessage>(&data) {
                 Ok(message) => Some(message),
                 Err(e) => {
                     warn!("Failed to parse SSE data: {}", e);
@@ -861,8 +913,14 @@ impl SseTransport {
             );
         }
 
+        let endpoint = self
+            .message_endpoint
+            .lock()
+            .await
+            .clone()
+            .unwrap_or_else(|| self.endpoint.clone());
         self.client
-            .post(self.endpoint.as_str())
+            .post(endpoint.as_str())
             .headers(headers)
             .body(json.to_string())
             .send()
@@ -895,7 +953,7 @@ impl McpTransport for SseTransport {
 
         // Serialize the message
         let json = serde_json::to_string(&message)?;
-        trace!("SSE sending: {}", json);
+        trace!("SSE sending an MCP message");
 
         // Build request headers (auth + content type + accept + session id).
         let response = self.send_with_headers(&json, self.auth_headers()?).await?;
@@ -954,6 +1012,16 @@ impl McpTransport for SseTransport {
 
     fn is_healthy(&self) -> bool {
         self.healthy.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for SseTransport {
+    fn drop(&mut self) {
+        self.healthy
+            .store(false, std::sync::atomic::Ordering::Release);
+        if let Some(task) = self.receive_task.get_mut().take() {
+            task.abort();
+        }
     }
 }
 
@@ -1052,6 +1120,7 @@ mod tests {
         let transport = SseTransport {
             client: Client::new(),
             endpoint: Url::parse("http://localhost:8080").unwrap(),
+            message_endpoint: Arc::new(Mutex::new(None)),
             session_id: Mutex::new(None),
             receiver: Arc::new(Mutex::new(rx)),
             sender: Arc::new(Mutex::new(tx)),

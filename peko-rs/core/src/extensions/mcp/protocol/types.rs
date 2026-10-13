@@ -208,6 +208,7 @@ pub struct ServerCapabilities {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptsCapability {
+    #[serde(default)]
     pub list_changed: bool,
 }
 
@@ -215,7 +216,9 @@ pub struct PromptsCapability {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourcesCapability {
+    #[serde(default)]
     pub subscribe: bool,
+    #[serde(default)]
     pub list_changed: bool,
 }
 
@@ -223,6 +226,7 @@ pub struct ResourcesCapability {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCapability {
+    #[serde(default)]
     pub list_changed: bool,
 }
 

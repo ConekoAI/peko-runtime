@@ -1,3 +1,5 @@
+> Historical proposal; superseded by [ADR-075](../architecture/adr/ADR-075-principal-owned-mcp-runtime.md) and the [current guide](mcp_reserved_params_guide.md).
+
 # Proposal: Reserved Parameter Injection for MCP Tools
 
 ## Executive Summary

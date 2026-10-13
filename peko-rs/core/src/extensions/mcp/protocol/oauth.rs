@@ -109,6 +109,16 @@ impl OAuthFlow {
         verifier: &str,
         redirect_uri: &str,
     ) -> Result<OAuthTokenEntry> {
+        Self::authorize_with_code_for_resource(config, code, verifier, redirect_uri, None).await
+    }
+
+    pub(crate) async fn authorize_with_code_for_resource(
+        config: &McpAuthConfig,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+        resource: Option<&str>,
+    ) -> Result<OAuthTokenEntry> {
         let token_endpoint = config
             .token_endpoint
             .as_ref()
@@ -124,6 +134,9 @@ impl OAuthFlow {
         params.insert("redirect_uri", redirect_uri);
         params.insert("client_id", client_id);
         params.insert("code_verifier", verifier);
+        if let Some(resource) = resource {
+            params.insert("resource", resource);
+        }
 
         Self::post_token_request(token_endpoint, params, config).await
     }
@@ -132,6 +145,14 @@ impl OAuthFlow {
     pub async fn refresh_token(
         config: &McpAuthConfig,
         refresh_token: &str,
+    ) -> Result<OAuthTokenEntry> {
+        Self::refresh_token_for_resource(config, refresh_token, None).await
+    }
+
+    pub(crate) async fn refresh_token_for_resource(
+        config: &McpAuthConfig,
+        refresh_token: &str,
+        resource: Option<&str>,
     ) -> Result<OAuthTokenEntry> {
         let token_endpoint = config
             .token_endpoint
@@ -145,6 +166,9 @@ impl OAuthFlow {
         let mut params = HashMap::new();
         params.insert("grant_type", "refresh_token");
         params.insert("refresh_token", refresh_token);
+        if let Some(resource) = resource {
+            params.insert("resource", resource);
+        }
         params.insert("client_id", client_id);
 
         Self::post_token_request(token_endpoint, params, config).await
@@ -156,7 +180,10 @@ impl OAuthFlow {
         params: HashMap<&str, &str>,
         config: &McpAuthConfig,
     ) -> Result<OAuthTokenEntry> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()?;
         let response = client
             .post(token_endpoint)
             .form(&params)
@@ -165,8 +192,7 @@ impl OAuthFlow {
             .with_context(|| format!("token endpoint request failed: {token_endpoint}"))?;
 
         if !response.status().is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("token endpoint error: {}", body));
+            return Err(anyhow!("token endpoint error: {}", response.status()));
         }
 
         let token: TokenResponse = response
@@ -190,7 +216,10 @@ impl OAuthFlow {
     }
 
     /// Wait for a single HTTP callback request and validate the state parameter.
-    async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String> {
+    pub(crate) async fn wait_for_callback(
+        listener: TcpListener,
+        expected_state: &str,
+    ) -> Result<String> {
         let (mut stream, _) = listener
             .accept()
             .await
@@ -214,12 +243,8 @@ impl OAuthFlow {
         let _ = stream.write_all(response_html).await;
 
         let query = path.splitn(2, '?').nth(1).unwrap_or("");
-        let params: HashMap<String, String> = query
-            .split('&')
-            .filter_map(|pair| {
-                let mut it = pair.splitn(2, '=');
-                Some((it.next()?.to_string(), it.next().unwrap_or("").to_string()))
-            })
+        let params: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
             .collect();
 
         if params.get("state").map(String::as_str) != Some(expected_state) {

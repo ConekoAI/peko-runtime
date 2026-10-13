@@ -167,7 +167,7 @@ impl InjectableMcpToolProxy {
             .get(name)
             .cloned()
             .unwrap_or(Value::Null);
-            trace!("Injecting reserved param '{}' = {:?}", name, value);
+            trace!("Injecting reserved param '{}'", name);
             obj.insert(name.clone(), value);
         }
 
@@ -187,7 +187,10 @@ impl InjectableMcpToolProxy {
         );
 
         // Delegate to inner proxy
-        self.inner.execute(merged).await
+        match ctx {
+            Some(ctx) => self.inner.execute_with_context(merged, ctx).await,
+            None => self.inner.execute(merged).await,
+        }
     }
 }
 

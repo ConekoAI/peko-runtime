@@ -324,6 +324,7 @@ output = "text"
             14
         );
         let request = PromptSectionRequest {
+            catalog_binding: None,
             principal_id: p1.to_string(),
             workspace: temp.path().to_string_lossy().into_owned(),
             session_id: "session".into(),
@@ -336,6 +337,7 @@ output = "text"
         );
         let other = runtime
             .render_prompt_sections(&PromptSectionRequest {
+                catalog_binding: None,
                 principal_id: p2.to_string(),
                 ..request.clone()
             })

@@ -388,6 +388,7 @@ mod tests {
             .await;
         let sections = runtime
             .render_prompt_sections(&PromptSectionRequest {
+                catalog_binding: None,
                 principal_id: p1.to_string(),
                 workspace: "/tmp/workspace".into(),
                 session_id: "session".into(),

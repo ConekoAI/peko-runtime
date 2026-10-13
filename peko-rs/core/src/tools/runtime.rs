@@ -51,6 +51,14 @@ const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
 
 /// The daemon's shared tooling runtime — see the module doc.
 pub struct ToolingRuntime {
+    mcp: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<
+                PrincipalId,
+                std::sync::Weak<crate::extensions::mcp::service::PrincipalMcpRuntime>,
+            >,
+        >,
+    >,
     run_bindings: Arc<std::sync::RwLock<RunBindings>>,
     run_binding: Option<std::sync::Weak<ToolingRuntime>>,
     /// One task registry per principal: every executor doing that
@@ -95,6 +103,51 @@ impl std::fmt::Debug for ToolingRuntime {
 }
 
 impl ToolingRuntime {
+    pub(crate) async fn bind_mcp(
+        &self,
+        service: Arc<crate::extensions::mcp::service::PrincipalMcpRuntime>,
+    ) {
+        self.mcp
+            .write()
+            .expect("MCP services lock poisoned")
+            .insert(service.owner().clone(), Arc::downgrade(&service));
+        self.catalog
+            .register(
+                Arc::new(crate::tools::builtin::mcp::McpTool::new(service.clone())),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                service.owner(),
+            )
+            .await;
+    }
+    pub(crate) async fn unbind_mcp(&self, owner: &PrincipalId) {
+        self.mcp
+            .write()
+            .expect("MCP services lock poisoned")
+            .remove(owner);
+        self.catalog.replace_mcp(owner, Vec::new(), String::new());
+        self.catalog.unregister("MCP", owner).await;
+    }
+    async fn prepare_mcp(&self, owner: &PrincipalId) {
+        let service = self
+            .mcp
+            .read()
+            .expect("MCP services lock poisoned")
+            .get(owner)
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(service) = service {
+            if let Err(error) = service.prepare_catalog().await {
+                tracing::warn!(principal=%owner.0,error=%error,"MCP reconciliation failed");
+                self.catalog.replace_mcp(
+                    owner,
+                    Vec::new(),
+                    format!("MCP configuration unavailable: {error}"),
+                );
+                return;
+            }
+            let (tools, context) = service.catalog().await;
+            self.catalog.replace_mcp(owner, tools, context);
+        }
+    }
     /// Compose the runtime. `router` is the timeout/detach machinery
     /// the dispatcher routes through; `audit` receives the `tool.call`
     /// audit events (`None` for tests / standalone contexts).
@@ -113,6 +166,7 @@ impl ToolingRuntime {
             audit,
         ));
         Self {
+            mcp: Default::default(),
             run_bindings: Default::default(),
             run_binding: None,
             task_registries: Default::default(),
@@ -155,6 +209,7 @@ impl ToolingRuntime {
     pub fn for_run(self: &Arc<Self>) -> Arc<Self> {
         let catalog = Arc::new(ToolCatalog::overlay(Arc::clone(&self.catalog)));
         Arc::new_cyclic(|binding| Self {
+            mcp: Arc::clone(&self.mcp),
             run_bindings: Arc::clone(&self.run_bindings),
             run_binding: Some(binding.clone()),
             task_registries: Arc::clone(&self.task_registries),
@@ -368,6 +423,16 @@ impl ToolingRuntime {
         }))
         .await;
 
+        let mut sections = sections;
+        if let Some(binding) = request.catalog_binding.as_ref().and_then(|binding| {
+            binding
+                .as_any()
+                .downcast_ref::<crate::tools::catalog::CatalogBinding>()
+        }) {
+            if binding.owner.0 == request.principal_id {
+                sections.push(("mcp_context".into(), binding.mcp_context.clone()));
+            }
+        }
         PromptSections { sections }
     }
 
@@ -428,6 +493,11 @@ impl ToolFunnel for ToolingRuntime {
         &self,
         call: ToolCallSpec,
     ) -> anyhow::Result<(String, serde_json::Value, bool)> {
+        if call.catalog_binding.is_none() && call.tool_name.starts_with("mcp:") {
+            if let Some(owner) = &call.principal_id {
+                self.prepare_mcp(&PrincipalId(owner.clone())).await;
+            }
+        }
         // IPC/workflow and Async action spawn callbacks re-enter through the shared
         // runtime. Resolve their explicit caller session to its live binding,
         // rather than selecting whichever agent registered last.
@@ -462,8 +532,9 @@ impl ToolFunnel for ToolingRuntime {
     async fn list_tool_definitions(
         &self,
         principal_id: &PrincipalId,
-    ) -> Vec<peko_provider_api::ToolDefinition> {
-        self.catalog.tool_definitions(principal_id).await
+    ) -> peko_engine::tooling::ToolCatalogSnapshot {
+        self.prepare_mcp(principal_id).await;
+        self.catalog.snapshot(principal_id).await
     }
 
     async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections {
