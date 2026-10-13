@@ -40,7 +40,6 @@
 mod common;
 use common::{DaemonGuard, PekoCli};
 use serial_test::serial;
-use std::time::Duration;
 
 use peko_auth::{Permission, Subject};
 use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
@@ -50,54 +49,9 @@ use peko_core::ipc::DaemonClient;
 // Fixture wiring
 // ---------------------------------------------------------------------------
 
-/// Create a Principal under the test's isolated `<HOME>/.peko` by invoking
-/// the real `peko create` command. This produces the workspace,
-/// identity, default `agents/primary.md` prompt, and `principal.toml` that
-/// the daemon's `load_principal` requires — `owner = { kind = "user", id =
-/// "local" }`, which satisfies the local-socket caller owner check in the
-/// `PrincipalGrantPermission` handler.
+/// Ready local fixture: permission changes need IPC, but no bootstrap LLM run.
 fn create_principal(cli: &PekoCli, name: &str) {
-    // Runs before `DaemonGuard::spawn`, so seed the `mock-llm` catalog
-    // entry here too (idempotent — the guard re-seeds the same values
-    // from MOCK_LLM_URL on spawn) and pin the principal to it: create
-    // requires `--model` and validates it against the catalog. These
-    // grant/revoke tests never dial the LLM, so a placeholder URL is
-    // fine when MOCK_LLM_URL isn't set.
-    let mock_url = std::env::var_os("MOCK_LLM_URL")
-        .map(|u| u.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "http://127.0.0.1:9/v1".to_string());
-    common::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url);
-    let output = cli
-        .cmd()
-        .args(["create", name, "--model", "mock-llm"])
-        .output()
-        .expect("run `peko create`");
-    assert!(
-        output.status.success(),
-        "`peko create {name}` failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    // `peko create` defaults the owner to `user:default`, but the
-    // local-socket caller in this test is `user:local`. Rewrite the owner so
-    // the `ManageSettings` owner-check in the grant/revoke handlers passes —
-    // mirroring the `owner = { kind = "user", id = "local" }` the old agent
-    // fixture used.
-    let path = cli
-        .peko_dir()
-        .join("principals")
-        .join(name)
-        .join("principal.toml");
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
-    let mut cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
-    cfg.owner = Subject::User("local".into());
-    std::fs::write(
-        &path,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
-    )
-    .expect("write principal.toml");
+    common::create_mock_principal(cli, name, "http://127.0.0.1:9/v1");
 }
 
 /// Read the principal config from disk and return the granted permissions.
@@ -243,9 +197,3 @@ async fn s6_revoke_missing_grant_is_idempotent() {
         "revoking a non-existent grant should leave permissions empty; got {perms:?}"
     );
 }
-
-// Sanity: the daemon startup itself can take a moment on Windows.
-// `DaemonGuard::spawn` already polls `peko daemon status` for up to
-// 30s, so this is here only as documentation.
-#[allow(dead_code)]
-const _STARTUP_BUFFER: Duration = Duration::from_secs(0);

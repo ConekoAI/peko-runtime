@@ -1,54 +1,7 @@
-//! CLI integration tests for the `tool:Agent` capability path
-//! (Phase B slice per `docs/integration/TESTING.md` §7).
-//!
-//! Coverage mirrors the mockable `e2e_tests/subagent/*.ps1` scripts that
-//! previously exercised this surface outside CI:
-//!
-//! | PS script                  | Rust tests                                                                                                |
-//! |----------------------------|-----------------------------------------------------------------------------------------------------------|
-//! | `subagent_blocking.ps1`    | `subagent_blocking_t1_write_file`, `subagent_blocking_t2_isolated`, `subagent_blocking_t4_inline_read`      |
-//! | `subagent_nesting.ps1`     | `subagent_nesting_t1_depth2_writes_file`, `subagent_nesting_t2_recursive_dispatch`                               |
-//! | `subagent_isolation.ps1`   | `subagent_isolation_t1_shared_workspace`, `subagent_isolation_t2_isolated_writes_file`                     |
-//! | `subagent_async.ps1`       | (deferred — `_async` path requires a populated `AsyncTaskRegistry`, not directly seedable from a test)    |
-//! | `subagent_status_list.ps1` | (deferred — same reason: `task` tool reads from in-process registry)                                      |
-//!
-//! **Principal model.** The principal's root agent calls `Agent` with a
-//! `role` argument that resolves to `roles/<name>/ROLE.md` or
-//! `roles/<name>.md` in its workspace. Every principal and its spawned
-//! sessions see every registered tool. These tests create a mock principal
-//! and write the worker role before starting its daemon.
-//!
-//! Each test:
-//!   1. Builds an isolated [`PekoCli`] tempdir as `HOME`.
-//!   2. Calls `POST /_test/configure` on the mock LLM to install a
-//!      scripted `MOCK_LLM_SCRIPT` (and reset the per-substring counter).
-//!   3. Creates the Principal + `worker` subagent via [`setup_principal`].
-//!   4. Spawns a plain `DaemonGuard` (no `--interval` — subagent tests
-//!      don't poll, and the child subagent's blocking LLM call goes
-//!      straight through the same mock endpoint).
-//!   5. Runs `peko send <principal> <prompt>` and asserts on the
-//!      parent's final stdout plus, where applicable, on the file the
-//!      child wrote into the tool workspace.
-//!
-//! Tier: mock-LLM (CI runs against the docker-compose stack with
-//! `MOCK_LLM_URL` set). Tests early-return if unset so `cargo test`
-//! still passes on a bare checkout.
-//!
-//! **Substring keying.** The parent agent's LLM call and each child
-//! subagent's LLM call all hit the same mock endpoint. The parent sees
-//! the `peko send` prompt in its first user message; each child sees a
-//! brand-new two-message request whose `user` is the wrapped task
-//! (template at `src/agent/subagent_announce.rs:146-155`). To route
-//! the parent vs. child to different script entries, each test embeds
-//! a per-speaker unique needle into the message that speaker sees: the
-//! parent needle is in the `peko send` prompt itself, the child needle
-//! is in the parent's `Agent` `prompt` arg (which the child sees
-//! wrapped). See per-test comments for the exact placement.
-//!
-//! **`#[serial]`.** The mock's per-substring counter is global state
-//! across all test binaries. Every test in this file is `#[serial]` to
-//! avoid concurrent tests racing the same counter; per-test unique
-//! needles are belt-and-suspenders.
+//! Three daemon checks for Agent dispatch: directory and flat role layouts,
+//! and recursive delegation. Assert filesystem effects and persisted Agent
+//! receipts; scripted final text alone cannot prove a child ran.
+//! Serial because each test replaces the shared mock script.
 
 mod common;
 use common::{configure_mock, create_mock_principal, run_with_timeout, DaemonGuard, PekoCli};
@@ -164,6 +117,76 @@ fn setup_principal_flat(cli: &PekoCli, name: &str, mock_llm_url: &str) {
     write_worker_subagent_flat(cli, name, WORKER);
 }
 
+/// Verify the successful child output actually returned through Agent's
+/// persisted tool result, rather than trusting the mock's final sentinel.
+fn assert_child_receipts(cli: &PekoCli, principal: &str, expected: &[&str]) {
+    use peko_message::ContentBlock;
+    use peko_session::events::SessionEvent;
+
+    let mut dirs = vec![cli
+        .peko_dir()
+        .join("data/principals")
+        .join(principal)
+        .join("local/sessions")];
+    let mut outputs = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read session directory") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            for line in std::fs::read_to_string(path).unwrap().lines() {
+                let event: SessionEvent = serde_json::from_str(line).expect("session event");
+                let SessionEvent::MessageV2(message) = event else {
+                    continue;
+                };
+                for block in message.message.content {
+                    if let ContentBlock::ToolResult {
+                        name,
+                        content,
+                        is_error,
+                        ..
+                    } = block
+                    {
+                        if name != "Agent" {
+                            continue;
+                        }
+                        assert!(!is_error, "Agent returned a tool error: {content:?}");
+                        let text: String = content
+                            .iter()
+                            .filter_map(|block| {
+                                if let ContentBlock::Text { text } = block {
+                                    Some(text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let receipt: serde_json::Value =
+                            serde_json::from_str(&text).expect("Agent receipt JSON");
+                        assert_eq!(receipt["success"], true, "{receipt}");
+                        assert_eq!(receipt["status"], "completed", "{receipt}");
+                        outputs.push(
+                            receipt["output"]
+                                .as_str()
+                                .expect("child output")
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    outputs.sort();
+    let mut expected: Vec<_> = expected.iter().map(|text| text.to_string()).collect();
+    expected.sort();
+    assert_eq!(outputs, expected, "persisted Agent receipts");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -253,164 +276,7 @@ async fn subagent_blocking_t1_write_file() {
         actual, file_content,
         "child wrote unexpected content to {path:?}",
     );
-}
-
-/// `subagent_blocking.ps1` TEST 2: same shape as T1 but with
-/// `isolated: true` on the parent's `Agent` arg. Verifies the
-/// `isolated` flag is plumbed through without erroring.
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-#[serial]
-async fn subagent_blocking_t2_isolated() {
-    if mock_llm_url().is_none() {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    }
-    let mock_url = mock_llm_url().unwrap();
-
-    let parent_needle = "subagent-block-t2-p-q3jh";
-    let child_needle = "subagent-block-t2-c-q3jh";
-    let agent_name = "subagent_blocking_t2";
-    let file_name = "subagent_blocking_T2_isolated.txt";
-    let file_content = "ISOLATED_SUBAGENT_WAS_HERE";
-
-    let task_for_child = format!(
-        "Write '{file_name}' with content '{file_content}' via Write. \
-         Substring '{child_needle}' for mock routing. (test=subagent_blocking_T2_isolated)"
-    );
-
-    let script = serde_json::json!({
-        parent_needle: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({
-                    "prompt": task_for_child,
-                    "role": WORKER,
-                    "path": "t2-iso",
-                }).to_string()
-            } },
-            "ISOLATED_SUCCESS",
-        ],
-        child_needle: [
-            { "tool_call": { "name": "Write", "arguments":
-                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
-            } },
-            "CHILD_DONE",
-        ],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    setup_principal(&cli, agent_name, &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Spawn an isolated subagent to do a task. When it returns, respond \
-         with ISOLATED_SUCCESS. Use the needle '{parent_needle}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", agent_name, &prompt],
-        Duration::from_secs(30),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("ISOLATED_SUCCESS"),
-        "parent did not report ISOLATED_SUCCESS: stdout={out} stderr={err}",
-    );
-
-    let path = workspace_dir(&cli).join(file_name);
-    let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        let dump = dump_data_dir(&cli);
-        panic!("child file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
-    });
-    assert_eq!(actual, file_content);
-}
-
-/// `subagent_blocking.ps1` TEST 4: the inline-result contract. The
-/// parent first writes a file with `Write`, then spawns a child
-/// that uses `read_file` to return the file content. The parent's
-/// blocking tool result for `Agent` should include the child's
-/// text (`INLINE_RESULT_OK`) in its `output` field — proving the
-/// child's text made it through the inline-result channel, not via
-/// the async-receipt + polling path.
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-#[serial]
-async fn subagent_blocking_t4_inline_read() {
-    if mock_llm_url().is_none() {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    }
-    let mock_url = mock_llm_url().unwrap();
-
-    let parent_needle = "subagent-block-t4-p-k8lf";
-    let child_needle = "subagent-block-t4-c-k8lf";
-    let agent_name = "subagent_blocking_t4";
-    let file_name = "subagent_blocking_T4_inline.txt";
-    let file_content = "INLINE_RESULT_OK";
-
-    let task_for_child = format!(
-        "Read '{file_name}' via Read and return its content as your final \
-         text. Substring '{child_needle}' for mock routing. \
-         (test=subagent_blocking_T4_inline)"
-    );
-
-    let script = serde_json::json!({
-        parent_needle: [
-            // Parent turn 1: write the file the child will read.
-            { "tool_call": { "name": "Write", "arguments":
-                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
-            } },
-            // Parent turn 2: spawn the child.
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child, "role": WORKER, "path": "t4-child" }).to_string()
-            } },
-            // Parent turn 3: report success. The child text was
-            // `INLINE_RESULT_OK` and the parent's blocking tool
-            // result includes it; the parent's LLM sees it and
-            // responds.
-            "INLINE_SUCCESS",
-        ],
-        child_needle: [
-            { "tool_call": { "name": "Read", "arguments":
-                serde_json::json!({ "file_path": file_name }).to_string()
-            } },
-            // Child's final text — this is what gets captured into
-            // the parent's blocking receipt's `output` field.
-            file_content,
-        ],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    setup_principal(&cli, agent_name, &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "First Write '{file_name}' with content '{file_content}'. Then \
-         spawn a subagent to read it and return the content. Then respond with \
-         INLINE_SUCCESS. Use the needle '{parent_needle}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", agent_name, &prompt],
-        Duration::from_secs(45),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("INLINE_SUCCESS"),
-        "parent did not report INLINE_SUCCESS: stdout={out} stderr={err}",
-    );
-    // NOTE: We don't assert that the child's `file_content` text appears
-    // in the parent's stdout. The MOCK_LLM_SCRIPT sequences hardcoded
-    // text responses; the parent's third turn is hardcoded `INLINE_SUCCESS`,
-    // not a synthesized echo of the blocking tool result. Proving the
-    // inline channel carries the child text would require a real LLM
-    // or a more sophisticated mock that can read prior tool results —
-    // out of scope for this migration. The `INLINE_SUCCESS` assertion
-    // above is sufficient to prove the blocking tool call completed.
+    assert_child_receipts(&cli, agent_name, &["CHILD_DONE"]);
 }
 
 /// `subagent_nesting.ps1` TEST 1: a 3-level chain (parent → child-A
@@ -499,227 +365,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
         panic!("grandchild file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
     });
     assert_eq!(actual, file_content);
-}
-
-/// `subagent_nesting.ps1` TEST 2: multi-level dispatch through the CLI.
-/// Delegation depth is unrestricted; live runs share principal admission.
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-#[serial]
-async fn subagent_nesting_t2_recursive_dispatch() {
-    if mock_llm_url().is_none() {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    }
-    let mock_url = mock_llm_url().unwrap();
-
-    let parent_needle = "subagent-nest-t2-p-q1w2";
-    let child_a_needle = "subagent-nest-t2-c1-q1w2";
-    let grandchild_needle = "subagent-nest-t2-c2-q1w2";
-    let agent_name = "subagent_nesting_t2";
-
-    let task_for_child_a = format!(
-        "You are Subagent-A at depth 1. Spawn a grandchild Subagent-B. \
-         Embed '{child_a_needle}' in your tool_call task arg so the mock \
-         can route your LLM call. Embed '{grandchild_needle}' in the task \
-         string you pass to Subagent-B. \
-         (test=subagent_nesting_T2_recursive_dispatch)"
-    );
-    let task_for_grandchild = format!(
-        "You are Subagent-B at depth 2. Spawn a great-grandchild Subagent-C. \
-         Substring '{grandchild_needle}' for mock routing. \
-         (test=subagent_nesting_T2_recursive_dispatch)"
-    );
-
-    let script = serde_json::json!({
-        parent_needle: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_child_a, "role": WORKER, "path": "t2-child-a" }).to_string()
-            } },
-            "PARENT_DONE",
-        ],
-        child_a_needle: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": task_for_grandchild, "role": WORKER, "path": "t2-grandchild" }).to_string()
-            } },
-            "CHILD_A_DONE",
-        ],
-        grandchild_needle: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({ "prompt": "would-be-depth-3-task", "role": WORKER, "path": "t2-depth-3" }).to_string()
-            } },
-            "GRANDCHILD_DONE",
-        ],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    setup_principal(&cli, agent_name, &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Spawn a subagent that spawns a grandchild that spawns a \
-         great-grandchild. Use the needle '{parent_needle}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", agent_name, &prompt],
-        Duration::from_secs(60),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("PARENT_DONE"),
-        "parent did not report PARENT_DONE: stdout={out} stderr={err}",
-    );
-}
-
-/// `subagent_isolation.ps1` TEST 1: shared workspace. The parent
-/// writes a file, then spawns a non-isolated child that reads it
-/// back. With `isolated: false` (the default), the child has access
-/// to the parent's session context.
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-#[serial]
-async fn subagent_isolation_t1_shared_workspace() {
-    if mock_llm_url().is_none() {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    }
-    let mock_url = mock_llm_url().unwrap();
-
-    let parent_needle = "subagent-iso-t1-shared-r4km";
-    let child_needle = "subagent-iso-t1-shared-c-r4km";
-    let agent_name = "subagent_isolation_t1";
-    let file_name = "subagent_isolation_T1_shared.txt";
-    let file_content = "SHARED_CONTEXT_SECRET";
-
-    let task_for_child = format!(
-        "Read '{file_name}' via Read and return its content as your \
-         final text. Substring '{child_needle}' for mock routing. \
-         (test=subagent_isolation_T1_shared_workspace)"
-    );
-
-    let script = serde_json::json!({
-        parent_needle: [
-            // Parent turn 1: write the file the child will read.
-            { "tool_call": { "name": "Write", "arguments":
-                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
-            } },
-            // Parent turn 2: spawn a non-isolated child.
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({
-                    "prompt": task_for_child,
-                    "role": WORKER,
-                    "path": "t1-shared",
-                }).to_string()
-            } },
-            "SHARED_OK",
-        ],
-        child_needle: [
-            { "tool_call": { "name": "Read", "arguments":
-                serde_json::json!({ "file_path": file_name }).to_string()
-            } },
-            file_content,
-        ],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    setup_principal(&cli, agent_name, &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "First Write '{file_name}' with content '{file_content}'. Then \
-         spawn a non-isolated subagent to read it. Respond with SHARED_OK. \
-         Use the needle '{parent_needle}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", agent_name, &prompt],
-        Duration::from_secs(45),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("SHARED_OK"),
-        "parent did not report SHARED_OK: stdout={out} stderr={err}",
-    );
-}
-
-/// `subagent_isolation.ps1` TEST 2: isolated child. Parent spawns
-/// an `isolated: true` child that writes a marker file. The
-/// assertion is that the child wrote the file (proving the
-/// dispatch + tool path works) and the parent received the
-/// success sentinel.
-#[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
-#[serial]
-async fn subagent_isolation_t2_isolated_writes_file() {
-    if mock_llm_url().is_none() {
-        eprintln!("MOCK_LLM_URL not set; skipping");
-        return;
-    }
-    let mock_url = mock_llm_url().unwrap();
-
-    let parent_needle = "subagent-iso-t2-iso-s7nv";
-    let child_needle = "subagent-iso-t2-iso-c-s7nv";
-    let agent_name = "subagent_isolation_t2";
-    let file_name = "subagent_isolation_T2_isolated.txt";
-    let file_content = "ISOLATED_SUBAGENT_MARKER";
-
-    let task_for_child = format!(
-        "Write '{file_name}' with content '{file_content}' via Write. \
-         Substring '{child_needle}' for mock routing. \
-         (test=subagent_isolation_T2_isolated)"
-    );
-
-    let script = serde_json::json!({
-        parent_needle: [
-            { "tool_call": { "name": "Agent", "arguments":
-                serde_json::json!({
-                    "prompt": task_for_child,
-                    "role": WORKER,
-                    "path": "t2-iso-file",
-                }).to_string()
-            } },
-            "ISOLATED_OK",
-        ],
-        child_needle: [
-            { "tool_call": { "name": "Write", "arguments":
-                serde_json::json!({ "file_path": file_name, "content": file_content }).to_string()
-            } },
-            "CHILD_DONE",
-        ],
-    })
-    .to_string();
-    configure_mock(&mock_url, &script).await;
-
-    let cli = PekoCli::new();
-    setup_principal(&cli, agent_name, &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    let prompt = format!(
-        "Spawn an isolated subagent to write a file. When it returns, \
-         respond with ISOLATED_OK. Use the needle '{parent_needle}'."
-    );
-    let (out, err, status) = run(
-        &cli,
-        &["send", agent_name, &prompt],
-        Duration::from_secs(30),
-    );
-    assert_ok(&out, &err, &status);
-    assert!(
-        out.contains("ISOLATED_OK"),
-        "parent did not report ISOLATED_OK: stdout={out} stderr={err}",
-    );
-
-    let path = workspace_dir(&cli).join(file_name);
-    let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        let dump = dump_data_dir(&cli);
-        panic!("child file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
-    });
-    assert_eq!(actual, file_content);
+    assert_child_receipts(&cli, agent_name, &["CHILD_A_DONE", "GRANDCHILD_DONE"]);
 }
 
 /// Flat-file layout variant of `subagent_blocking_t1_write_file`.
@@ -790,6 +436,7 @@ async fn subagent_blocking_t1_flat_file() {
         panic!("child file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
     });
     assert_eq!(actual, file_content);
+    assert_child_receipts(&cli, agent_name, &["CHILD_DONE"]);
 }
 
 // ---------------------------------------------------------------------------

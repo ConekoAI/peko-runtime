@@ -93,56 +93,10 @@ fn write_principal_with_perm(
     _owner_did: &str,
     permitted_user_id: Option<&str>,
 ) {
-    use common::agent::seed_mock_provider_in_catalog;
+    // A ready fixture avoids a bootstrap sidecar before tunnel credentials
+    // exist. The guarded daemon below owns the complete runtime lifecycle.
+    common::create_mock_principal(cli, principal_name, mock_llm_url);
 
-    // Seed the v3 catalog with `mock-llm` so the daemon's resolver
-    // finds a provider on first lookup. (PekoHub and the mock LLM
-    // are the long-lived fixtures; this catalog entry is the local
-    // provider pointer.)
-    seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
-
-    // Scaffold: identity, agents/primary.md, principal.toml — pinned
-    // to the seeded `mock-llm` model (model-first: create requires
-    // `--model` and validates it against the catalog).
-    //
-    // ADR-054: `peko create` is a BLOCKING command — the bare form
-    // spawns a daemon sidecar and waits for the genesis turn. Use
-    // `--detach` (provisioning is still synchronous), then stop the
-    // sidecar: it was started BEFORE `pekohub.toml` exists, so it can
-    // never announce — and while it holds the IPC socket it would
-    // starve the credentialed daemon this test starts below (the
-    // tunnel connect + `instance_announce` come from daemon start).
-    let output = cli
-        .cmd()
-        .args(["create", principal_name, "--model", "mock-llm", "--detach"])
-        .output()
-        .expect("run `peko create`");
-    assert!(
-        output.status.success(),
-        "`peko create {principal_name}` failed: stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let _ = cli
-        .cmd()
-        .args(["daemon", "stop"])
-        .output()
-        .expect("run `peko daemon stop`");
-
-    // Patch `principal.toml` to: pin exposure to Private (so pekohub's
-    // `canChat` doesn't 503 on the unexposed default), set the owner
-    // to the local-socket caller identity, and append the pre-seeded
-    // grant for `permitted_user_id` when supplied.
-    //
-    // TOML key-order trap: root-level scalar keys (`exposure`, `owner`)
-    // MUST come BEFORE any `[section]` header. After the v3 principal
-    // migration `peko create` writes a well-formed file
-    // (exposure/owner/description at the top), and `to_string_pretty`
-    // preserves the field order of `PrincipalConfig`, so reading +
-    // re-serializing keeps the correct order. We then re-read the
-    // rendered file, set `exposure`/`owner`, and rewrite it; the
-    // first serialize-then-deserialize pass anchors the field order
-    // before we apply our edits.
     let principal_toml = cli
         .peko_dir()
         .join("principals")
@@ -210,8 +164,10 @@ fn write_pekohub_credential(
         key_id,
         created_at: chrono::Utc::now(),
     };
+    let runtime_dir = cli.peko_dir().join("runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("create fixture runtime identity directory");
     std::fs::write(
-        cli.peko_dir().join("runtime/identity.toml"),
+        runtime_dir.join("identity.toml"),
         toml::to_string_pretty(&identity).unwrap(),
     )
     .expect("write fixture runtime identity");

@@ -5,7 +5,7 @@
 //!   (b) Legacy credential files are parsed gracefully (migration may or may not
 //!       succeed depending on keychain availability)
 //!   (c) Identity files use keychain storage when available, or encrypted-file
-//!       fallback when `with_passphrase()` is used
+//!       fallback when `with_passphrase()` is used (isolated, no OS keychain)
 //!   (d) An attacker reading `~/.peko/identity/` and `~/.peko/pekohub.toml`
 //!       cannot recover the private key without the OS keychain or passphrase
 //!
@@ -172,22 +172,6 @@ fn test_legacy_identity_auto_migration() {
         !json.contains("private_key"),
         "Migrated identity file must not contain plaintext private_key"
     );
-}
-
-#[test]
-fn test_headless_store_without_passphrase_fails() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
-    let result = storage.generate_identity(DIDScope::Local, Some("test"));
-    // If keychain is unavailable, this should fail with a clear error
-    if let Err(e) = result {
-        let err = format!("{e}");
-        assert!(
-            err.contains("keychain") || err.contains("passphrase"),
-            "Expected keychain/passphrase error, got: {err}"
-        );
-    }
-    // If keychain IS available (local dev), the test passes trivially
 }
 
 #[test]

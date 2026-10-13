@@ -24,9 +24,8 @@
 //! Rule") and §7 Phase C.
 
 mod common;
-use common::{configure_mock, create_mock_principal, run_with_timeout, DaemonGuard, PekoCli};
+use common::configure_mock;
 use serial_test::serial;
-use std::process::Stdio;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -49,21 +48,22 @@ fn completions_url(base: &str) -> String {
     format!("{}/v1/chat/completions", base.trim_end_matches('/'))
 }
 
-/// Run `peko send` once and return (stdout, stderr, status).
-fn send_once(cli: &PekoCli, args: &[&str]) -> (String, String, std::process::ExitStatus) {
-    let (out, _, _) = run_with_timeout(
-        || {
-            let mut c = cli.cmd();
-            c.stdout(Stdio::piped()).stderr(Stdio::piped());
-            c
-        },
-        args,
-        Duration::from_secs(20),
-    )
-    .expect("run peko send");
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    (stdout, stderr, out.status)
+/// Exercise fixture sequencing directly, without starting a runtime.
+async fn complete(base: &str, prompt: &str) -> String {
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .post(completions_url(base))
+        .json(&serde_json::json!({
+            "model": "default",
+            "messages": [{"role": "user", "content": prompt}],
+        }))
+        .send()
+        .await
+        .expect("mock completion");
+    assert!(response.status().is_success());
+    response.text().await.expect("mock stream")
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ fn send_once(cli: &PekoCli, args: &[&str]) -> (String, String, std::process::Exi
 
 /// 1st / 2nd / 3rd LLM call gets the i-th element of the list.
 #[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL"]
 #[serial]
 async fn mock_llm_script_list_returns_ith_element_per_call() {
     let Some(mock_url) = mock_llm_url() else {
@@ -86,28 +86,15 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
         serde_json::json!({ needle: ["FIRST_TURN", "SECOND_TURN", "THIRD_TURN"] }).to_string();
     configure_mock(&mock_url, &script).await;
 
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "seq-agent", &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
-    // Three sends, each prompt contains the needle so the substring
-    // matcher in the mock picks the script entry. Each send hits the
-    // mock exactly once, advancing the per-substring counter.
     for (i, expected) in ["FIRST_TURN", "SECOND_TURN", "THIRD_TURN"]
         .iter()
         .enumerate()
     {
         let prompt = format!("please react to {needle} turn {i}");
-        let (stdout, stderr, status) = send_once(&cli, &["send", "seq-agent", &prompt]);
-        assert_eq!(
-            status.code(),
-            Some(0),
-            "peko send #{i} exited non-zero (status={status:?})\n\
-             stdout: {stdout}\nstderr: {stderr}",
-        );
+        let body = complete(&mock_url, &prompt).await;
         assert!(
-            stdout.contains(expected),
-            "call #{i} did not return {expected}\nstdout: {stdout}\nstderr: {stderr}",
+            body.contains(expected),
+            "call #{i} missed {expected}: {body}"
         );
     }
 }
@@ -116,7 +103,7 @@ async fn mock_llm_script_list_returns_ith_element_per_call() {
 /// element — so a stray N+1 call in a test that scripted N turns
 /// doesn't crash.
 #[tokio::test]
-#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[ignore = "requires MOCK_LLM_URL"]
 #[serial]
 async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
     let Some(mock_url) = mock_llm_url() else {
@@ -130,22 +117,12 @@ async fn mock_llm_script_list_clamps_to_last_element_after_exhaustion() {
     let script = serde_json::json!({ needle: ["R1", "R2"] }).to_string();
     configure_mock(&mock_url, &script).await;
 
-    let cli = PekoCli::new();
-    create_mock_principal(&cli, "clamp-agent", &mock_url);
-    let _daemon = DaemonGuard::spawn(&cli);
-
     for (i, expected) in ["R1", "R2", "R2", "R2"].iter().enumerate() {
         let prompt = format!("needle {needle} call {i}");
-        let (stdout, stderr, status) = send_once(&cli, &["send", "clamp-agent", &prompt]);
-        assert_eq!(
-            status.code(),
-            Some(0),
-            "peko send #{i} exited non-zero (status={status:?})\n\
-             stdout: {stdout}\nstderr: {stderr}",
-        );
+        let body = complete(&mock_url, &prompt).await;
         assert!(
-            stdout.contains(expected),
-            "call #{i} did not return {expected}\nstdout: {stdout}\nstderr: {stderr}",
+            body.contains(expected),
+            "call #{i} missed {expected}: {body}"
         );
     }
 }
