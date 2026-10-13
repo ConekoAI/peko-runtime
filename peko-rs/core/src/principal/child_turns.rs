@@ -57,10 +57,7 @@ use crate::agents::subagent_executor::{
 use crate::principal::agent_runner::build_agent_config;
 use crate::principal::config::PrincipalConfig;
 use crate::principal::factory::DefaultPrincipalRouterFactory;
-use crate::principal::peer_children::ensure_peer_child;
-use crate::principal::peer_dm::{
-    ensure_peer_dm_channel, find_peer_dm_channel, post_peer_dm_reply, PeerDmSubscriberHook,
-};
+use crate::principal::peer_dm::{ensure_peer_dm_channel, post_peer_dm_reply, PeerDmSubscriberHook};
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
@@ -369,17 +366,56 @@ impl PeerChildTurns {
     /// debug log (standalone/test contexts). `dm_channel` is `None` in
     /// both cases (callers skip the posts).
     pub(crate) async fn ensure_child_ingress(&self, peer: &Subject) -> Result<PeerChildIngress> {
-        let child_id = ensure_peer_child(&self.agent_name, peer, &self.session_manager).await?;
-        let Some(port) = self.channel_port.clone() else {
-            tracing::debug!(
-                peer = %peer,
-                "peer DM provisioning skipped: no channel port attached"
-            );
-            return Ok(PeerChildIngress {
-                child_id,
-                dm_channel: None,
-            });
+        let port = self
+            .channel_port
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Conversation ingress requires a channel store"))?;
+        let known = port.actor_info(peer).await;
+        let peer = if known.identity_key != known.address {
+            known.subject()
+        } else {
+            let hub = peer.subject_id().strip_prefix("local_");
+            port.register_actor(
+                peer,
+                hub,
+                None,
+                None,
+                None,
+                if hub.is_some() {
+                    "registered"
+                } else {
+                    "local_only"
+                },
+            )
+            .await?
+            .subject()
         };
+        let slug = crate::principal::peer_children::peer_child_slug(&peer)?;
+        let initial_lock = self
+            .dm_lock
+            .clone()
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        let initial_guard = initial_lock.lock().await;
+        let me = port.actor_info(&Subject::from(&self.principal_id)).await;
+        let other = port.actor_info(&peer).await;
+        let expected = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
+        let created = !port
+            .list_for_principal(&self.principal_id)
+            .await?
+            .contains(&expected);
+        let channel = port
+            .ensure_dm(&self.principal_id, &peer, &format!("/{slug}"))
+            .await?;
+        drop(initial_guard);
+        let child_id = crate::principal::peer_children::ensure_channel_child(
+            &self.agent_name,
+            channel.as_str(),
+            &slug,
+            &peer.to_string(),
+            &self.session_manager,
+        )
+        .await?;
+
         // Tests may leave `dm_lock` unset; a call-local mutex gives no
         // cross-call serialization (documented on the field).
         let fallback_lock = tokio::sync::Mutex::new(());
@@ -387,7 +423,7 @@ impl PeerChildTurns {
         match ensure_peer_dm_channel(
             &port,
             &self.principal_id,
-            peer,
+            &peer,
             &child_id,
             &self.session_manager,
             lock,
@@ -395,7 +431,7 @@ impl PeerChildTurns {
         .await
         {
             Ok(provision) => {
-                if provision.created {
+                if created || provision.created {
                     if let Some(hook) = &self.dm_subscriber_hook {
                         hook(self.principal_id.clone(), provision.channel.clone());
                     }
@@ -440,23 +476,7 @@ impl PeerChildTurns {
         else {
             return (None, None);
         };
-        let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
-            (Some("user"), Some(id)) => Some(Subject::User(id.to_string())),
-            (Some("principal"), Some(id)) => Some(Subject::Principal(id.to_string().into())),
-            (Some("visitor"), Some(id)) => Some(Subject::Visitor(id.to_string())),
-            _ => None,
-        };
-        let channel = match (&self.channel_port, meta.slug.as_deref()) {
-            (Some(port), Some(slug)) => {
-                find_peer_dm_channel(port, &self.principal_id, &format!("/{slug}"))
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|id| id.to_string())
-            }
-            _ => None,
-        };
-        (peer.map(|p| p.to_string()), channel)
+        (None, meta.channel_id.clone())
     }
 
     /// Drive one streaming turn in the peer's standing child session.
@@ -548,7 +568,7 @@ impl PeerTurnSurfaceImpl {
 
 #[async_trait::async_trait]
 impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
-    async fn peer_surface(&self, session_id: &str) -> Option<(String, String)> {
+    async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)> {
         let metas = self
             .session_manager
             .write()
@@ -559,19 +579,19 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
         let meta = metas
             .iter()
             .find(|m| m.session_id.to_string() == session_id)?;
-        let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
-            (Some("user"), Some(id)) => Subject::User(id.to_string()),
-            (Some("principal"), Some(id)) => Subject::Principal(id.to_string().into()),
-            (Some("visitor"), Some(id)) => Subject::Visitor(id.to_string()),
-            _ => return None,
-        };
-        let slug = meta.slug.as_deref()?;
-        let channel =
-            find_peer_dm_channel(&self.channel_port, &self.principal_id, &format!("/{slug}"))
-                .await
-                .ok()
-                .flatten()?;
-        Some((peer.to_string(), channel.to_string()))
+        let channel = meta.channel_id.as_ref()?;
+        let id = peko_channel::ChannelId::parse(channel)?;
+        if self
+            .channel_port
+            .list_members(&id)
+            .await
+            .ok()?
+            .contains(&Subject::from(&self.principal_id))
+        {
+            Some((None, channel.clone()))
+        } else {
+            None
+        }
     }
 
     async fn post_reply(&self, channel_id: &str, text: &str) {
@@ -643,14 +663,11 @@ fn render_self_position(
         return Some("your position: `sess:/` — root session (the principal's trunk)".to_string());
     }
     let path = peko_session::path::compute_path(metas, session_id);
-    let role = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
-        (Some("user"), Some(id)) => {
-            format!("standing peer child of the trunk (peer: user:{id})")
+    let role = match crate::principal::conversation::binding(meta) {
+        Some(crate::principal::conversation::Conversation::Channel(channel)) => {
+            format!("conversation session (channel: {channel})")
         }
-        (Some("principal"), Some(id)) => {
-            format!("standing peer child of the trunk (peer: principal:{id})")
-        }
-        _ => "spawned child session".to_string(),
+        None => "spawned child session".to_string(),
     };
     Some(format!("your position: `{path}` — {role}"))
 }
@@ -717,39 +734,46 @@ impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContex
         if workspace.is_empty() || principal_id.is_empty() {
             return None;
         }
-        let sessions_dir = sessions_dir_for_workspace(&workspace)?;
-        let metas = peko_session::manager::SessionManager::new()
-            .with_sessions_dir_internal(sessions_dir)
-            .list_all_sessions(false)
-            .await
-            .unwrap_or_default();
         let port = input.channel_port.clone()?;
         let principal_id = peko_subject::PrincipalId(principal_id);
 
-        let mut lines = String::new();
-        for meta in &metas {
-            let peer = match (meta.peer_type.as_deref(), meta.peer_id.as_deref()) {
-                (Some("user"), Some(id)) => format!("user:{id}"),
-                (Some("principal"), Some(id)) => format!("principal:{id}"),
-                _ => continue,
-            };
-            let Some(slug) = meta.slug.as_deref() else {
-                continue;
-            };
-            let channel = find_peer_dm_channel(&port, &principal_id, &format!("/{slug}"))
-                .await
-                .ok()
-                .flatten()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "none".to_string());
-            lines.push_str(&format!("- `/{slug}` — {peer} — channel {channel}\n"));
+        let me = port.actor_info(&Subject::from(&principal_id)).await;
+        let mut lines = vec![format!(
+            "your actor: {} — Hub ID: {} — registration: {}",
+            me.address,
+            me.hub_address().unwrap_or_else(|| "none".into()),
+            me.registration
+        )];
+        for channel in port
+            .list_for_principal(&principal_id)
+            .await
+            .unwrap_or_default()
+        {
+            let roster = port.participants(&channel).await.unwrap_or_default();
+            let names = roster
+                .into_iter()
+                .map(|p| {
+                    format!(
+                        "{} — Hub: {} — name: {} — registration: {}{}",
+                        p.address,
+                        p.hub_address().unwrap_or_else(|| "none".into()),
+                        p.name.as_deref().unwrap_or("unknown"),
+                        p.registration,
+                        p.mention
+                            .as_ref()
+                            .map(|m| format!(" — mention: {m}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("- channel `{channel}` — participants: {names}"));
         }
         if lines.is_empty() {
             return None;
         }
-        Some(format!(
-            "peer sessions (address with Agent path or ChannelSend):\n{lines}"
-        ))
+        Some(format!("known contacts and conversations (Contacts lists/resolves actors; ChannelRead returns current participants):\n{}",
+            crate::tools::prompt_sections::render_capped_lines(&lines, 8192, "More contacts: use Contacts with action=list.")))
     }
 }
 
@@ -762,10 +786,48 @@ mod tests {
     };
     use peko_channel::ChannelPort;
 
+    #[tokio::test]
+    async fn resumed_group_surface_has_a_channel_and_no_invented_user() {
+        use crate::agents::subagent_executor::PeerTurnSurface;
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(RwLock::new(
+            peko_session::SessionManager::new()
+                .with_sessions_dir_internal(tmp.path().join("sessions")),
+        ));
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().into(),
+                shared_dir: None,
+            },
+        ));
+        let id = peko_subject::PrincipalId("principal-key".into());
+        let channel = peko_channel::ChannelId::for_group("eng");
+        port.create(
+            &id,
+            peko_channel::CreateOpts::runtime("eng").with_id(channel),
+        )
+        .await
+        .unwrap();
+        let session =
+            crate::principal::peer_children::ensure_group_child("root", "group:eng", &manager)
+                .await
+                .unwrap();
+        let surface = PeerTurnSurfaceImpl::new(manager.clone(), port.clone(), id);
+        assert_eq!(
+            surface.peer_surface(&session).await,
+            Some((None, "group:eng".into()))
+        );
+        let outsider =
+            PeerTurnSurfaceImpl::new(manager, port, peko_subject::PrincipalId("other".into()));
+        assert_eq!(outsider.peer_surface(&session).await, None);
+    }
+
     /// Minimal principal config for persona tests — everything
     /// defaulted except `name` and `routing`.
     fn test_config(name: &str, routing: PrincipalRoutingConfig) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
@@ -1076,19 +1138,11 @@ mod tests {
     async fn ensure_child_without_port_skips_provisioning() {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
-        let peer = Subject::User("alice".to_string());
-        turns.ensure_child_ingress(&peer).await.unwrap();
-        // Nothing to assert on the channel side except "did not
-        // panic"; the child still exists.
-        let metas = turns
-            .session_manager
-            .write()
+        let error = turns
+            .ensure_child_ingress(&Subject::User("alice".into()))
             .await
-            .list_all_sessions(false)
-            .await
-            .unwrap();
-        assert_eq!(metas.len(), 1);
-        assert_eq!(metas[0].slug.as_deref(), Some("user-alice"));
+            .unwrap_err();
+        assert!(error.to_string().contains("requires a channel store"));
     }
 
     /// Concurrent first-contact ensures for the same peer converge on
@@ -1177,8 +1231,11 @@ mod tests {
         assert_eq!(
             posted,
             vec![
-                ("user:alice".to_string(), "hello".to_string()),
-                ("prin_self".to_string(), "hi alice".to_string()),
+                ("user:local:alice".to_string(), "hello".to_string()),
+                (
+                    "principal:local:prin_self".to_string(),
+                    "hi alice".to_string()
+                ),
             ]
         );
 
@@ -1195,10 +1252,11 @@ mod tests {
     async fn ensure_child_ingress_without_port_reports_no_channel() {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
-        let peer = Subject::User("alice".to_string());
-        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
-        assert!(ingress.dm_channel.is_none());
-        assert!(!ingress.child_id.is_empty());
+        let error = turns
+            .ensure_child_ingress(&Subject::User("alice".into()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("requires a channel store"));
     }
 
     /// Conversation-prompt context: the peer's subject + DM channel
@@ -1221,7 +1279,7 @@ mod tests {
         let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
 
         let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
-        assert_eq!(peer_str.as_deref(), Some("user:alice"));
+        assert_eq!(peer_str.as_deref(), None);
         assert_eq!(channel.as_deref(), Some(dm.to_string().as_str()));
 
         // Unknown session id ⇒ no context.
@@ -1236,11 +1294,11 @@ mod tests {
     async fn conversation_context_without_port_omits_channel() {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
-        let peer = Subject::User("alice".to_string());
-        let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
-        let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
-        assert_eq!(peer_str.as_deref(), Some("user:alice"));
-        assert!(channel.is_none());
+        let error = turns
+            .ensure_child_ingress(&Subject::User("alice".into()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("requires a channel store"));
     }
 
     // ─── ADR-052 D5: self-position rendering ───────────────────────
@@ -1265,6 +1323,7 @@ mod tests {
             title: None,
             parent_session_id: parent,
             trigger: "user".to_string(),
+            channel_id: None,
             peer_type: None,
             peer_id: None,
             slug: slug.map(String::from),
@@ -1294,6 +1353,7 @@ mod tests {
         let task =
             peko_session::id::SessionId::parse("00000000-0000-0000-0000-000000000004").unwrap();
         let mut peer_child = position_meta(local_user, Some(trunk), Some("local-user"));
+        peer_child.trigger = "spawn".into();
         peer_child.peer_type = Some("user".to_string());
         peer_child.peer_id = Some("local".to_string());
         let metas = vec![
@@ -1320,8 +1380,7 @@ mod tests {
         let (_, local_user, _, metas) = position_tree();
         let rendered = render_self_position(&metas, local_user).expect("peer child has a position");
         assert_eq!(
-            rendered,
-            "your position: `sess:/local-user` — standing peer child of the trunk (peer: user:local)",
+            rendered, "your position: `sess:/local-user` — spawned child session",
             "got: {rendered}"
         );
     }

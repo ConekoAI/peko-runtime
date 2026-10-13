@@ -40,21 +40,17 @@ pub enum ApiKeyCommands {
     },
 }
 
-/// Mask a token for display
-fn mask_key(key: &str) -> String {
-    if key.len() <= 8 {
-        "***".to_string()
-    } else {
-        format!("{}...{}", &key[..4], &key[key.len() - 4..])
-    }
-}
-
 /// Handle auth commands
 pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
         AuthCommands::Status => {
-            let service = CredentialsService::new(paths.clone())?;
-            print_registry_status(&service, false)?;
+            match peko_core::tunnel::HubLogin::load(&paths.config_dir)? {
+                Some(login) => println!(
+                    "Logged in to {} as user:hub:{} (local ID: local_{})",
+                    login.hub_url, login.user_id, login.user_id
+                ),
+                None => println!("Local user: user:local:local (no Hub login)"),
+            }
             Ok(())
         }
 
@@ -123,58 +119,142 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
     }
 }
 
-/// Print registry login status
-fn print_registry_status(service: &CredentialsService, show: bool) -> Result<()> {
-    match service.get_registry_token()? {
-        Some(cred) => {
-            let token_display = if show {
-                cred.token.clone()
-            } else {
-                mask_key(&cred.token)
-            };
-            println!("Registry login status:");
-            println!("  ✓ Logged in to {}", cred.registry_host);
-            if let Some(ns) = &cred.user_namespace {
-                println!("  Namespace: {ns}");
-            }
-            println!("  Token: {token_display}");
-        }
-        None => {
-            println!("Registry login status:");
-            println!("  ✗ Not logged in to registry");
-            println!("    Run 'peko login --api-key <key>' to log in");
-        }
+fn hub_origin(host: &str) -> Result<String> {
+    let url = reqwest::Url::parse(&if host.contains("://") {
+        host.to_string()
+    } else {
+        format!("https://{host}")
+    })?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none(),
+        "Use a PekoHub HTTP(S) origin"
+    );
+    Ok(url.origin().ascii_serialization())
+}
+
+/// Authenticate the human account; login does not register principals or move runtime ownership.
+pub async fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) -> Result<()> {
+    let origin = hub_origin(host)?;
+    let Some(key) = api_key else {
+        println!("Create a PekoHub API key at {origin}/profile, then run peko login --hub {origin} --api-key <key>");
+        return Ok(());
+    };
+    let response = reqwest::Client::new()
+        .get(format!("{origin}/v1/auth/me"))
+        .bearer_auth(&key)
+        .send()
+        .await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "PekoHub login rejected: HTTP {}",
+        response.status()
+    );
+    let account: serde_json::Value = response.json().await?;
+    let user_id = account
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("PekoHub returned no account ID"))?;
+    uuid::Uuid::parse_str(user_id)?;
+    CredentialsService::new(paths.clone())?.set_registry_token(
+        key,
+        origin.clone(),
+        account
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+    )?;
+    peko_core::tunnel::HubLogin {
+        user_id: user_id.into(),
+        hub_url: origin.clone(),
     }
+    .save(&paths.config_dir)?;
+    println!("Logged in to {origin} as user:hub:{user_id} (local ID: local_{user_id})");
     Ok(())
 }
 
-/// Handle top-level `peko login` command
-pub fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) -> Result<()> {
-    let service = CredentialsService::new(paths.clone())?;
-
-    if let Some(key) = api_key {
-        // Store the API key directly as a Bearer token
-        service.set_registry_token(key, host.to_string(), None)?;
-        println!("✓ Logged in to {host}");
-        println!("  Token stored in {}", service.vault_path().display());
-    } else {
-        println!("To log in to PekoHub, visit:");
-        println!("  https://{host}/api/v1/auth/github/authorize");
-        println!("Or generate an API key at:");
-        println!("  https://{host}/profile");
-        println!();
-        println!("Then run: peko login --api-key <your-key>");
+pub fn handle_logout(paths: &GlobalPaths, host: Option<&str>) -> Result<()> {
+    let current = peko_core::tunnel::HubLogin::load(&paths.config_dir)?;
+    let origin = match host {
+        Some(host) => hub_origin(host)?,
+        None => current
+            .as_ref()
+            .map(|l| l.hub_url.clone())
+            .unwrap_or_else(|| "https://pekohub.org".into()),
+    };
+    CredentialsService::new(paths.clone())?.clear_registry_token(&origin)?;
+    if current
+        .as_ref()
+        .is_some_and(|login| login.hub_url == origin)
+    {
+        peko_core::tunnel::HubLogin::logout(&paths.config_dir)?;
     }
+    println!("Logged out from {origin}");
     Ok(())
 }
 
-/// Handle top-level `peko logout` command
-pub fn handle_logout(paths: &GlobalPaths, host: &str) -> Result<()> {
-    let service = CredentialsService::new(paths.clone())?;
-    if service.clear_registry_token(host)? {
-        println!("✓ Logged out from {host}")
-    } else {
-        println!("✗ Not logged in to {host}")
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn account_server(status: &str, body: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let response=format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            let received = socket.read(&mut buffer).await.unwrap();
+            assert!(received > 0);
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        origin
     }
-    Ok(())
+    #[tokio::test]
+    async fn login_validates_the_account_before_switching_local_identity() {
+        crate::test_support::init_credentials();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = GlobalPaths::new(
+            dir.path().join("config"),
+            dir.path().join("data"),
+            dir.path().join("cache"),
+            "local".into(),
+        );
+        let first = uuid::Uuid::new_v4().to_string();
+        let second = uuid::Uuid::new_v4().to_string();
+        peko_core::tunnel::HubLogin {
+            user_id: first.clone(),
+            hub_url: "https://original".into(),
+        }
+        .save(&paths.config_dir)
+        .unwrap();
+        let rejected = account_server("401 Unauthorized", "{}").await;
+        assert!(
+            handle_login(&paths, &rejected, Some("test-only-key".into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            super::super::identity_for_config_dir(&paths.config_dir),
+            format!("local_{first}")
+        );
+        let accepted = account_server(
+            "200 OK",
+            &serde_json::json!({"id":second,"namespace":"second"}).to_string(),
+        )
+        .await;
+        handle_login(&paths, &accepted, Some("test-only-key".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            super::super::identity_for_config_dir(&paths.config_dir),
+            format!("local_{second}")
+        );
+        handle_logout(&paths, None).unwrap();
+        assert_eq!(
+            super::super::identity_for_config_dir(&paths.config_dir),
+            "local"
+        );
+    }
 }

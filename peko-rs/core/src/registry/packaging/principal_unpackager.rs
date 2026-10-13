@@ -9,7 +9,7 @@ use crate::registry::packaging::path_safety::safe_join;
 use crate::registry::packaging::principal_manifest::PrincipalManifest;
 use crate::registry::packaging::validation::ValidationResult;
 use peko_auth::Subject;
-use peko_identity::{storage::KeyStorage, Identity, KeyPairExport};
+use peko_identity::{Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
 use std::collections::HashMap;
 use std::io::Read;
@@ -87,6 +87,7 @@ pub struct PrincipalUnpackager {
     package_path: PathBuf,
     config_dir: PathBuf,
     data_dir: PathBuf,
+    identity_vault: Option<Arc<crate::common::vault::Vault>>,
 }
 
 impl PrincipalUnpackager {
@@ -96,7 +97,14 @@ impl PrincipalUnpackager {
             package_path: package_path.as_ref().to_path_buf(),
             config_dir,
             data_dir,
+            identity_vault: None,
         }
+    }
+
+    /// Use the daemon's unlocked vault for imported signing keys.
+    pub fn with_identity_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
+        self.identity_vault = Some(vault);
+        self
     }
 
     /// Inspect a package without importing.
@@ -262,6 +270,37 @@ impl PrincipalUnpackager {
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
         config.name = name.clone();
+        config.hub_id = None;
+        config.exposure = peko_auth::Exposure::LocalOnly;
+        if options.rotate_keys {
+            config.id = Some(peko_subject::PrincipalId::generate());
+            config.actor_key = Some(uuid::Uuid::new_v4().to_string());
+        } else {
+            config
+                .id
+                .get_or_insert_with(peko_subject::PrincipalId::generate);
+            config
+                .actor_key
+                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
+        }
+
+        // A known actor keeps this runtime's local ID when a portable snapshot
+        // promotes a contact into a locally hosted principal.
+        use peko_channel::ChannelPort;
+        let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+            runtime_dir: PathResolver::with_dirs(
+                self.config_dir.clone(),
+                self.data_dir.clone(),
+                self.data_dir.clone(),
+            )
+            .runtime_dir(),
+            shared_dir: None,
+        });
+        if let Some(actor) = store.known_actors().await?.into_iter().find(|a| {
+            a.kind == "principal" && config.actor_key.as_deref() == Some(a.identity_key.as_str())
+        }) {
+            config.id = Some(peko_subject::PrincipalId(actor.local_id));
+        }
 
         // Default owner to local user unless already set
         if matches!(config.owner, Subject::User(ref u) if u == "default") {
@@ -383,39 +422,42 @@ impl PrincipalUnpackager {
             .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
         let did_doc: peko_identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
 
-        // Phase A: identity lives in the Shared tier so it ships
-        // in the portable bundle. The directory holds the
-        // `identity.json` (public DID) and `keys.enc` (private key
-        // export); `KeyStorage::with_path` expects the directory.
-        //
-        // ADR-066 D9: gate the directory on ownership via the
-        // caller-projected authority. Sponsor's `[[permissions]]`
-        // ACL is the lower-level PekoHub check.
-        let identity_dir = authority
+        // Gate the principal workspace before installing a signing credential.
+        authority
             .shared_identity_dir_write_for_name(principal_name)
-            .await?
-            .to_path_buf();
-
-        if options.rotate_keys {
-            let new_identity =
-                Identity::new(&manifest.name, peko_identity::did::DIDScope::Local).await?;
-            let key_storage = KeyStorage::with_path(identity_dir)?;
-            key_storage.store_identity(&new_identity).await?;
-            return Ok(new_identity);
-        }
-
-        let key_export: KeyPairExport = serde_json::from_slice(&files["identity/keys.enc"])?;
-        let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
-
-        let key_storage = KeyStorage::with_path(identity_dir)?;
-        if key_storage.exists(&identity.did) && !options.force {
-            anyhow::bail!(
-                "DID {} already exists locally. Use --force to overwrite or --rotate-keys to generate a new identity.",
-                identity.did
-            );
-        }
-        key_storage.store_identity(&identity).await?;
-
+            .await?;
+        let identity = if options.rotate_keys {
+            Identity::new(&manifest.name, peko_identity::did::DIDScope::Local).await?
+        } else {
+            let key_export: KeyPairExport = serde_json::from_slice(&files["identity/keys.enc"])?;
+            Identity::from_did_document_and_key(did_doc, key_export)?
+        };
+        let vault = match &self.identity_vault {
+            Some(vault) => vault.clone(),
+            None => {
+                #[cfg(test)]
+                let vault = if self.config_dir.join("vault.enc").exists() {
+                    crate::common::vault::Vault::load_with_passphrase(
+                        self.config_dir.join("vault.enc"),
+                        &secrecy::SecretString::new("snapshot-fixture".into()),
+                    )?
+                } else {
+                    crate::common::vault::Vault::for_test(&self.config_dir, "snapshot-fixture")
+                };
+                #[cfg(not(test))]
+                let vault = crate::common::vault::Vault::load(self.config_dir.join("vault.enc"))?;
+                Arc::new(vault)
+            }
+        };
+        let keypair = identity
+            .keypair
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Snapshot has no keypair"))?;
+        vault.set_principal_identity_private_key(
+            &format!("{}#keys-1", identity.did),
+            "ed25519-raw-base64",
+            &keypair.export().private_key,
+        )?;
         Ok(identity)
     }
 
@@ -767,6 +809,8 @@ mod tests {
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),
@@ -828,15 +872,65 @@ mod tests {
             .join("planner.md");
         assert!(role_path.exists(), "role prompt restored");
 
-        // Identity persisted (Shared tier — Phase A moved it out of
-        // `data_dir/principals/{name}/identity/` so it ships in the
-        // portable bundle).
-        let identity_dir = config_dir
-            .join("principals")
-            .join("importme")
-            .join("identity");
-        let storage = KeyStorage::with_path(identity_dir).unwrap();
-        assert!(storage.exists(&original_did), "identity persisted");
+        let vault = crate::common::vault::Vault::load_with_passphrase(
+            config_dir.join("vault.enc"),
+            &secrecy::SecretString::new("snapshot-fixture".into()),
+        )
+        .unwrap();
+        assert!(vault
+            .get_principal_identity_private_key(&format!("{original_did}#keys-1"))
+            .is_some());
+        let restored: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
+        assert!(restored.hub_id.is_none());
+        assert!(restored.id.is_some());
+        assert!(restored.actor_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn rotated_snapshot_is_a_new_local_actor_with_a_vault_signer() {
+        let temp = tempfile::tempdir().unwrap();
+        let identity = Identity::new("source", DIDScope::Local).await.unwrap();
+        let source_did = identity.did.clone();
+        let mut config = sample_config("source", &source_did);
+        let source_id = peko_subject::PrincipalId::generate();
+        config.id = Some(source_id.clone());
+        config.actor_key = Some("original-actor".into());
+        config.hub_id = Some(uuid::Uuid::new_v4().to_string());
+        config.exposure = peko_auth::Exposure::Public;
+        let output = temp.path().join("source.peko");
+        PrincipalPackager::new(config, identity)
+            .export(PrincipalExportOptions {
+                output_path: Some(output.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config_dir = temp.path().join("config");
+        let vault = Arc::new(crate::common::vault::Vault::for_test(
+            &config_dir,
+            "snapshot-test",
+        ));
+        let result = PrincipalUnpackager::new(&output, config_dir, temp.path().join("data"))
+            .with_identity_vault(vault.clone())
+            .import(PrincipalImportOptions {
+                rotate_keys: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(result.config_path).unwrap()).unwrap();
+        assert!(result.keys_rotated);
+        assert_ne!(result.did, source_did);
+        assert!(result.did.starts_with("did:key:"));
+        assert_ne!(config.id.unwrap(), source_id);
+        assert_ne!(config.actor_key.as_deref(), Some("original-actor"));
+        assert!(config.hub_id.is_none());
+        assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
+        assert!(vault
+            .get_principal_identity_private_key(&format!("{}#keys-1", result.did))
+            .is_some());
     }
 
     #[tokio::test]
@@ -992,10 +1086,10 @@ mod tests {
             "plans restored"
         );
 
-        // Cron schedule restored AND rebound to the imported
-        // principal's effective runtime id. `config.id` is unset in
-        // this fixture, so the effective id resolves to the imported
-        // DID (id → DID → name, the cron tools' resolution order).
+        // Cron state is rebound to the destination runtime's local actor ID.
+        let restored: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
+        let local_id = restored.id.unwrap().0;
         let schedule_path = data_dir
             .join("principals")
             .join("live")
@@ -1004,7 +1098,7 @@ mod tests {
             .join("schedule.toml");
         let schedule = std::fs::read_to_string(&schedule_path).unwrap();
         assert!(
-            schedule.contains(&format!("principal_id = \"{original_did}\"")),
+            schedule.contains(&format!("principal_id = \"{local_id}\"")),
             "principal ids rebound to the effective runtime id: {schedule}"
         );
         assert!(

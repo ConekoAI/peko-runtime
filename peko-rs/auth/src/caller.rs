@@ -1,6 +1,6 @@
 //! Caller context — resolved identity for every incoming request
 
-use peko_subject::{PrincipalDID, Subject};
+use peko_subject::Subject;
 
 use super::types::ApiKeyScope;
 
@@ -11,6 +11,8 @@ pub enum Identity {
     Local,
     /// pekohub user (sub claim from JWT)
     User(String),
+    /// PekoHub anonymous visitor (never an account).
+    Visitor(String),
     /// API key ID (prefix of the key, not the secret)
     ApiKey(String),
 }
@@ -22,6 +24,7 @@ impl Identity {
         match self {
             Self::Local => "local".to_string(),
             Self::User(uid) => format!("user:{uid}"),
+            Self::Visitor(uid) => format!("visitor:{uid}"),
             Self::ApiKey(key_id) => format!("apikey:{key_id}"),
         }
     }
@@ -54,43 +57,55 @@ pub struct CallerContext {
     pub api_key_scopes: Vec<ApiKeyScope>,
     /// ADR-057: hub user id bound to this runtime (the pekohub user
     /// that owns the runtime registration). Only set for `Local`
-    /// callers — the daemon resolves it from the pekohub credential
-    /// at startup. `None` means "not logged into pekohub" and the
+    /// callers — the daemon rereads authenticated login metadata
+    /// on each request. `None` means "not logged into pekohub" and the
     /// local terminal attributes as `user:local`.
-    pub hub_owner: Option<String>,
+    pub hub_user_id: Option<String>,
 }
 
 impl CallerContext {
     /// Create a local-trust caller context
     #[must_use]
     pub fn local() -> Self {
-        Self::local_with_hub_owner(None)
+        Self::local_with_hub_user_id(None)
     }
 
     /// Create a local-trust caller context with a known pekohub
-    /// owner (ADR-057). `hub_owner` is the hub user id captured from
-    /// the pekohub credential; `None` = not logged in.
+    /// owner (ADR-057). `hub_user_id` is the hub user id captured from
+    /// authenticated login metadata; `None` = not logged in.
     #[must_use]
-    pub fn local_with_hub_owner(hub_owner: Option<String>) -> Self {
+    pub fn local_with_hub_user_id(hub_user_id: Option<String>) -> Self {
         Self {
             identity: Identity::Local,
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: "local".to_string(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            hub_owner,
+            hub_user_id,
         }
     }
 
     /// Create a caller context from a pekohub JWT
     #[must_use]
     pub fn from_jwt(sub: String) -> Self {
+        let sub = sub.strip_prefix("user:").unwrap_or(&sub).to_string();
         let bucket = format!("user:{sub}");
         Self {
             identity: Identity::User(sub),
             auth_method: AuthMethod::PekohubJwt,
             rate_limit_bucket: bucket,
             api_key_scopes: Vec::new(), // N/A for JWT
-            hub_owner: None,
+            hub_user_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn from_visitor_jwt(sub: String) -> Self {
+        Self {
+            rate_limit_bucket: format!("visitor:{sub}"),
+            identity: Identity::Visitor(sub),
+            auth_method: AuthMethod::PekohubJwt,
+            api_key_scopes: Vec::new(),
+            hub_user_id: None,
         }
     }
 
@@ -103,8 +118,27 @@ impl CallerContext {
             auth_method: AuthMethod::ApiKey,
             rate_limit_bucket: bucket,
             api_key_scopes: scopes,
-            hub_owner: None,
+            hub_user_id: None,
         }
+    }
+
+    /// Permission projection for a resource. Physical local trust is owner-equivalent;
+    /// the message actor and its conversation remain the logged-in account.
+    #[must_use]
+    pub fn permission_subject(&self, owner: &Subject) -> Subject {
+        if self.is_operator() {
+            owner.clone()
+        } else {
+            self.subject()
+        }
+    }
+
+    /// Local transport or an explicitly administrative runtime API key.
+    #[must_use]
+    pub fn is_operator(&self) -> bool {
+        self.is_local()
+            || (matches!(self.identity, Identity::ApiKey(_))
+                && self.api_key_scopes.contains(&ApiKeyScope::Admin))
     }
 
     /// Check if this caller has local trust (owner equivalent)
@@ -113,18 +147,10 @@ impl CallerContext {
         matches!(self.identity, Identity::Local)
     }
 
-    /// Get the subject ID for ownership/permission checks (ADR-033).
-    ///
-    /// - Local → `local` (bare token; matches the legacy wire shape)
-    /// - User → `user:{sub}`
-    /// - ApiKey → `apikey:{key_id}`
+    /// The local actor ID. Credential diagnostics use rate_limit_bucket separately.
     #[must_use]
     pub fn subject_id(&self) -> String {
-        match &self.identity {
-            Identity::Local => "local".to_string(),
-            Identity::User(sub) => format!("user:{sub}"),
-            Identity::ApiKey(key_id) => format!("apikey:{key_id}"),
-        }
+        self.subject().subject_id().to_string()
     }
 
     /// Get the caller's `Subject` projection (ADR-039, ADR-041).
@@ -133,9 +159,8 @@ impl CallerContext {
     /// audit): API-key callers are *not* pekohub users, they are a
     /// distinct actor class. They project as `Subject::Principal`
     /// carrying a typed `PrincipalDID` of the form `apikey:{key_id}`.
-    /// `Local` and `User` retain their pre-R5 wire-compatible
-    /// `Subject::User` form because their `subject_id()` text is what
-    /// the on-disk grant list expects.
+    /// `User` uses the same bare account id for ownership, attribution and
+    /// channel membership. Old prefixed user grants normalize when checked.
     ///
     /// Equality across kinds is intentionally prevented
     /// (`Subject::User("apikey:...") != Subject::Principal(...)` of the
@@ -145,11 +170,10 @@ impl CallerContext {
     #[must_use]
     pub fn subject(&self) -> Subject {
         match &self.identity {
-            Identity::Local => Subject::User("local".to_string()),
-            Identity::User(sub) => Subject::User(format!("user:{sub}")),
-            Identity::ApiKey(key_id) => {
-                Subject::Principal(PrincipalDID(format!("apikey:{key_id}")))
-            }
+            Identity::Local => self.attribution_subject(),
+            Identity::User(sub) => Subject::User(format!("local_{sub}")),
+            Identity::Visitor(sub) => Subject::Visitor(format!("local_{sub}")),
+            Identity::ApiKey(_) => self.attribution_subject(),
         }
     }
 
@@ -162,7 +186,7 @@ impl CallerContext {
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: bucket.clone(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            hub_owner: None,
+            hub_user_id: None,
         }
     }
 
@@ -174,9 +198,7 @@ impl CallerContext {
     /// - **user** — a pekohub-verified human: a local terminal whose
     ///   runtime is logged into pekohub (`Subject::User(<hub owner
     ///   id>)`) or a remote pekohub JWT caller
-    ///   (`Subject::User(<bare sub>)`; the prefixed `user:<sub>`
-    ///   grant-matching projection stays in
-    ///   [`CallerContext::subject`]).
+    ///   (`Subject::User(<bare sub>)`; ownership checks use that same canonical subject).
     /// - **local** — the unverified local terminal
     ///   (`Subject::User("local")`).
     /// - **principal** — a cross-runtime actor, signature-verified
@@ -192,11 +214,13 @@ impl CallerContext {
     pub fn attribution_subject(&self) -> Subject {
         match &self.identity {
             Identity::Local | Identity::ApiKey(_) => Subject::User(
-                self.hub_owner
-                    .clone()
+                self.hub_user_id
+                    .as_ref()
+                    .map(|id| format!("local_{id}"))
                     .unwrap_or_else(|| "local".to_string()),
             ),
-            Identity::User(sub) => Subject::User(sub.clone()),
+            Identity::User(sub) => Subject::User(format!("local_{sub}")),
+            Identity::Visitor(sub) => Subject::Visitor(format!("local_{sub}")),
         }
     }
 
@@ -205,7 +229,7 @@ impl CallerContext {
     #[must_use]
     pub fn has_scope(&self, scope: &ApiKeyScope) -> bool {
         match self.identity {
-            Identity::Local | Identity::User(_) => true,
+            Identity::Local | Identity::User(_) | Identity::Visitor(_) => true,
             Identity::ApiKey(_) => self.api_key_scopes.contains(scope),
         }
     }
@@ -214,7 +238,6 @@ impl CallerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_subject::{PrincipalDID, SubjectKind};
 
     #[test]
     fn local_subject_is_user_local() {
@@ -235,9 +258,12 @@ mod tests {
     /// subject stays `user:local` (authority is unchanged; D2).
     #[test]
     fn local_attribution_uses_hub_owner_when_logged_in() {
-        let c = CallerContext::local_with_hub_owner(Some("39".to_string()));
-        assert_eq!(c.attribution_subject(), Subject::User("39".to_string()));
-        assert_eq!(c.subject(), Subject::User("local".to_string()));
+        let c = CallerContext::local_with_hub_user_id(Some("39".to_string()));
+        assert_eq!(
+            c.attribution_subject(),
+            Subject::User("local_39".to_string())
+        );
+        assert_eq!(c.subject(), Subject::User("local_39".to_string()));
         assert!(c.is_local());
     }
 
@@ -246,8 +272,11 @@ mod tests {
     #[test]
     fn jwt_attribution_is_bare_sub() {
         let c = CallerContext::from_jwt("39".to_string());
-        assert_eq!(c.attribution_subject(), Subject::User("39".to_string()));
-        assert_eq!(c.subject(), Subject::User("user:39".to_string()));
+        assert_eq!(
+            c.attribution_subject(),
+            Subject::User("local_39".to_string())
+        );
+        assert_eq!(c.subject(), Subject::User("local_39".to_string()));
     }
 
     /// ADR-057: API-key callers attribute as the runtime owner (a key
@@ -259,72 +288,37 @@ mod tests {
         let c = CallerContext::from_api_key("pkr_abc".to_string(), vec![]);
         assert_eq!(c.attribution_subject(), Subject::User("local".to_string()));
         // Authority stays key-typed (least privilege).
-        assert_eq!(
-            c.subject(),
-            Subject::Principal(PrincipalDID("apikey:pkr_abc".to_string()))
-        );
+        assert_eq!(c.subject(), Subject::User("local".to_string()));
     }
 
     #[test]
     fn jwt_subject_is_user_with_sub() {
         let s = CallerContext::from_jwt("alice".to_string()).subject();
-        assert_eq!(s, Subject::User("user:alice".to_string()));
+        assert_eq!(s, Subject::User("local_alice".to_string()));
     }
 
-    /// R5: API-key callers project as `Subject::Principal` carrying a
-    /// typed `PrincipalDID` of the form `apikey:{key_id}`. Pin the
-    /// kind + inner id separately — both halves are load-bearing for
-    /// the audit trail (kind tag) and the permission grant match
-    /// (subject_id() text).
     #[test]
-    fn api_key_subject_is_principal_typed() {
-        let s = CallerContext::from_api_key("pkr_abc123".to_string(), vec![]).subject();
-        assert_eq!(
-            s,
-            Subject::Principal(PrincipalDID("apikey:pkr_abc123".to_string()))
-        );
-        assert_eq!(s.kind(), SubjectKind::Principal);
-        assert_eq!(s.subject_id(), "apikey:pkr_abc123");
+    fn credentials_do_not_create_principal_actors() {
+        let mut caller = CallerContext::from_api_key("pkr_key".into(), vec![]);
+        assert_eq!(caller.subject(), Subject::User("local".into()));
+        assert_eq!(caller.subject_id(), "local");
+        assert_eq!(caller.rate_limit_bucket, "apikey:pkr_key");
+        caller.hub_user_id = Some("account".into());
+        assert_eq!(caller.subject(), Subject::User("local_account".into()));
     }
-
-    /// R5 cross-kind guard: a `Principal("apikey:foo")` is *not*
-    /// equal to `User("apikey:foo")` even though their `subject_id()`
-    /// texts are identical. The typed projection prevents a grant
-    /// issued for an API key from accidentally matching a (hypothetical)
-    /// user with the same id string, and vice versa.
     #[test]
-    fn api_key_principal_subject_is_not_equal_to_user_with_same_id() {
-        let principal = Subject::Principal(PrincipalDID("apikey:pkr_abc123".to_string()));
-        let user = Subject::User("apikey:pkr_abc123".to_string());
-        assert_ne!(
-            principal, user,
-            "cross-kind equality must be rejected (kind is part of identity)"
-        );
-        // subject_id() text equality is preserved — grants keyed on the
-        // text match regardless of kind, so legacy text-keyed grants
-        // still find api-key rows.
-        assert_eq!(principal.subject_id(), user.subject_id());
+    fn visitor_and_user_tokens_with_same_id_are_distinct() {
+        let user = CallerContext::from_jwt("same".into());
+        let visitor = CallerContext::from_visitor_jwt("same".into());
+        assert_ne!(user.subject(), visitor.subject());
+        assert_eq!(visitor.subject(), Subject::Visitor("local_same".into()));
+        assert!(!visitor.is_operator());
     }
-
-    /// subject_id() text must remain stable across the R5 change so
-    /// the on-disk grant list (which keys on the bare `apikey:{key_id}`
-    /// text) keeps matching API-key callers without a migration. The
-    /// audit trail's `caller_subject.subject_id()` field stays as
-    /// `apikey:...` for both kinds.
     #[test]
-    fn api_key_subject_id_text_matches_legacy_wire_shape() {
-        let c = CallerContext::from_api_key("pkr_xyz".to_string(), vec![]);
-        assert_eq!(c.subject_id(), "apikey:pkr_xyz");
-        assert_eq!(c.subject().subject_id(), "apikey:pkr_xyz");
-    }
-
-    /// `Subject::Display` (audit log + tunnel wire) now emits
-    /// `principal:apikey:{key_id}` for API-key callers (was
-    /// `user:apikey:{key_id}` pre-R5). Pin the new shape so the change
-    /// is intentional, not silent.
-    #[test]
-    fn api_key_subject_display_uses_principal_prefix() {
-        let s = CallerContext::from_api_key("pkr_xyz".to_string(), vec![]).subject();
-        assert_eq!(s.to_string(), "principal:apikey:pkr_xyz");
+    fn local_permission_projection_does_not_change_the_message_actor() {
+        let caller = CallerContext::local_with_hub_user_id(Some("account".into()));
+        let owner = Subject::User("local".into());
+        assert_eq!(caller.permission_subject(&owner), owner);
+        assert_eq!(caller.subject(), Subject::User("local_account".into()));
     }
 }

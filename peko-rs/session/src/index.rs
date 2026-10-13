@@ -103,6 +103,9 @@ pub struct SessionEntry {
     pub peer_type: Option<String>,
     /// Subject ID - for session identity restoration
     pub peer_id: Option<String>,
+    /// Sole conversation binding; actor identities live in channel membership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
     /// Per-parent-unique path segment for `/slug/...` addressing
     /// (see `crate::path`). The trunk session (sprint 6:
     /// `parent_session_id == None`) carries no slug.
@@ -174,6 +177,7 @@ impl SessionEntry {
             trigger: "user".to_string(),
             peer_type: None,
             peer_id: None,
+            channel_id: None,
             slug: None,
             page_limit: None,
             pruned_pages: 0,
@@ -1006,7 +1010,7 @@ fn backfill_peer_attribution(entries: &mut HashMap<String, SessionEntry>) -> boo
         let Some(entry) = entries.get(&id) else {
             continue;
         };
-        if entry.peer_type.is_some() && entry.peer_id.is_some() {
+        if entry.channel_id.is_some() || (entry.peer_type.is_some() && entry.peer_id.is_some()) {
             continue;
         }
         // Walk up the parent chain (cycle-safe). Cap at the entry

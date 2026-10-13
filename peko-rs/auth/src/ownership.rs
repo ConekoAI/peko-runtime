@@ -142,7 +142,8 @@ pub fn check_permission(
     caller: &Subject,
 ) -> Result<(), PermissionDenied> {
     // 1. Owner always passes (Subject equality, not string equality).
-    if resource.owner() == caller {
+    let caller = caller.normalized_for_auth();
+    if resource.owner().normalized_for_auth() == caller {
         return Ok(());
     }
 
@@ -151,7 +152,7 @@ pub fn check_permission(
         if !grant.permission.covers(&action) {
             continue;
         }
-        if &grant.subject == caller || grant.subject == Subject::Public {
+        if grant.subject.normalized_for_auth() == caller || grant.subject == Subject::Public {
             return Ok(());
         }
     }
@@ -212,7 +213,7 @@ mod tests {
 
     #[test]
     fn test_principal_resource_permission_checks() {
-        let owner = Subject::User("user:123".into());
+        let owner = Subject::User("hub:123".into());
         let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
@@ -224,11 +225,17 @@ mod tests {
         assert!(check_permission(
             &principal_resource(&view),
             Permission::Chat,
+            &Subject::User("123".into())
+        )
+        .is_ok());
+        assert!(check_permission(
+            &principal_resource(&view),
+            Permission::Chat,
             &Subject::User("other".into())
         )
         .is_err());
 
-        let grantee = Subject::User("user:456".into());
+        let grantee = Subject::User("local_456".into());
         let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
@@ -241,6 +248,21 @@ mod tests {
             exposure: Exposure::Private,
         };
         assert!(check_permission(&principal_resource(&view), Permission::Chat, &grantee).is_ok());
+        assert!(check_permission(
+            &principal_resource(&view),
+            Permission::Chat,
+            &Subject::User("456".into())
+        )
+        .is_ok());
+        for other_kind in [
+            Subject::Principal("456".into()),
+            Subject::Visitor("456".into()),
+        ] {
+            assert!(
+                check_permission(&principal_resource(&view), Permission::Chat, &other_kind)
+                    .is_err()
+            );
+        }
         assert!(
             check_permission(&principal_resource(&view), Permission::Delete, &grantee).is_err()
         );

@@ -126,7 +126,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         .await?;
 
     // The CLI's own subject — derived from the same rule the daemon
-    // uses (ADR-057): hub owner when logged into pekohub, else
+    // uses (ADR-057): current Hub account when logged into pekohub, else
     // `local`. Used only as the thread selector for `--wait` /
     // ctrl-c stop, never sent as an identity claim.
     let peer = peko_auth::Subject::User(paths.user().to_string());
@@ -147,7 +147,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
 /// `ChannelStore` when the daemon is unreachable, mirroring the
 /// `peko channel` dual-path so manual smoke tests work without a
 /// live daemon. The fallback path speaks as the CLI's derived
-/// identity (hub owner when logged in, else `user:local`).
+/// identity (current Hub account when logged in, else `user:local`).
 async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Result<()> {
     let packet = RequestPacket::ChannelPost {
         request_id: 0,
@@ -706,7 +706,7 @@ mod tests {
             })
             .collect();
         assert_eq!(posted.len(), 1, "expected exactly one post; got {posted:?}");
-        assert_eq!(posted[0].0, "user:local");
+        assert_eq!(posted[0].0, "user:local:local");
         assert_eq!(posted[0].1, "hi all");
     }
 

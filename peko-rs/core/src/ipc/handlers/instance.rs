@@ -138,10 +138,9 @@ impl RequestHandler for InstanceHandler {
                 exposure,
             } => {
                 let exposure_enum = match exposure.as_str() {
-                    "unexposed" => crate::tunnel::protocol::InstanceExposure::Unexposed,
+                    "local_only" => crate::tunnel::protocol::InstanceExposure::LocalOnly,
                     "private" => crate::tunnel::protocol::InstanceExposure::Private,
                     "public" => crate::tunnel::protocol::InstanceExposure::Public,
-                    "unlisted" => crate::tunnel::protocol::InstanceExposure::Unlisted,
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,

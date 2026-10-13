@@ -1,107 +1,12 @@
-//! End-to-end user-journey scenario D4 (Phase D slice per
-//! `docs/integration/TESTING.md` §7).
+//! Private-principal webchat through an explicitly registered runtime actor.
 //!
-//! Coverage — flow 6 from the Phase D plan: author publishes a running
-//! agent behind the PekoHub tunnel, and the per-instance ACL on the
-//! relay (`canChat` in `pekohub/backend/src/services/instances.ts`)
-//! gates who can chat.
+//! The fixture starts a tunnel without registering local-only principals, then
+//! calls `peko register` and waits for the instance identified by its Hub receipt.
+//! Hub ownership governs registration administration; recipient runtime chat
+//! grants govern access. An explicitly permitted account receives streamed output,
+//! while an unauthenticated request receives 401 before it reaches the runtime.
 //!
-//! | Rust test                                                  | Flow step                                                  |
-//! |------------------------------------------------------------|------------------------------------------------------------|
-//! | `permit_owner_can_chat`                                   | Flow 6a: owner hits `/v1/instances/:id/chat` → 200          |
-//! | `no_auth_returns_401`                                     | Flow 6c: no `Authorization` header → 401                   |
-//!
-//! ## Note on Flow 6b (granted-vs-ungranted)
-//!
-//! The original Flow 6b scenario
-//! (`permit_granted_user_chats_ungranted_forbidden`) was deleted in
-//! Phase B cleanup. It relied on pekohub's pre-#19 `allowedUsers`
-//! allow-list matching, but pekohub post-#19 dropped the typed
-//! `allowed_principals` DB column and the runtime-side allow-list
-//! (`PrincipalConfig.permissions`) is now the canonical ACL surface
-//! (R4). Pekohub's `canChat` checks owner-vs-caller only and
-//! forwards chat requests to the runtime, which runs the
-//! defense-in-depth `check_request_allowed` ACL itself.
-//!
-//! A replacement end-to-end test for the granted-vs-ungranted ACL
-//! path needs to target the runtime's local enforcement (not
-//! pekohub's); that's a follow-up to redesign against the post-#19
-//! model.
-//!
-//! ## Scope
-//!
-//! **Mock-LLM tier.** PekoHub is the long-lived fixture container
-//! (or local node+tsx process) — `make docker-up` brings it up.
-//! The pekohub DB is reset at the top of every test with
-//! `reset_pekohub` so cross-test user/runtime collisions are
-//! eliminated.
-//!
-//! All tests early-return if `PEKOHUB_URL` or `MOCK_LLM_URL` is
-//! unset, so a bare `cargo test` still passes.
-//!
-//! ## The structural facts this file relies on
-//!
-//! 1. **The runtime auto-starts the tunnel inside `peko daemon start
-//!    --foreground` if `~/.peko/pekohub.toml` exists.** The
-//!    `PekoCli::cmd()` builder sets `HOME = <tempdir>` (see
-//!    [`tests/common/cli.rs:109-115`](../common/cli.rs#L109-L115)),
-//!    and `PekoHubCredential::default_path()` returns
-//!    `dirs::home_dir().join(".peko/pekohub.toml")` (see
-//!    [`src/tunnel/credential.rs:62-66`](../../src/tunnel/credential.rs#L62-L66)).
-//!    So writing the credential to `<cli.peko_dir()>/pekohub.toml`
-//!    and spawning the daemon triggers the tunnel connect
-//!    automatically. This is the same shape
-//!    `tests/tunnel_e2e.rs:219-241` uses (in-process via
-//!    `AppState::start_tunnel()`), but here we exercise the full
-//!    `peko daemon start --foreground` code path to match the
-//!    production startup sequence.
-//! 2. **Tunnel → PekoHub announce.** On tunnel connect the runtime
-//!    iterates `PrincipalManager::list_all()` and sends an
-//!    `instance_announce` (type `principal`) for each local
-//!    principal, with `allowed_users` resolved from
-//!    `principal.config.permissions` (see
-//!    [`src/tunnel/dispatcher.rs:297-323`](../../src/tunnel/dispatcher.rs#L297-L323)
-//!    and
-//!    [`compute_allowed_user_ids`](../../src/tunnel/dispatcher.rs)).
-//!    PekoHub's `handleInstanceAnnounce` (at
-//!    [`pekohub/backend/src/services/tunnel-manager.ts:385-421`](../../../pekohub/backend/src/services/tunnel-manager.ts#L385-L421))
-//!    resolves the runtime DID to an owner via `resolveRuntimeOwner`;
-//!    **the runtime record must already exist in pekohub's `runtimes`
-//!    table** (created here via the `/test/create-runtime` fixture
-//!    endpoint), otherwise the announce is silently dropped.
-//! 3. **The per-instance ACL is enforced server-side at
-//!    `pekohub/backend/src/services/instances.ts:339-345`**
-//!    (`canChat`) and the chat route at
-//!    `pekohub/backend/src/routes/api/instances.ts:545-607` — owner
-//!    or any user in `allowedUsers` is allowed; everyone else gets
-//!    403. Missing auth on a private instance returns 401.
-//! 4. **The runtime's instance_id is stable per (runtime_did, principal)
-//!    pair** — see `TunnelDispatcher::instance_id` at
-//!    [`src/tunnel/dispatcher.rs:123-131`](../../src/tunnel/dispatcher.rs#L123-L131),
-//!    which uses a UUID v5 namespace. We don't precompute it; we
-//!    discover the instance via `GET /v1/instances?runtime_id=<did>`
-//!    and look it up by runtime_id (one instance per runtime, since
-//!    the test only creates one principal).
-//! 5. **`peko permit` propagates to PekoHub within ~1s.** As
-//!    of the fix for [issue #16](https://github.com/ConekoAI/peko-runtime/issues/16),
-//!    the `PrincipalGrantPermission` and `PrincipalRevokePermission`
-//!    IPC handlers call
-//!    `TunnelDispatcher::refresh_instance_allowed_principals` after the
-//!    local config write, which re-announces the instance to PekoHub
-//!    with `allowed_user_ids` re-derived from the new
-//!    `PrincipalConfig.permissions`. PekoHub treats
-//!    `instance_announce` as an upsert and refreshes `allowedUsers`;
-//!    the runtime's defense-in-depth cache is updated in the same
-//!    round-trip. The D4 test still pre-seeds the config before
-//!    daemon start, but the live `permit`/`revoke` path is now
-//!    covered by `tests/scenarios/s5_*.rs` (regression for #16).
-//!
-//! ## What the test asserts
-//!
-//! The relay-side ACL outcome — 200 for owner, 200 for permitted, 403
-//! for unpermitted, 401 for unauthenticated. The LLM is incidental;
-//! the mock LLM just needs to echo a non-empty response so we can
-//! distinguish a 200-with-content from a tunnel-routing failure.
+//! Requires PekoHub and the mock LLM (or the existing real-LLM test configuration).
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -294,6 +199,22 @@ fn write_pekohub_credential(
     vault
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
+    // The runtime's host identity must match the identity authenticated by its
+    // tunnel: principal registration proofs bind both signing identities.
+    let key_id = format!("{did}#keys-1");
+    vault
+        .set_identity_private_key(&key_id, "ed25519-raw-base64", &private_key_b64)
+        .expect("store fixture runtime signing key");
+    let identity = peko_identity::runtime::RuntimeIdentity {
+        runtime_did: did.into(),
+        key_id,
+        created_at: chrono::Utc::now(),
+    };
+    std::fs::write(
+        cli.peko_dir().join("runtime/identity.toml"),
+        toml::to_string_pretty(&identity).unwrap(),
+    )
+    .expect("write fixture runtime identity");
 
     let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
@@ -338,6 +259,27 @@ async fn register_runtime_with_pekohub(
 }
 
 /// Poll `GET /v1/instances?runtime_id=<did>` for up to 30s, waiting
+/// Start Hub access explicitly; local-only principals never auto-register.
+fn register_principal(cli: &PekoCli, name: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let output = cli
+            .cmd()
+            .args(["register", name])
+            .output()
+            .expect("register principal");
+        if output.status.success() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Principal registration failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 /// for the runtime's `instance_announce` to land in pekohub's DB.
 /// Returns the FIRST instance id (we only have one agent in the
 /// test, so there's only one).
@@ -448,13 +390,7 @@ fn jwt_for_user(user_id: &str, namespace: &str) -> String {
 // Test 1 (Flow 6a) — owner can chat
 // ---------------------------------------------------------------------------
 
-/// Flow 6a (positive): the owner of the runtime, sending a chat
-/// request to their own announced instance, gets a 200 with a
-/// non-empty body. The owner is allowed by the `canChat`
-/// `instance.ownerId === userId` short-circuit (see
-/// `pekohub/backend/src/services/instances.ts:343`), which is why
-/// we do NOT need to pre-seed the agent config with a `[[permissions]]`
-/// grant for the owner — the owner is always allowed.
+/// An account with an explicit runtime chat grant receives streamed output.
 #[tokio::test]
 #[ignore = "requires PEKOHUB_URL + MOCK_LLM_URL + peko daemon"]
 #[serial]
@@ -487,14 +423,12 @@ async fn permit_owner_can_chat() {
     // 4. Set up the per-CLI HOME: write principal config + pekohub.toml.
     let cli = PekoCli::new();
     let principal_name = "s4_owner_principal";
-    write_principal_with_perm(&cli, principal_name, &mock_url, &did, None);
+    write_principal_with_perm(&cli, principal_name, &mock_url, &did, Some(&owner_id));
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
-    // 5. Start the daemon. It reads `pekohub.toml` from $HOME and
-    //    auto-starts the tunnel, which on connect sends
-    //    `instance_announce` (type `principal`) for every local
-    //    principal in `PrincipalManager::list_all()`.
+    // 5. Start the tunnel, then explicitly register this principal.
     let _daemon = DaemonGuard::spawn(&cli);
+    register_principal(&cli, principal_name);
 
     // 6. Wait for the announced instance to land in pekohub's DB.
     let instance_id = wait_for_announced_instance(
@@ -565,6 +499,7 @@ async fn no_auth_returns_401() {
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
 
     let _daemon = DaemonGuard::spawn(&cli);
+    register_principal(&cli, principal_name);
     let instance_id = wait_for_announced_instance(
         &client,
         &backend.url,

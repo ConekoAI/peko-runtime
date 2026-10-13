@@ -541,6 +541,8 @@ mod tests {
 
     fn bare_config() -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: "seedling".into(),
             boot_state: None,
             ..make_default()
@@ -555,6 +557,8 @@ mod tests {
             PrincipalRoutingConfig,
         };
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: String::new(),
             id: None,
             did: None,

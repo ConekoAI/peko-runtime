@@ -646,6 +646,9 @@ impl TunnelClient {
             | TunnelMessage::StreamChunk { .. }
             | TunnelMessage::StreamEnd { .. }
             | TunnelMessage::StreamIteration { .. }
+            | TunnelMessage::PrincipalRegistrationRejected { .. }
+            | TunnelMessage::PrincipalRegistered { .. }
+            | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }
             | TunnelMessage::ExposureUpdate { .. }

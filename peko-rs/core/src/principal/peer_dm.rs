@@ -6,13 +6,8 @@
 //! 1:1 **DM channel** — the channel-tier home of that peer's
 //! conversation with the principal:
 //!
-//! - routing id:
-//!   - `principal:<did>` peers → `ChannelId::for_principal(did)`
-//!     (sprint 4: the principal prefix is now the routing id, so the
-//!     `peko log` consumer and the `ChannelSend` principal-branch
-//!     dispatch agree on identity without an indirection table).
-//!   - user / public peers → `dm-<peer_child_slug>` (unchanged; the
-//!     user-branch dispatch is messenger-port, not channel-port).
+//! - routing id: new DMs use `dm_<sha256>` of both canonical actor addresses.
+//!   Old ids remain readable; new principal sends never reuse recipient-only ids.
 //! - display name: `dm-<peer_child_slug>` for all peer kinds (display
 //!   convention, not routing — kept for `peko log` continuity and the
 //!   `dm-…` prefix tests pin);
@@ -72,9 +67,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use peko_auth::Subject;
-use peko_channel::{ChannelId, ChannelPort, CreateOpts, PostMsg};
+use peko_channel::{ChannelId, ChannelPort, PostMsg};
 use peko_session::manager::SessionManager;
-use peko_subject::{PrincipalDID, PrincipalId};
+use peko_subject::PrincipalId;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, warn};
 
@@ -146,34 +141,20 @@ pub(crate) async fn ensure_peer_dm_channel(
 
     let _guard = lock.lock().await;
 
-    // Find: a channel whose binding IS this child's path is the peer's
-    // DM channel (see `find_peer_dm_channel`).
-    if let Some(existing) = find_peer_dm_channel(port, principal, &binding).await? {
-        return Ok(PeerDmProvision {
-            channel: existing,
-            created: false,
-        });
-    }
-
-    // Create: the principal is the creator (auto-member). For
-    // `principal:<did>` peers this provisions the LOCAL channel only —
-    // the cross-runtime invite/mirror fan-out is the caller's job
-    // (sprint 3 Phase 12a/12b: the principal branch of `ChannelSend`
-    // invites on first contact; the receiver bootstraps via
-    // `dm_channel_mirror_bootstrap`).
-    //
-    // Sprint 4: routing id is `ChannelId::for_principal(did)` for
-    // principal peers (so `peko log` consumers and `ChannelSend`'s
-    // dispatch see the same id without an indirection table); user /
-    // public peers keep the slug-based routing id (`dm-<slug>`) since
-    // the user-branch dispatch is messenger-port, not channel-port.
-    // Display name stays `dm-<slug>` either way — tests at lines
-    // ~305, ~343, ~445 pin the convention.
-    let mut opts = CreateOpts::runtime(name.clone()).with_passive_binding(binding.clone());
-    if let Subject::Principal(PrincipalDID(did)) = peer {
-        opts = opts.with_id(ChannelId::for_principal(did));
-    }
-    let channel = port.create(principal, opts).await?;
+    // Pair identity and each local principal's binding are ensured atomically.
+    let me = port.actor_info(&Subject::from(principal)).await;
+    let other = port.actor_info(peer).await;
+    let expected = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
+    let created = !port
+        .list_for_principal(principal)
+        .await?
+        .contains(&expected);
+    let channel = port.ensure_dm(principal, peer, &binding).await?;
+    session_manager
+        .read()
+        .await
+        .bind_session_channel(child_id, channel.as_str())
+        .await?;
     tracing::info!(
         channel = %channel,
         name = %name,
@@ -181,10 +162,7 @@ pub(crate) async fn ensure_peer_dm_channel(
         peer = %peer,
         "peer DM channel provisioned"
     );
-    Ok(PeerDmProvision {
-        channel,
-        created: true,
-    })
+    Ok(PeerDmProvision { channel, created })
 }
 
 /// Find-only variant of [`ensure_peer_dm_channel`]: returns the
@@ -200,8 +178,10 @@ pub(crate) async fn find_peer_dm_channel(
     principal: &PrincipalId,
     binding: &str,
 ) -> Result<Option<ChannelId>> {
-    for candidate in port.list_for_principal(principal).await? {
-        match port.passive_binding(&candidate).await {
+    let mut candidates = port.list_for_principal(principal).await?;
+    candidates.sort_by_key(|c| !c.as_str().starts_with("dm_"));
+    for candidate in candidates {
+        match port.binding_for(&candidate, principal).await {
             Ok(Some(existing)) if existing == binding => {
                 return Ok(Some(candidate));
             }
@@ -272,7 +252,7 @@ pub(crate) async fn post_peer_dm_reply(
         return;
     }
     let via = port
-        .passive_binding(channel)
+        .binding_for(channel, principal)
         .await
         .ok()
         .flatten()
@@ -345,7 +325,7 @@ mod tests {
         // The principal is a member (creator auto-added) — the
         // responder's reply post + ChannelSend both require it.
         let members = store.list_members(&provision.channel).await.unwrap();
-        assert_eq!(members, vec![Subject::from(&principal_id())]);
+        assert_eq!(members, vec![Subject::from(&principal_id()), peer.clone()]);
     }
 
     #[tokio::test]
@@ -557,8 +537,11 @@ mod tests {
         assert_eq!(
             posted,
             vec![
-                ("user:alice".to_string(), "hello there".to_string()),
-                ("prin_self".to_string(), "hi alice".to_string()),
+                ("user:local:alice".to_string(), "hello there".to_string()),
+                (
+                    "principal:local:prin_self".to_string(),
+                    "hi alice".to_string()
+                ),
             ]
         );
     }

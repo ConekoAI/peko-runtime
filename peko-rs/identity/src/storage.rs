@@ -630,7 +630,7 @@ mod tests {
             .unwrap();
 
         assert!(storage.exists(&identity.did));
-        assert!(identity.did.starts_with("did:peko:local:test:"));
+        assert!(identity.did.starts_with("did:key:"));
     }
 
     #[test]
@@ -679,7 +679,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.did, second.did);
-        assert!(second.did.starts_with("did:peko:local:"));
+        assert!(second.did.starts_with("did:key:"));
         // The alias file pins the name → DID mapping on disk.
         assert_eq!(
             storage.resolve_name_alias("root").as_deref(),

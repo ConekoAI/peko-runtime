@@ -1,6 +1,6 @@
 //! Dispatcher-level harness for built-in tool tests.
 //!
-//! [`ToolHarness::new`] installs all 19 built-in tools behind the real
+//! [`ToolHarness::new`] installs all 20 built-in tools behind the real
 //! [`ToolDispatcher`](crate::tools::dispatcher::ToolDispatcher) — argument
 //! validation, workspace injection, hooks, timeout routing, and the
 //! `tool.call` audit sink — and calls them the way an agentic loop does:
@@ -170,6 +170,10 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
             Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new()),
         )),
         Arc::new(ChannelReadTool::new(backends.channels.clone())),
+        Arc::new(channel::contacts::ContactsTool::new(
+            backends.channels.clone(),
+            Weak::new(),
+        )),
         Arc::new(ChannelSendTool::new_local_only(
             backends.channels.clone(),
             PRINCIPAL.into(),
@@ -181,7 +185,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
     ]
 }
 
-/// All 19 built-in tools behind the production dispatcher.
+/// All 20 built-in tools behind the production dispatcher.
 pub(crate) struct ToolHarness {
     _root: tempfile::TempDir,
     workspace: PathBuf,
@@ -444,12 +448,9 @@ mod tests {
                 "completed",
             ),
             ("Session", json!({"action":"list"}), ""),
-            (
-                "ChannelSend",
-                json!({"channel": channel, "text":"ping"}),
-                "",
-            ),
+            ("ChannelSend", json!({"to": channel, "text":"ping"}), ""),
             ("ChannelRead", json!({"channel": channel}), "ping"),
+            ("Contacts", json!({"action":"list"}), "participants"),
             ("ModelList", json!({}), ""),
             (
                 "Task",

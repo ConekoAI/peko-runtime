@@ -41,7 +41,7 @@ use crate::tunnel::TunnelChannelPort;
 pub struct CrossRuntimeA2aCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,
     /// a `FakeAgentDirectory` in tests). The outbound path calls
-    /// `resolve_by_did` / `resolve_by_handle` to learn which runtime
+    /// `resolve_by_hub_id` / `resolve_by_handle` to learn which runtime
     /// hosts the target principal.
     pub directory: Arc<dyn AgentDirectory>,
 

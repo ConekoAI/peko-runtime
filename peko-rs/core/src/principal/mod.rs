@@ -23,6 +23,7 @@ pub(crate) mod channel_digest;
 pub(crate) mod child_turns;
 pub mod config;
 pub mod context;
+pub(crate) mod conversation;
 pub mod default_nodes;
 pub mod factory;
 pub mod genesis;
@@ -143,6 +144,8 @@ impl Principal {
     pub async fn summary(&self) -> PrincipalSummary {
         let config = self.config.read().await;
         PrincipalSummary {
+            local_id: self.id.0.clone(),
+            hub_id: config.hub_id.clone(),
             name: config.name.clone(),
             did: self.did().await,
             owner: config.owner.clone(),
@@ -165,6 +168,8 @@ impl Principal {
 /// `PrincipalGet` IPC variants — see audit finding C1.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalSummary {
+    pub local_id: String,
+    pub hub_id: Option<String>,
     pub name: String,
     pub did: PrincipalDID,
     pub owner: peko_auth::Subject,

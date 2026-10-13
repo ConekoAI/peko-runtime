@@ -653,11 +653,11 @@ pub enum RequestPacket {
     /// `principal.toml` so the change survives daemon restart. Delegates
     /// to `TunnelDispatcher::set_instance_exposure` to publish an
     /// `exposure_update` to the hub.
-    #[serde(rename = "principal_set_exposure")]
-    PrincipalSetExposure {
+    #[serde(rename = "principal_register")]
+    PrincipalRegister {
         request_id: u64,
         name: String,
-        /// One of: "unexposed", "private", "public".
+        /// One of: "local_only", "private", "public".
         exposure: String,
     },
 
@@ -888,7 +888,7 @@ impl RequestPacket {
             | Self::PrincipalGrantPermission { request_id, .. }
             | Self::PrincipalRevokePermission { request_id, .. }
             | Self::PrincipalSetStatus { request_id, .. }
-            | Self::PrincipalSetExposure { request_id, .. }
+            | Self::PrincipalRegister { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalMintInvite { request_id, .. }
             | Self::PrincipalRevokeInvite { request_id, .. }
@@ -1740,11 +1740,13 @@ pub enum ResponsePacket {
         status: String,
     },
 
-    /// Result of `PrincipalSetExposure`. Echoes the persisted exposure.
-    #[serde(rename = "principal_exposure_updated")]
-    PrincipalExposureUpdated {
+    /// Result of `PrincipalRegister`. Echoes the persisted exposure.
+    #[serde(rename = "principal_registration_updated")]
+    PrincipalRegistrationUpdated {
         request_id: u64,
         name: String,
+        local_id: String,
+        hub_id: Option<String>,
         exposure: String,
     },
 
@@ -2300,7 +2302,7 @@ impl ResponsePacket {
             | Self::PrincipalPermissionRevoked { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalStatusUpdated { request_id, .. }
-            | Self::PrincipalExposureUpdated { request_id, .. }
+            | Self::PrincipalRegistrationUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
@@ -2375,7 +2377,7 @@ impl ResponsePacket {
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
             Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
-            Self::PrincipalExposureUpdated { .. } => "PrincipalExposureUpdated",
+            Self::PrincipalRegistrationUpdated { .. } => "PrincipalRegistrationUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
             Self::Status { .. } => "Status",
@@ -2764,6 +2766,8 @@ mod tests {
         let resp = ResponsePacket::PrincipalList {
             request_id: 600,
             principals: vec![crate::principal::PrincipalSummary {
+                local_id: "prin_fixture".into(),
+                hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
@@ -2795,6 +2799,8 @@ mod tests {
         let resp = ResponsePacket::PrincipalGet {
             request_id: 601,
             principal: Some(crate::principal::PrincipalSummary {
+                local_id: "prin_fixture".into(),
+                hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
@@ -3223,6 +3229,8 @@ mod tests {
         let resp = ResponsePacket::PrincipalUpdated {
             request_id: 604,
             principal: crate::principal::PrincipalSummary {
+                local_id: "prin_fixture".into(),
+                hub_id: None,
                 name: "alice".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
@@ -3277,6 +3285,8 @@ mod tests {
         let resp = ResponsePacket::PrincipalCreated {
             request_id: 603,
             principal: crate::principal::PrincipalSummary {
+                local_id: "prin_fixture".into(),
+                hub_id: None,
                 name: "alice".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
@@ -3825,6 +3835,8 @@ mod tests {
         let resp_principal_updated = ResponsePacket::PrincipalUpdated {
             request_id: 12,
             principal: crate::principal::PrincipalSummary {
+                local_id: "prin_fixture".into(),
+                hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
                 owner: peko_auth::Subject::User("alice".to_string()),
@@ -4335,8 +4347,8 @@ mod tests {
     }
 
     #[test]
-    fn test_principal_set_exposure_request_roundtrip() {
-        let req = RequestPacket::PrincipalSetExposure {
+    fn test_principal_register_request_roundtrip() {
+        let req = RequestPacket::PrincipalRegister {
             request_id: 5004,
             name: "helper".to_string(),
             exposure: "private".to_string(),
@@ -4344,10 +4356,11 @@ mod tests {
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
-            RequestPacket::PrincipalSetExposure {
+            RequestPacket::PrincipalRegister {
                 request_id,
                 name,
                 exposure,
+                ..
             } => {
                 assert_eq!(request_id, 5004);
                 assert_eq!(name, "helper");
@@ -4382,7 +4395,9 @@ mod tests {
 
     #[test]
     fn test_principal_exposure_updated_response_roundtrip() {
-        let resp = ResponsePacket::PrincipalExposureUpdated {
+        let resp = ResponsePacket::PrincipalRegistrationUpdated {
+            local_id: "prin_test".into(),
+            hub_id: Some("hub_test".into()),
             request_id: 6002,
             name: "helper".to_string(),
             exposure: "public".to_string(),
@@ -4390,10 +4405,11 @@ mod tests {
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
         match decoded {
-            ResponsePacket::PrincipalExposureUpdated {
+            ResponsePacket::PrincipalRegistrationUpdated {
                 request_id,
                 name,
                 exposure,
+                ..
             } => {
                 assert_eq!(request_id, 6002);
                 assert_eq!(name, "helper");

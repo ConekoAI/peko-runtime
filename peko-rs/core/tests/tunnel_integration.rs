@@ -200,6 +200,95 @@ async fn authenticate_tunnel(
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Register a signing identity and wait for the correlated Hub-ID receipt.
+async fn register_test_principal(
+    write: &mut futures::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+    read: &mut futures::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+    runtime_did: &str,
+    name: &str,
+    instance_id: &str,
+) -> (String, String, String) {
+    let (signing_did, key) = generate_runtime_identity();
+    let registration_id = uuid::Uuid::new_v4().to_string();
+    let local_id = peko_subject::PrincipalId::generate().0;
+    let now = chrono::Utc::now().timestamp();
+    let proof = peko_core::tunnel::jws_sign(
+        &key,
+        serde_json::json!({
+            "runtimeId": runtime_did, "principalDid": signing_did, "iat": now, "exp": now + 300,
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let announce = TunnelMessage::InstanceAnnounce {
+        payload: InstanceAnnouncePayload {
+            registration_id: Some(registration_id.clone()),
+            local_id: local_id.clone(),
+            identity_key: uuid::Uuid::new_v4().to_string(),
+            id: instance_id.into(),
+            instance_type: InstanceType::Principal,
+            name: name.into(),
+            agent_did: None,
+            bundle_ref: None,
+            principal_did: Some(signing_did.clone()),
+            principal_pop: Some(proof),
+            runtime_display_name: Some("Transport Test Runtime".into()),
+            status: InstanceStatus::Online,
+            exposure: InstanceExposure::Public,
+            allowed_principals: None,
+            capabilities: Some(vec!["chat".into()]),
+            metadata: None,
+        },
+    };
+    write
+        .send(Message::Binary(announce.to_bytes().unwrap()))
+        .await
+        .unwrap();
+    let receipt = timeout(Duration::from_secs(10), async {
+        loop {
+            let bytes = match read
+                .next()
+                .await
+                .expect("Tunnel closed before receipt")
+                .expect("WebSocket error")
+            {
+                Message::Binary(bytes) => bytes,
+                Message::Text(text) => text.into_bytes(),
+                _ => continue,
+            };
+            match TunnelMessage::from_bytes(&bytes).unwrap() {
+                TunnelMessage::PrincipalRegistered {
+                    registration_id: nonce,
+                    local_id: returned_local,
+                    hub_id,
+                    signing_did: returned_signer,
+                } if nonce.as_deref() == Some(registration_id.as_str()) => {
+                    assert_eq!(returned_local, local_id);
+                    assert_eq!(returned_signer, signing_did);
+                    uuid::Uuid::parse_str(&hub_id).expect("Hub ID must be a UUID");
+                    break hub_id;
+                }
+                TunnelMessage::PrincipalRegistrationRejected { message, .. } => {
+                    panic!("Registration rejected: {message}")
+                }
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("Registration receipt timed out");
+    (receipt, local_id, signing_did)
+}
+
 #[tokio::test]
 #[ignore = "requires PekoHub backend (Node.js+tsx locally, or PEKOHUB_URL container)"]
 async fn test_tunnel_handshake_and_heartbeat() {
@@ -343,8 +432,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     let jwt_token = generate_jwt(&user_id, "tunneltestuser");
     let auth_header = format!("Bearer {jwt_token}");
 
-    let (mut write, read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
-    let _read = read; // keep alive
+    let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
     // Announce an instance
     let instance_id = uuid::Uuid::new_v5(
@@ -353,31 +441,8 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     )
     .to_string();
 
-    let announce = TunnelMessage::InstanceAnnounce {
-        payload: InstanceAnnouncePayload {
-            id: instance_id.clone(),
-            instance_type: InstanceType::Agent,
-            name: "test-agent".to_string(),
-            agent_did: None,
-            bundle_ref: None,
-            principal_did: None,
-            principal_pop: None,
-            runtime_display_name: Some("Test Runtime".to_string()),
-            status: InstanceStatus::Online,
-            exposure: InstanceExposure::Public,
-            allowed_principals: None,
-            capabilities: Some(vec!["chat".to_string()]),
-            metadata: None,
-            // B5: `runtime_direct_endpoint` field dropped from payload.
-        },
-    };
-    write
-        .send(Message::Binary(announce.to_bytes().unwrap()))
-        .await
-        .unwrap();
-
-    // Give PekoHub time to process
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (hub_id, local_id, _) =
+        register_test_principal(&mut write, &mut read, &did, "test-agent", &instance_id).await;
 
     // Query instances API with auth
     let list_resp = client
@@ -396,6 +461,10 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
         "Announced instance should appear in API. Got: {:?}",
         instances
     );
+
+    let row = instances.iter().find(|i| i["id"] == instance_id).unwrap();
+    assert_eq!(row["hubId"], hub_id);
+    assert_eq!(row["localId"], local_id);
 
     // Send heartbeat
     let heartbeat = TunnelMessage::InstanceHeartbeat {
@@ -427,7 +496,7 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
 
     // Drop connection and verify instances go offline
     drop(write);
-    drop(_read);
+    drop(read);
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -571,40 +640,16 @@ async fn test_instance_announce_registers_directory_entry() {
     let (did, signing_key) = generate_runtime_identity();
     seed_runtime_for_test(&backend.url, &did).await;
 
-    let (mut write, read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
-    let _read = read; // keep the tunnel alive
+    let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
-    let principal_did = "did:peko:principal:tunnel-transport-001";
     let instance_id = uuid::Uuid::new_v5(
         &uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d1e2f3a4b5c6"),
         format!("{did}:transport-agent").as_bytes(),
     )
     .to_string();
 
-    let announce = TunnelMessage::InstanceAnnounce {
-        payload: InstanceAnnouncePayload {
-            id: instance_id,
-            instance_type: InstanceType::Principal,
-            name: "transport-agent".to_string(),
-            agent_did: None,
-            bundle_ref: None,
-            principal_did: Some(principal_did.to_string()),
-            principal_pop: None,
-            runtime_display_name: Some("Transport Test Runtime".to_string()),
-            status: InstanceStatus::Online,
-            exposure: InstanceExposure::Public,
-            allowed_principals: None,
-            capabilities: Some(vec!["chat".to_string()]),
-            metadata: None,
-            // B5: `runtime_direct_endpoint` field dropped from payload.
-        },
-    };
-    write
-        .send(Message::Binary(announce.to_bytes().unwrap()))
-        .await
-        .unwrap();
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (hub_id, local_id, signing_did) =
+        register_test_principal(&mut write, &mut read, &did, "transport-agent", &instance_id).await;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -614,9 +659,8 @@ async fn test_instance_announce_registers_directory_entry() {
 
     let dir_resp = client
         .get(format!(
-            "{}/v1/principals/by-did/{}",
-            backend.url,
-            urlencoding::encode(principal_did)
+            "{}/v1/principals/by-hub-id/{}",
+            backend.url, hub_id
         ))
         .send()
         .await
@@ -641,10 +685,7 @@ async fn test_instance_announce_registers_directory_entry() {
         "directEndpoint must not be published, got: {}",
         body
     );
-    // The resolver itself still works: the DID key from the announce is
-    // what the by-did endpoint indexes on.
-    assert_eq!(
-        body["principalDid"], principal_did,
-        "directory response must echo the announced principal DID"
-    );
+    assert_eq!(body["hubId"], hub_id);
+    assert_eq!(body["localId"], local_id);
+    assert_eq!(body["principalDid"], signing_did);
 }

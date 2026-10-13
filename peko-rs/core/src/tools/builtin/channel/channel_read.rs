@@ -125,6 +125,7 @@ const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 struct WatchFilter {
     /// The watching principal's id; its own posts never count.
     me: String,
+    hub: Option<String>,
     /// The watching principal's name, for group `@<name>` mentions.
     name: String,
     /// Exact author, when set.
@@ -151,12 +152,18 @@ impl WatchFilter {
         else {
             return false;
         };
-        if *author == self.me {
+        if *author == self.me || self.me.strip_prefix("principal:") == Some(author.as_str()) {
             return false;
         }
-        if author.starts_with("user:")
+        if (author.starts_with("user:") || author.starts_with("visitor:"))
             && parent.is_none()
-            && (is_dm || peko_channel::mentions(text, &self.name))
+            && (is_dm
+                || peko_channel::mentions(text, &self.name)
+                || peko_channel::mentions(text, &self.me)
+                || self
+                    .hub
+                    .as_ref()
+                    .is_some_and(|h| peko_channel::mentions(text, h)))
         {
             return false;
         }
@@ -316,6 +323,11 @@ impl Tool for ChannelReadTool {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
+        let author = match author {
+            Some(reference) => Some(self.port.resolve_actor(&reference).await?.address),
+            None => None,
+        };
+
         let watch = params
             .get("watch")
             .and_then(serde_json::Value::as_bool)
@@ -372,8 +384,38 @@ impl Tool for ChannelReadTool {
         // events, parsed at the store without decoding the whole log.
         let (events, has_more, next_cursor) = if watch {
             let filter = WatchFilter {
-                me: principal_str.clone(),
-                name: ctx.principal_name.clone().unwrap_or_default(),
+                hub: self
+                    .port
+                    .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                        principal_str.clone(),
+                    )))
+                    .await
+                    .hub_address(),
+                me: self
+                    .port
+                    .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                        principal_str.clone(),
+                    )))
+                    .await
+                    .address,
+                name: {
+                    let name = ctx.principal_name.clone().unwrap_or_default();
+                    let actor = self
+                        .port
+                        .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                            principal_str.clone(),
+                        )))
+                        .await;
+                    if peko_channel::short_name_unambiguous(
+                        &self.port.participants(&channel_id).await?,
+                        &name,
+                        &actor.address,
+                    ) {
+                        name
+                    } else {
+                        String::new()
+                    }
+                },
                 author,
                 text: query_text.map(|t| t.to_lowercase()),
                 reply_to,
@@ -468,6 +510,8 @@ impl Tool for ChannelReadTool {
         Ok(json!({
             "channel": channel_id.as_str(),
             "events": events,
+            "participants": self.port.participants(&channel_id).await?,
+            "binding": self.port.binding_for(&channel_id, &peko_subject::PrincipalId(principal_str)).await?,
             "has_more": has_more,
             "next_cursor": next_cursor,
         }))
@@ -706,7 +750,7 @@ mod tests {
         assert_eq!(found, ["deploy the release", "release notes drafted"]);
 
         let got = fx
-            .read(json!({ "query": "release", "author": "user:bob" }))
+            .read(json!({ "query": "release", "author": "user:local:bob" }))
             .await;
         assert_eq!(texts(&got), ["deploy the release"]);
         assert_eq!(

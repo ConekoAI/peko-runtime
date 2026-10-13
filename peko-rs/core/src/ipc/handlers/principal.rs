@@ -6,7 +6,7 @@
 //! `PrincipalExport`,
 //! `PrincipalImportPreview`, `PrincipalImport`, `PrincipalGrantPermission`,
 //! `PrincipalRevokePermission`, `PrincipalPermissions`,
-//! `PrincipalSetStatus`, `PrincipalSetExposure`. This is the largest
+//! `PrincipalSetStatus`, `PrincipalRegister`. This is the largest
 //! F6 domain — it owns the root-agent streaming machinery, the
 //! `.peko` package import/export, and the principal-scoped
 //! permission system (ADR-033).
@@ -160,7 +160,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// In-memory principal manager. Powers `PrincipalList` /
     /// `PrincipalGet` / `PrincipalSend*` / `PrincipalLog` /
     /// `PrincipalGrantPermission` / `PrincipalRevokePermission` /
-    /// `PrincipalSetStatus` / `PrincipalSetExposure`. Phase 11:
+    /// `PrincipalSetStatus` / `PrincipalRegister`. Phase 11:
     /// `PrincipalLog` reads the peer DM channel through the manager's
     /// `channel_port()` — the trait no longer carries a chat-log
     /// accessor.
@@ -199,7 +199,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
 
     /// Live outbound tunnel dispatcher (F5 / F7 fourth-narrow-handle
     /// surface). `None` when tunnel is not active. Powers
-    /// `PrincipalSetStatus` / `PrincipalSetExposure` /
+    /// `PrincipalSetStatus` / `PrincipalRegister` /
     /// `PrincipalGrant*` / `PrincipalRevoke*` propagation to the hub.
     async fn tunnel_dispatcher(&self) -> Option<TunnelDispatcher>;
 
@@ -286,7 +286,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalRevokePermission { .. }
                 | RequestPacket::PrincipalPermissions { .. }
                 | RequestPacket::PrincipalSetStatus { .. }
-                | RequestPacket::PrincipalSetExposure { .. }
+                | RequestPacket::PrincipalRegister { .. }
                 | RequestPacket::PrincipalMintInvite { .. }
                 | RequestPacket::PrincipalRevokeInvite { .. }
                 | RequestPacket::PrincipalCreate { .. }
@@ -417,6 +417,7 @@ impl RequestHandler for PrincipalHandler {
                     query,
                     author,
                     caller_subject,
+                    caller.is_operator(),
                 )
                 .await
                 {
@@ -616,9 +617,11 @@ impl RequestHandler for PrincipalHandler {
                 let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalGrantPermission denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -723,12 +726,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalRevokePermission denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -803,12 +807,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ViewSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ViewSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalPermissions denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -917,7 +922,7 @@ impl RequestHandler for PrincipalHandler {
                 }
             }
 
-            RequestPacket::PrincipalSetExposure {
+            RequestPacket::PrincipalRegister {
                 request_id,
                 name,
                 exposure,
@@ -937,15 +942,15 @@ impl RequestHandler for PrincipalHandler {
 
                 use peko_auth::Exposure;
                 let exposure_enum = match exposure.as_str() {
-                    "unexposed" => Exposure::Unexposed,
+                    "local_only" => Exposure::LocalOnly,
                     "private" => Exposure::Private,
                     "public" => Exposure::Public,
-                    "unlisted" => Exposure::Unlisted,
+
                     other => {
                         let response = ResponsePacket::Error {
                             request_id,
                             message: format!(
-                                "Invalid exposure '{other}'. Expected: unexposed, private, public, unlisted"
+                                "Invalid exposure '{other}'. Expected: local_only, private, public"
                             ),
                         };
                         send_response(sink, response).await?;
@@ -959,7 +964,7 @@ impl RequestHandler for PrincipalHandler {
                     .shared_config_write_for_name(&name)
                     .await
                 {
-                    warn!("PrincipalSetExposure write denied: {e}");
+                    warn!("PrincipalRegister write denied: {e}");
                     let response = ResponsePacket::Error {
                         request_id,
                         message: format!("[permission_denied] {e}"),
@@ -968,40 +973,63 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
 
-                match host
-                    .principal_manager()
-                    .update_config(&name, |config| {
-                        config.exposure = exposure_enum;
-                    })
-                    .await
-                {
-                    Ok(_) => {
-                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) = dispatcher
-                                .set_instance_exposure(&name, exposure_enum.into())
+                let result = match host.tunnel_dispatcher().await {
+                    Some(dispatcher) => {
+                        dispatcher
+                            .register_principal(&name, exposure_enum.into())
+                            .await
+                    }
+                    None if exposure_enum == peko_auth::Exposure::LocalOnly => {
+                        let principal = host
+                            .principal_manager()
+                            .get_by_name(&name)
+                            .await
+                            .expect("validated principal");
+                        let profile = host
+                            .principal_manager()
+                            .channel_port()
+                            .expect("actor registry")
+                            .actor_info(&Subject::from(&principal.id))
+                            .await;
+                        if profile.hub_id.is_some() {
+                            Err(anyhow::anyhow!(
+                                "Reconnect to Hub to unregister this principal"
+                            ))
+                        } else {
+                            host.principal_manager()
+                                .update_config(&name, |c| {
+                                    c.exposure = peko_auth::Exposure::LocalOnly
+                                })
                                 .await
-                            {
-                                warn!(
-                                    principal = %name,
-                                    "Failed to publish PrincipalSetExposure to hub: {e}"
-                                );
-                            }
+                                .map(|_| None)
+                                .map_err(Into::into)
                         }
-                        let response = ResponsePacket::PrincipalExposureUpdated {
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "Hub registration requires a connected tunnel"
+                    )),
+                };
+                let response = match result {
+                    Ok(hub_id) => {
+                        let principal = host
+                            .principal_manager()
+                            .get_by_name(&name)
+                            .await
+                            .expect("registered principal");
+                        ResponsePacket::PrincipalRegistrationUpdated {
                             request_id,
                             name,
+                            local_id: principal.id.0.clone(),
+                            hub_id,
                             exposure,
-                        };
-                        send_response(sink, response).await?;
+                        }
                     }
-                    Err(e) => {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("Failed to persist exposure: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                    }
-                }
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    },
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalMintInvite {
@@ -1037,12 +1065,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalMintInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1142,12 +1171,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalRevokeInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1273,6 +1303,8 @@ impl RequestHandler for PrincipalHandler {
                 //    we honour the request's subject.
                 let description = description.unwrap_or_else(|| format!("The {name} Principal"));
                 let config = PrincipalConfig {
+                    hub_id: None,
+                    actor_key: None,
                     name: name.clone(),
                     id: None,
                     did: None,
@@ -1354,12 +1386,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalUpdate denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1411,15 +1444,14 @@ impl RequestHandler for PrincipalHandler {
                 let exposure_enum = match exposure {
                     None => None,
                     Some(s) => match s.as_str() {
-                        "unexposed" => Some(Exposure::Unexposed),
+                        "local_only" => Some(Exposure::LocalOnly),
                         "private" => Some(Exposure::Private),
                         "public" => Some(Exposure::Public),
-                        "unlisted" => Some(Exposure::Unlisted),
                         other => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!(
-                                    "Invalid exposure '{other}'. Expected: unexposed, private, public, unlisted"
+                                    "Invalid exposure '{other}'. Expected: local_only, private, public"
                                 ),
                             };
                             send_response(sink, response).await?;
@@ -1536,7 +1568,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(denied) = check_permission(
                     &resource,
                     Permission::ManageSettings,
-                    &caller.subject().clone(),
+                    &caller.permission_subject(resource.owner()),
                 ) {
                     warn!("PrincipalReload denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1594,12 +1626,13 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
-                let caller_subject = caller.subject();
                 let config = principal.config.read().await;
                 let resource = principal_resource(&*config);
-                if let Err(denied) =
-                    check_permission(&resource, Permission::ManageSettings, &caller_subject)
-                {
+                if let Err(denied) = check_permission(
+                    &resource,
+                    Permission::ManageSettings,
+                    &caller.permission_subject(resource.owner()),
+                ) {
                     warn!("PrincipalRemove denied: {}", denied);
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1695,7 +1728,13 @@ async fn handle_principal_stop(
         exposure,
     };
     let caller_subject = caller.subject();
-    if check_permission(&resource, Permission::Chat, &caller_subject).is_err() {
+    if check_permission(
+        &resource,
+        Permission::Chat,
+        &caller.permission_subject(resource.owner()),
+    )
+    .is_err()
+    {
         let response = ResponsePacket::Error {
             request_id,
             message: format!(
@@ -1708,7 +1747,7 @@ async fn handle_principal_stop(
 
     // Default is the principal's owner (the owner-root thread), same
     // convention as `PrincipalLog`'s `peer: None`.
-    let target_peer = peer.unwrap_or_else(|| owner.clone());
+    let target_peer = peer.unwrap_or_else(|| caller_subject.clone());
     if !target_peer.is_session_peer() {
         let response = ResponsePacket::Error {
             request_id,
@@ -1717,7 +1756,7 @@ async fn handle_principal_stop(
         send_response(sink, response).await?;
         return Ok(());
     }
-    if caller_subject != target_peer && caller_subject != owner {
+    if !caller.is_operator() && caller_subject != target_peer && caller_subject != owner {
         let response = ResponsePacket::Error {
             request_id,
             message: "[forbidden] you can only stop your own conversation; ask the owner to stop on your behalf".to_string(),
@@ -1734,7 +1773,16 @@ async fn handle_principal_stop(
         .list_all_sessions(false)
         .await
         .map_err(|e| anyhow::anyhow!("session listing failed: {e}"))?;
-    let Some(session_id) = crate::principal::peer_children::find_peer_child(&metas, &target_peer)
+    let Some(session_id) = crate::principal::peer_children::find_dm_child(
+        &metas,
+        &principal.id,
+        &target_peer,
+        &host
+            .principal_manager()
+            .channel_port()
+            .expect("conversation channel store"),
+    )
+    .await
     else {
         let response = ResponsePacket::Done {
             request_id,
@@ -1896,12 +1944,13 @@ async fn run_principal_send(
     // and per-message configuration can't drift between variants. The
     // assembled context is otherwise unused: Phase 7 drives the turn
     // in the peer's standing child (below), not through the router.
+    let permission_subject = caller.permission_subject(&principal.config.read().await.owner);
     if let Err(e) = host
         .principal_manager()
         .build_router_context_as(
             &principal,
             peer.clone(),
-            caller.subject(),
+            permission_subject.clone(),
             message.clone(),
             channel,
             override_model.clone(),
@@ -2412,7 +2461,7 @@ async fn run_principal_send(
                     Arc::clone(&turns),
                     &session_id,
                     peer.clone(),
-                    caller.subject(),
+                    permission_subject.clone(),
                     msg,
                     override_model.clone(),
                     channel_port.clone(),
@@ -2450,7 +2499,7 @@ async fn run_principal_send(
                     Arc::clone(&turns),
                     &session_id,
                     peer.clone(),
-                    caller.subject(),
+                    permission_subject.clone(),
                     SteeringMessage::new(crate::async_exec::executor::wake::WAKE_TURN_MARKER),
                     override_model.clone(),
                     channel_port.clone(),
@@ -2798,21 +2847,6 @@ async fn load_principal(host: &dyn PrincipalHost, name: &str) -> Option<Arc<Prin
     manager.get_by_name(name).await
 }
 
-/// Load a Principal's `Identity` (with keypair) from its identity store.
-async fn load_principal_identity(
-    resolver: &PathResolver,
-    name: &str,
-    did: &str,
-) -> anyhow::Result<peko_identity::Identity> {
-    let identity_dir = resolver.principal_layout(name).shared.root.join("identity");
-    let did = did.to_string();
-    tokio::task::spawn_blocking(move || {
-        let storage = peko_identity::storage::KeyStorage::with_path(identity_dir)?;
-        storage.load(&did)
-    })
-    .await?
-}
-
 /// Build a snapshot packager from the principal's typed tier layout.
 async fn build_principal_packager(
     host: &dyn PrincipalHost,
@@ -2840,7 +2874,25 @@ async fn build_principal_packager(
     // identity-bearing local state (cron/plans).
     let resolver = host.path_resolver();
     let layout = resolver.principal_layout(name);
-    let identity = load_principal_identity(&resolver, name, &did).await?;
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use secrecy::ExposeSecret;
+    let vault = host.principal_manager().signing_vault()?;
+    let secret = vault
+        .get_principal_identity_private_key(&format!("{did}#keys-1"))
+        .ok_or_else(|| anyhow::anyhow!("Principal signing key is unavailable"))?;
+    let seed: [u8; 32] = BASE64
+        .decode(secret.expose_secret())?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid principal signing key length"))?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let identity = peko_identity::Identity::from_keypair(peko_identity::KeyPair {
+        verifying_key: signing_key.verifying_key(),
+        signing_key,
+    });
+    anyhow::ensure!(
+        identity.did == did,
+        "Principal signing key does not match its identity"
+    );
 
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
@@ -2977,7 +3029,8 @@ async fn import_principal_package(
         file_path,
         host.config_dir(),
         host.data_dir(),
-    );
+    )
+    .with_identity_vault(host.principal_manager().signing_vault()?);
     // ADR-066 P2/D1: no capability negotiation — the caller's subject
     // is projected into the unpackager so the agent-prompt + identity
     // writes use ownership checks through RuntimeAuthority.
@@ -3025,6 +3078,7 @@ async fn resolve_log_thread(
     name: &str,
     peer: Option<Subject>,
     caller: &Subject,
+    operator: bool,
 ) -> Result<ResolvedLogThread, PrincipalLogError> {
     // ── Resolve the principal ─────────────────────────────────────
     let manager = host.principal_manager();
@@ -3046,7 +3100,7 @@ async fn resolve_log_thread(
     };
 
     // ── Chat permission ───────────────────────────────────────────
-    if check_permission(&resource, Permission::Chat, caller).is_err() {
+    if !operator && check_permission(&resource, Permission::Chat, caller).is_err() {
         return Err(PrincipalLogError::Forbidden(format!(
             "caller '{caller}' lacks Chat permission on principal '{name}'"
         )));
@@ -3057,7 +3111,7 @@ async fn resolve_log_thread(
     // caller who isn't the owner and didn't supply `--peer` is
     // asking for the owner's thread and is rejected by the privacy
     // check below.
-    let target_peer = peer.unwrap_or_else(|| owner.clone());
+    let target_peer = peer.unwrap_or_else(|| caller.clone());
 
     if !target_peer.is_session_peer() {
         return Err(PrincipalLogError::Forbidden(format!(
@@ -3066,7 +3120,7 @@ async fn resolve_log_thread(
     }
 
     // ── Peer-privacy match ────────────────────────────────────────
-    if *caller != target_peer && *caller != owner {
+    if !operator && *caller != target_peer && *caller != owner {
         return Err(PrincipalLogError::Forbidden(
             "you can only read your own conversation; ask the owner to read on your behalf"
                 .to_string(),
@@ -3091,7 +3145,14 @@ async fn resolve_log_thread(
         .list_all_sessions(false)
         .await
         .map_err(|e| PrincipalLogError::Internal(format!("session listing failed: {e}")))?;
-    let channel = match crate::principal::peer_children::find_peer_child(&metas, &target_peer) {
+    let channel = match crate::principal::peer_children::find_dm_child(
+        &metas,
+        &principal.id,
+        &target_peer,
+        &manager.channel_port().expect("conversation channel store"),
+    )
+    .await
+    {
         Some(child_id) => {
             match metas
                 .iter()
@@ -3158,8 +3219,9 @@ async fn read_principal_log(
     query: Option<String>,
     author: Option<String>,
     caller: Subject,
+    operator: bool,
 ) -> Result<PrincipalLogResponse, PrincipalLogError> {
-    let resolved = resolve_log_thread(host, name, peer, &caller).await?;
+    let resolved = resolve_log_thread(host, name, peer, &caller, operator).await?;
     let principal = resolved.principal;
     let target_peer = resolved.target_peer;
 
@@ -3210,7 +3272,16 @@ async fn read_principal_log(
     // read keeps walking older pages until the page fills or the log
     // is exhausted.
     let needle = query.as_deref().map(str::to_lowercase);
-    let author_filter = author.as_deref();
+    let author_address = match author.as_deref() {
+        Some(reference) => Some(
+            port.resolve_actor(reference)
+                .await
+                .map_err(|e| PrincipalLogError::Internal(e.to_string()))?
+                .address,
+        ),
+        None => None,
+    };
+    let author_filter = author_address.as_deref();
 
     // The cursor is a raw line number: return rows strictly older.
     if let Some(c) = cursor.as_deref() {
@@ -3324,26 +3395,27 @@ async fn handle_principal_log_watch(
     sink: &dyn ResponseSink,
 ) -> anyhow::Result<()> {
     let caller_subject = caller.subject();
-    let resolved = match resolve_log_thread(host, name, peer, &caller_subject).await {
-        Ok(r) => r,
-        Err(e) => {
-            let message = match e {
-                PrincipalLogError::NotFound(msg) => format!("[not_found] {msg}"),
-                PrincipalLogError::Forbidden(msg) => format!("[forbidden] {msg}"),
-                PrincipalLogError::BadCursor(msg) => format!("[bad_cursor] {msg}"),
-                PrincipalLogError::Internal(msg) => format!("[internal_error] {msg}"),
-            };
-            send_response(
-                sink,
-                ResponsePacket::Error {
-                    request_id,
-                    message,
-                },
-            )
-            .await?;
-            return Ok(());
-        }
-    };
+    let resolved =
+        match resolve_log_thread(host, name, peer, &caller_subject, caller.is_operator()).await {
+            Ok(r) => r,
+            Err(e) => {
+                let message = match e {
+                    PrincipalLogError::NotFound(msg) => format!("[not_found] {msg}"),
+                    PrincipalLogError::Forbidden(msg) => format!("[forbidden] {msg}"),
+                    PrincipalLogError::BadCursor(msg) => format!("[bad_cursor] {msg}"),
+                    PrincipalLogError::Internal(msg) => format!("[internal_error] {msg}"),
+                };
+                send_response(
+                    sink,
+                    ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
+        };
 
     let (Some(port), Some(channel)) = (resolved.port, resolved.channel) else {
         let response = ResponsePacket::Error {
@@ -3635,6 +3707,8 @@ mod tests {
 
         fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
             crate::principal::PrincipalConfig {
+                hub_id: None,
+                actor_key: None,
                 name: name.to_string(),
                 id: None,
                 did: None,
@@ -3764,6 +3838,7 @@ mod tests {
                 None,
                 None,
                 fx.owner.clone(),
+                false,
             )
             .await
         }
@@ -3778,12 +3853,12 @@ mod tests {
             assert_eq!(page.messages.len(), 2);
             assert!(!page.has_more);
             assert_eq!(page.next_cursor, None);
-            assert_eq!(page.messages[0].sender, fx.peer);
+            assert_eq!(page.messages[0].sender, Subject::User("local:alice".into()));
             assert_eq!(page.messages[0].text, "question 0");
             assert_eq!(page.messages[0].id, "chan_1");
             assert_eq!(
                 page.messages[1].sender,
-                Subject::Principal(fx.principal.did().await),
+                Subject::Principal(format!("local:{}", fx.principal.id.0).into()),
                 "the principal's raw-id author maps to Subject::Principal"
             );
             assert_eq!(page.messages[1].text, "answer 0");
@@ -3919,6 +3994,7 @@ mod tests {
                 Some("QUESTION".to_string()),
                 None,
                 fx.owner.clone(),
+                false,
             )
             .await
             .expect("query read");
@@ -3935,8 +4011,9 @@ mod tests {
                 None,
                 None,
                 None,
-                Some(fx.peer.to_string()),
+                Some(format!("user:local:{}", fx.peer.subject_id())),
                 fx.owner.clone(),
+                false,
             )
             .await
             .expect("author read");
@@ -3955,6 +4032,7 @@ mod tests {
                 Some("no-such-text".to_string()),
                 None,
                 fx.owner.clone(),
+                false,
             )
             .await
             .expect("empty read");
@@ -3979,6 +4057,7 @@ mod tests {
                 None,
                 None,
                 fx.owner.clone(),
+                false,
             )
             .await
             .expect("read");
@@ -4103,7 +4182,7 @@ mod tests {
             // author maps to Subject::Principal.
             assert_eq!(
                 appended[2].sender,
-                Subject::Principal(fx.principal.did().await)
+                Subject::Principal(format!("local:{}", fx.principal.id.0).into())
             );
             assert!(
                 observed
@@ -4120,14 +4199,14 @@ mod tests {
         async fn log_watch_forbidden_for_non_owner_non_peer() {
             let fx = fixture(true).await;
             let sink = CollectSink::default();
-            // Local caller (subject "local") is neither the owner
+            // Remote account caller is neither the owner
             // ("test-owner") nor the requested peer ("alice").
             handle_principal_log_watch(
                 7,
                 "loggable",
                 Some(fx.peer.clone()),
                 None,
-                &CallerContext::local(),
+                &CallerContext::from_jwt("stranger".into()),
                 &fx.host,
                 &sink,
             )

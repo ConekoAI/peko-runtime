@@ -18,8 +18,6 @@ use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
 use peko_auth::Subject;
-use peko_identity::did::DIDScope;
-use peko_identity::storage::KeyStorage;
 use peko_observability::Observability;
 use peko_plan::{PlanNodeStatus, PlanRecord};
 use peko_providers::LlmResolver;
@@ -169,12 +167,7 @@ pub struct PrincipalManager {
     /// manager first, so this is a post-construction install behind
     /// interior mutability, not a builder arg).
     dm_subscriber_hook: std::sync::RwLock<Option<crate::principal::peer_dm::PeerDmSubscriberHook>>,
-    /// ADR-058 D1: when attached (daemon path), principal genesis mints
-    /// a per-principal ed25519 keypair whose DID is the `did:key` of
-    /// that key, and stores the private-key seed in the vault under
-    /// the `principal-identity` namespace. `None` (tests / offline
-    /// CLI) keeps the legacy `KeyStorage` minting
-    /// (`did:peko:public:<name>:<hash>`).
+    /// Optional shared vault. Without one, identity creation opens the configured runtime vault.
     identity_vault: Option<Arc<crate::common::vault::Vault>>,
 }
 
@@ -198,6 +191,12 @@ impl PrincipalManager {
         router_factory: Arc<dyn PrincipalRouterFactory>,
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
+        let channel_port: Arc<dyn peko_channel::ChannelPort> = Arc::new(
+            peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+                runtime_dir: path_resolver.runtime_dir(),
+                shared_dir: None,
+            }),
+        );
         Self {
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
@@ -211,7 +210,7 @@ impl PrincipalManager {
             observability: None,
             peer_registry: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
-            channel_port: None,
+            channel_port: Some(channel_port),
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
@@ -260,12 +259,7 @@ impl PrincipalManager {
         self
     }
 
-    /// ADR-058 D1: attach the credential vault used to custody
-    /// per-principal identity keys. When attached, principal genesis
-    /// mints an ed25519 keypair, derives the principal DID as
-    /// `did:key` of that key, and stores the seed in the vault under
-    /// the `principal-identity` namespace. When `None` (tests /
-    /// offline CLI), the legacy `KeyStorage` minting path is kept.
+    /// Attach the runtime vault for principal signing-key custody.
     #[must_use]
     pub fn with_identity_vault(mut self, vault: Arc<crate::common::vault::Vault>) -> Self {
         self.identity_vault = Some(vault);
@@ -367,6 +361,8 @@ impl PrincipalManager {
         let mut config = config;
         let did = self.generate_identity(&name).await?;
         config.did = Some(PrincipalDID(did));
+        config.hub_id = None;
+        config.actor_key = Some(uuid::Uuid::new_v4().to_string());
         // Persist the generated id so daemon restarts load the same
         // principal identity (peer DM channels are keyed by it).
         config.id = Some(id.clone());
@@ -468,6 +464,11 @@ impl PrincipalManager {
             .write()
             .await
             .insert(id.clone(), principal.clone());
+        if let Some(port) = self.channel_port() {
+            self.register_actor_identity(&principal, &port)
+                .await
+                .map_err(|e| PrincipalManagerError::Config(format!("actor registration: {e}")))?;
+        }
         self.principals_by_name.write().await.insert(name, id);
 
         Ok(principal)
@@ -540,6 +541,16 @@ impl PrincipalManager {
                 id
             }
         };
+        if config.actor_key.is_none() {
+            config.actor_key = Some(uuid::Uuid::new_v4().to_string());
+            self.persist_config(&workspace_path, &config).await?;
+        }
+        // Canonical actor addressing requires a persisted identity, even for
+        // pre-identity local definitions. Never replace an existing DID.
+        if config.did.as_ref().is_none_or(|did| did.0.is_empty()) {
+            config.did = Some(PrincipalDID(self.generate_identity(&name).await?));
+            self.persist_config(&workspace_path, &config).await?;
+        }
         // Phase A: memory factory takes the Local tier root, not
         // the Shared root.
         let memory = self.memory_factory.create(&id, &layout.local.root).await;
@@ -592,6 +603,11 @@ impl PrincipalManager {
             .write()
             .await
             .insert(id.clone(), principal.clone());
+        if let Some(port) = self.channel_port() {
+            self.register_actor_identity(&principal, &port)
+                .await
+                .map_err(|e| PrincipalManagerError::Config(format!("actor registration: {e}")))?;
+        }
         self.principals_by_name.write().await.insert(name, id);
 
         Ok(principal)
@@ -602,8 +618,82 @@ impl PrincipalManager {
     }
 
     pub async fn get_by_name(&self, name: &str) -> Option<Arc<Principal>> {
+        if let Some(id) = name.strip_prefix("principal:local:") {
+            return self.get(PrincipalId(id.into())).await;
+        }
+        if let Some(hub) = name.strip_prefix("principal:hub:") {
+            for principal in self.list_all().await {
+                if principal.config.read().await.hub_id.as_deref() == Some(hub) {
+                    return Some(principal);
+                }
+            }
+            return None;
+        }
         let id = self.principals_by_name.read().await.get(name).cloned()?;
         self.get(id).await
+    }
+
+    pub async fn prepare_hub_registration(
+        &self,
+        name: &str,
+        exposure: peko_auth::Exposure,
+    ) -> Result<(), PrincipalManagerError> {
+        let principal = self
+            .get_by_name(name)
+            .await
+            .ok_or_else(|| PrincipalManagerError::NotFound(name.into()))?;
+        let did = if principal.did().await.0.starts_with("did:key:") {
+            principal.did().await.0
+        } else {
+            self.generate_identity(name).await?
+        };
+        self.update_config(name, |config| {
+            config.did = Some(did.into());
+            config.exposure = exposure;
+        })
+        .await?;
+        if let Some(port) = self.channel_port() {
+            self.register_actor_identity(&principal, &port)
+                .await
+                .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub async fn register_actor_identity(
+        &self,
+        principal: &Arc<Principal>,
+        port: &Arc<dyn peko_channel::ChannelPort>,
+    ) -> peko_channel::Result<peko_channel::ActorInfo> {
+        let config = principal.config.read().await;
+        // Only authenticated Hub receipts and verified directory results establish aliases.
+        // principal.toml is editable workspace content, not a Hub identity attestation.
+        let hub_id = port
+            .resolve_actor(&format!("principal:local:{}", principal.id.0))
+            .await
+            .ok()
+            .and_then(|actor| actor.hub_id);
+        let did = config.did.as_ref().map(|d| d.0.clone());
+        let key = config.actor_key.clone();
+        let name = config.name.clone();
+        let registration = if hub_id.is_none() {
+            "local_only"
+        } else if config.exposure == peko_auth::Exposure::Public {
+            "public"
+        } else {
+            "private"
+        };
+        drop(config);
+        principal.config.write().await.hub_id = hub_id.clone();
+        port.register_actor(
+            &Subject::from(&principal.id),
+            hub_id.as_deref(),
+            did.as_deref(),
+            key.as_deref(),
+            Some(&name),
+            registration,
+        )
+        .await
     }
 
     /// Find a loaded Principal by its stable DID.
@@ -719,7 +809,11 @@ impl PrincipalManager {
         };
         self.persist_config(&principal.workspace_path, &snapshot)
             .await?;
-
+        if let Some(port) = self.channel_port() {
+            self.register_actor_identity(&principal, &port)
+                .await
+                .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
+        }
         Ok(principal)
     }
 
@@ -787,49 +881,35 @@ impl PrincipalManager {
     /// cross-runtime channel fan-out loads the key back for author
     /// signatures (`VaultPrincipalSigningKeys` in `daemon::state`).
     ///
-    /// Without a vault (tests / offline CLI), the legacy
-    /// `KeyStorage`-backed minting is kept
-    /// (`did:peko:public:<name>:<hash>` — never loaded for signing).
-    async fn generate_identity(&self, name: &str) -> Result<String, PrincipalManagerError> {
-        if let Some(vault) = &self.identity_vault {
-            use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-            use rand::RngCore as _;
-
-            let mut seed = [0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut seed);
-            let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-            let did = peko_identity::runtime::public_key_to_did_key(
-                &signing_key.verifying_key().to_bytes(),
-            );
-            vault
-                .set_principal_identity_private_key(
-                    &format!("{did}#keys-1"),
-                    "ed25519-raw-base64",
-                    &BASE64.encode(seed),
-                )
-                .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
-            return Ok(did);
+    /// Standalone callers load the same runtime vault as the daemon.
+    pub(crate) fn signing_vault(&self) -> anyhow::Result<Arc<crate::common::vault::Vault>> {
+        match &self.identity_vault {
+            Some(vault) => Ok(vault.clone()),
+            None => Ok(Arc::new(crate::common::vault::Vault::load(
+                self.path_resolver.vault(),
+            )?)),
         }
+    }
 
-        let identity_dir = self
-            .path_resolver
-            .principal_layout(name)
-            .shared
-            .root
-            .join("identity");
-        tokio::fs::create_dir_all(&identity_dir).await?;
-        let identity_dir = identity_dir.clone();
-        let name = name.to_string();
-        let identity = tokio::task::spawn_blocking(move || {
-            let storage = KeyStorage::with_path(identity_dir)
-                .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
-            storage
-                .generate_identity(DIDScope::Public, Some(&name))
-                .map_err(|e| PrincipalManagerError::Identity(e.to_string()))
-        })
-        .await
-        .map_err(|e| PrincipalManagerError::Identity(e.to_string()))??;
-        Ok(identity.did)
+    async fn generate_identity(&self, _name: &str) -> Result<String, PrincipalManagerError> {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+        use rand::RngCore as _;
+        let vault = self
+            .signing_vault()
+            .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
+        let mut seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut seed);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let did =
+            peko_identity::runtime::public_key_to_did_key(&signing_key.verifying_key().to_bytes());
+        vault
+            .set_principal_identity_private_key(
+                &format!("{did}#keys-1"),
+                "ed25519-raw-base64",
+                &BASE64.encode(seed),
+            )
+            .map_err(|e| PrincipalManagerError::Identity(e.to_string()))?;
+        Ok(did)
     }
 
     /// Get (or create) the session-creation mutex for a given Principal.
@@ -1647,8 +1727,14 @@ mod tests {
             .list_all_sessions(false)
             .await
             .expect("list sessions");
-        let child_id = crate::principal::peer_children::find_peer_child(&metas, peer)
-            .expect("peer child exists after ingress");
+        let child_id = crate::principal::peer_children::find_dm_child(
+            &metas,
+            &principal.id,
+            peer,
+            &manager.channel_port().expect("conversation channel store"),
+        )
+        .await
+        .expect("peer child exists after ingress");
         let slug = metas
             .iter()
             .find(|m| m.session_id.to_string() == child_id)
@@ -1716,6 +1802,8 @@ mod tests {
 
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
+            hub_id: None,
+            actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
@@ -2100,23 +2188,11 @@ mod tests {
         tokio::fs::write(&config_path, legacy).await.unwrap();
 
         let manager2 = build_manager(&temp).await;
-        let loaded = manager2.load(&config_path).await.expect("load");
-        assert_ne!(
-            loaded.id, original_id,
-            "legacy config should get a freshly generated id"
-        );
-
-        // The generated id was re-persisted…
-        let toml = tokio::fs::read_to_string(&config_path).await.unwrap();
         assert!(
-            toml.contains(&format!("id = \"{}\"", loaded.id)),
-            "generated id should be re-persisted, got: {toml}"
+            manager2.load(&config_path).await.is_err(),
+            "An immutable actor cannot be duplicated under a fresh local ID"
         );
-
-        // …so the next restart recovers it.
-        let manager3 = build_manager(&temp).await;
-        let reloaded = manager3.load(&config_path).await.expect("reload");
-        assert_eq!(reloaded.id, loaded.id);
+        assert!(manager.get(original_id).await.is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2126,18 +2202,16 @@ mod tests {
         let principal = manager.get(id).await.expect("principal should exist");
         let did = principal.did().await;
         assert!(
-            did.0.starts_with("did:peko:"),
+            did.0.starts_with("did:key:"),
             "principal should have a real DID, got {}",
             did.0
         );
 
-        let identity_dir = manager
-            .path_resolver
-            .principal_layout("stressy")
-            .shared
-            .root
-            .join("identity");
-        assert!(identity_dir.exists(), "identity directory should exist");
+        let vault = crate::common::vault::Vault::load(manager.path_resolver.vault()).unwrap();
+        assert!(vault
+            .get_principal_identity_private_key(&format!("{}#keys-1", did.0))
+            .is_some());
+        assert!(principal.config.read().await.hub_id.is_none());
     }
 
     /// ADR-058 D1: a manager wired with `with_identity_vault` (the
@@ -2673,7 +2747,7 @@ mod tests {
         let rows = dm_posted_rows(&manager, &store, &principal, &peer).await;
         assert_eq!(
             rows,
-            vec![("user:alice".to_string(), steered_text.to_string())],
+            vec![("user:local:alice".to_string(), steered_text.to_string())],
             "exactly one peer-authored row should land on the DM channel"
         );
 
@@ -2722,8 +2796,14 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("user:alice".to_string(), "hello principal".to_string()),
-                (principal.id.to_string(), "hello alice".to_string()),
+                (
+                    "user:local:alice".to_string(),
+                    "hello principal".to_string()
+                ),
+                (
+                    format!("principal:local:{}", principal.id.0),
+                    "hello alice".to_string()
+                ),
             ],
             "inbound (peer-attributed) + reply (principal-authored) rows"
         );
@@ -2801,8 +2881,8 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("user:queued-peer".to_string(), "hello 0".to_string()),
-                ("user:queued-peer".to_string(), "hello 1".to_string()),
+                ("user:local:queued-peer".to_string(), "hello 0".to_string()),
+                ("user:local:queued-peer".to_string(), "hello 1".to_string()),
             ],
             "each inbound posted exactly once; no Queued… notice rows"
         );
@@ -3215,8 +3295,8 @@ mod tests {
             child.slug.is_some(),
             "a stranger's child still gets a provisioned session"
         );
-        assert_eq!(child.peer_type.as_deref(), Some("principal"));
-        assert_eq!(child.peer_id.as_deref(), Some("did:key:z6MkA2aPeerExample"));
+        assert!(child.peer_type.is_none() && child.peer_id.is_none());
+        assert!(child.channel_id.is_some());
 
         let jsonl = std::fs::read_to_string(sessions_dir.join(format!("{child_id}.jsonl")))
             .expect("child JSONL exists");

@@ -205,27 +205,17 @@ enum CallerBinding {
 
 /// Map a [`CallerContext`] to its [`CallerBinding`].
 ///
-/// The JWT projection deliberately does NOT use
-/// `CallerContext::subject()` — that projection carries the prefix
-/// inside the id (`Subject::User("user:<sub>")`, the grant-matching
-/// convention from issue #68/R5), while channel member rows store
-/// users as `Subject::User(<bare id>)` (the `user:<id>` wire form of
-/// ADR-049). The projection strips one redundant `user:` prefix (the
-/// normalization the retired `Subject::from_bridge_user` used to
-/// perform), so the channel-side identity of a JWT caller with sub
-/// `39` is `Subject::User("39")` — exactly what an invite of `user:39`
-/// records. The Derived projection is the ADR-057 attribution subject
-/// (hub owner when logged in, else `user:local`; API keys attribute
-/// as the owner they belong to).
+/// JWT callers use the same bare user id for permissions, attribution and
+/// membership. Legacy prefixed claims are normalized by CallerContext.
 fn caller_binding(caller: &CallerContext) -> CallerBinding {
     use peko_auth::caller::Identity;
     match &caller.identity {
         Identity::Local | Identity::ApiKey(_) => {
             CallerBinding::Derived(caller.attribution_subject())
         }
-        Identity::User(sub) => CallerBinding::User(Subject::User(
-            sub.strip_prefix("user:").unwrap_or(sub).to_string(),
-        )),
+        Identity::User(_) | Identity::Visitor(_) => {
+            CallerBinding::User(caller.attribution_subject())
+        }
     }
 }
 
@@ -257,6 +247,23 @@ impl RequestHandler for ChannelHandler {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
+        let actor = caller.attribution_subject();
+        let hub = actor.subject_id().strip_prefix("local_");
+        self.host
+            .channel_port()
+            .register_actor(
+                &actor,
+                hub,
+                None,
+                None,
+                None,
+                if hub.is_some() {
+                    "registered"
+                } else {
+                    "local_only"
+                },
+            )
+            .await?;
         match request {
             RequestPacket::ChannelCreate {
                 request_id,
@@ -1431,7 +1438,7 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .invite(&ch, &creator, &Subject::User("alice".to_string()))
+            .invite(&ch, &creator, &Subject::User("local_alice".to_string()))
             .await
             .expect("invite user");
         adapter
@@ -1502,7 +1509,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(authors, vec!["user:alice"]);
+        assert_eq!(authors, vec!["user:local:local_alice"]);
 
         // A local caller declaring a user sender is refused — even a
         // member one. Identities are derived, never declared.

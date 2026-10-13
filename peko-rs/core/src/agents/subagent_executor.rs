@@ -238,9 +238,9 @@ enum AttachKind {
 /// one party posts.
 #[async_trait::async_trait]
 pub trait PeerTurnSurface: Send + Sync {
-    /// `(peer_wire_form, dm_channel_id)` when `session_id` is a
-    /// peer-bound session with a DM channel, else `None`.
-    async fn peer_surface(&self, session_id: &str) -> Option<(String, String)>;
+    /// `(peer_address, channel_id)` for a bound conversation, else `None`.
+    /// Group sessions have a channel and no single actor peer.
+    async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)>;
     /// Post a completed turn's reply text to the peer's DM channel.
     /// Warn-only on failure (the reply is also returned to the caller).
     async fn post_reply(&self, channel_id: &str, text: &str);
@@ -1866,14 +1866,14 @@ impl SubagentExecutor {
         // a peer-bound child with a DM channel, runs from non-ingress
         // drivers (Agent-tool resume, cron SpawnTool attach) flip into
         // conversation mode and deliver the final reply to the peer's
-        // DM channel at completion. Explicitly-conversational callers
-        // keep their own peer/channel values (get_or_insert).
+        // channel at completion. The bound target session determines the
+        // conversation, including clearing a caller's peer for a group resume.
         let deliver_to_channel: Option<String> = match self.peer_turn_surface.as_ref() {
             Some(surface) => match surface.peer_surface(&child_session_id).await {
                 Some((peer, channel)) => {
                     config.conversation = true;
-                    config.conversation_channel.get_or_insert(channel.clone());
-                    config.conversation_peer.get_or_insert(peer);
+                    config.conversation_channel = Some(channel.clone());
+                    config.conversation_peer = peer;
                     Some(channel)
                 }
                 None => None,

@@ -8,7 +8,7 @@
 //! | Wire form             | Kind       | Tool semantics                                     |
 //! |-----------------------|------------|-----------------------------------------------------|
 //! | `chan_<8 base36>`     | Bare       | Plain fire-and-forget post (backward compat)        |
-//! | `principal:<did>`     | Principal  | Post on the pair's DM channel and return (ADR-072)  |
+//! | `principal:local:<id>` / `principal:hub:<id>`     | Principal  | Post on the pair's DM channel and return (ADR-072)  |
 //! | `user:<id>`           | User       | Fire-and-forget note via peer messenger             |
 //! | `group:<slug>`        | Group      | Fire-and-forget post (the LLM has bound a group)    |
 //!
@@ -45,12 +45,11 @@ use peko_subject::{PrincipalDID, PrincipalId};
 use peko_tools_core::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::str::FromStr;
 
 use crate::extensions::framework::core::ExtensionServices;
 use crate::principal::Principal;
 use crate::tunnel::cross_runtime::CrossRuntimeA2aCtx;
-use crate::tunnel::hub_directory::{AgentResolution, DirectoryError, ResolvedExposure};
+use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
 
 /// Wire name registered with the ToolingRuntime.
 pub const CHANNEL_SEND_TOOL_NAME: &str = "ChannelSend";
@@ -70,19 +69,18 @@ pub const CHANNEL_SEND_TOOL_NAME: &str = "ChannelSend";
 /// name. Ignored on bare / principal / group branches.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSendArgs {
-    /// Channel id: any of the four wire forms (`chan_*`,
-    /// `principal:<did>`, `user:<id>`, `group:<slug>`).
+    /// Actor reference (`principal:<ref>`, `user:<id>`, `visitor:<id>`) or
+    /// conversation ID (`chan_*`, `dm_*`, `group:<slug>`).
+    #[serde(rename = "to")]
     pub channel: String,
     /// Message body. Bare / Group: posted as-is. Principal: posted
     /// to the pair's DM channel. User: becomes the note text.
     pub text: String,
-    /// User branch only: short label for the delivered note. Ignored
-    /// on bare / principal / group branches.
+    /// Human-note branch only: short label for the delivered note.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Bare / Group branch only: TaskId of the message being replied
-    /// to; omit to post a root message. Ignored on principal / user
-    /// branches.
+    /// to; omit to post a root message. Actor references reject this field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
 }
@@ -97,6 +95,8 @@ pub struct ChannelSendArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSendResult {
     pub success: bool,
+    #[serde(rename = "to", skip_serializing_if = "Option::is_none", default)]
+    pub target: Option<String>,
     /// User: a delivery confirmation. Empty otherwise.
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub response: String,
@@ -159,11 +159,9 @@ const REPLY_NOTE: &str = "Posted. Posting does not wake the other principal; it 
 /// "caller masquerades as a user" audit foot-gun the legacy `a2a_send`
 /// had when `caller_principal_did` was unset.
 ///
-/// The cross-runtime ctx (`Arc<CrossRuntimeA2aCtx>`) is required for
-/// the principal branch (same-runtime DM exchange + cross-runtime
-/// mirror fan-out). When absent — tunnel down, test harnesses —
-/// register with `new_local_only` and principal targets return a
-/// structured error.
+/// The addressing context is installed before tunnel setup. Its local-first
+/// directory resolves offline actors; tunnel setup adds signed Hub resolution
+/// and remote transport. Bare test adapters can omit it and reject actor sends.
 pub struct ChannelSendTool {
     /// File-backed channel port (the same handle the daemon holds on
     /// `AppState`). Required for every branch.
@@ -215,6 +213,7 @@ impl ChannelSendTool {
     fn error_value(&self, kind: &str, err: &str) -> serde_json::Value {
         let result = ChannelSendResult {
             success: false,
+            target: None,
             response: String::new(),
             task_id: String::new(),
             session_id: String::new(),
@@ -250,11 +249,12 @@ impl ChannelSendTool {
         let user_error = |err: String| {
             serde_json::to_value(ChannelSendResult {
                 success: false,
+                target: Some(target.to_string()),
                 response: String::new(),
                 task_id: String::new(),
                 session_id: String::new(),
-                kind: Some("user".to_string()),
-                channel: target.to_string(),
+                kind: Some(target.kind().to_string()),
+                channel: String::new(),
                 dm_channel: None,
                 delivery: None,
                 note: None,
@@ -293,14 +293,15 @@ impl ChannelSendTool {
         {
             Ok(true) => serde_json::to_value(ChannelSendResult {
                 success: true,
+            target: Some(target.to_string()),
                 response: format!(
                     "Delivered as a note to {target}'s conversational session. Users do not \
                      reply synchronously — it appears in their next turn."
                 ),
                 task_id: String::new(),
                 session_id: String::new(),
-                kind: Some("user".to_string()),
-                channel: target.to_string(),
+                kind: Some(target.kind().to_string()),
+                channel: String::new(),
                 dm_channel: None,
                 delivery: None,
                 note: None,
@@ -314,30 +315,54 @@ impl ChannelSendTool {
         }
     }
 
-    /// Local principal branch: the target lives on THIS runtime. One
-    /// channel store serves both principals, so each has its own DM
-    /// channel for the other: the message is recorded on the caller's
-    /// and delivered on the target's (where the target reads it), under
-    /// one message id. Posting starts no run in the target (ADR-072).
+    /// Local principal branch: both principals share one pair DM with
+    /// independent session bindings. Posting starts no run (ADR-072).
     async fn execute_local(
         &self,
         ctx: &CrossRuntimeA2aCtx,
         caller: &Arc<Principal>,
-        target_did: &str,
+        resolution: &AgentResolution,
         message: &str,
         via: Option<String>,
     ) -> Result<serde_json::Value> {
-        let Some(target) = ctx.principal_manager.find_by_did(target_did).await else {
+        let target_did = resolution.agent_did.as_str();
+        let target = match ctx
+            .principal_manager
+            .get(PrincipalId(resolution.local_id.clone()))
+            .await
+        {
+            Some(target) => Some(target),
+            None => ctx.principal_manager.find_by_did(target_did).await,
+        };
+        let Some(target) = target else {
             return Ok(self.error_value(
                 "principal",
                 "target principal is not loaded on this runtime",
             ));
         };
+        anyhow::ensure!(
+            target.did().await.0 == target_did,
+            "Directory instance does not match the resolved principal identity"
+        );
 
-        // 1. Caller-side DM channel: the durable outbound record for
-        //    the caller's `peko log` (self-authored root — the
-        //    caller's own responder self-skips it).
-        let caller_peer = Subject::Principal(PrincipalDID(target_did.to_string()));
+        {
+            let mut config = target.config.read().await.clone();
+            config.owner = ctx.channel_port.actor_info(&config.owner).await.subject();
+            for grant in &mut config.permissions {
+                grant.subject = ctx.channel_port.actor_info(&grant.subject).await.subject();
+            }
+            if matches!(config.exposure, peko_auth::Exposure::Private) {
+                peko_auth::ownership::check_permission(
+                    &peko_auth::ownership::principal_resource(&config),
+                    peko_auth::ownership::Permission::Chat,
+                    &Subject::from(&caller.id),
+                )
+                .map_err(|e| anyhow::anyhow!("DM delivery denied: {e}"))?;
+            }
+        }
+
+        // Provision the caller's session binding and pair conversation.
+        let caller_peer = Subject::from(&target.id);
         let caller_ingress = match ctx
             .principal_manager
             .ensure_peer_child_ingress(caller, &caller_peer)
@@ -358,13 +383,7 @@ impl ChannelSendTool {
                  to the principal manager)",
             ));
         };
-        // `via` stamps the calling session's slug path on both root
-        // posts (caller-side projection + target-side post); the
-        // reply mirror below stays unattributed (the remote replier's
-        // agent is unknown).
-        // One stable id for both copies of the request (the caller's
-        // record and the target-side delivery), so the reply — threaded
-        // onto the delivery copy — is recognised on both channels.
+        // The post has one stable identity, independent of its session binding.
         let msg_id = peko_channel::new_msg_id();
         let mut own_msg = PostMsg::root(message).with_msg_id(msg_id.clone());
         own_msg.via = via.clone();
@@ -382,12 +401,10 @@ impl ChannelSendTool {
             }
         };
 
-        // 2. Target side: ensure the TARGET's DM channel for the
-        //    caller peer, invite the caller in (idempotent; the
-        //    target is the creator/member so the store's inviter
-        //    check passes), then post the root under the caller's raw
-        //    id, where the target reads it.
-        let target_peer = Subject::Principal(PrincipalDID(self.caller_principal_did.clone()));
+        // Add the target's independent binding and local membership to the
+        // same pair channel. Adapters exposing separate projections still
+        // receive the same message ID rather than unrelated duplicate posts.
+        let target_peer = Subject::from(&caller.id);
         let target_ingress = match ctx
             .principal_manager
             .ensure_peer_child_ingress(&target, &target_peer)
@@ -420,27 +437,35 @@ impl ChannelSendTool {
         }
         let mut target_msg = PostMsg::root(message).with_msg_id(msg_id);
         target_msg.via = via;
-        if let Err(e) = ctx
-            .channel_port
-            .post(&target_channel, &Subject::from(&caller.id), target_msg)
-            .await
-        {
-            return Ok(self.error_value(
-                "principal",
-                &format!("ChannelSend: DM channel post failed: {e}"),
-            ));
+        if target_channel != own_channel {
+            if let Err(e) = ctx
+                .channel_port
+                .post(&target_channel, &Subject::from(&caller.id), target_msg)
+                .await
+            {
+                return Ok(self.error_value(
+                    "principal",
+                    &format!("ChannelSend: DM channel post failed: {e}"),
+                ));
+            }
         }
 
-        // 3. Return at once. Posting never starts a run in the target
+        // Return at once. Posting never starts a run in the target
         //    (ADR-072); it reads the message on its DM channel, and its
         //    answer is a post the caller reads on its own.
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
+            target: Some(
+                ctx.channel_port
+                    .actor_info(&Subject::Principal(target_did.into()))
+                    .await
+                    .address,
+            ),
             response: String::new(),
             task_id: own_line,
             session_id: caller_ingress.child_id,
             kind: Some("principal".to_string()),
-            channel: format!("principal:{target_did}"),
+            channel: own_channel.to_string(),
             dm_channel: Some(own_channel.as_str().to_string()),
             delivery: Some("delivered".to_string()),
             note: Some(REPLY_NOTE.to_string()),
@@ -509,10 +534,16 @@ impl ChannelSendTool {
             }
         };
         if !has_remote_member {
-            let invitee = PrincipalId(format!("{target_did}@{}", resolution.runtime_id));
+            let invitee = PrincipalId(target_did.into());
             if let Err(e) = ctx
                 .channel_port
-                .fanout_dm_invite(&channel, &caller.id, &self.caller_principal_did, &invitee)
+                .fanout_dm_invite(
+                    &channel,
+                    &caller.id,
+                    &self.caller_principal_did,
+                    &invitee,
+                    &resolution.runtime_id,
+                )
                 .await
             {
                 return Ok(self.error_value(
@@ -563,11 +594,17 @@ impl ChannelSendTool {
         };
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
+            target: Some(
+                ctx.channel_port
+                    .actor_info(&Subject::Principal(target_did.into()))
+                    .await
+                    .address,
+            ),
             response: String::new(),
             task_id: line,
             session_id: ingress.child_id,
             kind: Some("principal".to_string()),
-            channel: format!("principal:{target_did}"),
+            channel: channel.to_string(),
             dm_channel: Some(channel.as_str().to_string()),
             delivery: Some(delivery.to_string()),
             note: Some(note),
@@ -606,11 +643,11 @@ impl Tool for ChannelSendTool {
     }
 
     fn description(&self) -> String {
-        r#"Post a message. Every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. The `channel` address picks where the message goes (your peers' addresses are listed in your session context):
+        r#"Post a message. Every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. The `to` address picks where the message goes (use Contacts to list and resolve actors and channels):
 
-- `principal:<did>` — a message to another principal, on your shared DM channel (`dm_channel` in the result). Its answer, if any, is a post on that channel: read it later with ChannelRead, or call ChannelRead with `watch: true` to wait for the next post.
-- `user:<id>` — a note to a user's conversation; it appears in their next turn, and their answer arrives in their conversation with you.
-- `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message. In a group, mentioning `@<name>` does not wake that principal either — only users' mentions do.
+- `principal:local:<id>` / `principal:hub:<id>` — a message to another principal, on your shared DM channel (`dm_channel` in the result). Its answer, if any, is a post on that channel: read it later with ChannelRead, or call ChannelRead with `watch: true` to wait for the next post.
+- `user:local:<id>` / `user:hub:<id>` / `visitor:local:<id>` / `visitor:hub:<id>` — a note to a user's conversation; it appears in their next turn, and their answer arrives in their conversation with you.
+- `dm_<hash>` / `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message. In a group, mentioning `@<name>` does not wake that principal either — only users' mentions do.
 
 Each post carries your session path as `via`. Not for running work in your own principal's sessions — use the Agent tool.
 
@@ -626,10 +663,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
         json!({
             "type": "object",
             "properties": {
-                "channel": {
-                    "type": "string",
-                    "description": "Address: `principal:<did>` (a principal, on your DM channel with it), `user:<id>` (a note to a user), `chan_<id>` or `group:<slug>` (a channel post)."
-                },
+                "to": { "type": "string", "description": "Actor address (principal:local:<id>, principal:hub:<id>, user:local:<id>, user:hub:<id>, visitor:local:<id>, visitor:hub:<id>) or conversation ID (dm_<hash>, chan_<id>, group:<slug>). Resolve unfamiliar principals with Contacts." },
                 "text": {
                     "type": "string",
                     "description": "Message body."
@@ -643,7 +677,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
                     "description": "Notes to users only: short label for the note (shown as 📨 [<label>]); defaults to your agent name."
                 }
             },
-            "required": ["channel", "text"]
+            "required": ["to", "text"]
         })
     }
 
@@ -675,14 +709,19 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
         ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
         // Parse + validate arguments.
+        anyhow::ensure!(
+            params.get("channel").is_none(),
+            "ChannelSend: the retired 'channel' alias is unsupported; use 'to'"
+        );
         let channel_str = params
-            .get("channel")
+            .get("to")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("ChannelSend requires 'channel' (string)"))?;
+            .ok_or_else(|| anyhow::anyhow!("ChannelSend requires 'to' (string)"))?;
         let channel_id = ProtoChannelId::parse(channel_str).ok_or_else(|| {
             anyhow::anyhow!(
                 "ChannelSend: '{channel_str}' is not a valid channel id \
-                 (expected 'chan_<8 base36>', 'principal:<did>', 'user:<id>', or 'group:<slug>')"
+                 (expected 'chan_<8 base36>', 'dm_<64 hex>', 'principal:<ref>', \
+                 'user:local:<id>', 'user:hub:<id>', 'visitor:local:<id>', 'visitor:hub:<id>', or 'group:<slug>')"
             )
         })?;
         let text = params
@@ -701,6 +740,19 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        anyhow::ensure!(
+            parent.is_none()
+                || matches!(
+                    channel_id.kind(),
+                    ProtoChannelKind::Bare | ProtoChannelKind::Group
+                ),
+            "Thread replies using the conversation channel ID, not an actor address"
+        );
+        anyhow::ensure!(
+            label.is_none() || channel_id.kind() == ProtoChannelKind::User,
+            "Labels are only supported for user/visitor notes"
+        );
+
         // Pull the principal id out of the ToolContext. The F37 funnel
         // supplies this; bare `execute` callers (none in production)
         // get a hard error.
@@ -717,7 +769,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
         // Sprint 4 dispatch: branch on `kind()` to select the right
         // semantic. The wire form IS the policy — the LLM picks by
         // choosing the prefix.
-        let result = match channel_id.kind() {
+        let mut result = match channel_id.kind() {
             ProtoChannelKind::Bare | ProtoChannelKind::Group => {
                 self.execute_bare(&channel_id, text, parent, &principal_str, via)
                     .await
@@ -731,6 +783,10 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
                     .await
             }
         }?;
+        if let Some(out) = result.as_object_mut() {
+            out.entry("to".to_string())
+                .or_insert_with(|| json!(channel_str));
+        }
         // A send that did not go through is a tool error, not a
         // successful call carrying `success: false`.
         if result.get("success") == Some(&serde_json::Value::Bool(false)) {
@@ -772,6 +828,7 @@ impl ChannelSendTool {
         match self.port.post(channel_id, &sender, msg).await {
             Ok(task_id) => Ok(serde_json::to_value(ChannelSendResult {
                 success: true,
+                target: None,
                 response: String::new(),
                 task_id,
                 session_id: String::new(),
@@ -785,6 +842,7 @@ impl ChannelSendTool {
             .expect("ChannelSendResult must serialize to JSON")),
             Err(ChannelError::NotMember) => Ok(serde_json::to_value(ChannelSendResult {
                 success: false,
+                target: None,
                 response: String::new(),
                 task_id: String::new(),
                 session_id: String::new(),
@@ -798,6 +856,7 @@ impl ChannelSendTool {
             .expect("ChannelSendResult must serialize to JSON")),
             Err(ChannelError::NotFound(_)) => Ok(serde_json::to_value(ChannelSendResult {
                 success: false,
+                target: None,
                 response: String::new(),
                 task_id: String::new(),
                 session_id: String::new(),
@@ -821,11 +880,11 @@ impl ChannelSendTool {
         &self,
         channel_id: &ProtoChannelId,
         text: &str,
-        _ctx: &peko_tools_core::exec::ToolContext,
+        ctx: &peko_tools_core::exec::ToolContext,
         via: Option<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
-        let target_principal_did = raw.strip_prefix("principal:").ok_or_else(|| {
+        let reference = raw.strip_prefix("principal:").ok_or_else(|| {
             anyhow::anyhow!("internal: principal branch requires 'principal:' prefix")
         })?;
         let cross_runtime = self.cross_runtime_context();
@@ -838,7 +897,9 @@ impl ChannelSendTool {
         };
         let Some(caller) = cross_runtime
             .principal_manager
-            .find_by_did(&self.caller_principal_did)
+            .get(PrincipalId(ctx.principal_id.clone().ok_or_else(|| {
+                anyhow::anyhow!("ChannelSend requires a principal context")
+            })?))
             .await
         else {
             return Ok(self.error_value(
@@ -846,44 +907,99 @@ impl ChannelSendTool {
                 "ChannelSend: caller principal is not loaded on this runtime",
             ));
         };
-        let resolution = match cross_runtime
-            .directory
-            .resolve_by_did(target_principal_did)
-            .await
-        {
-            Ok(r) => r,
-            Err(err) => {
-                return Ok(self.error_value("principal", &match err {
-                    DirectoryError::NotFound => format!(
-                        "target principal not found in hub directory (did={target_principal_did})"
-                    ),
-                    DirectoryError::Forbidden => format!(
-                        "hub directory denied resolution (did={target_principal_did}); cross-runtime \
-                         ChannelSend from anonymous callers can only reach `exposure: \"public\"` \
-                         principals until peko-runtime#16 runtime-attested JWT lands"
-                    ),
-                    other => format!("hub directory lookup failed: {other}"),
-                }));
+        anyhow::ensure!(
+            caller.did().await.0 == self.caller_principal_did,
+            "ChannelSend caller identity does not match its principal context"
+        );
+        let (scope, identifier) = reference
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("Use principal:local:<id> or principal:hub:<id>"))?;
+        let resolution = match scope {
+            "local" => {
+                let actor = cross_runtime.channel_port.resolve_actor(raw).await?;
+                if cross_runtime
+                    .principal_manager
+                    .get(PrincipalId(actor.local_id.clone()))
+                    .await
+                    .is_some()
+                {
+                    cross_runtime
+                        .directory
+                        .resolve_by_handle("", &actor.local_id)
+                        .await?
+                } else {
+                    let hub = actor.hub_id.ok_or_else(|| {
+                        anyhow::anyhow!("Local contact has no remote Hub identity")
+                    })?;
+                    let resolved = cross_runtime
+                        .directory
+                        .resolve_by_hub_id_as(&hub, &caller.did().await.0)
+                        .await?;
+                    anyhow::ensure!(
+                        resolved.hub_id == hub,
+                        "Directory substituted a different Hub identity"
+                    );
+                    resolved
+                }
             }
+            "hub" => {
+                let result = cross_runtime
+                    .directory
+                    .resolve_by_hub_id_as(identifier, &caller.did().await.0)
+                    .await?;
+                anyhow::ensure!(
+                    result.hub_id == identifier,
+                    "Directory substituted a different Hub identity"
+                );
+                result
+            }
+            _ => anyhow::bail!("Use principal:local:<id> or principal:hub:<id>"),
         };
-        if matches!(resolution.exposure, ResolvedExposure::Unexposed) {
-            return Ok(self.error_value(
-                "principal",
-                &format!(
-                    "target principal is unexposed (runtime_id={}, instance_id={})",
-                    resolution.runtime_id, resolution.instance_id
-                ),
-            ));
+        anyhow::ensure!(
+            !resolution.agent_did.is_empty(),
+            "Directory returned an empty target signing DID"
+        );
+        anyhow::ensure!(
+            !resolution.identity_key.is_empty(),
+            "Directory returned no immutable actor key"
+        );
+        if resolution.runtime_id != cross_runtime.caller_runtime_id {
+            anyhow::ensure!(
+                resolution.exposure != ResolvedExposure::LocalOnly,
+                "Target is local_only"
+            );
         }
-        if resolution.agent_did.is_empty() {
-            return Ok(self.error_value(
-                "principal",
-                "hub directory returned an empty target DID; cannot dispatch ChannelSend \
-                 without a stable target identifier",
-            ));
+        let local_id = if resolution.runtime_id == cross_runtime.caller_runtime_id {
+            resolution.local_id.clone()
+        } else {
+            format!("local_{}", resolution.hub_id)
+        };
+        cross_runtime
+            .channel_port
+            .register_actor(
+                &Subject::Principal(local_id.into()),
+                (!resolution.hub_id.is_empty()).then_some(resolution.hub_id.as_str()),
+                Some(&resolution.agent_did),
+                Some(&resolution.identity_key),
+                resolution.name.as_deref(),
+                if resolution.hub_id.is_empty() {
+                    "local_only"
+                } else if resolution.exposure == ResolvedExposure::Public {
+                    "public"
+                } else {
+                    "private"
+                },
+            )
+            .await?;
+        let target_principal_did = resolution.agent_did.as_str();
+        if resolution.runtime_id != cross_runtime.caller_runtime_id {
+            anyhow::ensure!(
+                caller.config.read().await.hub_id.is_some(),
+                "Register the sending principal before using Hub transport"
+            );
         }
         if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            self.execute_local(cross_runtime, &caller, target_principal_did, text, via)
+            self.execute_local(cross_runtime, &caller, &resolution, text, via)
                 .await
         } else {
             self.execute_remote(
@@ -908,8 +1024,6 @@ impl ChannelSendTool {
         label: Option<String>,
         ctx: &peko_tools_core::exec::ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        let target = Subject::from_str(channel_id.as_str())
-            .map_err(|e| anyhow::anyhow!("ChannelSend: invalid user target '{channel_id}': {e}"))?;
         let principal_str = ctx.principal_id.clone().ok_or_else(|| {
             anyhow::anyhow!("ChannelSend: user targets require a principal context")
         })?;
@@ -919,6 +1033,8 @@ impl ChannelSendTool {
                 "ChannelSend: peer messenger is not installed (daemon not running?)",
             ));
         };
+        let actor = self.port.resolve_actor(channel_id.as_str()).await?;
+        let target = actor.subject();
         Ok(Self::execute_user_target(
             messenger.as_ref(),
             &principal_str,
@@ -1013,11 +1129,11 @@ mod tests {
         let channel = fx.channel_of(&fx.alice, None).await;
 
         let first = fx
-            .send(json!({ "channel": channel.as_str(), "text": "first" }))
+            .send(json!({ "to": channel.as_str(), "text": "first" }))
             .await
             .unwrap();
         let second = fx
-            .send(json!({ "channel": channel.as_str(), "text": "second" }))
+            .send(json!({ "to": channel.as_str(), "text": "second" }))
             .await
             .unwrap();
         assert_eq!(first["success"], true, "{first}");
@@ -1039,11 +1155,11 @@ mod tests {
         let fx = Fixture::new();
         let channel = fx.channel_of(&fx.alice, None).await;
         let root = fx
-            .send(json!({ "channel": channel.as_str(), "text": "root" }))
+            .send(json!({ "to": channel.as_str(), "text": "root" }))
             .await
             .unwrap();
         let root_id = root["id"].as_str().unwrap().to_string();
-        fx.send(json!({ "channel": channel.as_str(), "text": "reply", "parent": root_id }))
+        fx.send(json!({ "to": channel.as_str(), "text": "reply", "parent": root_id }))
             .await
             .unwrap();
         assert_eq!(
@@ -1058,7 +1174,7 @@ mod tests {
         let bobs = fx.channel_of(&PrincipalId::generate(), None).await;
 
         let got = fx
-            .send(json!({ "channel": bobs.as_str(), "text": "hi" }))
+            .send(json!({ "to": bobs.as_str(), "text": "hi" }))
             .await
             .unwrap_err();
         assert_eq!(
@@ -1071,7 +1187,7 @@ mod tests {
         assert!(fx.posts(&bobs).await.is_empty(), "nothing was posted");
 
         let got = fx
-            .send(json!({ "channel": "chan_zzzzzzzz", "text": "hi" }))
+            .send(json!({ "to": "chan_zzzzzzzz", "text": "hi" }))
             .await
             .unwrap_err();
         assert_eq!(
@@ -1087,7 +1203,7 @@ mod tests {
             .channel_of(&fx.alice, Some(ChannelId::for_group("eng-standup")))
             .await;
         let got = fx
-            .send(json!({ "channel": "group:eng-standup", "text": "standup in 5" }))
+            .send(json!({ "to": "group:eng-standup", "text": "standup in 5" }))
             .await
             .unwrap();
         assert_eq!(got["success"], true, "{got}");
@@ -1105,23 +1221,23 @@ mod tests {
     async fn malformed_calls_are_rejected() {
         let fx = Fixture::new();
         for (params, expected) in [
-            (json!({ "text": "hi" }), "requires 'channel'"),
-            (json!({ "channel": 7, "text": "hi" }), "requires 'channel'"),
-            (json!({ "channel": "chan_a1b2c3d4" }), "requires 'text'"),
+            (json!({ "text": "hi" }), "requires 'to'"),
+            (json!({ "to": 7, "text": "hi" }), "requires 'to'"),
+            (json!({ "to": "chan_a1b2c3d4" }), "requires 'text'"),
             (
-                json!({ "channel": "chan_a1b2c3d4", "text": "" }),
+                json!({ "to": "chan_a1b2c3d4", "text": "" }),
                 "non-empty 'text'",
             ),
             (
-                json!({ "channel": "not-a-chan-id", "text": "hi" }),
+                json!({ "to": "not-a-chan-id", "text": "hi" }),
                 "not a valid channel id",
             ),
             (
-                json!({ "channel": "stream:abc", "text": "hi" }),
+                json!({ "to": "stream:abc", "text": "hi" }),
                 "not a valid channel id",
             ),
             (
-                json!({ "channel": "principal:", "text": "hi" }),
+                json!({ "to": "principal:", "text": "hi" }),
                 "not a valid channel id",
             ),
         ] {
@@ -1133,7 +1249,7 @@ mod tests {
         let error = fx
             .tool
             .execute_with_context(
-                json!({ "channel": "chan_a1b2c3d4", "text": "hi" }),
+                json!({ "to": "chan_a1b2c3d4", "text": "hi" }),
                 &no_principal,
             )
             .await
@@ -1142,7 +1258,7 @@ mod tests {
 
         let error = fx
             .tool
-            .execute(json!({ "channel": "chan_a1b2c3d4", "text": "hi" }))
+            .execute(json!({ "to": "chan_a1b2c3d4", "text": "hi" }))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("ToolContext"), "{error}");
@@ -1154,7 +1270,7 @@ mod tests {
     async fn principal_branch_without_cross_runtime_context_is_an_error() {
         let fx = Fixture::new();
         let got = fx
-            .send(json!({ "channel": "principal:did:key:zBob", "text": "hi bob" }))
+            .send(json!({ "to": "principal:did:key:zBob", "text": "hi bob" }))
             .await
             .unwrap_err()
             .to_string();
@@ -1167,7 +1283,7 @@ mod tests {
     async fn user_branch_without_messenger_is_an_error() {
         let fx = Fixture::new();
         let got = fx
-            .send(json!({ "channel": "user:alice", "text": "hi" }))
+            .send(json!({ "to": "user:local:alice", "text": "hi" }))
             .await
             .unwrap_err()
             .to_string();
@@ -1330,7 +1446,7 @@ mod tests {
             .await;
             assert_eq!(out["success"], false, "{out}");
             assert_eq!(out["kind"], "user");
-            assert_eq!(out["channel"], "user:bob");
+            assert_eq!(out["to"], "user:bob");
             assert!(out["error"].as_str().unwrap().contains(expected), "{out}");
         }
     }

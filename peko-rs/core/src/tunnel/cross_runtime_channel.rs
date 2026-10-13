@@ -79,7 +79,7 @@ impl PrincipalSigningKeys for NoPrincipalKeys {
 pub struct CrossRuntimeChannelCtx {
     /// Directory client (`HubAgentDirectoryClient` in production,
     /// a `FakeAgentDirectory` in tests). The outbound send path
-    /// calls `resolve_by_did` to learn which runtime hosts each
+    /// calls `resolve_by_hub_id` to learn which runtime hosts each
     /// remote channel member.
     pub directory: Arc<dyn AgentDirectory>,
 
@@ -123,5 +123,27 @@ impl std::fmt::Debug for CrossRuntimeChannelCtx {
             .field("tunnel", &self.tunnel)
             .field("principal_keys", &"<dyn PrincipalSigningKeys>")
             .finish()
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestPrincipalKeys(pub Vec<(PrincipalId, Arc<SigningKey>)>);
+#[cfg(test)]
+#[async_trait::async_trait]
+impl PrincipalSigningKeys for TestPrincipalKeys {
+    async fn did_for_principal(&self, principal: &PrincipalId) -> Option<String> {
+        self.0
+            .iter()
+            .find(|(id, key)| {
+                id == principal
+                    || crate::tunnel::verifying_key_to_did_key(&key.verifying_key()) == principal.0
+            })
+            .map(|(_, key)| crate::tunnel::verifying_key_to_did_key(&key.verifying_key()))
+    }
+    async fn signing_key_for_did(&self, did: &str) -> Option<Arc<SigningKey>> {
+        self.0
+            .iter()
+            .find(|(_, key)| crate::tunnel::verifying_key_to_did_key(&key.verifying_key()) == did)
+            .map(|(_, key)| key.clone())
     }
 }

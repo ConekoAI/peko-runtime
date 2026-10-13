@@ -566,13 +566,13 @@ impl DaemonClient {
 
     /// Set the tunnel exposure of a Principal's instance. Persisted on
     /// the Principal and broadcast to the hub.
-    pub async fn principal_set_exposure(
+    pub async fn principal_register(
         &self,
         name: impl Into<String>,
         exposure: impl Into<String>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
-        let packet = RequestPacket::PrincipalSetExposure {
+        let packet = RequestPacket::PrincipalRegister {
             request_id,
             name: name.into(),
             exposure: exposure.into(),

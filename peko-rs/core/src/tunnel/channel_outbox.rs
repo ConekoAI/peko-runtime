@@ -107,6 +107,32 @@ pub(crate) struct ChannelOutbox {
 }
 
 impl ChannelOutbox {
+    /// Keep pending message identity while following a peer's new host.
+    pub(crate) async fn retarget(
+        &self,
+        channel: &ChannelId,
+        old: &str,
+        new: &str,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.state.lock().await;
+        let entries = self.loaded(&mut guard).await;
+        for entry in entries
+            .values_mut()
+            .filter(|e| e.recipient_runtime_id == old)
+        {
+            let target = match &entry.item {
+                OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => channel,
+            };
+            if target != channel {
+                continue;
+            }
+            entry.recipient_runtime_id = new.into();
+            // Bootstrap the new mirror first; pending posts become due next tick.
+            entry.last_attempt = Some(Utc::now());
+            self.write(entry).await?;
+        }
+        Ok(())
+    }
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
             dir,
@@ -391,6 +417,23 @@ impl ReceivedLog {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn retarget_preserves_pending_message_identity_across_restart() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = ChannelOutbox::new(dir.path().join("outbox"));
+        let first = outbox.enqueue("old", posted("msg_stable")).await.unwrap();
+        outbox
+            .retarget(&ChannelId("chan_test0001".into()), "old", "new")
+            .await
+            .unwrap();
+        let reloaded = ChannelOutbox::new(dir.path().join("outbox"));
+        let entries = reloaded.due(true).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].request_id, first.request_id);
+        assert_eq!(entries[0].recipient_runtime_id, "new");
+        assert_eq!(entries[0].msg_id(), Some("msg_stable"));
+    }
     use super::*;
 
     fn posted(msg_id: &str) -> OutboxItem {

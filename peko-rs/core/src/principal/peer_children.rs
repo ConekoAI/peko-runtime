@@ -1,40 +1,6 @@
-//! Peer-child provisioning (agent-session paradigm, sprint 2 Phase 5).
-//!
-//! Every external ingress peer gets a STANDING first-level child of
-//! the trunk session (`root:self`) that acts as that peer's permanent
-//! conversation with the principal:
-//!
-//! - the CLI owner (`user:local`) → `/local-user`;
-//! - any other user (`user:{id}`) → `/user-{sanitized}`;
-//! - an A2A principal (`principal:{did}`) →
-//!   `/principal-{did-fragment}`.
-//!
-//! [`ensure_peer_child`] find-or-creates the child (metadata + a JSONL
-//! created-event only — NO LLM turn, no run), flagged
-//! `trigger = "spawn"` / `slug = peer_child_slug(peer)`, parented at
-//! the trunk, titled with the peer's display string, and stamped with
-//! the REAL peer. Peer-child identity keys on that peer stamp — the
-//! `standing` / `privileged` flags were removed with the 2026-09-12
-//! filesystem model (whole-store reach for every caller; hierarchy is
-//! organizational only).
-//!
-//! ## Dangling trunk
-//!
-//! The trunk session may not exist yet (no self-turn has run). The
-//! child's `parent_session_id` then dangles — which the ownership
-//! layer tolerates by design (same as the dangling owner root in
-//! `crate::principal::children`): the ancestor walk ends gracefully at
-//! the missing entry, and `descendants_of` adjacency works without a
-//! parent entry. We deliberately do NOT create the trunk entry here —
-//! its lifecycle belongs to the engine.
-//!
-//! ## Concurrency
-//!
-//! Creation is serialized by holding the shared per-principal
-//! `SessionManager` write lock across the whole find-or-create (the
-//! former `ensure_declared_children` pattern): every ingress path for a
-//! principal shares one manager, so concurrent first-contact for the
-//! same peer cannot double-create.
+//! Standing conversation sessions, keyed exclusively by their channel binding.
+//! Display slugs and titles organize private working memory; channel membership
+//! identifies interlocutors. Every creation is serialized by the session store lock.
 
 use std::sync::Arc;
 
@@ -113,218 +79,86 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
     Ok(slug)
 }
 
-/// Find the peer's EXISTING standing child of the trunk (find-only —
-/// never creates). Returns the child session id, or `None` when the
-/// peer has no child yet.
-///
-/// Used by the peer messenger's note delivery
-/// ([`crate::principal::messenger`]): a note must attach to the peer's
-/// conversational session but must never provision one — sessions are
-/// created by ingress turns, not by note delivery.
-///
-/// Same match rule as [`ensure_peer_child`]: walk `base`, `base-2`,
-/// …; a standing spawn child of the trunk whose stamped peer IS this
-/// peer matches; a slug claimed by a DIFFERENT peer's child keeps the
-/// walk going; the first unclaimed candidate ends it (`None`).
-pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<String> {
-    let base_slug = peer_child_slug(peer).ok()?;
-    find_standing_child(metas, &base_slug, peer)
-}
-
-/// A standing spawn child of the trunk carrying exactly `slug` (any
-/// peer). The successor of `children::find_declared_child` (which died
-/// with declared-children provisioning): peer-child identity now keys
-/// on the stamped peer, not on `principal.toml` declarations.
-fn find_trunk_standing_child<'a>(
-    metas: &'a [SessionMetadata],
-    trunk: &str,
-    slug: &str,
-) -> Option<&'a SessionMetadata> {
-    metas.iter().find(|m| {
-        m.slug.as_deref() == Some(slug)
-            && m.trigger == "spawn"
-            && m.parent_session_id
-                .as_ref()
-                .map(|p| p.to_string())
-                .as_deref()
-                == Some(trunk)
-    })
-}
-
-/// The shared find half of the standing-child match rule: walk
-/// `base`, `base-2`, … under the trunk for a standing spawn child
-/// stamped with THIS peer. Factored out of [`find_peer_child`] so
-/// [`ensure_group_child`] (ADR-049 Phase 3) matches on its own slug
-/// space instead of the peer-derived one.
-fn find_standing_child(
+/// Locate the persisted conversation binding using its immutable actor pair.
+pub async fn find_dm_child(
     metas: &[SessionMetadata],
-    base_slug: &str,
+    principal: &peko_subject::PrincipalId,
     peer: &Subject,
+    port: &Arc<dyn peko_channel::ChannelPort>,
 ) -> Option<String> {
-    let trunk = trunk_session_id();
-    for attempt in 0..MAX_SLUG_ATTEMPTS {
-        let candidate = suffixed_slug(base_slug, attempt);
-        match find_trunk_standing_child(metas, &trunk, &candidate) {
-            Some(m) if peer_matches(m, peer) => return Some(m.session_id.to_string()),
-            Some(_) => continue,
-            None => return None,
-        }
-    }
-    None
+    let me = port.actor_info(&Subject::from(principal)).await;
+    let other = port.actor_info(peer).await;
+    let channel = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
+    metas
+        .iter()
+        .find(|m| m.channel_id.as_deref() == Some(channel.as_str()))
+        .map(|m| m.session_id.to_string())
 }
-
-/// Find-or-create the peer's standing child of the trunk; returns the
-/// child session id. Idempotent: a second call returns the same id.
-///
-/// `agent_name` is stamped on a created session's metadata (the root
-/// agent's prompt name on the production path).
-///
-/// Match: a session whose `slug == peer_child_slug(peer)` AND
-/// `trigger == "spawn"` whose parent chain roots at the trunk
-/// (`root:self`) AND whose stamped peer IS this peer. A slug held by a DIFFERENT peer's child (sanitized collision)
-/// does not match — the peer's child is created with a `-2`, `-3`, …
-/// suffix instead.
-pub async fn ensure_peer_child(
-    agent_name: &str,
-    peer: &Subject,
-    session_manager: &Arc<RwLock<SessionManager>>,
-) -> Result<String> {
-    let base_slug = peer_child_slug(peer)?;
-    ensure_standing_child(
-        agent_name,
-        peer,
-        &base_slug,
-        &peer.to_string(),
-        session_manager,
-    )
-    .await
+#[cfg(test)]
+pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<String> {
+    metas
+        .iter()
+        .find(|m| m.channel_id.is_some() && m.title.as_deref() == Some(peer.to_string().as_str()))
+        .map(|m| m.session_id.to_string())
 }
-
-/// The base slug [`ensure_group_child`] assigns for `channel` (before
-/// any `-N` collision suffix). Factored out so the group wake
-/// responder's `via` attribution (`daemon::channel_binding`) derives
-/// the same `/group-<slug>` path from the channel wire id.
 pub(crate) fn group_child_base_slug(channel: &str) -> String {
-    let stripped = channel.strip_prefix("group:").unwrap_or(channel);
-    let sanitized = sanitize_slug_segment(stripped);
-    if sanitized.is_empty() {
-        "group".to_string()
-    } else {
-        cap_slug(&format!("group-{sanitized}"))
-    }
+    cap_slug(&format!(
+        "group-{}",
+        sanitize_slug_segment(channel.strip_prefix("group:").unwrap_or(channel))
+    ))
 }
-
-/// ADR-049 Phase 3 (D4): find-or-create the principal's standing
-/// child session for a GROUP channel — the per-(principal, channel)
-/// working memory a group wake run resumes. Idempotent per channel,
-/// never privileged (a group is not the owner).
-///
-/// `channel` is the channel's wire id (`group:eng-standup`, or a bare
-/// `chan_*` id for an unbound legacy group). The slug strips a leading
-/// `group:` prefix before sanitizing, so `group:eng-standup` →
-/// `/group-eng-standup` and `chan_ab12cd34` → `/group-chan-ab12cd34`.
-///
-/// `Subject` has no channel kind, so the child is stamped with the
-/// channel wire id carried as a User-typed peer id (metadata only —
-/// no ingress path resolves it back to a real user). The slug spaces
-/// cannot collide with a real peer child: a hypothetical user named
-/// `group:eng` slugs to `user-group-eng`, not `group-eng`.
 pub async fn ensure_group_child(
     agent_name: &str,
     channel: &str,
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
-    let base_slug = group_child_base_slug(channel);
-    peko_session::path::validate_slug(&base_slug)?;
-    let peer = Subject::User(channel.to_string());
-    ensure_standing_child(agent_name, &peer, &base_slug, channel, session_manager).await
+    ensure_channel_child(
+        agent_name,
+        channel,
+        &group_child_base_slug(channel),
+        channel,
+        session_manager,
+    )
+    .await
 }
-
-/// The shared find-or-create core for standing children of the trunk.
-/// Holds the session-manager write lock across the whole operation so
-/// concurrent first-contact for the same peer/channel serializes
-/// (module docs, "Concurrency").
-async fn ensure_standing_child(
+pub async fn ensure_channel_child(
     agent_name: &str,
-    peer: &Subject,
+    channel: &str,
     base_slug: &str,
     title: &str,
     session_manager: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
-    let trunk = trunk_session_id();
-
-    // Hold the write lock across find-or-create so concurrent ingress
-    // for the same peer serializes here (module docs, "Concurrency").
-    let mut mgr = session_manager.write().await;
-    let metas = mgr.list_all_sessions(false).await?;
-
-    // Find: an existing standing child stamped with THIS peer is
-    // reused (idempotent). Otherwise walk `base`, `base-2`, … for the
-    // first candidate not claimed by a DIFFERENT peer's child
-    // (sanitized collisions like `user:Foo Bar` vs `user:foo-bar`).
-    if let Some(existing) = find_standing_child(&metas, base_slug, peer) {
-        return Ok(existing);
+    let mut manager = session_manager.write().await;
+    let metas = manager.list_all_sessions(false).await?;
+    if let Some(meta) = metas
+        .iter()
+        .find(|m| m.channel_id.as_deref() == Some(channel))
+    {
+        return Ok(meta.session_id.to_string());
     }
-    let mut create_slug = None;
-    for attempt in 0..MAX_SLUG_ATTEMPTS {
-        let candidate = suffixed_slug(base_slug, attempt);
-        match find_trunk_standing_child(&metas, &trunk, &candidate) {
-            Some(_) => continue,
-            None => {
-                create_slug = Some(candidate);
-                break;
-            }
-        }
-    }
-    let mut slug = create_slug.ok_or_else(|| {
-        anyhow::anyhow!(
-            "peer child slug space exhausted for peer {peer}: every suffix of '{base_slug}' is \
-             claimed by another peer's child"
-        )
-    })?;
-
-    // Create with the REAL peer stamped (not the `standing_*`
-    // placeholder the retired declared-children path used).
     let options = SessionCreateOptions::new()
-        .with_parent(trunk.clone())
-        // `with_parent` presets trigger="branch"; the explicit trigger
-        // must be applied after it (spawn semantics — the resume guard
-        // stack keys on `trigger == "spawn"`).
+        .with_parent(trunk_session_id())
         .with_trigger("spawn")
         .with_title(title);
-    let handle = mgr.create_session(agent_name, peer, options).await?;
-    let child_id = handle.session_id().to_string();
-
-    // The find scan only sees standing+spawn matches; a PLAIN session
-    // can still hold the candidate slug under the trunk, so retry the
-    // assignment with further suffixes on a uniqueness conflict.
-    let mut assigned = false;
+    let session = manager
+        .create_session(agent_name, &Subject::Public, options)
+        .await?;
+    let id = session.session_id().to_string();
     for attempt in 0..MAX_SLUG_ATTEMPTS {
-        if attempt > 0 {
-            slug = suffixed_slug(base_slug, attempt);
-        }
-        match mgr.set_session_slug(&child_id, Some(slug.clone())).await {
-            Ok(()) => {
-                assigned = true;
-                break;
-            }
+        let slug = if attempt == 0 {
+            base_slug.to_string()
+        } else {
+            format!("{base_slug}-{}", attempt + 1)
+        };
+        match manager.set_session_slug(&id, Some(slug)).await {
+            Ok(()) => break,
             Err(e) if e.to_string().contains("unique per parent") => continue,
             Err(e) => return Err(e),
         }
     }
-    if !assigned {
-        anyhow::bail!(
-            "peer child slug space exhausted for peer {peer}: every suffix of '{base_slug}' \
-             collides under the trunk"
-        );
-    }
-    tracing::info!(
-        "ensure_standing_child: provisioned peer child '/{slug}' for {peer} as session {child_id} \
-         under {trunk}"
-    );
-    Ok(child_id)
+    manager.bind_session_channel(&id, channel).await?;
+    Ok(id)
 }
-
 /// Sanitize a user id into a slug segment: lowercase ascii
 /// alphanumerics kept, everything else mapped to `-`, repeats
 /// collapsed, leading/trailing `-` trimmed.
@@ -349,444 +183,19 @@ fn cap_slug(slug: &str) -> String {
     slug.chars().take(MAX_SLUG_LEN).collect()
 }
 
-/// Attempt 0 is the base slug; attempts 1.. append `-2`, `-3`, …,
-/// truncating the base first so the result stays within the cap.
-fn suffixed_slug(base: &str, attempt: usize) -> String {
-    if attempt == 0 {
-        return base.to_string();
-    }
-    let suffix = format!("-{}", attempt + 1);
-    let head: String = base.chars().take(MAX_SLUG_LEN - suffix.len()).collect();
-    format!("{head}{suffix}")
-}
-
-/// True when the session was stamped with this peer at creation
-/// (`SessionManager::create_session` records `peer.kind()` /
-/// `peer.subject_id()`).
-fn peer_matches(m: &SessionMetadata, peer: &Subject) -> bool {
-    let kind = peer.kind().to_string();
-    m.peer_type.as_deref() == Some(kind.as_str()) && m.peer_id.as_deref() == Some(peer.subject_id())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::ownership::{caller_context, in_subtree};
-
-    /// Sprint 6: convert a fixture literal to the v5-derived UUID form
-    /// the runtime stores in `SessionMetadata.session_id`.
-    fn sid(literal: &str) -> String {
-        peko_session::SessionId::from(literal).to_string()
-    }
-
-    fn principal_peer(did: &str) -> Subject {
-        Subject::Principal(did.to_string().into())
-    }
-
-    // ─── peer_child_slug ────────────────────────────────────────────
-
-    #[test]
-    fn slug_for_local_user_is_local_user() {
-        assert_eq!(
-            peer_child_slug(&Subject::User("local".to_string())).unwrap(),
-            "local-user"
-        );
-    }
-
-    #[test]
-    fn slug_for_users_sanitizes() {
-        assert_eq!(
-            peer_child_slug(&Subject::User("alice".to_string())).unwrap(),
-            "user-alice"
-        );
-        // Uppercase + spaces + punctuation collapse to single dashes.
-        assert_eq!(
-            peer_child_slug(&Subject::User("Foo Bar__Baz!".to_string())).unwrap(),
-            "user-foo-bar-baz"
-        );
-        // Unicode maps to dashes; leading/trailing dashes trim.
-        assert_eq!(
-            peer_child_slug(&Subject::User("héllo wörld".to_string())).unwrap(),
-            "user-h-llo-w-rld"
-        );
-        // Nothing slug-safe survives → bare prefix (still valid).
-        assert_eq!(
-            peer_child_slug(&Subject::User("!!!".to_string())).unwrap(),
-            "user"
-        );
-    }
-
-    #[test]
-    fn slug_for_principals_uses_did_fingerprint() {
-        let slug = peer_child_slug(&principal_peer("did:key:z6MkTestABCDEF1234567890")).unwrap();
-        assert_eq!(slug, "principal-54a679d9fdcc0265");
-        assert!(slug.len() <= MAX_SLUG_LEN);
-        assert!(peko_session::path::validate_slug(&slug).is_ok());
-    }
-
-    /// Regression: the fragment used to be the DID's first 16
-    /// alphanumerics, so principals on one runtime (shared
-    /// `did:peko:<tier>:` prefix) and their peers' slugs collided. A
-    /// same-runtime `ChannelSend` then resolved the caller's own DM
-    /// channel to the target's (same binding path), double-posting
-    /// every request after the first.
-    #[test]
-    fn principal_slugs_differ_for_dids_sharing_a_long_prefix() {
-        let dids = [
-            "did:peko:public:offline-caller:d7b8bc4fb20b9e20",
-            "did:peko:public:offline-target:d7b8bc4fb20b9e20",
-            "did:peko:local:alice:0001",
-            "did:peko:local:alice:0002",
-            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doL",
-        ];
-        let slugs: std::collections::HashSet<_> = dids
-            .iter()
-            .map(|did| peer_child_slug(&principal_peer(did)).unwrap())
-            .collect();
-        assert_eq!(slugs.len(), dids.len(), "{slugs:?}");
-    }
-
-    #[test]
-    fn slug_for_visitors_uses_own_space() {
-        // ADR-058 D5: visitors land in `/visitor-<id>` children,
-        // sanitized like users but in a distinct slug space.
-        assert_eq!(
-            peer_child_slug(&Subject::Visitor("vis_abc123".to_string())).unwrap(),
-            "visitor-vis-abc123"
-        );
-        // Nothing slug-safe survives → bare prefix (still valid).
-        assert_eq!(
-            peer_child_slug(&Subject::Visitor("!!!".to_string())).unwrap(),
-            "visitor"
-        );
-    }
-
-    #[test]
-    fn slug_is_capped_at_max_len() {
-        let long_id = "a".repeat(200);
-        let slug = peer_child_slug(&Subject::User(long_id)).unwrap();
-        assert_eq!(slug.chars().count(), MAX_SLUG_LEN);
-        assert!(slug.starts_with("user-"));
-        peko_session::path::validate_slug(&slug).unwrap();
-    }
-
-    #[test]
-    fn slug_for_public_is_an_error() {
-        let err = peer_child_slug(&Subject::Public).unwrap_err();
-        assert!(err.to_string().contains("not a session peer"), "{err}");
-    }
-
-    // ─── ensure_peer_child ──────────────────────────────────────────
-
-    async fn fixture() -> (tempfile::TempDir, Arc<RwLock<SessionManager>>) {
-        let dir = tempfile::tempdir().unwrap();
-        let sessions_dir = dir.path().join("sessions");
-        let manager = SessionManager::new().with_sessions_dir_internal(sessions_dir);
-        (dir, Arc::new(RwLock::new(manager)))
-    }
-
-    async fn metas_of(manager: &Arc<RwLock<SessionManager>>) -> Vec<SessionMetadata> {
-        manager
-            .write()
-            .await
-            .list_all_sessions(false)
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn creates_owner_peer_child_privileged_and_standing() {
-        let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
-
-        let child_id = ensure_peer_child("root", &owner, &manager).await.unwrap();
-
-        let metas = metas_of(&manager).await;
-        let child = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == child_id)
-            .expect("child metadata exists");
-        assert_eq!(child.slug.as_deref(), Some("local-user"));
-        assert_eq!(child.trigger, "spawn");
-        assert_eq!(
-            child.parent_session_id.map(|id| id.to_string()),
-            Some(peko_session::SessionId::from("root:self").to_string()),
-            "peer child must be parented at the trunk"
-        );
-        assert_eq!(child.title.as_deref(), Some("user:local"));
-        // The REAL peer is stamped (not a standing_* placeholder).
-        assert_eq!(child.peer_type.as_deref(), Some("user"));
-        assert_eq!(child.peer_id.as_deref(), Some("local"));
-    }
-
-    #[tokio::test]
-    async fn stranger_peer_child_is_not_privileged() {
-        let (_dir, manager) = fixture().await;
-        let stranger = Subject::User("mallory".to_string());
-        let a2a = principal_peer("did:key:z6MkStranger");
-
-        let stranger_id = ensure_peer_child("root", &stranger, &manager)
-            .await
-            .unwrap();
-        let a2a_id = ensure_peer_child("root", &a2a, &manager).await.unwrap();
-
-        let metas = metas_of(&manager).await;
-        let s = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == stranger_id)
-            .unwrap();
-        assert_eq!(s.slug.as_deref(), Some("user-mallory"));
-        assert_eq!(s.peer_id.as_deref(), Some("mallory"));
-
-        let p = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == a2a_id)
-            .unwrap();
-        assert_eq!(
-            p.slug.as_deref(),
-            Some(peer_child_slug(&a2a).unwrap().as_str())
-        );
-        assert_eq!(p.peer_type.as_deref(), Some("principal"));
-        assert_eq!(p.peer_id.as_deref(), Some("did:key:z6MkStranger"));
-    }
-
-    #[tokio::test]
-    async fn visitor_peer_child_provisions_in_own_slug_space() {
-        let (_dir, manager) = fixture().await;
-        let visitor = Subject::Visitor("vis_abc123".to_string());
-
-        let child_id = ensure_peer_child("root", &visitor, &manager).await.unwrap();
-
-        let metas = metas_of(&manager).await;
-        let child = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == child_id)
-            .expect("child metadata exists");
-        assert_eq!(child.slug.as_deref(), Some("visitor-vis-abc123"));
-        assert_eq!(child.trigger, "spawn");
-        assert_eq!(child.title.as_deref(), Some("visitor:vis_abc123"));
-        // The REAL visitor peer is stamped (kind + bare id).
-        assert_eq!(child.peer_type.as_deref(), Some("visitor"));
-        assert_eq!(child.peer_id.as_deref(), Some("vis_abc123"));
-    }
-
-    #[tokio::test]
-    async fn second_call_is_idempotent() {
-        let (_dir, manager) = fixture().await;
-        let peer = Subject::User("alice".to_string());
-
-        let first = ensure_peer_child("root", &peer, &manager).await.unwrap();
-        let second = ensure_peer_child("root", &peer, &manager).await.unwrap();
-        assert_eq!(first, second);
-        assert_eq!(metas_of(&manager).await.len(), 1);
-    }
-
-    /// Two peers whose ids sanitize to the same slug get distinct
-    /// children via the `-2` suffix, and each subsequent call still
-    /// resolves to its OWN child.
-    #[tokio::test]
-    async fn sanitized_collision_gets_suffix_and_stays_idempotent() {
-        let (_dir, manager) = fixture().await;
-        let peer_a = Subject::User("foo-bar".to_string());
-        let peer_b = Subject::User("foo bar".to_string());
-
-        let a_id = ensure_peer_child("root", &peer_a, &manager).await.unwrap();
-        let b_id = ensure_peer_child("root", &peer_b, &manager).await.unwrap();
-        assert_ne!(a_id, b_id);
-
-        let metas = metas_of(&manager).await;
-        let a = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == a_id)
-            .unwrap();
-        let b = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == b_id)
-            .unwrap();
-        assert_eq!(a.slug.as_deref(), Some("user-foo-bar"));
-        assert_eq!(b.slug.as_deref(), Some("user-foo-bar-2"));
-
-        // Idempotent per peer: each resolves to its own child again.
-        assert_eq!(
-            ensure_peer_child("root", &peer_a, &manager).await.unwrap(),
-            a_id
-        );
-        assert_eq!(
-            ensure_peer_child("root", &peer_b, &manager).await.unwrap(),
-            b_id
-        );
-        assert_eq!(metas_of(&manager).await.len(), 2);
-    }
-
-    /// A PLAIN (non-standing) session holding the derived slug under
-    /// the trunk does not satisfy the match; provisioning retries with
-    /// the `-2` suffix (the per-parent uniqueness error path).
-    #[tokio::test]
-    async fn plain_session_slug_collision_retries_with_suffix() {
-        let (_dir, manager) = fixture().await;
-        let peer = Subject::User("alice".to_string());
-        let owner = Subject::User("local".to_string());
-
-        // Pre-create a non-standing session under the trunk holding
-        // the would-be slug.
-        {
-            let mut mgr = manager.write().await;
-            let options = SessionCreateOptions::new()
-                .with_parent("root:self")
-                .with_trigger("spawn");
-            let handle = mgr.create_session("root", &owner, options).await.unwrap();
-            let id = handle.session_id().to_string();
-            mgr.set_session_slug(&id, Some("user-alice".to_string()))
-                .await
-                .unwrap();
-        }
-
-        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
-        let metas = metas_of(&manager).await;
-        let child = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == child_id)
-            .unwrap();
-        assert_eq!(child.slug.as_deref(), Some("user-alice-2"));
-        assert_eq!(metas.len(), 2, "the plain session is left untouched");
-    }
-
-    /// The trunk session may not exist yet: the child's parent pointer
-    /// dangles, which the ownership layer tolerates (the ancestor walk
-    /// ends gracefully; the child classifies as a spawned caller). Once
-    /// the trunk exists it manages the whole store including the child.
-    #[tokio::test]
-    async fn dangling_trunk_is_tolerated() {
-        let (_dir, manager) = fixture().await;
-        let owner = Subject::User("local".to_string());
-
-        let child_id = ensure_peer_child("root", &owner, &manager).await.unwrap();
-        let metas = metas_of(&manager).await;
-
-        // BEFORE the trunk exists: the child is a spawned caller whose
-        // dangling parent stays in its ancestor chain.
-        let child_caller = caller_context(&child_id, &metas);
-        assert!(!child_caller.is_base);
-        assert!(!child_caller.dangling);
-        assert_eq!(child_caller.ancestors, vec![sid("root:self")]);
-        assert!(!in_subtree(&child_caller, &sid("root:self"), &metas));
-
-        // Create the trunk (as the first self-turn would).
-        {
-            let mut mgr = manager.write().await;
-            let options = SessionCreateOptions::new().with_session_id("root:self");
-            mgr.create_session("root", &owner, options).await.unwrap();
-        }
-        let metas = metas_of(&manager).await;
-
-        // AFTER: the trunk caller is base and manages the child.
-        let trunk_caller = caller_context(&sid("root:self"), &metas);
-        assert!(trunk_caller.is_base);
-        assert!(in_subtree(&trunk_caller, &child_id, &metas));
-    }
-
-    #[tokio::test]
-    async fn public_peer_is_refused_without_creating() {
-        let (_dir, manager) = fixture().await;
-        let err = ensure_peer_child("root", &Subject::Public, &manager)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("not a session peer"), "{err}");
-        assert!(metas_of(&manager).await.is_empty());
-    }
-
-    // ─── ensure_group_child (ADR-049 Phase 3) ────────────────────────
-
-    /// The group child is a standing, non-privileged spawn child of
-    /// the trunk, keyed by the channel wire id: `group:eng-standup`
-    /// slugs to `group-eng-standup` and the channel wire id is stamped
-    /// as the (User-typed) peer id. Idempotent per channel; distinct
-    /// channels get distinct children.
-    #[tokio::test]
-    async fn group_child_is_keyed_per_channel_and_idempotent() {
-        let (_dir, manager) = fixture().await;
-
-        let eng = ensure_group_child("root", "group:eng-standup", &manager)
-            .await
-            .unwrap();
-        let eng_again = ensure_group_child("root", "group:eng-standup", &manager)
-            .await
-            .unwrap();
-        assert_eq!(
-            eng, eng_again,
-            "same channel must resolve to the same child"
-        );
-
-        let ops = ensure_group_child("root", "group:ops", &manager)
-            .await
-            .unwrap();
-        assert_ne!(eng, ops, "distinct channels must get distinct children");
-
-        let metas = metas_of(&manager).await;
-        assert_eq!(
-            metas.len(),
-            2,
-            "exactly one child per channel; got {metas:?}"
-        );
-        let child = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == eng)
-            .expect("group child metadata exists");
-        assert_eq!(child.slug.as_deref(), Some("group-eng-standup"));
-        assert_eq!(child.trigger, "spawn");
-        assert_eq!(
-            child.parent_session_id.map(|id| id.to_string()),
-            Some(peko_session::SessionId::from("root:self").to_string()),
-            "group child must be parented at the trunk"
-        );
-        assert_eq!(child.title.as_deref(), Some("group:eng-standup"));
-        // The channel wire id is stamped as the (User-typed) peer id.
-        assert_eq!(child.peer_type.as_deref(), Some("user"));
-        assert_eq!(child.peer_id.as_deref(), Some("group:eng-standup"));
-    }
-
-    /// A bare `chan_*` id (an unbound legacy group channel) slugs into
-    /// the same `group-*` space without colliding with `group:<slug>`
-    /// channels.
-    #[tokio::test]
-    async fn group_child_for_bare_channel_id() {
-        let (_dir, manager) = fixture().await;
-        let child = ensure_group_child("root", "chan_ab12cd34", &manager)
-            .await
-            .unwrap();
-        let metas = metas_of(&manager).await;
-        let meta = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == child)
-            .unwrap();
-        assert_eq!(meta.slug.as_deref(), Some("group-chan-ab12cd34"));
-    }
-
-    /// The group child slug space cannot collide with a real peer
-    /// child: a user whose id contains the channel wire form slugs to
-    /// `user-group-...`, not `group-...`.
-    #[tokio::test]
-    async fn group_child_does_not_collide_with_peer_children() {
-        let (_dir, manager) = fixture().await;
-        let peer = Subject::User("group:eng".to_string());
-
-        let group = ensure_group_child("root", "group:eng", &manager)
-            .await
-            .unwrap();
-        let user = ensure_peer_child("root", &peer, &manager).await.unwrap();
-        assert_ne!(group, user);
-
-        let metas = metas_of(&manager).await;
-        let g = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == group)
-            .unwrap();
-        let u = metas
-            .iter()
-            .find(|m| m.session_id.to_string() == user)
-            .unwrap();
-        assert_eq!(g.slug.as_deref(), Some("group-eng"));
-        assert_eq!(u.slug.as_deref(), Some("user-group-eng"));
-    }
+pub async fn ensure_peer_child(
+    agent_name: &str,
+    peer: &Subject,
+    sessions: &Arc<RwLock<SessionManager>>,
+) -> Result<String> {
+    let channel = peko_channel::dm_channel_id("fixture", &peer.to_string());
+    ensure_channel_child(
+        agent_name,
+        channel.as_str(),
+        &peer_child_slug(peer)?,
+        &peer.to_string(),
+        sessions,
+    )
+    .await
 }

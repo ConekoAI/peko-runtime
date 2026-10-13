@@ -76,39 +76,30 @@ pub trait RuntimePaths: Send + Sync + 'static {
 /// `peko-principal` (the future Phase 14 extraction) import it from
 /// `peko_auth` without a cycle.
 ///
-/// The wire shape is unchanged: `snake_case` serde with
-/// `private` / `public` / `unexposed` variants. Persisted
-/// `principal.toml` files keep loading without migration.
-///
-/// Variants:
-/// - `Unexposed`: not visible to anyone; no chat access (default).
-/// - `Private`: owner + explicitly-typed subjects in
-///   `PrincipalConfig.permissions` only.
-/// - `Public`: world-readable + world-listable in
-///   `GET /v1/discovery/*` on PekoHub.
-/// - `Unlisted`: world-chat-table via direct URL, but excluded from
-///   discovery. The default for share-link use cases — share-with-URL
-///   without world-listing. Token-based access (PR #11) extends
-///   `Unlisted` and `Private` with scoped invite tokens.
+/// Registration visibility: local-only, registered private, or registered public.
+/// Hub identity assignment is recorded separately in the runtime actor registry.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Exposure {
     Private,
     Public,
-    Unlisted,
+
     #[default]
-    Unexposed,
+    LocalOnly,
 }
 
-impl std::fmt::Display for Exposure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+impl Exposure {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
             Self::Private => "private",
             Self::Public => "public",
-            Self::Unlisted => "unlisted",
-            Self::Unexposed => "unexposed",
-        };
-        f.write_str(s)
+            Self::LocalOnly => "local_only",
+        }
+    }
+}
+impl std::fmt::Display for Exposure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -189,7 +180,7 @@ mod tests {
 
     #[test]
     fn exposure_default_is_unexposed() {
-        assert_eq!(Exposure::default(), Exposure::Unexposed);
+        assert_eq!(Exposure::default(), Exposure::LocalOnly);
     }
 
     #[test]
@@ -203,12 +194,12 @@ mod tests {
             "\"public\""
         );
         assert_eq!(
-            serde_json::to_string(&Exposure::Unexposed).unwrap(),
-            "\"unexposed\""
+            serde_json::to_string(&Exposure::LocalOnly).unwrap(),
+            "\"local_only\""
         );
         assert_eq!(
-            serde_json::to_string(&Exposure::Unlisted).unwrap(),
-            "\"unlisted\""
+            serde_json::to_string(&Exposure::Public).unwrap(),
+            "\"public\""
         );
     }
 
@@ -223,8 +214,8 @@ mod tests {
             Exposure::Public
         );
         assert_eq!(
-            serde_json::from_str::<Exposure>("\"unlisted\"").unwrap(),
-            Exposure::Unlisted
+            serde_json::from_str::<Exposure>("\"public\"").unwrap(),
+            Exposure::Public
         );
     }
 
@@ -232,8 +223,8 @@ mod tests {
     fn exposure_display_matches_wire_format() {
         assert_eq!(Exposure::Private.to_string(), "private");
         assert_eq!(Exposure::Public.to_string(), "public");
-        assert_eq!(Exposure::Unlisted.to_string(), "unlisted");
-        assert_eq!(Exposure::Unexposed.to_string(), "unexposed");
+        assert_eq!(Exposure::Public.to_string(), "public");
+        assert_eq!(Exposure::LocalOnly.to_string(), "local_only");
     }
 
     #[test]

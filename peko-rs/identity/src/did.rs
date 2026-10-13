@@ -2,7 +2,7 @@
 
 use crate::keys::KeyPair;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::info;
 
 /// DID method for Peko
 pub const DID_METHOD: &str = "peko";
@@ -10,7 +10,7 @@ pub const DID_METHOD: &str = "peko";
 /// DID Identity document
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
-    /// Full DID (did:peko:scope:tenant:keyhash)
+    /// Self-certifying signing DID (did:key).
     pub did: String,
     /// DID document containing public keys and services
     pub document: DIDDocument,
@@ -93,31 +93,21 @@ pub struct ParsedDID {
 impl Identity {
     /// Generate a new identity with keys
     pub fn generate(scope: DIDScope, tenant: Option<&str>) -> anyhow::Result<Self> {
-        info!("Generating new DID identity with scope: {}", scope);
+        info!("Generating signing identity");
+        let _ = (scope, tenant);
+        Ok(Self::from_keypair(KeyPair::generate()))
+    }
 
-        // Generate ed25519 keypair
-        let keypair = KeyPair::generate();
-        let public_key_bytes = keypair.verifying_key.as_bytes();
-
-        // Create key hash from public key
-        let key_hash = blake3::hash(public_key_bytes).to_hex().to_string()[..16].to_string();
-
-        // Build DID
-        let did = match tenant {
-            Some(t) => format!("did:{DID_METHOD}:{scope}:{t}:{key_hash}"),
-            None => format!("did:{DID_METHOD}:{scope}:{key_hash}"),
-        };
-
-        debug!("Generated DID: {}", did);
-
-        // Create DID document
-        let document = Self::create_did_document(&did, &keypair, scope);
-
-        Ok(Self {
+    /// Build a portable identity from a vault-backed signing key.
+    #[must_use]
+    pub fn from_keypair(keypair: KeyPair) -> Self {
+        let did = crate::runtime::public_key_to_did_key(&keypair.public_key_bytes());
+        let document = Self::create_did_document(&did, &keypair, DIDScope::Local);
+        Self {
             did,
             document,
             keypair: Some(keypair),
-        })
+        }
     }
 
     /// Create DID document
@@ -148,6 +138,15 @@ impl Identity {
 
     /// Parse a DID string
     pub fn parse_did(did: &str) -> anyhow::Result<ParsedDID> {
+        if did.starts_with("did:key:") {
+            let public_key = crate::runtime::did_key_to_public_key(did)?;
+            return Ok(ParsedDID {
+                method: "key".into(),
+                scope: DIDScope::Local,
+                tenant: None,
+                key_hash: blake3::hash(&public_key).to_hex().to_string()[..16].into(),
+            });
+        }
         let parts: Vec<&str> = did.split(':').collect();
 
         if parts.len() < 3 || parts[0] != "did" || parts[1] != DID_METHOD {
@@ -235,7 +234,11 @@ mod tests {
     fn test_generate_identity() {
         let identity = Identity::generate(DIDScope::Local, Some("acme")).unwrap();
 
-        assert!(identity.did.starts_with("did:peko:local:acme:"));
+        assert!(identity.did.starts_with("did:key:"));
+        assert_eq!(
+            crate::runtime::did_key_to_public_key(&identity.did).unwrap(),
+            identity.keypair.as_ref().unwrap().public_key_bytes()
+        );
         assert_eq!(identity.document.id, identity.did);
         assert!(!identity.document.verification_method.is_empty());
         assert!(identity.keypair.is_some());

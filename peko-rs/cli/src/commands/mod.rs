@@ -183,9 +183,9 @@ pub enum Commands {
 
     /// Log in to PekoHub
     Login {
-        /// Registry host (default: from config or pekohub.ai)
+        /// PekoHub origin (default: https://pekohub.org)
         #[arg(long)]
-        registry: Option<String>,
+        hub: Option<String>,
         /// API key for authentication
         #[arg(long)]
         api_key: Option<String>,
@@ -193,9 +193,9 @@ pub enum Commands {
 
     /// Log out from PekoHub
     Logout {
-        /// Registry host to log out from (default: from config or pekohub.ai)
+        /// PekoHub origin (default: the current login)
         #[arg(long)]
-        registry: Option<String>,
+        hub: Option<String>,
     },
 
     /// Update Peko to the latest version
@@ -280,17 +280,14 @@ pub(crate) fn parse_recipient(s: &str) -> Recipient {
 /// ADR-057: the CLI's identity is derived, not specified — the hub
 /// owner id from the pekohub credential when the runtime is logged
 /// into pekohub, else `local`. Mirrors the daemon's
-/// `AppState::hub_owner` resolution so the daemon-less in-process
+/// `AppState::hub_user_id` resolution so the daemon-less in-process
 /// fallback paths attribute identically to the IPC path.
 fn identity_for_config_dir(config_dir: &std::path::Path) -> String {
-    let cred_path = peko_core::tunnel::PekoHubCredential::path_for_config_dir(config_dir);
-    if !cred_path.exists() {
-        return "local".to_string();
-    }
-    peko_core::tunnel::PekoHubCredential::from_file(&cred_path)
+    peko_core::tunnel::HubLogin::load(config_dir)
         .ok()
-        .and_then(|cred| cred.owner_id)
-        .unwrap_or_else(|| "local".to_string())
+        .flatten()
+        .map(|login| format!("local_{}", login.user_id))
+        .unwrap_or_else(|| "local".into())
 }
 
 /// Build a [`GlobalPaths`] from a parsed [`Cli`] argument struct.

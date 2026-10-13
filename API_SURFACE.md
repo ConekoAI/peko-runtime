@@ -1,5 +1,10 @@
 # Public API Surface Documentation
 
+> Current actor addressing and conversation binding are defined in ADR-073 and
+> the ADR-073 section below. Earlier sprint records describe retired contracts:
+> DIDs are signing credentials, actor references use local/Hub IDs, and sessions
+> bind only to channels.
+
 > **Version:** 0.1.0 (Post-ADR-017, Post-Issue-021)  
 > **Last Updated:** 2026-07-10  
 
@@ -1060,3 +1065,31 @@ The following operations must be tested:
 ---
 
 *Version 0.1.0 · Post-ADR-017 · Post-Issue-015/020/021 · 2026-07-10*
+
+## ADR-073 dual identity API
+
+- `ChannelPort::{register_actor, resolve_actor, known_actors, actor_info, participants}`
+  expose one local ID, optional Hub ID, name, kind, and registration state.
+  `resolve_actor` accepts explicit `kind:local:<id>` or `kind:hub:<UUID>` references.
+  Signing DIDs and immutable actor keys remain internal.
+- `ChannelPort::{ensure_dm, binding_for}` and `dm_channel_id(a,b)` use immutable actor
+  keys and independent principal-local session bindings. Membership includes humans.
+- `Contacts (list/resolve)` supplies local discovery and verified remote principal
+  profiles. `ChannelSend.to` accepts either actor alias or a channel ID. The old
+  `channel` argument is rejected. Results separate canonical `to` and actual `channel`.
+  `ChannelRead.author` accepts either alias and results expose participant profiles.
+- `AgentDirectory::{resolve_by_hub_id_as, resolve_by_handle_as}` resolves routing as
+  the authenticated requesting principal. Receiver permissions remain authoritative.
+- `SessionManager::bind_session_channel` writes only `channel_id`, clearing actor
+  stamps. `PeerTurnSurface::peer_surface` returns `(None, channel_id)` for conversations.
+- IPC `principal_register` takes `name` and `exposure` (`local_only`, `private`,
+  `public`), returning `principal_registration_updated` with `local_id`, `hub_id`,
+  and exposure. CLI: `peko register NAME [--public]`, `peko unregister NAME`.
+- `HubLogin` stores verified account metadata independently from tunnel ownership.
+  CLI: `peko login [--hub ORIGIN] --api-key KEY`, `peko logout [--hub ORIGIN]`.
+  Local caller attribution rereads login state; account changes preserve distinct IDs.
+- `ChannelStore::replace_dm_peer_route` and `ChannelOutbox::retarget` follow a moved
+  registered principal without changing its conversation or pending message IDs.
+
+See [ADR-073](docs/architecture/adr/ADR-073-actor-addresses-and-conversation-bindings.md)
+for the coordinated pre-launch replacement contract.

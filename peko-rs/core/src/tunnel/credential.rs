@@ -44,9 +44,8 @@ pub struct PekoHubCredential {
     pub runtime_id: String,
     /// ADR-057: the pekohub user id that owns this runtime's
     /// registration (captured from the register endpoint's response
-    /// during `peko tunnel setup`). Drives the local terminal's
-    /// attribution identity while logged in. Absent on credentials
-    /// written before ADR-057.
+    /// during `peko tunnel setup`). Current human login lives separately
+    /// in `HubLogin`; changing it does not transfer this runtime's ownership.
     #[serde(default)]
     pub owner_id: Option<String>,
     /// Optional TLS configuration for the tunnel connection.
@@ -291,5 +290,89 @@ mod tests {
             .unwrap();
         let key = cred.resolve_private_key(&vault).unwrap();
         assert_eq!(key, "dHVubmVsLWtleQ==");
+    }
+}
+
+/// The authenticated human using the local terminal, independent of tunnel ownership.
+/// Only public account metadata lives here; the API credential remains in the vault.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubLogin {
+    pub user_id: String,
+    pub hub_url: String,
+}
+impl HubLogin {
+    pub fn path(config_dir: &Path) -> PathBuf {
+        config_dir.join("runtime").join("hub-login.json")
+    }
+    pub fn load(config_dir: &Path) -> Result<Option<Self>> {
+        let path = Self::path(config_dir);
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let login: Self = serde_json::from_slice(&data)?;
+        uuid::Uuid::parse_str(&login.user_id).context("Hub login requires an account UUID")?;
+        Ok(Some(login))
+    }
+    pub fn save(&self, config_dir: &Path) -> Result<()> {
+        uuid::Uuid::parse_str(&self.user_id).context("Hub login requires an account UUID")?;
+        let path = Self::path(config_dir);
+        std::fs::create_dir_all(path.parent().expect("login parent"))?;
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        std::fs::write(&temp, serde_json::to_vec(self)?)?;
+        std::fs::rename(temp, path)?;
+        Ok(())
+    }
+    pub fn logout(config_dir: &Path) -> Result<()> {
+        match std::fs::remove_file(Self::path(config_dir)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    #[test]
+    fn account_switch_and_logout_do_not_change_runtime_tunnel_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path();
+        let owner = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        let credential = PekoHubCredential {
+            url: "wss://hub/v1/tunnel".into(),
+            runtime_id: "did:key:runtime".into(),
+            owner_id: Some(owner.clone()),
+            tls: None,
+        };
+        credential
+            .save_to_file(&PekoHubCredential::path_for_config_dir(config))
+            .unwrap();
+        assert!(HubLogin::load(config).unwrap().is_none());
+        HubLogin {
+            user_id: owner.clone(),
+            hub_url: "https://hub".into(),
+        }
+        .save(config)
+        .unwrap();
+        assert_eq!(HubLogin::load(config).unwrap().unwrap().user_id, owner);
+        HubLogin {
+            user_id: other.clone(),
+            hub_url: "https://hub".into(),
+        }
+        .save(config)
+        .unwrap();
+        assert_eq!(HubLogin::load(config).unwrap().unwrap().user_id, other);
+        HubLogin::logout(config).unwrap();
+        assert!(HubLogin::load(config).unwrap().is_none());
+        assert_eq!(
+            PekoHubCredential::from_file(&PekoHubCredential::path_for_config_dir(config))
+                .unwrap()
+                .owner_id,
+            Some(owner)
+        );
     }
 }

@@ -28,7 +28,7 @@ pub use client::{
     TunnelClient, TunnelHandle, TunnelStatusUpdate, DEFAULT_MAX_RECONNECT_ATTEMPTS,
     TUNNEL_OUTBOUND_BUFFER_SIZE,
 };
-pub use credential::{hub_origin, load_pekohub_credential, PekoHubCredential};
+pub use credential::{hub_origin, load_pekohub_credential, HubLogin, PekoHubCredential};
 pub use cross_runtime::CrossRuntimeA2aCtx;
 pub use cross_runtime_channel::CrossRuntimeChannelCtx;
 pub use did_key::{did_key_to_verifying_key, verifying_key_to_did_key};
