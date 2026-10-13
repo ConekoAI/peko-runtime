@@ -380,6 +380,23 @@ async fn test_e2e_tunnel_chat_with_llm() {
     vault
         .set_tunnel_private_key(&did, &private_key_b64)
         .expect("store tunnel private key in vault");
+    let key_id = format!("{did}#keys-1");
+    vault
+        .set_identity_private_key(&key_id, "ed25519-raw-base64", &private_key_b64)
+        .expect("store fixture runtime identity key");
+    let identity = peko_identity::runtime::RuntimeIdentity {
+        runtime_did: did.clone(),
+        key_id,
+        created_at: chrono::Utc::now(),
+    };
+    let runtime_dir = workspace_path.join("config/runtime");
+    tokio::fs::create_dir_all(&runtime_dir).await.unwrap();
+    tokio::fs::write(
+        runtime_dir.join("identity.toml"),
+        toml::to_string_pretty(&identity).unwrap(),
+    )
+    .await
+    .expect("persist fixture runtime identity");
 
     // 5. Build AppState with real services
     let config = DaemonConfigSnapshot {
@@ -398,6 +415,7 @@ async fn test_e2e_tunnel_chat_with_llm() {
     )
     .await
     .expect("Failed to build AppState");
+    assert_eq!(app_state.runtime_identity.runtime_did, did);
 
     // 6. Create runtime record (with owner_id = the user we created above)
 
@@ -458,22 +476,23 @@ async fn test_e2e_tunnel_chat_with_llm() {
         "Tunnel should have started (credentials exist)"
     );
 
-    // Local-only principals never auto-register when the tunnel connects.
+    // Transport connection precedes the authenticated TunnelReady receipt.
+    let dispatcher = app_state
+        .tunnel_dispatcher()
+        .await
+        .expect("Tunnel dispatcher");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !app_state.tunnel_connected().await {
+    while !dispatcher.is_ready().await {
         assert!(
             std::time::Instant::now() < deadline,
-            "Tunnel did not become ready"
+            "Tunnel did not authenticate"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    app_state
-        .tunnel_dispatcher()
-        .await
-        .expect("Tunnel dispatcher")
+    dispatcher
         .register_principal(
-            "e2e-test-principal",
-            crate::tunnel::InstanceExposure::Private,
+            principal_name,
+            crate::tunnel::protocol::InstanceExposure::Private,
         )
         .await
         .expect("Explicit principal registration");
