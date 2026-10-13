@@ -199,6 +199,22 @@ fn write_pekohub_credential(
     vault
         .set_tunnel_private_key(did, &private_key_b64)
         .expect("store tunnel private key in vault");
+    // The runtime's host identity must match the identity authenticated by its
+    // tunnel: principal registration proofs bind both signing identities.
+    let key_id = format!("{did}#keys-1");
+    vault
+        .set_identity_private_key(&key_id, "ed25519-raw-base64", &private_key_b64)
+        .expect("store fixture runtime signing key");
+    let identity = peko_identity::runtime::RuntimeIdentity {
+        runtime_did: did.into(),
+        key_id,
+        created_at: chrono::Utc::now(),
+    };
+    std::fs::write(
+        cli.peko_dir().join("runtime/identity.toml"),
+        toml::to_string_pretty(&identity).unwrap(),
+    )
+    .expect("write fixture runtime identity");
 
     let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
@@ -260,7 +276,7 @@ fn register_principal(cli: &PekoCli, name: &str) {
             "Principal registration failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
