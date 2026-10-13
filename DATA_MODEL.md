@@ -2936,7 +2936,14 @@ persisted session, task, cron, or workflow fields.
 
 `runtime/actors.json` contains actor records with `info` (`address`, `local_id`,
 `hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
-and optional private `signing_did`. The identity key and signing DID are omitted
+and optional private `signing_did`. An optional `known_by` array records the local
+principal IDs that explicitly learned this contact; absent arrays default to empty.
+Current channel participants are discovered from membership, without adding them
+to `known_by`. Actor profile updates retain the learned relationships. Contact
+discovery combines the caller's own actor, current channel rosters, and its
+`known_by` entries; it never enumerates the runtime registry. Legacy registry rows
+do not automatically become every principal's contacts.
+The identity key, signing DID, and `known_by` are omitted
 from tool profiles. Local addresses have the form `kind:local:<id>`; optional
 aliases are `kind:hub:<UUID>`. Registry writes use a file lock and atomic replacement.
 Aliases and immutable keys cannot belong to two local actors.

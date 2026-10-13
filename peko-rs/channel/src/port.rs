@@ -67,6 +67,18 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
+    /// Contacts explicitly learned by this principal, independent of membership.
+    async fn known_contacts(&self, _principal: &PrincipalId) -> Result<Vec<ActorInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// Remember a verified actor for one principal without exposing it to others.
+    async fn remember_contact(&self, _principal: &PrincipalId, _actor: &Subject) -> Result<()> {
+        Err(ChannelError::Adapter(
+            "Contact persistence is unavailable".into(),
+        ))
+    }
+
     async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
         let subject: Subject = reference
             .parse()
