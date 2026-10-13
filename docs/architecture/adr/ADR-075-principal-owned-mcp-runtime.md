@@ -292,7 +292,11 @@ owner's complete new MCP entries and remove obsolete entries in one transaction,
 without changing built-ins or another principal's partition. A reader captures
 one immutable partition; it cannot observe half of a multi-tool update. Sort the
 wire definitions deterministically and preserve exact registered names such as
-`mcp:github:search_issues`; map them to exact remote methods without reparsing
+`mcp__github__search_issues`. Names use ASCII letters/digits/underscores/dashes
+and at most 64 bytes, as required by model function APIs. Unsafe, long, or ambiguous
+component pairs receive a deterministic digest suffix; duplicate registered names
+reject the offending server catalog instead of replacing another method. Map bindings
+to exact remote methods without reparsing
 untrusted names at execution time. No capability/search/exposure filter is added.
 
 The engine's current `list_tool_definitions -> Vec` and later live lookup are

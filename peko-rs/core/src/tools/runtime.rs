@@ -493,7 +493,7 @@ impl ToolFunnel for ToolingRuntime {
         &self,
         call: ToolCallSpec,
     ) -> anyhow::Result<(String, serde_json::Value, bool)> {
-        if call.catalog_binding.is_none() && call.tool_name.starts_with("mcp:") {
+        if call.catalog_binding.is_none() && call.tool_name.starts_with("mcp__") {
             if let Some(owner) = &call.principal_id {
                 self.prepare_mcp(&PrincipalId(owner.clone())).await;
             }

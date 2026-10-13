@@ -9,6 +9,28 @@ use std::{
     time::Duration,
 };
 
+/// Model APIs require ASCII letters/digits/underscores/dashes and at most 64 bytes.
+/// Keep ordinary names readable; hash unsafe, long or ambiguous component pairs.
+pub(super) fn registered_name(server: &str, method: &str) -> String {
+    let candidate = format!("mcp__{server}__{method}");
+    let allowed =
+        |character: char| character.is_ascii_alphanumeric() || matches!(character, '_' | '-');
+    if candidate.len() <= 64
+        && candidate.chars().all(allowed)
+        && !server.contains("__")
+        && !method.contains("__")
+    {
+        return candidate;
+    }
+    let label: String = candidate
+        .chars()
+        .map(|character| if allowed(character) { character } else { '_' })
+        .take(41)
+        .collect();
+    let digest = super::digest(&serde_json::json!({"server":server,"method":method}));
+    format!("{label}__{}", &digest[..20])
+}
+
 pub(super) struct MethodTool {
     runtime: Arc<PrincipalMcpRuntime>,
     server: Arc<Server>,
@@ -23,11 +45,7 @@ impl MethodTool {
         server: Arc<Server>,
         descriptor: Value,
     ) -> Self {
-        let name = format!(
-            "mcp:{}:{}",
-            server.id,
-            descriptor["name"].as_str().unwrap_or_default()
-        );
+        let name = registered_name(&server.id, descriptor["name"].as_str().unwrap_or_default());
         let reserved: HashSet<String> = server
             .definition
             .reserved_parameters

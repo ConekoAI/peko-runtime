@@ -23,7 +23,8 @@ The next model request discovers the server's methods. The principal can also ca
 {"action":"refresh","server":"notes"}
 ```
 
-on `MCP`, then use the individual `mcp:notes:<method>` tools on its next iteration.
+on `MCP`, then use the individual `mcp__notes__<method>` tools on its next iteration.
+Use the exact advertised name; long or unsafe component names carry a stable digest suffix.
 `MCP {"action":"status"}` reports source paths, readiness, cached/fresh catalogs,
 tool counts and errors. Edits/removal take effect without restarting the daemon.
 

@@ -20,7 +20,7 @@ impl Tool for McpTool {
         "MCP"
     }
     fn description(&self) -> String {
-        "Inspect and refresh your workspace MCP servers, reconnect or authenticate, and retrieve server resources and prompts. Configure servers with Write/Edit under mcp/<id>/server.json. Server methods appear as individual mcp:<server>:<method> tools.".into()
+        "Inspect and refresh your workspace MCP servers, reconnect or authenticate, and retrieve server resources and prompts. Configure servers with Write/Edit under mcp/<id>/server.json. Server methods appear as individual mcp__<server>__<method> tools.".into()
     }
     fn parameters(&self) -> Value {
         let actions = [

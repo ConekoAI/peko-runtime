@@ -204,6 +204,9 @@ Its explicit constructor binds owner/workspace/local cache/vault/resolver/meter/
 provide workspace reconciliation, owner inventory, operational actions and teardown.
 `ToolingRuntime::{bind_mcp, unbind_mcp}` binds the principal service;
 `ToolCatalog::replace_mcp` atomically replaces only that owner's MCP partition.
+Native names use `mcp__<server>__<method>` with stable digests for unsafe/long/
+ambiguous names, within model function-name constraints. Bindings retain exact
+remote methods; duplicate aliases reject the server catalog.
 The process-global MCP accessor and `McpReload`/`McpReloaded` IPC contracts are retired.
 Legacy manager APIs remain compatibility adapters, outside native principal wiring.
 `Vault::reload_unlocked` reloads credentials with the already-held vault key.

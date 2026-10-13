@@ -7,7 +7,7 @@ using the same server ID or URL gets an independent connection and account.
 
 Configure ordinary workspace files at `mcp/<id>/server.json`. The runtime scans
 before each model request, discovers cold servers, and publishes all discovered
-methods as `mcp:<id>:<method>` through the existing ToolCatalog/ToolDispatcher.
+methods as `mcp__<id>__<method>` through the existing ToolCatalog/ToolDispatcher.
 A valid local cached catalog permits lazy startup. No capability grant, install
 command, daemon restart, or global MCP configuration is required.
 

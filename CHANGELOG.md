@@ -13,6 +13,8 @@ All notable changes to Peko.
   publish owner catalogs atomically, and bind execution to the advertised schema.
   Removed/changed definitions reject unsent calls; started calls retain their
   original client; principal teardown also cancels retained generations.
+- Register model-compatible `mcp__<server>__<method>` names, with stable digests
+  for unsafe/long/ambiguous components and fail-closed alias collision detection.
 - Use `rmcp` for stdio and Streamable HTTP, with cancellation, progress,
   list-change notifications, bounded pagination, structured errors, and no
   automatic replay of business calls. Retain legacy SSE endpoint compatibility.

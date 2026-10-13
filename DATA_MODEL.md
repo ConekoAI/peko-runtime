@@ -2466,7 +2466,10 @@ When a base image is used, markdown files from the base are loaded first. If the
 ## 12. Workspace MCP server definitions
 
 **Location:** `<principal-workspace>/mcp/<server-id>/server.json` (ADR-075).
-The directory ID is canonical. Native definitions use `schema_version: 1`;
+The directory ID is canonical. Registered methods use `mcp__<server>__<method>`;
+unsafe, long or ambiguous names receive a stable digest suffix to fit model API
+character/64-byte limits. Remote method names remain exact and are bound directly.
+Native definitions use `schema_version: 1`;
 unknown fields and invalid transport combinations fail explicitly.
 
 ```json

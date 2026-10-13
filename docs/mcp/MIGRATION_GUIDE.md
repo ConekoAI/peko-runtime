@@ -13,7 +13,7 @@ are preserved; unsupported fields fail with migration guidance.
 
 Keep one definition per ID. If both server.json and manifest.yaml exist, retain one.
 Split multi-server YAML into directories. A legacy name must match the directory
-ID; rename explicitly to preserve `mcp:<id>:<method>` call names. Flat compatibility
+ID; rename explicitly to preserve `mcp__<id>__<method>` call names. Flat compatibility
 files use their filename stem as ID. Binary bundles require ordinary workspace files.
 
 Move raw bearer tokens and arbitrary vault/env references into local credential

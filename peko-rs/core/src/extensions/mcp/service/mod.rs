@@ -601,9 +601,31 @@ impl PrincipalMcpRuntime {
 
     pub async fn catalog(self: &Arc<Self>) -> (Vec<(String, Arc<dyn Tool>)>, String) {
         let mut tools = Vec::new();
+        let mut registered_names = std::collections::HashSet::new();
         let mut lines = Vec::new();
         for server in self.servers.read().await.values() {
             if let Some(inventory) = server.inventory.read().await.as_ref() {
+                let names: Vec<_> = inventory
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        proxy::registered_name(
+                            &server.id,
+                            tool["name"].as_str().unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                let mut unique = std::collections::HashSet::new();
+                if names
+                    .iter()
+                    .any(|name| registered_names.contains(name) || !unique.insert(name.clone()))
+                {
+                    let error = "MCP catalog rejected: registered tool name collision";
+                    *server.diagnostic.write().await = Some(error.into());
+                    lines.push(format!("- {}: {error}", server.id));
+                    continue;
+                }
+                registered_names.extend(names);
                 lines.push(format!(
                     "- {}: {} catalog, {} tools",
                     server.id,

@@ -43,7 +43,7 @@ for line in sys.stdin:
             tool=json.load(open('schema.json'));tool['description']='Changed by notification';json.dump(tool,open('schema.json','w'))
             print(json.dumps({'jsonrpc':'2.0','method':'notifications/tools/list_changed'}),flush=True)
         if args.get('value')=='slow': time.sleep(0.5)
-        value={'label':os.environ['LABEL'],'principal':args.get('principal_id'),'session':args.get('session_id'),'run':args.get('run_id'),'call':args.get('tool_call_id'),'token_digest':hashlib.sha256(os.environ['TOKEN'].encode()).hexdigest(),'value':args.get('value')}
+        value={'method':params['name'],'label':os.environ['LABEL'],'principal':args.get('principal_id'),'session':args.get('session_id'),'run':args.get('run_id'),'call':args.get('tool_call_id'),'token_digest':hashlib.sha256(os.environ['TOKEN'].encode()).hexdigest(),'value':args.get('value')}
         if args.get('value')=='sample':
             print(json.dumps({'jsonrpc':'2.0','id':'sampling-1','method':'sampling/createMessage','params':{'messages':[{'role':'user','content':{'type':'text','text':'Say hi'}}],'maxTokens':64}}),flush=True)
             sampling=json.loads(sys.stdin.readline())
@@ -93,7 +93,7 @@ for line in sys.stdin:
         value: &str,
         binding: Option<Arc<dyn peko_engine::tooling::ToolCatalogBinding>>,
     ) -> peko_engine::ToolCallSpec {
-        let mut call = peko_engine::ToolCallSpec::new("mcp:shared:echo", json!({"value":value}));
+        let mut call = peko_engine::ToolCallSpec::new("mcp__shared__echo", json!({"value":value}));
         call.run_id = Some("engine-run".into());
         call.tool_call_id = Some("model-tool-call".into());
         call.principal_id = Some(self.runtime.owner.0.clone());
@@ -123,7 +123,7 @@ async fn cold_discovery_isolated_owners_and_shared_sibling_startup() {
     assert!(a
         .definitions
         .iter()
-        .any(|tool| tool.name == "mcp:shared:echo"));
+        .any(|tool| tool.name == "mcp__shared__echo"));
     assert_eq!(
         serde_json::to_value(&a.definitions).unwrap(),
         serde_json::to_value(&b.definitions).unwrap()
@@ -224,7 +224,7 @@ async fn schema_refresh_removal_and_started_call_leases() {
     assert!(!updated
         .definitions
         .iter()
-        .any(|tool| tool.name.starts_with("mcp:")));
+        .any(|tool| tool.name.starts_with("mcp__")));
     assert!(background.await.unwrap().2);
     let removed = tooling
         .execute(fixture.call("session", "hello", snapshot.binding))
@@ -551,7 +551,7 @@ async fn sdk_notifications_refresh_catalog_and_disconnect_does_not_replay_busine
         updated
             .definitions
             .iter()
-            .find(|tool| tool.name == "mcp:shared:echo")
+            .find(|tool| tool.name == "mcp__shared__echo")
             .unwrap()
             .description,
         "Changed by notification"
@@ -654,5 +654,77 @@ async fn sibling_retries_share_one_startup_even_at_the_restart_limit() {
             .count(),
         2
     );
+    fixture.runtime.shutdown().await;
+}
+
+#[test]
+fn registered_names_fit_model_apis_without_losing_remote_identity() {
+    use super::proxy::registered_name;
+    assert_eq!(registered_name("shared", "echo"), "mcp__shared__echo");
+    let pairs = [
+        ("github.test".to_owned(), "search.items".to_owned()),
+        ("github_test".into(), "search_items".into()),
+        ("a__b".into(), "c".into()),
+        ("a".into(), "b__c".into()),
+        ("server".into(), "query_".repeat(40)),
+        ("server".into(), "query_".repeat(41)),
+        ("server".into(), "search.雪".into()),
+    ];
+    let mut names = std::collections::HashSet::new();
+    for (server, method) in pairs {
+        let name = registered_name(&server, &method);
+        assert!(
+            name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        );
+        assert_eq!(name, registered_name(&server, &method));
+        assert!(names.insert(name));
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn model_aliases_invoke_exact_remote_methods_and_duplicate_aliases_fail_closed() {
+    let vault_dir = tempfile::tempdir().unwrap();
+    let vault = Arc::new(crate::common::vault::Vault::for_test(
+        vault_dir.path(),
+        "name-passphrase",
+    ));
+    let fixture = Fixture::new("owner", vault, "A");
+    let schema_path = fixture.root.join("schema.json");
+    let mut descriptor: Value =
+        serde_json::from_slice(&std::fs::read(&schema_path).unwrap()).unwrap();
+    let remote_name = "search.items";
+    descriptor["name"] = json!(remote_name);
+    std::fs::write(schema_path, descriptor.to_string()).unwrap();
+    let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+    tooling.bind_mcp(fixture.runtime.clone()).await;
+    let snapshot = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let registered = super::proxy::registered_name("shared", remote_name);
+    assert!(snapshot
+        .definitions
+        .iter()
+        .any(|tool| tool.name == registered));
+    let mut call = fixture.call("session", "hello", snapshot.binding);
+    call.tool_name = registered;
+    let (text, value, success) = tooling.execute(call).await.unwrap();
+    assert!(success, "{text}");
+    assert_eq!(value["structuredContent"]["method"], remote_name);
+    let server = fixture.runtime.server("shared").await.unwrap();
+    server
+        .inventory
+        .write()
+        .await
+        .as_mut()
+        .unwrap()
+        .tools
+        .push(descriptor);
+    assert!(fixture.runtime.tools().await.is_empty());
+    assert!(fixture.runtime.status().await["servers"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("name collision"));
     fixture.runtime.shutdown().await;
 }

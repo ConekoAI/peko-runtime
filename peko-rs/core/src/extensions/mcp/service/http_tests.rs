@@ -140,17 +140,17 @@ async fn same_http_endpoint_uses_independent_principal_credentials_and_catalogs(
             snapshot
                 .definitions
                 .iter()
-                .any(|tool| tool.name == format!("mcp:shared:account_{owner}")),
+                .any(|tool| tool.name == format!("mcp__shared__account_{owner}")),
             "{}",
             runtime.status().await
         );
         assert!(!snapshot.definitions.iter().any(|tool| tool.name
             == format!(
-                "mcp:shared:account_{}",
+                "mcp__shared__account_{}",
                 if owner == "a" { "b" } else { "a" }
             )));
         let mut call =
-            peko_engine::ToolCallSpec::new(format!("mcp:shared:account_{owner}"), json!({}));
+            peko_engine::ToolCallSpec::new(format!("mcp__shared__account_{owner}"), json!({}));
         call.principal_id = Some(owner.into());
         call.catalog_binding = snapshot.binding;
         let (text, value, success) = tooling.execute(call).await.unwrap();
@@ -192,7 +192,7 @@ async fn oauth_discovery_registration_pkce_callback_and_refresh_are_owner_scoped
             .tools()
             .await
             .iter()
-            .any(|(_, tool)| tool.name() == "mcp:shared:account_a"),
+            .any(|(_, tool)| tool.name() == "mcp__shared__account_a"),
         "{}",
         runtime.status().await
     );

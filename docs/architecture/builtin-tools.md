@@ -717,7 +717,7 @@ Principal-owned connections and credentials are shared by all of that principal'
 sessions. Configuration is `mcp/<id>/server.json` in its workspace. `Write`/`Edit`
 and normal filesystem operations manage those definitions; the runtime reconciles
 them before each model request. Cold servers discover tools automatically.
-Discovered methods appear as `mcp:<server>:<method>` with their server schemas.
+Discovered methods appear as `mcp__<server>__<method>` with their server schemas.
 Calls preserve the advertised catalog binding and return an error if an unsent
 call's definition changes. Started calls retain their original connection.
 
