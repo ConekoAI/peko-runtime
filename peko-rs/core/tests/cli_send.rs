@@ -316,7 +316,7 @@ fn send_posts_both_directions_to_peer_dm_channel() {
         .collect();
     let replies: Vec<&(String, String)> = rows
         .iter()
-        .filter(|(author, _)| author.starts_with("prin_"))
+        .filter(|(author, _)| author.starts_with("principal:local:"))
         .collect();
 
     let inbound_texts: Vec<&str> = inbound.iter().map(|(_, text)| text.as_str()).collect();
@@ -336,8 +336,12 @@ fn send_posts_both_directions_to_peer_dm_channel() {
         1,
         "SECOND_DM_MESSAGE must appear exactly once as a peer-authored row; rows: {rows:?}"
     );
-    assert!(
-        replies.len() >= 2,
-        "each send must post one principal-authored reply; rows: {rows:?}"
+    assert_eq!(
+        replies.len(),
+        2,
+        "each send must post exactly one principal-authored reply; rows: {rows:?}"
     );
+    assert!(inbound
+        .iter()
+        .all(|(author, _)| author == "user:local:local"));
 }

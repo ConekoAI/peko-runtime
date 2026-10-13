@@ -458,8 +458,25 @@ async fn test_e2e_tunnel_chat_with_llm() {
         "Tunnel should have started (credentials exist)"
     );
 
-    // Give tunnel time to connect and announce
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Local-only principals never auto-register when the tunnel connects.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !app_state.tunnel_connected().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Tunnel did not become ready"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    app_state
+        .tunnel_dispatcher()
+        .await
+        .expect("Tunnel dispatcher")
+        .register_principal(
+            "e2e-test-principal",
+            crate::tunnel::InstanceExposure::Private,
+        )
+        .await
+        .expect("Explicit principal registration");
 
     // 7. Find the announced instance
     let list_resp = client
