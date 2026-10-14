@@ -7,6 +7,9 @@ Supersedes: DID addressing, recipient-only DMs, actor-bound conversation session
 
 ## Identity
 
+> Refined by [ADR-077](ADR-077-local-and-hub-actor-identities.md): remote actors
+> are Hub-only; the proxy IDs described below are superseded.
+
 Every actor known to a runtime has one permanent local ID and an optional Hub ID.
 Users, visitors, and principals occupy distinct namespaces. A principal's local ID
 is `prin_*`; the default offline user is `local`. An authenticated Hub account or

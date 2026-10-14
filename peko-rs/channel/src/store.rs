@@ -76,28 +76,43 @@ struct ActorRecord {
     signing_did: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     known_by: BTreeSet<String>,
+    /// Previous addresses resolve internally so history and membership survive
+    /// promotion and unlinking. They are not public routing aliases.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    historical_aliases: BTreeSet<String>,
 }
 impl ActorRecord {
+    fn unhost(&mut self) {
+        self.historical_aliases.extend(self.aliases());
+        let hub = self.info.hub_id.as_deref().expect("Hub actor");
+        let subject = format!("{}:hub:{hub}", self.info.kind)
+            .parse::<Subject>()
+            .expect("registered actor kind");
+        let mut info = ActorInfo::from_subject(&subject, self.info.name.as_deref());
+        info.registration = self.info.registration.clone();
+        self.info = info;
+    }
+
     fn info(&self) -> ActorInfo {
         let mut info = self.info.clone();
         info.identity_key = self.identity_key.clone();
         info
     }
     fn aliases(&self) -> Vec<String> {
-        let mut out = vec![
-            self.info.address.clone(),
-            format!("{}:{}", self.info.kind, self.info.local_id),
-        ];
-        if self.info.kind == "principal" {
-            out.push(self.info.local_id.clone());
+        let mut out = vec![self.info.address.clone()];
+        if let Some(id) = &self.info.local_id {
+            out.push(format!("{}:{id}", self.info.kind));
+            if self.info.kind == "principal" {
+                out.push(id.clone());
+            }
         }
         if let Some(id) = &self.info.hub_id {
             out.push(format!("{}:hub:{id}", self.info.kind));
-            out.push(format!("{}:{id}", self.info.kind));
         }
         if let Some(did) = &self.signing_did {
             out.extend([did.clone(), format!("principal:{did}")]);
         }
+        out.extend(self.historical_aliases.iter().cloned());
         out
     }
 }
@@ -109,7 +124,24 @@ fn actor_index(records: Vec<ActorRecord>) -> HashMap<String, ActorRecord> {
 }
 fn load_actors(path: &Path) -> Result<Vec<ActorRecord>> {
     match std::fs::read(path) {
-        Ok(data) => Ok(serde_json::from_slice(&data)?),
+        Ok(data) => {
+            let records: Vec<ActorRecord> = serde_json::from_slice(&data)?;
+            for record in &records {
+                let mut info = record.info.clone();
+                info.bind_hub_id(record.info.hub_id.as_deref())?;
+                let expected = if let Some(id) = &info.local_id {
+                    format!("{}:local:{id}", info.kind)
+                } else {
+                    info.hub_address().expect("validated actor has an ID")
+                };
+                if info.address != expected {
+                    return Err(ChannelError::Adapter(
+                        "Actor address does not match its IDs".into(),
+                    ));
+                }
+            }
+            Ok(records)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e.into()),
     }
@@ -450,6 +482,7 @@ fn member_subject(entry: &str) -> Subject {
 #[must_use]
 pub fn subject_wire_form(subject: &Subject) -> String {
     match subject {
+        Subject::Principal(id) if id.as_str().starts_with("hub:") => subject.to_string(),
         Subject::Principal(did) => did.to_string(),
         other => other.to_string(),
     }
@@ -500,6 +533,35 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
+    /// Reconcile pre-ADR-077 proxies using the complete hosted-principal
+    /// inventory, never ID spelling. Call before accepting daemon traffic.
+    pub async fn reconcile_actor_locality(&self, hosted: &[PrincipalId]) -> Result<()> {
+        fs::create_dir_all(&self.cfg.runtime_dir).await?;
+        let path = self.cfg.runtime_dir.join("actors.json");
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut records = load_actors(&path)?;
+        let mut changed = false;
+        for record in &mut records {
+            if record.info.hub_id.is_some()
+                && record.info.local_id.as_ref().is_some_and(|id| {
+                    record.info.kind != "principal" || !hosted.iter().any(|p| &p.0 == id)
+                })
+            {
+                record.unhost();
+                changed = true;
+            }
+        }
+        if changed {
+            let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
+            fs::rename(temp, path).await?;
+        }
+        *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        Ok(())
+    }
+
     fn canonical_address(&self, address: &str) -> String {
         let actors = self.actors.lock().expect("actor directory mutex");
         actors
@@ -511,7 +573,7 @@ impl ChannelStore {
                 } else {
                     address
                         .parse::<Subject>()
-                        .map(|s| ActorInfo::local(&s, None).address)
+                        .map(|s| ActorInfo::from_subject(&s, None).address)
                         .unwrap_or_else(|_| address.to_string())
                 }
             })
@@ -1323,11 +1385,10 @@ impl ChannelStore {
                 Err(_) => continue, // skip corrupt / incomplete dirs
             };
             let principal_subject = Subject::from(principal);
-            if members
-                .members
-                .iter()
-                .any(|m| member_subject(m) == principal_subject)
-            {
+            if members.members.iter().any(|m| {
+                self.canonical_address(&member_subject(m).to_string())
+                    == self.canonical_address(&principal_subject.to_string())
+            }) {
                 out.push(channel_id);
             }
         }
@@ -1863,6 +1924,27 @@ pub fn new_msg_id() -> String {
 
 #[async_trait]
 impl ChannelPort for ChannelStore {
+    async fn unhost_principal(&self, id: &PrincipalId) -> Result<()> {
+        let path = self.cfg.runtime_dir.join("actors.json");
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut records = load_actors(&path)?;
+        let Some(record) = records.iter_mut().find(|r| {
+            r.info.kind == "principal"
+                && r.info.local_id.as_deref() == Some(id.0.as_str())
+                && r.info.hub_id.is_some()
+        }) else {
+            return Ok(());
+        };
+        record.unhost();
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
+        fs::rename(temp, path).await?;
+        *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        Ok(())
+    }
+
     async fn register_principal(&self, id: &PrincipalId, did: &str, name: &str) -> Result<()> {
         self.register_actor(
             &Subject::from(id),
@@ -1890,23 +1972,19 @@ impl ChannelPort for ChannelStore {
             .await
             .map_err(|e| ChannelError::Adapter(e.to_string()))?;
         let mut records = load_actors(&path)?;
-        let info = ActorInfo::local(subject, name);
-        let old = records.iter().position(|r| r.info.address == info.address);
-        if identity_key.is_some_and(|key| {
-            records
-                .iter()
-                .any(|r| r.identity_key == key && r.info.address != info.address)
-        }) {
-            return Err(ChannelError::Adapter(
-                "Actor key already belongs to another local actor".into(),
-            ));
-        }
+        let mut info = ActorInfo::from_subject(subject, name);
+        info.bind_hub_id(hub_id)?;
+        let old = records.iter().position(|r| {
+            r.aliases().contains(&subject.to_string())
+                || r.info.address == info.address
+                || identity_key.is_some_and(|key| r.identity_key == key)
+        });
 
-        if let Some(hub_id) = hub_id {
-            if records.iter().any(|r| {
-                r.info.kind == info.kind
-                    && r.info.hub_id.as_deref() == Some(hub_id)
-                    && r.info.local_id != info.local_id
+        if let Some(hub_id) = info.hub_id.as_deref() {
+            if records.iter().enumerate().any(|(index, r)| {
+                Some(index) != old
+                    && r.info.kind == info.kind
+                    && r.aliases().contains(&format!("{}:hub:{hub_id}", info.kind))
             }) {
                 return Err(ChannelError::Adapter(
                     "Hub identity already belongs to a different local actor".into(),
@@ -1915,6 +1993,18 @@ impl ChannelPort for ChannelStore {
         }
         if let Some(index) = old {
             let record = &records[index];
+            if record.info.kind != info.kind
+                || (record.info.local_id.is_some()
+                    && info.local_id.is_some()
+                    && record.info.local_id != info.local_id)
+                || (record.info.hub_id.is_some()
+                    && info.hub_id.is_some()
+                    && record.info.hub_id != info.hub_id)
+            {
+                return Err(ChannelError::Adapter(
+                    "Actor key already belongs to another actor".into(),
+                ));
+            }
             if identity_key.is_some_and(|key| key != record.identity_key) {
                 return Err(ChannelError::Adapter(
                     "Actor identity key cannot change".into(),
@@ -1927,7 +2017,16 @@ impl ChannelPort for ChannelStore {
                     "Actor signing identity cannot change".into(),
                 ));
             }
+            // Directory refreshes of a hosted actor must not remove its local
+            // identity. A verified remote contact can be promoted by the host
+            // that installs its signing credential and immutable actor key.
+            if info.local_id.is_none() && record.info.local_id.is_some() {
+                info.local_id = record.info.local_id.clone();
+                info.address = record.info.address.clone();
+                info.mention = record.info.mention.clone();
+            }
         }
+        let updated_info = info.clone();
         let mut record = old
             .map(|i| records.remove(i))
             .unwrap_or_else(|| ActorRecord {
@@ -1935,15 +2034,24 @@ impl ChannelPort for ChannelStore {
                     .or(signing_did)
                     .map(str::to_owned)
                     .unwrap_or_else(|| {
-                        hub_id
+                        info.hub_id
+                            .as_deref()
                             .map(|h| format!("{}:hub:{h}", info.kind))
                             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
                     }),
                 info,
                 signing_did: signing_did.map(str::to_owned),
                 known_by: BTreeSet::new(),
+                historical_aliases: BTreeSet::new(),
             });
-        record.info.hub_id = hub_id.map(str::to_owned);
+        if record.info.address != updated_info.address || record.info.hub_id != updated_info.hub_id
+        {
+            record.historical_aliases.extend(record.aliases());
+        }
+        record.info.local_id = updated_info.local_id;
+        record.info.hub_id = updated_info.hub_id;
+        record.info.address = updated_info.address;
+        record.info.mention = updated_info.mention;
         if let Some(name) = name {
             record.info.name = Some(name.into());
         }
@@ -1969,7 +2077,7 @@ impl ChannelPort for ChannelStore {
             .expect("actor registry mutex")
             .get(&subject.to_string())
             .map(ActorRecord::info)
-            .unwrap_or_else(|| ActorInfo::local(subject, None))
+            .unwrap_or_else(|| ActorInfo::from_subject(subject, None))
     }
     async fn known_actors(&self) -> Result<Vec<ActorInfo>> {
         let mut actors = load_actors(&self.cfg.runtime_dir.join("actors.json"))?
@@ -2023,6 +2131,10 @@ impl ChannelPort for ChannelStore {
             .lock()
             .expect("actor registry mutex")
             .get(reference)
+            .filter(|record| {
+                record.info.address == reference
+                    || record.info.hub_address().as_deref() == Some(reference)
+            })
             .map(ActorRecord::info)
             .ok_or_else(|| {
                 ChannelError::Adapter(format!(
@@ -2051,8 +2163,19 @@ impl ChannelPort for ChannelStore {
         for actor in [Subject::from(principal), peer.clone()] {
             let info = self.actor_info(&actor).await;
             if info.identity_key == info.address {
-                self.register_actor(&actor, None, None, None, None, "local_only")
-                    .await?;
+                self.register_actor(
+                    &actor,
+                    info.hub_id.as_deref(),
+                    None,
+                    None,
+                    None,
+                    if info.hub_id.is_some() {
+                        "registered"
+                    } else {
+                        "local_only"
+                    },
+                )
+                .await?;
             }
         }
         let me = self.actor_info(&Subject::from(principal)).await;
@@ -2075,7 +2198,14 @@ impl ChannelPort for ChannelStore {
         let mut expected = vec![me.address.clone(), other.address.clone()];
         expected.sort();
         expected.dedup();
-        if !meta.participants.is_empty() && meta.participants != expected {
+        let mut stored = meta
+            .participants
+            .iter()
+            .map(|p| self.canonical_address(p))
+            .collect::<Vec<_>>();
+        stored.sort();
+        stored.dedup();
+        if !stored.is_empty() && stored != expected {
             return Err(ChannelError::Adapter(
                 "DM participant identity conflicts with stored channel".into(),
             ));
@@ -2195,17 +2325,9 @@ impl ChannelPort for ChannelStore {
     ) -> Result<()> {
         let info = self.actor_info(invitee).await;
         let info = if info.identity_key == info.address {
-            let raw = invitee.subject_id();
-            let (id, hub) = if let Some(hub) = raw.strip_prefix("hub:") {
-                (format!("local_{hub}"), Some(hub))
-            } else {
-                (raw.strip_prefix("local:").unwrap_or(raw).to_string(), None)
-            };
-            let local = format!("{}:{id}", invitee.kind())
-                .parse::<Subject>()
-                .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+            let hub = info.hub_id.as_deref();
             self.register_actor(
-                &local,
+                invitee,
                 hub,
                 None,
                 None,
@@ -2226,18 +2348,16 @@ impl ChannelPort for ChannelStore {
         let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let inviter_subject = Subject::from(inviter);
-        if !members
-            .members
-            .iter()
-            .any(|m| member_subject(m) == inviter_subject)
-        {
+        if !members.members.iter().any(|m| {
+            self.canonical_address(&member_subject(m).to_string())
+                == self.canonical_address(&inviter_subject.to_string())
+        }) {
             return Err(ChannelError::NotMember);
         }
-        if members
-            .members
-            .iter()
-            .any(|m| member_subject(m) == *invitee)
-        {
+        if members.members.iter().any(|m| {
+            self.canonical_address(&member_subject(m).to_string())
+                == self.canonical_address(&invitee.to_string())
+        }) {
             // Idempotent: invitee already a member.
             return Ok(());
         }
@@ -2398,9 +2518,10 @@ impl ChannelPort for ChannelStore {
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
         let principal_subject = Subject::from(principal);
-        members
-            .members
-            .retain(|m| member_subject(m) != principal_subject);
+        members.members.retain(|m| {
+            self.canonical_address(&member_subject(m).to_string())
+                != self.canonical_address(&principal_subject.to_string())
+        });
         if members.members.len() == before_len {
             // Idempotent leave for non-members.
             return Ok(());
@@ -2421,7 +2542,14 @@ impl ChannelPort for ChannelStore {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
-        Ok(members.members.iter().map(|m| member_subject(m)).collect())
+        let mut out = Vec::new();
+        for member in &members.members {
+            let subject = self.actor_info(&member_subject(member)).await.subject();
+            if !out.contains(&subject) {
+                out.push(subject);
+            }
+        }
+        Ok(out)
     }
 
     async fn list_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>> {

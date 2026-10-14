@@ -64,6 +64,33 @@ pub struct CrossRuntimeA2aCtx {
     pub channel_port: Arc<TunnelChannelPort>,
 }
 
+impl CrossRuntimeA2aCtx {
+    /// A directory's foreign storage ID is metadata, not a local identity.
+    /// Same-runtime claims must identify an actual hosted principal.
+    pub(crate) async fn actor_subject(
+        &self,
+        resolved: &super::hub_directory::AgentResolution,
+    ) -> anyhow::Result<peko_subject::Subject> {
+        if resolved.runtime_id != self.caller_runtime_id {
+            return Ok(peko_subject::Subject::Principal(
+                format!("hub:{}", resolved.hub_id).into(),
+            ));
+        }
+        let principal = self
+            .principal_manager
+            .get(peko_subject::PrincipalId(resolved.local_id.clone()))
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Directory returned an unknown local principal"))?;
+        let config = principal.config.read().await;
+        anyhow::ensure!(
+            config.did.as_ref().map(|did| did.0.as_str()) == Some(resolved.agent_did.as_str())
+                && config.actor_key.as_deref() == Some(resolved.identity_key.as_str()),
+            "Directory local identity does not match the hosted principal"
+        );
+        Ok(peko_subject::Subject::from(&principal.id))
+    }
+}
+
 impl std::fmt::Debug for CrossRuntimeA2aCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CrossRuntimeA2aCtx")

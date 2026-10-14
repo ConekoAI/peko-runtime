@@ -286,7 +286,7 @@ fn identity_for_config_dir(config_dir: &std::path::Path) -> String {
     peko_core::tunnel::HubLogin::load(config_dir)
         .ok()
         .flatten()
-        .map(|login| format!("local_{}", login.user_id))
+        .map(|login| format!("hub:{}", login.user_id))
         .unwrap_or_else(|| "local".into())
 }
 

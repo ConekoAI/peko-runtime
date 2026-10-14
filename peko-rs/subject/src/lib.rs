@@ -173,19 +173,24 @@ impl fmt::Display for SubjectKind {
 }
 
 impl Subject {
-    /// Read compatibility for the retired prefixed-user grant projection.
-    /// Authentication creates bare User ids; legacy grants may contain `user:`.
-    /// Other kinds are never coerced into the user namespace.
+    /// Normalize internal local storage keys without erasing the Hub namespace.
+    /// A local actor and a Hub actor with the same ID are distinct authorities.
     #[must_use]
     pub fn normalized_for_auth(&self) -> Self {
+        // Persisted ADR-073 user/visitor grants may still contain a bare proxy
+        // ID. Explicit local references never take this compatibility path.
+        if matches!(self, Self::User(_) | Self::Visitor(_)) {
+            if let Some(hub) = self.subject_id().strip_prefix("local_") {
+                return match self {
+                    Self::User(_) => Self::User(format!("hub:{hub}")),
+                    _ => Self::Visitor(format!("hub:{hub}")),
+                };
+            }
+        }
         let id = self
             .subject_id()
             .strip_prefix("local:")
             .unwrap_or(self.subject_id());
-        let id = id
-            .strip_prefix("hub:")
-            .or_else(|| id.strip_prefix("local_"))
-            .unwrap_or(id);
         match self {
             Self::User(_) => Self::User(id.into()),
             Self::Visitor(_) => Self::Visitor(id.into()),
@@ -261,14 +266,14 @@ impl Subject {
             )));
         }
         match kind {
-            "user" => Ok(Self::User(format!("local_{sub}"))),
+            "user" => Ok(Self::User(format!("hub:{sub}"))),
             "visitor" => {
                 if sub == "local" {
                     Err(SubjectParseError(
                         "visitor sub 'local' is reserved for the local owner".to_string(),
                     ))
                 } else {
-                    Ok(Self::Visitor(format!("local_{sub}")))
+                    Ok(Self::Visitor(format!("hub:{sub}")))
                 }
             }
             other => Err(SubjectParseError(format!(
@@ -518,15 +523,15 @@ mod tests {
     fn test_from_bridge_claim_happy_paths() {
         assert_eq!(
             Subject::from_bridge_claim("user", "39").unwrap(),
-            Subject::User("local_39".to_string())
+            Subject::User("hub:39".to_string())
         );
         assert_eq!(
             Subject::from_bridge_claim("user", "user-42").unwrap(),
-            Subject::User("local_user-42".to_string())
+            Subject::User("hub:user-42".to_string())
         );
         assert_eq!(
             Subject::from_bridge_claim("visitor", "vis_abc123").unwrap(),
-            Subject::Visitor("local_vis_abc123".to_string())
+            Subject::Visitor("hub:vis_abc123".to_string())
         );
     }
 

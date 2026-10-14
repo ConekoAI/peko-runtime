@@ -159,8 +159,8 @@ impl CallerContext {
     /// audit): API-key callers are *not* pekohub users, they are a
     /// distinct actor class. They project as `Subject::Principal`
     /// carrying a typed `PrincipalDID` of the form `apikey:{key_id}`.
-    /// `User` uses the same bare account id for ownership, attribution and
-    /// channel membership. Old prefixed user grants normalize when checked.
+    /// `User` uses the same scoped Hub account ID for ownership, attribution and
+    /// channel membership. Hub accounts have no runtime-local proxy identity.
     ///
     /// Equality across kinds is intentionally prevented
     /// (`Subject::User("apikey:...") != Subject::Principal(...)` of the
@@ -171,8 +171,8 @@ impl CallerContext {
     pub fn subject(&self) -> Subject {
         match &self.identity {
             Identity::Local => self.attribution_subject(),
-            Identity::User(sub) => Subject::User(format!("local_{sub}")),
-            Identity::Visitor(sub) => Subject::Visitor(format!("local_{sub}")),
+            Identity::User(sub) => Subject::User(format!("hub:{sub}")),
+            Identity::Visitor(sub) => Subject::Visitor(format!("hub:{sub}")),
             Identity::ApiKey(_) => self.attribution_subject(),
         }
     }
@@ -216,11 +216,11 @@ impl CallerContext {
             Identity::Local | Identity::ApiKey(_) => Subject::User(
                 self.hub_user_id
                     .as_ref()
-                    .map(|id| format!("local_{id}"))
+                    .map(|id| format!("hub:{id}"))
                     .unwrap_or_else(|| "local".to_string()),
             ),
-            Identity::User(sub) => Subject::User(format!("local_{sub}")),
-            Identity::Visitor(sub) => Subject::Visitor(format!("local_{sub}")),
+            Identity::User(sub) => Subject::User(format!("hub:{sub}")),
+            Identity::Visitor(sub) => Subject::Visitor(format!("hub:{sub}")),
         }
     }
 
@@ -259,24 +259,18 @@ mod tests {
     #[test]
     fn local_attribution_uses_hub_owner_when_logged_in() {
         let c = CallerContext::local_with_hub_user_id(Some("39".to_string()));
-        assert_eq!(
-            c.attribution_subject(),
-            Subject::User("local_39".to_string())
-        );
-        assert_eq!(c.subject(), Subject::User("local_39".to_string()));
+        assert_eq!(c.attribution_subject(), Subject::User("hub:39".to_string()));
+        assert_eq!(c.subject(), Subject::User("hub:39".to_string()));
         assert!(c.is_local());
     }
 
     /// ADR-057: JWT callers attribute as their bare sub (ADR-049 wire
     /// form), not the prefixed grant projection.
     #[test]
-    fn jwt_attribution_is_bare_sub() {
+    fn jwt_attribution_is_scoped_hub_subject() {
         let c = CallerContext::from_jwt("39".to_string());
-        assert_eq!(
-            c.attribution_subject(),
-            Subject::User("local_39".to_string())
-        );
-        assert_eq!(c.subject(), Subject::User("local_39".to_string()));
+        assert_eq!(c.attribution_subject(), Subject::User("hub:39".to_string()));
+        assert_eq!(c.subject(), Subject::User("hub:39".to_string()));
     }
 
     /// ADR-057: API-key callers attribute as the runtime owner (a key
@@ -294,7 +288,7 @@ mod tests {
     #[test]
     fn jwt_subject_is_user_with_sub() {
         let s = CallerContext::from_jwt("alice".to_string()).subject();
-        assert_eq!(s, Subject::User("local_alice".to_string()));
+        assert_eq!(s, Subject::User("hub:alice".to_string()));
     }
 
     #[test]
@@ -304,14 +298,14 @@ mod tests {
         assert_eq!(caller.subject_id(), "local");
         assert_eq!(caller.rate_limit_bucket, "apikey:pkr_key");
         caller.hub_user_id = Some("account".into());
-        assert_eq!(caller.subject(), Subject::User("local_account".into()));
+        assert_eq!(caller.subject(), Subject::User("hub:account".into()));
     }
     #[test]
     fn visitor_and_user_tokens_with_same_id_are_distinct() {
         let user = CallerContext::from_jwt("same".into());
         let visitor = CallerContext::from_visitor_jwt("same".into());
         assert_ne!(user.subject(), visitor.subject());
-        assert_eq!(visitor.subject(), Subject::Visitor("local_same".into()));
+        assert_eq!(visitor.subject(), Subject::Visitor("hub:same".into()));
         assert!(!visitor.is_operator());
     }
     #[test]
@@ -319,6 +313,6 @@ mod tests {
         let caller = CallerContext::local_with_hub_user_id(Some("account".into()));
         let owner = Subject::User("local".into());
         assert_eq!(caller.permission_subject(&owner), owner);
-        assert_eq!(caller.subject(), Subject::User("local_account".into()));
+        assert_eq!(caller.subject(), Subject::User("hub:account".into()));
     }
 }

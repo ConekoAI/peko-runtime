@@ -2428,7 +2428,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("local_user-jwt".to_string())
+            Subject::User("hub:user-jwt".to_string())
         );
     }
 
@@ -2446,7 +2446,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::Visitor("local_vis_abc123".to_string())
+            Subject::Visitor("hub:vis_abc123".to_string())
         );
     }
 
@@ -2591,7 +2591,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("local_user-jwt".to_string())
+            Subject::User("hub:user-jwt".to_string())
         );
     }
 
@@ -3151,7 +3151,7 @@ mod tests {
             .resolve_actor(&format!("principal:hub:{hub}"))
             .await
             .unwrap();
-        assert_eq!(profile.local_id, principal.id.0);
+        assert_eq!(profile.local_id.as_deref(), Some(principal.id.0.as_str()));
         assert_eq!(
             dispatcher
                 .state
@@ -3546,7 +3546,7 @@ mod tests {
         let kp = peko_identity::keys::KeyPair::generate();
         let source = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         port.register_actor(
-            &Subject::User("local_bob".into()),
+            &Subject::User("hub:bob".into()),
             Some("bob"),
             None,
             None,
@@ -3748,7 +3748,7 @@ mod tests {
             .host
             .tunnel_channel_port()
             .register_actor(
-                &Subject::Principal("local_author".into()),
+                &Subject::Principal("hub:author-hub".into()),
                 Some("author-hub"),
                 Some(&author_did),
                 Some("author-key"),
@@ -4052,7 +4052,8 @@ mod tests {
             1
         );
         let profile = port.resolve_actor(&creator).await.unwrap();
-        assert_eq!(profile.local_id, format!("local_{source_hub}"));
+        assert_eq!(profile.local_id, None);
+        assert_eq!(profile.address, creator);
         assert_eq!(port.participants(&channel).await.unwrap().len(), 2);
         if dm {
             assert!(app

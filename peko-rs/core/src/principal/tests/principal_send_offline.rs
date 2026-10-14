@@ -35,6 +35,7 @@ use peko_subject::PrincipalDID;
 /// for same-runtime `ChannelSend` principal branch.
 const CALLER_RUNTIME: &str = "did:key:test-runtime";
 const REMOTE_RUNTIME: &str = "did:key:remote-runtime";
+const REMOTE_HUB: &str = "remote-hub";
 const REMOTE_TARGET: &str = "did:key:z6MkRemoteTarget";
 
 struct PanicDirectory;
@@ -585,11 +586,12 @@ async fn caller_not_loaded_on_this_runtime_is_an_error() {
 
 fn remote_resolution(
     exposure: crate::tunnel::hub_directory::ResolvedExposure,
+    hub_id: &str,
     agent_did: &str,
 ) -> crate::tunnel::hub_directory::AgentResolution {
     crate::tunnel::hub_directory::AgentResolution {
         name: None,
-        hub_id: agent_did.into(),
+        hub_id: hub_id.into(),
         local_id: "prin_remote".into(),
         identity_key: "remote-actor-key".into(),
         runtime_id: REMOTE_RUNTIME.into(),
@@ -632,13 +634,13 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     let fx = Fixture::new().await;
     let directory = Arc::new(crate::tunnel::hub_directory::FakeAgentDirectory::new());
     directory.register_hub_id(
-        REMOTE_TARGET,
-        remote_resolution(ResolvedExposure::Public, REMOTE_TARGET),
+        REMOTE_HUB,
+        remote_resolution(ResolvedExposure::Public, REMOTE_HUB, REMOTE_TARGET),
     );
     let outbound = fx.connect_remote(directory).await;
     let (peer, seen) = spawn_remote_peer(outbound);
 
-    let first = fx.send_to(REMOTE_TARGET, "ping").await;
+    let first = fx.send_to(REMOTE_HUB, "ping").await;
     assert!(first.success, "{:?}", first.error);
     // The captured tunnel never answers, so nothing confirms delivery.
     assert_eq!(first.delivery.as_deref(), Some("queued"));
@@ -649,7 +651,7 @@ async fn remote_request_invites_once_fans_out_and_returns_at_once() {
     );
     assert_eq!(first.channel, expected.as_str());
     assert_eq!(first.dm_channel.as_deref(), Some(expected.as_str()));
-    let second = fx.send_to(REMOTE_TARGET, "again").await;
+    let second = fx.send_to(REMOTE_HUB, "again").await;
     assert!(second.success, "{:?}", second.error);
     // Let the captured tunnel drain.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -688,14 +690,22 @@ async fn remote_resolution_failures_are_errors() {
     directory.register_hub_id_err("did:key:forbidden", DirectoryErrorKind::Forbidden);
     directory.register_hub_id(
         "did:key:hidden",
-        remote_resolution(ResolvedExposure::LocalOnly, "did:key:hidden"),
+        remote_resolution(
+            ResolvedExposure::LocalOnly,
+            "did:key:hidden",
+            "did:key:hidden",
+        ),
     );
-    let mut missing_signer = remote_resolution(ResolvedExposure::Public, "");
+    let mut missing_signer = remote_resolution(ResolvedExposure::Public, "did:key:nodid", "");
     missing_signer.hub_id = "did:key:nodid".into();
     directory.register_hub_id("did:key:nodid", missing_signer);
     directory.register_hub_id(
         "did:key:requested",
-        remote_resolution(ResolvedExposure::Public, "did:key:substituted"),
+        remote_resolution(
+            ResolvedExposure::Public,
+            "did:key:substituted",
+            "did:key:substituted",
+        ),
     );
     let mut outbound = fx.connect_remote(directory).await;
 

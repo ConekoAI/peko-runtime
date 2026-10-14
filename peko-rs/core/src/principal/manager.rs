@@ -692,12 +692,40 @@ impl PrincipalManager {
         let config = principal.config.read().await;
         // Only authenticated Hub receipts and verified directory results establish aliases.
         // principal.toml is editable workspace content, not a Hub identity attestation.
-        let hub_id = port
+        let existing = port
             .resolve_actor(&format!("principal:local:{}", principal.id.0))
             .await
-            .ok()
-            .and_then(|actor| actor.hub_id);
+            .ok();
+        let existing = if existing.is_some() {
+            existing
+        } else {
+            // A snapshot can install a previously remote contact locally.
+            // Only this runtime's verified registry can supply its Hub link.
+            port.known_actors().await?.into_iter().find(|actor| {
+                actor.kind == "principal"
+                    && config.actor_key.as_deref() == Some(actor.identity_key.as_str())
+            })
+        };
         let did = config.did.as_ref().map(|d| d.0.clone());
+        if existing
+            .as_ref()
+            .is_some_and(|actor| actor.local_id.is_none())
+        {
+            let vault = self
+                .signing_vault()
+                .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))?;
+            if !did.as_ref().is_some_and(|did| {
+                vault
+                    .get_principal_identity_private_key(&format!("{did}#keys-1"))
+                    .is_some()
+            }) {
+                return Err(peko_channel::ChannelError::Adapter(
+                    "Promoting a remote contact requires its vault-backed signing credential"
+                        .into(),
+                ));
+            }
+        }
+        let hub_id = existing.and_then(|actor| actor.hub_id);
         let key = config.actor_key.clone();
         let name = config.name.clone();
         let registration = if hub_id.is_none() {
@@ -808,6 +836,12 @@ impl PrincipalManager {
                     );
                     PrincipalManagerError::Io(e)
                 })?;
+        }
+
+        if let Some(port) = self.channel_port() {
+            port.unhost_principal(&id)
+                .await
+                .map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
         }
 
         Ok(())
@@ -2367,14 +2401,76 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
+    async fn promoting_a_contact_requires_a_vault_credential_and_preserves_verified_hub_link() {
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let port = manager.channel_port().unwrap();
+        let config = principal.config.read().await;
+        let did = config.did.clone().unwrap();
+        port.register_actor(
+            &Subject::from(&id),
+            Some("promoted-hub"),
+            Some(&did.0),
+            config.actor_key.as_deref(),
+            Some("stressy"),
+            "private",
+        )
+        .await
+        .unwrap();
+        drop(config);
+        port.unhost_principal(&id).await.unwrap();
+        assert!(port
+            .resolve_actor("principal:hub:promoted-hub")
+            .await
+            .unwrap()
+            .local_id
+            .is_none());
+        principal.config.write().await.did = Some("did:key:missing-credential".into());
+        let error = manager
+            .register_actor_identity(&principal, &port)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("vault-backed signing credential"));
+        assert!(port
+            .resolve_actor("principal:hub:promoted-hub")
+            .await
+            .unwrap()
+            .local_id
+            .is_none());
+        principal.config.write().await.did = Some(did);
+        let actor = manager
+            .register_actor_identity(&principal, &port)
+            .await
+            .unwrap();
+        assert_eq!(actor.local_id.as_deref(), Some(id.0.as_str()));
+        assert_eq!(actor.hub_id.as_deref(), Some("promoted-hub"));
+        assert_eq!(principal.config.read().await.hub_id, actor.hub_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
     async fn remove_principal_deletes_workspace() {
         let (_temp, manager, _adapter, id) = setup().await;
-        let workspace_path = manager
-            .get(id)
+        let principal = manager
+            .get(id.clone())
             .await
-            .expect("principal should exist")
-            .workspace_path
-            .clone();
+            .expect("principal should exist");
+        let workspace_path = principal.workspace_path.clone();
+        let port = manager.channel_port().unwrap();
+        let config = principal.config.read().await;
+        port.register_actor(
+            &Subject::from(&id),
+            Some("removed-hub"),
+            config.did.as_ref().map(|did| did.0.as_str()),
+            config.actor_key.as_deref(),
+            Some("stressy"),
+            "private",
+        )
+        .await
+        .unwrap();
+        drop(config);
 
         manager
             .remove("stressy")
@@ -2382,6 +2478,15 @@ mod tests {
             .expect("remove should succeed");
         assert!(manager.get_by_name("stressy").await.is_none());
         assert!(!workspace_path.exists(), "workspace should be deleted");
+        let actor = port
+            .resolve_actor("principal:hub:removed-hub")
+            .await
+            .unwrap();
+        assert!(actor.local_id.is_none());
+        assert!(port
+            .resolve_actor(&format!("principal:local:{}", id.0))
+            .await
+            .is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3285,7 +3390,20 @@ mod tests {
         let (_temp, manager, adapter, id) = setup().await;
         adapter.queue_text("a2a reply".to_string());
 
-        let peer = Subject::Principal("did:key:z6MkA2aPeerExample".to_string().into());
+        let peer = Subject::Principal("hub:a2a-peer".into());
+        manager
+            .channel_port()
+            .unwrap()
+            .register_actor(
+                &peer,
+                Some("a2a-peer"),
+                Some("did:key:z6MkA2aPeerExample"),
+                Some("a2a-peer-key"),
+                None,
+                "public",
+            )
+            .await
+            .unwrap();
         let channel = ChannelContext {
             kind: ChannelKind::Cli,
             streaming: false,

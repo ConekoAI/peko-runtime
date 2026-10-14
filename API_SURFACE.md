@@ -1095,9 +1095,17 @@ The following operations must be tested:
 ## ADR-073 dual identity API
 
 - `ChannelPort::{register_actor, resolve_actor, known_actors, actor_info, participants}`
-  expose one local ID, optional Hub ID, name, kind, and registration state.
+  expose optional local and Hub IDs, name, kind, and registration state (ADR-077).
+  At least one ID is present. Hub-only remote actors have `local_id: null` and a
+  canonical `kind:hub:<id>` address; hosted actors use `kind:local:<id>`.
+  `ActorInfo::from_subject` preserves explicit Hub scope, and `subject()` returns
+  a local storage subject or a scoped Hub subject as appropriate.
   `resolve_actor` accepts explicit `kind:local:<id>` or `kind:hub:<UUID>` references.
   Signing DIDs and immutable actor keys remain internal.
+- `ChannelStore::reconcile_actor_locality` reconciles old proxy records against a
+  complete hosted-principal inventory at daemon startup, retaining history.
+- `ChannelPort::unhost_principal` drops the local ID of a removed registered
+  principal, retaining a Hub-only contact and internal historical aliases.
 - `ChannelPort::{ensure_dm, binding_for}` and `dm_channel_id(a,b)` use immutable actor
   keys and independent principal-local session bindings. Membership includes humans.
 - `ChannelPort::{known_contacts, remember_contact}` persists explicitly learned
@@ -1121,7 +1129,8 @@ The following operations must be tested:
   and exposure. CLI: `peko register NAME [--public]`, `peko unregister NAME`.
 - `HubLogin` stores verified account metadata independently from tunnel ownership.
   CLI: `peko login [--hub ORIGIN] --api-key KEY`, `peko logout [--hub ORIGIN]`.
-  Local caller attribution rereads login state; account changes preserve distinct IDs.
+  Local caller attribution rereads login state; authenticated users and visitors
+  use Hub subjects without synthetic local IDs. Account changes preserve distinct IDs.
 - `ChannelStore::replace_dm_peer_route` and `ChannelOutbox::retarget` follow a moved
   registered principal without changing its conversation or pending message IDs.
 

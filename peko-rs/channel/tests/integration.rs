@@ -507,7 +507,7 @@ async fn group_channel_end_to_end_via_router() {
             _ => None,
         })
         .collect();
-    assert_eq!(authored, vec!["user:local"]);
+    assert_eq!(authored, vec!["user:local:local"]);
 
     // A non-member user is still refused with NotMember.
     let stranger = Subject::User("mallory".to_string());

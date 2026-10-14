@@ -290,8 +290,8 @@ impl PrincipalUnpackager {
                 .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
         }
 
-        // A known actor keeps this runtime's local ID when a portable snapshot
-        // promotes a contact into a locally hosted principal.
+        // Reuse an existing hosted identity. Remote contacts have no local ID;
+        // importing their credential promotes them using the immutable actor key.
         use peko_channel::ChannelPort;
         let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
             runtime_dir: PathResolver::with_dirs(
@@ -305,7 +305,11 @@ impl PrincipalUnpackager {
         if let Some(actor) = store.known_actors().await?.into_iter().find(|a| {
             a.kind == "principal" && config.actor_key.as_deref() == Some(a.identity_key.as_str())
         }) {
-            config.id = Some(peko_subject::PrincipalId(actor.local_id));
+            if let Some(local_id) = actor.local_id {
+                config.id = Some(peko_subject::PrincipalId(local_id));
+            } else {
+                config.id = Some(peko_subject::PrincipalId::generate());
+            }
         }
 
         // Default owner to local user unless already set
@@ -915,6 +919,68 @@ mod tests {
         assert!(restored.hub_id.is_none());
         assert!(restored.id.is_some());
         assert!(restored.actor_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn importing_remote_contact_allocates_a_local_id_without_adopting_foreign_id() {
+        use peko_channel::{ChannelConfig, ChannelPort, ChannelStore};
+        use peko_subject::PrincipalId;
+        let identity = Identity::new("remote-import", DIDScope::Local)
+            .await
+            .unwrap();
+        let mut config = sample_config("remote-import", &identity.did);
+        config.id = Some(PrincipalId("prin_foreign".into()));
+        config.actor_key = Some("portable-key".into());
+        let signer = identity.did.clone();
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("remote.peko");
+        PrincipalPackager::new(config, identity)
+            .export(PrincipalExportOptions {
+                output_path: Some(package.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let config_dir = temp.path().join("config");
+        let port = ChannelStore::new(ChannelConfig {
+            runtime_dir: config_dir.join("runtime"),
+            shared_dir: None,
+        });
+        let remote: Subject = "principal:hub:portable".parse().unwrap();
+        port.register_actor(
+            &remote,
+            Some("portable"),
+            Some(&signer),
+            Some("portable-key"),
+            None,
+            "public",
+        )
+        .await
+        .unwrap();
+        let learner = PrincipalId::generate();
+        port.remember_contact(&learner, &remote).await.unwrap();
+        let result = PrincipalUnpackager::new(&package, config_dir, temp.path().join("data"))
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+        let restored: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(result.config_path).unwrap()).unwrap();
+        let local_id = restored.id.unwrap();
+        assert!(local_id.0.starts_with("prin_"));
+        assert_ne!(local_id.0, "prin_foreign");
+        assert_eq!(restored.actor_key.as_deref(), Some("portable-key"));
+        let promoted = port
+            .register_actor(
+                &Subject::from(&local_id),
+                Some("portable"),
+                Some(&signer),
+                Some("portable-key"),
+                None,
+                "private",
+            )
+            .await
+            .unwrap();
+        assert_eq!(port.known_contacts(&learner).await.unwrap(), vec![promoted]);
     }
 
     #[tokio::test]

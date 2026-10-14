@@ -743,13 +743,15 @@ impl AppState {
             // peer's DM channel through the daemon-global port.
             .with_channel_port(channel_port.clone());
 
+            let mut complete_inventory = true;
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
+                while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
                     if path.is_dir() {
                         let config_path = path.join("principal.toml");
                         if config_path.exists() {
                             if let Err(e) = manager.load(&config_path).await {
+                                complete_inventory = false;
                                 tracing::warn!(
                                     "Failed to load principal from {}: {e}",
                                     config_path.display()
@@ -758,6 +760,24 @@ impl AppState {
                         }
                     }
                 }
+            } else {
+                complete_inventory = false;
+            }
+            if complete_inventory {
+                let hosted = manager
+                    .list_all()
+                    .await
+                    .into_iter()
+                    .map(|p| p.id.clone())
+                    .collect::<Vec<_>>();
+                tunnel_channel_port
+                    .as_ref()
+                    .expect("channel port initialized")
+                    .local()
+                    .reconcile_actor_locality(&hosted)
+                    .await?;
+            } else {
+                tracing::warn!("Skipping actor locality reconciliation: hosted principal inventory is incomplete");
             }
             manager
         };
@@ -2060,7 +2080,7 @@ impl crate::tunnel::TunnelHost for AppState {
         let source_actor = self
             .tunnel_channel_port
             .register_actor(
-                &Subject::Principal(format!("local_{creator_hub}").into()),
+                &Subject::Principal(format!("hub:{creator_hub}").into()),
                 Some(creator_hub),
                 Some(&source.agent_did),
                 Some(&source.identity_key),
@@ -2092,14 +2112,7 @@ impl crate::tunnel::TunnelHost for AppState {
                 );
                 self.tunnel_channel_port
                     .register_actor(
-                        &Subject::Principal(
-                            if resolved.runtime_id == self.runtime_identity.runtime_did {
-                                resolved.local_id.clone()
-                            } else {
-                                format!("local_{hub}")
-                            }
-                            .into(),
-                        ),
+                        &directory.actor_subject(&resolved).await?,
                         Some(hub),
                         Some(&resolved.agent_did),
                         Some(&resolved.identity_key),
@@ -2118,10 +2131,10 @@ impl crate::tunnel::TunnelHost for AppState {
                     let hub = subject.subject_id().strip_prefix("hub:").ok_or_else(|| {
                         anyhow::anyhow!("Remote human membership requires a Hub reference")
                     })?;
-                    let local = format!("{}:local_{hub}", subject.kind()).parse::<Subject>()?;
+                    let remote = format!("{}:hub:{hub}", subject.kind()).parse::<Subject>()?;
                     self.tunnel_channel_port
                         .register_actor(
-                            &local,
+                            &remote,
                             Some(hub),
                             None,
                             None,

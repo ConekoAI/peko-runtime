@@ -1027,6 +1027,10 @@ impl TunnelChannelPort {
 
 #[async_trait]
 impl ChannelPort for TunnelChannelPort {
+    async fn unhost_principal(&self, id: &PrincipalId) -> Result<()> {
+        self.local.unhost_principal(id).await
+    }
+
     async fn register_actor(
         &self,
         subject: &Subject,
@@ -1101,13 +1105,17 @@ impl ChannelPort for TunnelChannelPort {
             return self.local.invite(channel, inviter, invitee).await;
         };
         let known = self.local.actor_info(invitee).await;
-        if (known.hub_id.is_none() && !invitee.subject_id().starts_with("hub:"))
-            || !matches!(invitee, Subject::Principal(_))
-            || ctx
-                .principal_keys
-                .did_for_principal(&PrincipalId(known.local_id.clone()))
+        let hosted = if let Some(local_id) = &known.local_id {
+            ctx.principal_keys
+                .did_for_principal(&PrincipalId(local_id.clone()))
                 .await
                 .is_some()
+        } else {
+            false
+        };
+        if (known.hub_id.is_none() && !invitee.subject_id().starts_with("hub:"))
+            || !matches!(invitee, Subject::Principal(_))
+            || hosted
         {
             self.local
                 .invite(channel, inviter, &known.subject())
@@ -1144,15 +1152,28 @@ impl ChannelPort for TunnelChannelPort {
                 "Directory substituted a different actor".into(),
             ));
         }
-        let local_id = if resolution.runtime_id == ctx.caller_runtime_id {
-            resolution.local_id.clone()
+        let subject = if resolution.runtime_id == ctx.caller_runtime_id {
+            let id = PrincipalId(resolution.local_id.clone());
+            let actor = self
+                .local
+                .resolve_actor(&format!("principal:local:{}", id.0))
+                .await?;
+            if actor.identity_key != resolution.identity_key
+                || ctx.principal_keys.did_for_principal(&id).await.as_deref()
+                    != Some(resolution.agent_did.as_str())
+            {
+                return Err(peko_channel::ChannelError::Adapter(
+                    "Directory local identity does not match the hosted principal".into(),
+                ));
+            }
+            Subject::from(&id)
         } else {
-            format!("local_{hub_id}")
+            Subject::Principal(format!("hub:{hub_id}").into())
         };
         let actor = self
             .local
             .register_actor(
-                &Subject::Principal(local_id.into()),
+                &subject,
                 Some(&hub_id),
                 Some(&resolution.agent_did),
                 Some(&resolution.identity_key),
@@ -1710,7 +1731,7 @@ mod tests {
             },
         );
         port.register_actor(
-            &Subject::Principal("local_remote-hub".into()),
+            &Subject::Principal("hub:remote-hub".into()),
             Some("remote-hub"),
             Some(&remote_did),
             Some("remote-key"),
@@ -2341,7 +2362,7 @@ mod tests {
         let channel = if dm {
             port.ensure_dm(
                 &inviter,
-                &Subject::Principal("local_remote-hub".into()),
+                &Subject::Principal("hub:remote-hub".into()),
                 "/remote",
             )
             .await
