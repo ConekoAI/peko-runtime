@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Dead protocol helpers and runtime install roots removed (0.1.0, 2026-10-14)
+
+- Delete `framework::protocols::shared::process_transport`
+  (`ProcessConfig`, `ProcessTransport`, `ProcessTransportBuilder`,
+  `resolve_command`) and `framework::protocols::shared::validation`
+  (`ValidationError`, the `validate_*` helpers, `ValidationReport`,
+  `ValidationBuilder`). Nothing outside their own files used them.
+  `shared::schema_filter` stays, because the MCP service proxy uses it.
+- Delete the unused extension and MCP install roots:
+  `RuntimeLayout::{extensions_root, mcps_root}`, the matching
+  `PathResolver` accessors, and `RuntimeAuthority::{runtime_extensions_root,
+  runtime_extensions_root_write, runtime_mcps_root, shared_mcps_dir,
+  shared_mcps_dir_write}`. `ensure_dirs` no longer creates the empty
+  `{data_dir}/runtime/extensions` and `{data_dir}/runtime/mcps` directories.
+  Existing copies of those directories are left on disk.
+
 ### MCP prompt-context provider seam removed (0.1.0, 2026-10-14)
 
 - Delete the engine's unbound `{{mcp_context}}` seam:

@@ -47,7 +47,7 @@ pub(crate) struct AppState {
     pub cache_dir: PathBuf,
 
     /// Typed path resolver (Phase A). Every code path that needs
-    /// per-tier roots (`extensions_root`, `mcps_root`, etc.) reaches
+    /// per-tier roots (`runtime_layout()`, `principal_layout(..)`, etc.) reaches
     /// them through this resolver instead of hand-rolled
     /// `data_dir.join("…")` joins. The legacy `data_dir` field is
     /// retained for back-compat with callers that haven't migrated.
@@ -872,7 +872,7 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
-            // Phase A: carry the typed resolver forward so IPC handlers can reach `extensions_root()`,
+            // Phase A: carry the typed resolver forward so IPC handlers can reach `runtime_layout()`,
             // `principal_layout(name).local.root`, etc. without
             // re-deriving them from `data_dir`.
             path_resolver: path_resolver.clone(),
