@@ -2721,12 +2721,12 @@ mod tests {
         );
     }
 
-    /// Phase 1 contract: hook-driven sections fire in parallel. Four
-    /// hooks each sleep 50ms; total must be < 100ms when parallel
-    /// (serial would take ~200ms+).
+    /// Phase 1 contract: hook-driven sections fire in parallel. Three
+    /// hooks each sleep 50ms; total must be < 150ms when parallel
+    /// (serial would take ~150ms+).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial(core)]
-    async fn loop_invokes_tools_skills_agents_mcp_hooks_in_parallel() {
+    async fn loop_invokes_tools_skills_roles_hooks_in_parallel() {
         use peko_engine::prompt::context::TurnPromptContext;
         use peko_engine::PromptRenderer;
         use std::time::Instant;
@@ -2735,7 +2735,7 @@ mod tests {
         let _tooling = ToolingRuntime::standalone();
         let core = crate::tools::runtime::ToolingRuntime::standalone();
 
-        // Register four 50ms-sleep handlers (one per section).
+        // Register three 50ms-sleep handlers (one per section).
         #[derive(Debug)]
         struct SleepHandler(&'static str, std::time::Duration);
         #[async_trait::async_trait]
@@ -2764,28 +2764,12 @@ mod tests {
                 .unwrap();
         }
 
-        // Phase 2 PR 2 (ADR-047 §2.3): `mcp_context` is no longer
-        // a framework hook — the `McpAdapter` is deleted. The
-        // renderer consults an `McpPromptContextProvider`
-        // directly. Provide a 50ms-sleep mock so the parallel
-        // dispatch contract still holds across all four sections.
-        struct SleepMcpProvider(std::time::Duration);
-        #[async_trait::async_trait]
-        impl peko_engine::McpPromptContextProvider for SleepMcpProvider {
-            async fn render_mcp_context(&self) -> String {
-                tokio::time::sleep(self.0).await;
-                "mcp_context".to_string()
-            }
-        }
-        let mcp_provider: Arc<dyn peko_engine::McpPromptContextProvider> =
-            Arc::new(SleepMcpProvider(std::time::Duration::from_millis(50)));
-
-        let renderer = PromptRenderer::with_mcp_context_provider(core, mcp_provider);
+        let renderer = PromptRenderer::new(core);
         let ctx = TurnPromptContext {
             principal_id: "test".into(),
             session_id: "test-session".into(),
             role_name: "test-agent".into(),
-            body: "{{tools}} {{skills}} {{roles}} {{mcp_context}}".into(),
+            body: "{{tools}} {{skills}} {{roles}}".into(),
             principal_memory: None,
             project_instructions: None,
             workspace: tempdir_unused(),
@@ -2809,20 +2793,18 @@ mod tests {
 
         assert!(
             elapsed < std::time::Duration::from_millis(150),
-            "parallel render took {elapsed:?} — should be ~50ms with fan-out, not ~200ms serial"
+            "parallel render took {elapsed:?} — should be ~50ms with fan-out, not ~150ms serial"
         );
         // F36: tool catalogs are wire-only. `{{tools}}` has no enum
         // variant (retired) and no value is inserted, so it is stripped
-        // via `remove_missing=true`. The other three sections still
+        // via `remove_missing=true`. The other two sections still
         // flow through the wire, so their markers must be substituted
         // with the hook output.
         assert!(!rendered.contains("{{tools}}"));
         assert!(!rendered.contains("{{skills}}"));
         assert!(!rendered.contains("{{agents}}"));
-        assert!(!rendered.contains("{{mcp_context}}"));
         assert!(rendered.contains("skills"));
         assert!(rendered.contains("roles"));
-        assert!(rendered.contains("mcp_context"));
     }
 
     /// Phase 1 contract: a stuck handler (>2s) must not stall the

@@ -243,11 +243,21 @@ Its explicit constructor binds owner/workspace/local cache/vault/resolver/meter/
 provide workspace reconciliation, owner inventory, operational actions and teardown.
 `ToolingRuntime::{bind_mcp, unbind_mcp}` binds the principal service;
 `ToolCatalog::replace_mcp` atomically replaces only that owner's MCP partition.
+That partition's `PrincipalMcpRuntime::context()` text rides each catalog snapshot
+(`CatalogBinding.mcp_context`); `ToolingRuntime::render_prompt_sections` emits it as
+the `mcp_context` section only for a request bound to the owner's own catalog, and
+`PromptRenderer::render_runtime_context` renders it as a change-tracked tail section.
+The engine's `McpPromptContextProvider` / `EmptyMcpPromptContextProvider`,
+`PromptRenderer::with_mcp_context_provider`, `AgenticLoop::with_mcp_context_provider`,
+`Agent::with_mcp_context_provider`, and `Placeholder::McpContext` are deleted; the
+frozen system prompt carries no MCP context and `{{mcp_context}}` strips as unknown.
 Native names use `mcp__<server>__<method>` with stable digests for unsafe/long/
 ambiguous names, within model function-name constraints. Bindings retain exact
 remote methods; duplicate aliases reject the server catalog.
 The process-global MCP accessor and `McpReload`/`McpReloaded` IPC contracts are retired.
-Legacy manager APIs remain compatibility adapters, outside native principal wiring.
+The legacy shared-manager stack (`McpManager`, `McpClientRegistry`, `McpRuntimeAdapter`,
+`McpToolProxy`) is deleted; `mcp::protocol` keeps only the client, SSE transport, OAuth,
+sampling, and `McpAuthConfig` that `PrincipalMcpRuntime` uses for legacy SSE peers.
 `Vault::reload_unlocked` reloads credentials with the already-held vault key.
 
 `peko_engine::tooling::ToolFunnel` has exactly three methods:
