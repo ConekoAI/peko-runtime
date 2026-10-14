@@ -30,9 +30,8 @@
 //! - **Stateless renderer.** The renderer carries no per-iteration
 //!   state. The capability-diff tracker and the runtime-context
 //!   change-detection state live on the loop and are passed in.
-//! - **Parallel hook dispatch.** The `mcp_context` section and the
-//!   per-turn `SessionContextBuild` / `skills` / `agents` hooks all fire
-//!   concurrently via [`tokio::join!`]. Each handler is wrapped
+//! - **Parallel hook dispatch.** The per-turn `SessionContextBuild` /
+//!   `skills` / `agents` hooks all fire concurrently. Each handler is wrapped
 //!   in a 2-second timeout; a slow or stuck handler soft-fails to empty so
 //!   a single misbehaving extension can't stall the loop. The `tools`
 //!   section is intentionally not dispatched — tool catalogs travel on
@@ -47,9 +46,14 @@
 //!   stays byte-identical for the provider prefix cache. Per-section
 //!   change detection means the catalogs are only re-injected when the
 //!   scan result actually changes.
-//! - **`mcp_context` normalized.** This section previously used plain
-//!   `invoke_hook_text`; the rest use the trait-port
-//!   [`ToolFunnel::render_prompt_sections`](crate::tooling::ToolFunnel::render_prompt_sections).
+//! - **`mcp_context` rides the tail.** The principal's MCP service status
+//!   and server instructions arrive as the catalog-bound `mcp_context`
+//!   section of
+//!   [`ToolFunnel::render_prompt_sections`](crate::tooling::ToolFunnel::render_prompt_sections)
+//!   and render through the custom-section path of
+//!   [`PromptRenderer::render_runtime_context`]. Server state changes
+//!   mid-run, so it never enters the frozen prefix; the retired
+//!   `{{mcp_context}}` marker is stripped like any unknown token.
 //! - **`remove_missing=true` for placeholders.** Templates that omit
 //!   any of the four control-surface placeholders get no section.
 //!
@@ -68,7 +72,6 @@
 use super::context::{render_quota_tripped_section, IterationBudgetState, TurnPromptContext};
 use super::placeholder::{replace_placeholders, Placeholder};
 use crate::tooling::{PromptSectionRequest, ToolingSeam};
-use async_trait::async_trait;
 use chrono::{Local, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -85,77 +88,27 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 
-/// Source for the `{{mcp_context}}` system-prompt section.
-///
-/// Phase 2 PR 2 (ADR-047 §2.3) deletes the framework `McpAdapter`,
-/// so the `PromptSystemSection { section: "mcp_context" }` hook has
-/// no handler. The renderer instead consults an
-/// `McpPromptContextProvider` directly. The default
-/// [`EmptyMcpPromptContextProvider] returns the empty string
-/// (templates that reference `{{mcp_context}}` get the placeholder
-/// stripped by `remove_missing=true`).
-#[async_trait]
-pub trait McpPromptContextProvider: Send + Sync {
-    /// Render the `mcp_context` Markdown body. The empty string means
-    /// "no MCP servers configured".
-    async fn render_mcp_context(&self) -> String;
-}
-
-/// Default no-op provider — used whenever no MCP context provider is
-/// bound (so MCP context never silently leaks state from a prior test
-/// in the same process).
-#[derive(Default)]
-pub struct EmptyMcpPromptContextProvider;
-
-#[async_trait]
-impl McpPromptContextProvider for EmptyMcpPromptContextProvider {
-    async fn render_mcp_context(&self) -> String {
-        String::new()
-    }
-}
-
 /// Renders the system prompt for one iteration.
 ///
 /// Constructed once per agentic loop and shared across iterations. Cheap
 /// to construct — just an `Arc` clone of the tooling seam (ADR-066 P3:
 /// `crate::tooling::ToolingSeam`, implemented by root's
 /// `ToolingRuntime`).
-///
-/// Phase 2 PR 2 (ADR-047 §2.3) added the `mcp_context_provider`
-/// field. The `{{mcp_context}}` placeholder is sourced from the
-/// provider directly.
 #[derive(Clone)]
 pub struct PromptRenderer {
     tooling: Arc<dyn ToolingSeam>,
-    mcp_context_provider: Arc<dyn McpPromptContextProvider>,
 }
 
 impl PromptRenderer {
-    /// Create a new renderer bound to the tooling seam, with a default
-    /// (empty) MCP context provider.
+    /// Create a new renderer bound to the tooling seam.
     #[must_use]
     pub fn new(tooling: Arc<dyn ToolingSeam>) -> Self {
-        Self {
-            tooling,
-            mcp_context_provider: Arc::new(EmptyMcpPromptContextProvider),
-        }
-    }
-
-    /// Create a new renderer with an explicit MCP context provider.
-    #[must_use]
-    pub fn with_mcp_context_provider(
-        tooling: Arc<dyn ToolingSeam>,
-        mcp_context_provider: Arc<dyn McpPromptContextProvider>,
-    ) -> Self {
-        Self {
-            tooling,
-            mcp_context_provider,
-        }
+        Self { tooling }
     }
 
     /// Render the system prompt for one iteration.
     ///
-    /// Dispatches the three hook-driven sections plus `SessionContextBuild`
+    /// Dispatches the hook-driven sections plus `SessionContextBuild`
     /// in parallel (each with a 2s timeout) and assembles the final body
     /// via [`replace_placeholders`] with `remove_missing=true`.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.role_name, iteration = ?ctx.iteration_budget.map(|i| i.iteration)))]
@@ -170,9 +123,6 @@ impl PromptRenderer {
         // ADR-066 P3: one aggregated call renders the sections
         // (providers + workspace-hook binds; 2s soft-fail per leg inside
         // the impl).
-        //
-        // Phase 2 PR 2: `mcp_context` is sourced from the provider
-        // field on the renderer, not from a hook.
         let section_request = PromptSectionRequest {
             catalog_binding: None,
             principal_id: ctx.principal_id.clone(),
@@ -180,22 +130,19 @@ impl PromptRenderer {
             session_id: ctx.session_id.clone(),
             acting_for: ctx.acting_for.clone(),
         };
-        let (rendered, mcp) = tokio::join!(
-            self.tooling.render_prompt_sections(&section_request),
-            self.mcp_context_provider.render_mcp_context(),
-        );
+        let rendered = self.tooling.render_prompt_sections(&section_request).await;
         let skills = rendered.get("skills").unwrap_or("").to_string();
         let agents = rendered.get("roles").unwrap_or("").to_string();
         let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
 
-        let values = build_placeholder_values(ctx, &skills, &agents, &mcp, &session_ctx);
+        let values = build_placeholder_values(ctx, &skills, &agents, &session_ctx);
         replace_placeholders(&ctx.body, &values, true)
     }
 
     /// F23: render the cache-stable system prompt.
     ///
-    /// Includes the agent body, inline identity / runtime / sandbox
-    /// fields, and the `mcp_context` section — i.e. everything that is
+    /// Includes the agent body and the inline identity / runtime /
+    /// sandbox fields — i.e. everything that is
     /// byte-stable across iterations within a session unless the profile
     /// mutates. Excludes per-iteration fields like `{{iteration_budget}}`,
     /// `{{quota_tripped}}`, `{{session_context}}`, `{{memory}}`,
@@ -205,8 +152,8 @@ impl PromptRenderer {
     /// `{{timezone}}` is retired from the per-turn context (redundant
     /// with `{{current_time}}`); it still resolves in
     /// [`render_for_iteration`] for legacy templates.
-    /// `{{skills}}` and `{{agents}}` also go in
-    /// [`render_runtime_context`]: they are workspace-scanned catalogs,
+    /// `{{skills}}`, `{{agents}}`, and the MCP service context also go
+    /// in [`render_runtime_context`]: they are live catalogs,
     /// so rendering them in the tail message lets new workspace files
     /// appear on the next iteration while the frozen system prompt
     /// stays byte-identical for the provider prefix cache. Tool
@@ -220,17 +167,7 @@ impl PromptRenderer {
     /// turn-over-turn.
     #[tracing::instrument(skip(self, ctx), fields(agent = %ctx.role_name))]
     pub async fn render_cache_stable(&self, ctx: &TurnPromptContext) -> String {
-        // `mcp_context` is the only hook-driven section left in the
-        // prefix — `skills` / `agents` moved to the volatile suffix
-        // (see the doc above). The session-context hook is volatile
-        // (it runs every iteration); we ignore its result by reading
-        // an empty string into the values map.
-        //
-        // Phase 2 PR 2: `mcp_context` sourced from the provider field,
-        // not from a framework hook.
-        let mcp = self.mcp_context_provider.render_mcp_context().await;
-
-        let values = build_stable_placeholder_values(ctx, &mcp);
+        let values = build_stable_placeholder_values(ctx);
         let rendered = replace_placeholders(&ctx.body, &values, true);
         append_missing_stable_sections(&ctx.body, rendered, &values)
     }
@@ -635,7 +572,6 @@ fn build_placeholder_values(
     ctx: &TurnPromptContext,
     skills: &str,
     agents: &str,
-    mcp: &str,
     session_ctx: &str,
 ) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
@@ -663,7 +599,6 @@ fn build_placeholder_values(
         Placeholder::SelfUpdate,
         format_self_update_section(ctx.has_gateway),
     );
-    values.insert(Placeholder::McpContext, mcp.to_string());
     values.insert(Placeholder::Memory, format_memory_section(ctx));
     values.insert(
         Placeholder::SessionContext,
@@ -701,18 +636,15 @@ fn build_placeholder_values(
 ///
 /// Same shape as `build_placeholder_values`, but only fills the
 /// placeholders that are byte-stable across iterations: inline
-/// identity, runtime, sandbox, model aliases, self-update, and the
-/// `mcp_context` section. `skills` and `agents` moved to the tail
+/// identity, runtime, sandbox, model aliases, and self-update.
+/// `skills` and `agents` moved to the tail
 /// runtime-context message ([`PromptRenderer::render_runtime_context`])
 /// so new workspace files appear on the next iteration; the other
 /// volatile placeholders (`timezone`, `memory`, `session_context`,
 /// `iteration_budget`, `quota_tripped`, `soft_cancel`,
 /// control banners) are omitted as before — `remove_missing=true`
 /// strips them on render.
-fn build_stable_placeholder_values(
-    ctx: &TurnPromptContext,
-    mcp: &str,
-) -> HashMap<Placeholder, String> {
+fn build_stable_placeholder_values(ctx: &TurnPromptContext) -> HashMap<Placeholder, String> {
     let mut values = HashMap::new();
 
     // Inline identity / runtime (no volatile clock).
@@ -734,7 +666,6 @@ fn build_stable_placeholder_values(
         Placeholder::SelfUpdate,
         format_self_update_section(ctx.has_gateway),
     );
-    values.insert(Placeholder::McpContext, mcp.to_string());
     // Memory, SessionContext, IterationBudget, QuotaTripped, SoftCancel,
 
     values

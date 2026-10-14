@@ -1018,4 +1018,77 @@ mod tests {
                 .2
         );
     }
+
+    /// ADR-075 MCP context reaches the model only through the catalog
+    /// binding: the bound owner's turn carries it as the `mcp_context`
+    /// `<runtime-context>` section and the frozen system prompt never
+    /// does (server state changes mid-run). An unbound request or another
+    /// owner's binding renders no MCP context.
+    #[tokio::test]
+    async fn mcp_context_rides_the_catalog_bound_runtime_context() {
+        use peko_engine::prompt::context::TurnPromptContext;
+        use peko_engine::tooling::{CatalogBoundTooling, PromptSectionRequest};
+        use peko_engine::{PromptRenderer, RuntimeContextState};
+
+        let tooling = ToolingRuntime::standalone();
+        let owner = PrincipalId("prin_mcp_owner".into());
+        let context = "- docs: ready, fresh catalog, 2 tools";
+        tooling
+            .catalog()
+            .replace_mcp(&owner, Vec::new(), context.into());
+        let stamp = peko_tools_core::ActingFor::runtime();
+        let snapshot = tooling.list_tool_definitions(&owner, Some(&stamp)).await;
+
+        let request = |principal: &PrincipalId| PromptSectionRequest {
+            catalog_binding: snapshot.binding.clone(),
+            principal_id: principal.0.clone(),
+            workspace: std::env::temp_dir().display().to_string(),
+            session_id: "session".into(),
+            acting_for: Some(stamp.clone()),
+        };
+        let bound = tooling.render_prompt_sections(&request(&owner)).await;
+        assert_eq!(bound.get("mcp_context"), Some(context));
+        let foreign = PrincipalId("prin_mcp_other".into());
+        let foreign = tooling.render_prompt_sections(&request(&foreign)).await;
+        assert_eq!(foreign.get("mcp_context"), None);
+        let mut unbound = request(&owner);
+        unbound.catalog_binding = None;
+        let unbound = tooling.render_prompt_sections(&unbound).await;
+        assert_eq!(unbound.get("mcp_context"), None);
+
+        let renderer = PromptRenderer::new(CatalogBoundTooling::new(tooling.clone(), snapshot));
+        let ctx = TurnPromptContext {
+            principal_id: owner.0.clone(),
+            session_id: "session".into(),
+            role_name: "root".into(),
+            body: "Root body. {{mcp_context}}".into(),
+            principal_memory: None,
+            project_instructions: None,
+            workspace: std::env::temp_dir(),
+            resolved_model: "default".into(),
+            channel: "cli".into(),
+            thinking_level: "medium".into(),
+            sandbox_enabled: false,
+            model_aliases: vec![],
+            has_gateway: false,
+            conversation_channel: None,
+            acting_for: Some(stamp.clone()),
+            iteration_budget: None,
+            quota_tripped: false,
+            soft_cancel_pending: false,
+            tool_definitions: vec![],
+        };
+        let stable = renderer.render_cache_stable(&ctx).await;
+        assert!(!stable.contains("{{mcp_context}}"), "{stable}");
+        assert!(!stable.contains(context), "{stable}");
+        let mut state = RuntimeContextState::default();
+        let tail = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .expect("runtime context renders");
+        assert!(
+            tail.contains(&format!("## mcp_context\n\n{context}")),
+            "{tail}"
+        );
+    }
 }

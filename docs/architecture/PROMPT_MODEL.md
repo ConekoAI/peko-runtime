@@ -56,7 +56,7 @@ the always-on iteration-budget line.
 |---|---|---|
 | T1 role body | `roles/<name>.md` / `roles/<name>/ROLE.md`; root resolves `[routing].root_prompt` → `roles/root.md` → `roles/root/ROLE.md` — **no render-time fallback**: the file is stamped at provision (and backfilled by the genesis boot pass) from the seed source `resources/roles/root/ROLE.md`; absent = loud error | The only authored prose in the head |
 | Generated stable sections | Hardcoded | `## Runtime` / `## Sandbox` / `## Model aliases` / `## Self-update` — appended when the template didn't place them via placeholder, never duplicated |
-| Inline placeholders | Computed | `{{role_name}}` (legacy `{{agent_name}}` — same value), `{{workspace}}`, `{{channel}}`, `{{thinking_level}}`, `{{runtime}}`, `{{sandbox}}`, `{{model_aliases}}`, `{{self_update}}`, `{{mcp_context}}` |
+| Inline placeholders | Computed | `{{role_name}}` (legacy `{{agent_name}}` — same value), `{{workspace}}`, `{{channel}}`, `{{thinking_level}}`, `{{runtime}}`, `{{sandbox}}`, `{{model_aliases}}`, `{{self_update}}` |
 
 **Placeholder contract:** inline variables only. Section-shaped
 placeholders (`{{roles}}`, `{{skills}}`, `{{memory}}`, `{{session_context}}`,
@@ -65,7 +65,7 @@ section rendered into the prefix (which busts prefix caching when the
 content changes) *in addition to* the tail copy. Do not place them in new
 templates; the tail owns sections. Unknown `{{...}}` tokens are stripped
 by `remove_missing=true` — this is how retired markers (`{{tools}}`,
-`{{quota_state}}`, `{{agents}}`) age out with no dead enum variants.
+`{{quota_state}}`, `{{agents}}`, `{{mcp_context}}`) age out with no dead enum variants.
 
 ## 5. Tail `<runtime-context>` — rebuilt per iteration
 
@@ -89,10 +89,11 @@ derived by the runtime; **hook** = dispatched to a registered handler
 | 10 | Roles catalog — `## Available Roles` | tier-neutral | file scan: `roles/` (per-file `mtime+len`) | on change | every agent |
 | 11 | Skills catalog | tier-neutral | file scan: `skills/` | on change | every agent |
 | 12 | Workflows catalog | tier-neutral | file scan: `workflows/` | on change | every agent |
-| 13 | Custom sections | — | hook: `PromptSection` binds in `hooks/<id>/hook.toml` | on change | every agent of the principal |
-| 14 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
-| 15 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
-| 16 | Soft-cancel banner | T2 | computed | event-edged | every agent |
+| 13 | MCP context — `## mcp_context` (server status + instructions) | tier-neutral | computed: the principal MCP service's context, carried by the request's catalog binding (ADR-075) | on change | every agent whose catalog binding is the principal's own |
+| 14 | Custom sections | — | hook: `PromptSection` binds in `hooks/<id>/hook.toml` | on change | every agent of the principal |
+| 15 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
+| 16 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
+| 17 | Soft-cancel banner | T2 | computed | event-edged | every agent |
 
 **Section names are a registry key.** Built-in dispatched names:
 `identity`, `roles`, `skills`, `workflows` (deduped — a workspace hook

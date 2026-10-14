@@ -52,9 +52,7 @@ pub use peko_session::compaction::{
     CompactionResponseResult, CompactionResult, CompactionState, CompactorBackend,
     ContextUsageEstimate,
 };
-pub use prompt::renderer::{
-    EmptyMcpPromptContextProvider, McpPromptContextProvider, PromptRenderer, RuntimeContextState,
-};
+pub use prompt::renderer::{PromptRenderer, RuntimeContextState};
 pub use prompt::{
     builder::{PromptMode, SystemPromptBuilder},
     context::{IterationBudgetState, TurnPromptContext},

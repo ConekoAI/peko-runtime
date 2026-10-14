@@ -42,5 +42,3 @@ When you spawn an agent, use the role's **id** from `RoleCatalog` as the `Agent`
   timeout, peko automatically detaches it to a background task and returns a
   receipt. Inspect detached work with `Async(action="output")` /
   `Async(action="status")` / `Async(action="list")`; stop it with `Async(action="stop")`.
-
-{{mcp_context}}

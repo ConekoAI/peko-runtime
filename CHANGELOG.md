@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### MCP prompt-context provider seam removed (0.1.0, 2026-10-14)
+
+- Delete the engine's unbound `{{mcp_context}}` seam:
+  `McpPromptContextProvider`, `EmptyMcpPromptContextProvider`,
+  `PromptRenderer::with_mcp_context_provider`,
+  `AgenticLoop::with_mcp_context_provider`, `Agent::with_mcp_context_provider`,
+  and `Placeholder::McpContext`. Its only producer died with the legacy MCP
+  stack, so the placeholder always rendered empty.
+- Principal MCP context (ADR-075) still reaches the model as the
+  catalog-bound `mcp_context` section of the `<runtime-context>` tail. It is
+  change-tracked there and kept out of the frozen system prompt, because
+  server state changes during a run. The seed root `ROLE.md` drops its
+  `{{mcp_context}}` marker; existing workspace copies still render cleanly
+  because unknown markers are stripped.
+
 ### Legacy MCP stack removed (0.1.0, 2026-10-14)
 
 - Delete the pre-ADR-075 shared-manager MCP path, which had no production

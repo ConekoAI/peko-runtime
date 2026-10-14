@@ -6,7 +6,7 @@
 //! [`super::renderer::PromptRenderer::render_for_iteration`], which
 //! renders the system prompt fresh every iteration from a
 //! [`super::context::TurnPromptContext`]. The renderer dispatches all
-//! hook-driven sections (`tools`, `skills`, `agents`, `mcp_context`,
+//! hook-driven sections (`tools`, `skills`, `agents`,
 //! `SessionContextBuild`) via [`ToolingRuntime`] and threads the four
 //! long-horizon control surfaces (`iteration_budget`, `quota_tripped`,
 //! `soft_cancel`) into the body.
@@ -147,7 +147,6 @@ impl SystemPromptBuilder {
             self.render_model_aliases_section(),
         );
         values.insert(Placeholder::SelfUpdate, self.render_self_update_section());
-        values.insert(Placeholder::McpContext, String::new());
         values.insert(Placeholder::Memory, self.render_memory_section());
         values.insert(
             Placeholder::SessionContext,

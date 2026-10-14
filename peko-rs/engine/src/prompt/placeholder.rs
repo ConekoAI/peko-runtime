@@ -11,7 +11,8 @@
 //!
 //! Unknown `{{...}}` tokens are stripped by
 //! [`replace_placeholders`] with `remove_missing=true`, which is what
-//! retires retired markers (e.g. `{{tools}}`, `{{quota_state}}`):
+//! retires retired markers (e.g. `{{tools}}`, `{{quota_state}}`,
+//! `{{mcp_context}}`):
 //! old templates keep rendering cleanly with no dead enum variants.
 
 use std::collections::HashMap;
@@ -51,8 +52,6 @@ pub enum Placeholder {
     Channel,
     /// Thinking level inline - {{`thinking_level`}}
     ThinkingLevel,
-    /// MCP server context section - {{mcp_context}}
-    McpContext,
     /// Principal long-term memory from kb/MEMORY.md - {{memory}}
     Memory,
     /// Extension bootstrap context from per-turn SessionContextBuild hooks - {{session_context}}
@@ -88,7 +87,6 @@ impl Placeholder {
             Self::Workspace => "{{workspace}}",
             Self::Channel => "{{channel}}",
             Self::ThinkingLevel => "{{thinking_level}}",
-            Self::McpContext => "{{mcp_context}}",
             Self::Memory => "{{memory}}",
             Self::SessionContext => "{{session_context}}",
             Self::IterationBudget => "{{iteration_budget}}",
@@ -139,7 +137,8 @@ mod tests {
         assert_eq!(Placeholder::SoftCancel.marker(), "{{soft_cancel}}");
     }
 
-    /// Retired markers (`{{tools}}`, `{{quota_state}}`) have no enum
+    /// Retired markers (`{{tools}}`, `{{quota_state}}`,
+    /// `{{mcp_context}}`) have no enum
     /// variant any more — but old templates containing them still
     /// render cleanly: with a value map lacking those keys and
     /// `remove_missing=true`, the unknown-token regex strips them.
@@ -147,10 +146,10 @@ mod tests {
     /// untouched — the caller decides.)
     #[test]
     fn retired_markers_are_stripped_by_remove_missing() {
-        let template = "body {{tools}} {{quota_state}} tail";
+        let template = "body {{tools}} {{quota_state}} {{mcp_context}} tail";
         let values = HashMap::new();
         let rendered = replace_placeholders(template, &values, true);
-        assert_eq!(rendered, "body   tail");
+        assert_eq!(rendered, "body    tail");
     }
 
     #[test]
