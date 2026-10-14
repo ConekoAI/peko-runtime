@@ -112,6 +112,9 @@ impl std::error::Error for IngressError {}
 
 /// Owns all Principals in a runtime.
 pub struct PrincipalManager {
+    /// The manager's own `Arc`, once [`Self::install_policy_gate`] binds
+    /// it: owner approval commands replay calls through it.
+    self_ref: std::sync::OnceLock<std::sync::Weak<PrincipalManager>>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
@@ -198,6 +201,7 @@ impl PrincipalManager {
             }),
         );
         Self {
+            self_ref: std::sync::OnceLock::new(),
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
@@ -220,6 +224,15 @@ impl PrincipalManager {
         Arc::clone(&self.tooling)
     }
 
+    /// Bind the ADR-078 D7 policy gate onto this manager's tooling: the
+    /// reviewer for non-owner runs and the owner's approval desk.
+    pub fn install_policy_gate(self: &Arc<Self>) {
+        let _ = self.self_ref.set(Arc::downgrade(self));
+        self.tooling.dispatcher().set_policy_gate(Arc::new(
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(self)),
+        ));
+    }
+
     pub fn with_tooling(mut self, tooling: Arc<crate::tools::runtime::ToolingRuntime>) -> Self {
         self.tooling = tooling;
         self
@@ -233,6 +246,11 @@ impl PrincipalManager {
     /// The shared LLM resolver, when bound (daemon path). Used by
     /// out-of-band turn builders (cron cold-start Agent registration)
     /// that need model resolution outside a live turn.
+    /// The observability hub, when one is attached.
+    pub(crate) fn observability(&self) -> Option<Arc<Observability>> {
+        self.observability.clone()
+    }
+
     pub fn llm_resolver(&self) -> Option<Arc<LlmResolver>> {
         self.resolver.clone()
     }
@@ -1336,6 +1354,11 @@ impl PrincipalManager {
             // when the principal has no quota configured, so passing
             // it through unconditionally is safe.
             quota_meter: Some(Arc::clone(&principal.quota_meter)),
+            stamps: Some(crate::principal::trust::stamps_for(
+                principal,
+                self.channel_port.clone(),
+            )),
+            acting_for: None,
         })
     }
 
@@ -1379,8 +1402,22 @@ impl PrincipalManager {
         // Automation + trunk channels have no streaming trunk entry
         // point; route them through the one-shot trunk path.
         if matches!(channel.kind, ChannelKind::Trunk | ChannelKind::Cron) {
+            // ADR-078 D2: the peer must be the owner to reach the trunk.
+            let principal = self
+                .get(principal_id.clone())
+                .await
+                .ok_or_else(|| PrincipalManagerError::NotFound("unknown".to_string()))?;
+            let stamps = crate::principal::trust::stamps_for(&principal, self.channel_port.clone());
+            let driver = stamps.driver(&peer, &peer).await;
+            let acting_for = stamps
+                .enter(
+                    &driver,
+                    peko_tools_core::Compartment::Internal,
+                    peko_tools_core::Origin::Ingress { channel: None },
+                )
+                .await;
             return self
-                .receive_trunk(principal_id, message, override_model)
+                .receive_trunk(principal_id, message, override_model, acting_for)
                 .await;
         }
 
@@ -1398,6 +1435,23 @@ impl PrincipalManager {
                 override_model.clone(),
             )
             .await?;
+
+        // ADR-078 D7: the owner's approval commands are answered by the
+        // runtime before any agent turn.
+        if let Some(manager) = self.self_ref.get().and_then(std::sync::Weak::upgrade) {
+            let stamps = crate::principal::trust::stamps_for(&principal, self.channel_port.clone());
+            if stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner {
+                if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
+                    &manager,
+                    &principal,
+                    &ctx.message,
+                )
+                .await
+                {
+                    return Ok(PrincipalResponse::text(reply));
+                }
+            }
+        }
 
         // Phase 11: same DM-channel discipline as `receive` — the
         // inbound message is posted (peer-attributed) before dispatch;
@@ -1419,6 +1473,16 @@ impl PrincipalManager {
                 // turn. The helper also re-built `turns` internally
                 // (cached), but we only need `child_id` here.
                 let turns = self.peer_child_turns_for(&principal).await?;
+                // ADR-078: this path checks permissions against the
+                // peer itself, so it is also the authority.
+                let driver = turns.driver(&peer, &peer).await;
+                let acting_for = turns
+                    .root_stamp(
+                        Some(&driver),
+                        &child_id,
+                        peko_tools_core::Origin::Ingress { channel: None },
+                    )
+                    .await;
                 let outcome = turns
                     .drive_turn_streaming(
                         &child_id,
@@ -1426,6 +1490,7 @@ impl PrincipalManager {
                         Arc::from(on_event),
                         None,
                         override_model,
+                        acting_for,
                     )
                     .await
                     .map_err(|e| {
@@ -1485,7 +1550,19 @@ impl PrincipalManager {
         // Per-message configured model override; same semantics as
         // `receive` (`None` uses the principal's pinned model).
         override_model: Option<String>,
+        // ADR-078 D2: the trunk acts only for the owner. Anything else
+        // is refused before a turn starts.
+        acting_for: peko_tools_core::ActingFor,
     ) -> Result<PrincipalResponse, PrincipalManagerError> {
+        if !acting_for.is_owner()
+            || acting_for.compartment != peko_tools_core::Compartment::Internal
+        {
+            return Err(PrincipalManagerError::PermissionDenied(format!(
+                "the trunk acts only for the owner; refused a run acting for {} ({})",
+                acting_for.actor,
+                acting_for.trust.as_str()
+            )));
+        }
         let principal = self
             .get(principal_id)
             .await
@@ -1500,9 +1577,10 @@ impl PrincipalManager {
             streaming: false,
         };
 
-        let ctx = self
+        let mut ctx = self
             .build_router_context(&principal, peer, message, channel, override_model)
             .await?;
+        ctx.acting_for = Some(acting_for);
 
         let session_id = super::routers::root::trunk_session_id();
         match self.inbox_registry.try_acquire_run(&session_id).await {
@@ -2577,6 +2655,126 @@ mod tests {
         );
     }
 
+    /// ADR-078 D7: the reviewer reads the policy model's verdict, and the
+    /// owner's commands list, deny, and approve requests — each decided
+    /// once, with *always* recorded in POLICY.md.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn the_policy_gate_reviews_and_the_owner_decides() {
+        use crate::principal::policy_gate::{handle_owner_command, PrincipalPolicyGate};
+        use crate::security::judge::{GatedCall, PolicyGate, Verdict};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let call = GatedCall {
+            principal_id: id.0.clone(),
+            principal_name: None,
+            session_id: Some("guest-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "user:hub:x".into(),
+                name: None,
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: "dm_x".into(),
+                },
+                origin: Origin::Ingress { channel: None },
+            },
+            tool_name: "Read".into(),
+            params: serde_json::json!({"file_path": "finances/q3.md"}),
+        };
+
+        adapter.queue_text("{\"decision\": \"deny\", \"reason\": \"finances\"}");
+        assert_eq!(gate.review(&call).await, Verdict::Deny("finances".into()));
+        adapter.queue_text("I think it's fine");
+        assert!(matches!(gate.review(&call).await, Verdict::AskOwner(_)));
+
+        let first = gate.ask_owner(&call, "unclear").await.unwrap();
+        let listed = handle_owner_command(&manager, &principal, "approvals")
+            .await
+            .unwrap();
+        assert!(
+            listed.contains(&first) && listed.contains("user:hub:x"),
+            "{listed}"
+        );
+        assert!(handle_owner_command(&manager, &principal, "hello there")
+            .await
+            .is_none());
+        let denied = handle_owner_command(&manager, &principal, &format!("deny {first}"))
+            .await
+            .unwrap();
+        assert!(denied.starts_with("Denied"), "{denied}");
+        let again = handle_owner_command(&manager, &principal, &format!("approve {first}"))
+            .await
+            .unwrap();
+        assert!(again.contains("already decided"), "{again}");
+
+        let second = gate.ask_owner(&call, "unclear").await.unwrap();
+        let mut replay = call.clone();
+        replay.stamp.origin = Origin::Approval {
+            request_id: second.clone(),
+        };
+        assert!(!gate.is_approved_replay(&replay).await, "not approved yet");
+        let approved =
+            handle_owner_command(&manager, &principal, &format!("approve {second} always"))
+                .await
+                .unwrap();
+        assert!(approved.starts_with("Approved"), "{approved}");
+        assert!(gate.is_approved_replay(&replay).await);
+        let mut altered = replay.clone();
+        altered.params = serde_json::json!({"file_path": "finances/q4.md"});
+        assert!(
+            !gate.is_approved_replay(&altered).await,
+            "an approval covers exactly the call the owner saw"
+        );
+        let policy = std::fs::read_to_string(
+            principal
+                .workspace_path
+                .join(crate::security::policy::POLICY_FILE),
+        )
+        .unwrap();
+        assert!(policy.contains("## user:hub:x"), "{policy}");
+        assert!(policy.contains("finances/q3.md"), "{policy}");
+    }
+
+    /// ADR-078 D2: the trunk acts only for the owner. A non-owner stamp
+    /// is refused before any turn starts, whatever its trust.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn trunk_refuses_runs_acting_for_anyone_but_the_owner() {
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, _adapter, id) = setup().await;
+        for (trust, compartment) in [
+            (Trust::Trusted, Compartment::Internal),
+            (Trust::Untrusted, Compartment::Internal),
+            (
+                Trust::Owner,
+                Compartment::Conversation {
+                    channel: "dm_x".into(),
+                },
+            ),
+        ] {
+            let stamp = ActingFor {
+                actor: "user:hub:x".into(),
+                name: None,
+                trust,
+                compartment,
+                origin: Origin::Cron {
+                    job_id: "cron_x".into(),
+                },
+            };
+            let result = manager
+                .receive_trunk(id.clone(), "do it".into(), None, stamp)
+                .await;
+            assert!(
+                matches!(result, Err(PrincipalManagerError::PermissionDenied(_))),
+                "{trust:?}: {result:?}"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn receive_denies_unauthorized_user() {
@@ -3543,7 +3741,12 @@ mod tests {
         let id = principal.id.clone();
 
         let response = manager
-            .receive_trunk(id.clone(), "trunk tick".to_string(), None)
+            .receive_trunk(
+                id.clone(),
+                "trunk tick".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
             .await
             .expect("trunk receive should succeed");
         assert!(
@@ -3594,7 +3797,12 @@ mod tests {
             .expect("permit should be free");
 
         let response = manager
-            .receive_trunk(id, "second tick".to_string(), None)
+            .receive_trunk(
+                id,
+                "second tick".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
             .await
             .expect("trunk receive should succeed");
         assert!(

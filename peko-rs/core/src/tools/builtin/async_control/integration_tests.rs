@@ -5,6 +5,13 @@
 
 #[cfg(test)]
 mod tests {
+    /// A context acting for the owner (ADR-078): these tests exercise
+    /// the Async plumbing, not the trust floor.
+    fn owner_ctx() -> peko_tools_core::ToolContext {
+        peko_tools_core::ToolContext::default_for_tool("Async")
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
+    }
+
     use crate::async_exec::executor::{
         standalone_inbox_registry, AsyncExecutor, AsyncExecutorRuntime,
     };
@@ -116,11 +123,14 @@ mod tests {
 
         let receipt = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn",
-                "tool": "stub_tool",
-                "params": {},
-                "label": "happy-path",
-            }))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn",
+                    "tool": "stub_tool",
+                    "params": {},
+                    "label": "happy-path",
+                }),
+                &owner_ctx(),
+            )
             .await
             .expect("Async action spawn returns receipt");
         assert_eq!(
@@ -185,6 +195,7 @@ mod tests {
             .execute_with_context(
                 serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
                 &peko_tools_core::ToolContext::default_for_tool("Async")
+                    .with_acting_for(peko_tools_core::ActingFor::runtime())
                     .with_session_id("ctx-session-A"),
             )
             .await
@@ -209,7 +220,9 @@ mod tests {
                 .tool
                 .execute_with_context(
                     serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
-                    &peko_tools_core::ToolContext::default_for_tool("Async").with_session_id(id),
+                    &peko_tools_core::ToolContext::default_for_tool("Async")
+                        .with_acting_for(peko_tools_core::ActingFor::runtime())
+                        .with_session_id(id),
                 )
                 .await
                 .expect("spawn with ctx");
@@ -240,10 +253,13 @@ mod tests {
 
         let receipt = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn",
-                "tool": "abortable_stub",
-                "params": {},
-            }))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn",
+                    "tool": "abortable_stub",
+                    "params": {},
+                }),
+                &owner_ctx(),
+            )
             .await
             .expect("Async action spawn returns receipt");
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
@@ -281,7 +297,10 @@ mod tests {
 
         let receipt = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
+                &owner_ctx(),
+            )
             .await
             .unwrap();
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
@@ -310,7 +329,10 @@ mod tests {
 
         let receipt = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}),
+                &owner_ctx(),
+            )
             .await
             .unwrap();
         let task_id = receipt["task_id"].as_str().unwrap().to_string();
@@ -373,12 +395,18 @@ mod tests {
         // One of each.
         let r1 = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn","tool": "stub_tool", "params": {}}),
+                &owner_ctx(),
+            )
             .await
             .unwrap();
         let r2 = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn","tool": "abortable_stub", "params": {}}),
+                &owner_ctx(),
+            )
             .await
             .unwrap();
 
@@ -442,11 +470,14 @@ mod tests {
 
         let receipt = rig
             .tool
-            .execute(serde_json::json!({"action":"spawn",
-                "tool": "stub_tool",
-                "params": {},
-                "label": "f37-allow",
-            }))
+            .execute_with_context(
+                serde_json::json!({"action":"spawn",
+                    "tool": "stub_tool",
+                    "params": {},
+                    "label": "f37-allow",
+                }),
+                &owner_ctx(),
+            )
             .await
             .expect("Async action spawn returns receipt");
         let task_id = receipt["task_id"].as_str().unwrap().to_string();

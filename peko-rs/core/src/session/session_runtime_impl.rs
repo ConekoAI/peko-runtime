@@ -83,6 +83,10 @@ pub struct SessionManagerRuntime {
     /// The owning principal's task registry, where its subagent runs
     /// register; the run-active guards consult it.
     task_registry: Option<crate::async_exec::executor::SharedAsyncTaskRegistry>,
+    /// Whom the calling run acts for (ADR-078 D4). `Some` for every
+    /// `Session` tool call: a non-owner run sees and manages only its own
+    /// compartment's sessions. `None` only for runtime-internal callers.
+    acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 impl SessionManagerRuntime {
@@ -102,7 +106,33 @@ impl SessionManagerRuntime {
             inbox_registry,
             quota_meter,
             task_registry: None,
+            acting_for: None,
         }
+    }
+
+    /// The same runtime, acting for `stamp` (ADR-078 D4).
+    #[must_use]
+    pub fn with_acting_for(mut self, stamp: peko_tools_core::ActingFor) -> Self {
+        self.acting_for = Some(stamp);
+        self
+    }
+
+    /// The sessions this caller may see: everything for the owner and
+    /// runtime-internal callers; otherwise its compartment plus the
+    /// ancestors that anchor its slug paths.
+    fn visible(&self, metas: Vec<SessionMetadata>) -> Vec<SessionMetadata> {
+        match &self.acting_for {
+            Some(stamp) if !stamp.is_owner() => crate::security::visible_metas(stamp, &metas),
+            _ => metas,
+        }
+    }
+
+    /// Whether this caller may act on `id` (anchors are visible, not
+    /// reachable).
+    fn reachable(&self, metas: &[SessionMetadata], id: peko_session::SessionId) -> bool {
+        self.acting_for
+            .as_ref()
+            .is_none_or(|stamp| crate::security::may_reach(stamp, metas, id))
     }
 
     /// Bind the owning principal's task registry so the run-active guards
@@ -132,7 +162,7 @@ impl SessionManagerRuntime {
         &self,
         manager: &mut SessionManager,
     ) -> anyhow::Result<(CallerContext, Vec<SessionMetadata>)> {
-        let metas = manager.list_all_sessions(false).await?;
+        let metas = self.visible(manager.list_all_sessions(false).await?);
         let caller = caller_context(&self.current_session_key(), &metas);
         Ok((caller, metas))
     }
@@ -154,6 +184,7 @@ impl SessionManagerRuntime {
             inbox_registry: self.inbox_registry.clone(),
             quota_meter: self.quota_meter.clone(),
             task_registry: self.task_registry.clone(),
+            acting_for: self.acting_for.clone(),
         }
     }
 
@@ -210,9 +241,13 @@ impl SessionManagerRuntime {
         reference: &str,
     ) -> anyhow::Result<String> {
         let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-        peko_session::path::resolve_reference(metas, caller_id, reference)
-            .map(|id| id.to_string())
-            .map_err(|e| self.refuse(e))
+        let id = peko_session::path::resolve_reference(metas, caller_id, reference)
+            .map_err(|e| self.refuse(e))?;
+        // ADR-078 D4: outside the caller's compartment reads as missing.
+        if !self.reachable(metas, id) {
+            return Err(self.refuse(crate::security::err_out_of_reach(reference)));
+        }
+        Ok(id.to_string())
     }
 
     /// ADR-051: resolve + ownership-gate + load the target session's
@@ -372,7 +407,7 @@ impl SessionRuntime for SessionManagerRuntime {
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let mut manager = self.session_manager.write().await;
-        let metadatas = manager.list_all_sessions(false).await?;
+        let metadatas = self.visible(manager.list_all_sessions(false).await?);
 
         // Organizational subtree scope (query filter, not a privilege
         // boundary — 2026-09-12 filesystem model): resolve the path
@@ -431,7 +466,11 @@ impl SessionRuntime for SessionManagerRuntime {
                 let subtree_match = subtree_ids
                     .as_ref()
                     .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
-                peer_match && agent_match && active_match && subtree_match
+                peer_match
+                    && agent_match
+                    && active_match
+                    && subtree_match
+                    && self.reachable(&metadatas, m.session_id)
             })
             .take(limit)
             .map(|m| {
@@ -760,7 +799,7 @@ impl SessionRuntime for SessionManagerRuntime {
                     let subtree_match = subtree_ids
                         .as_ref()
                         .map_or(true, |ids| ids.contains(&m.session_id.to_string()));
-                    peer_match && subtree_match
+                    peer_match && subtree_match && self.reachable(&metas, m.session_id)
                 })
                 .map(|m| m.session_id.to_string())
                 .collect();
@@ -844,7 +883,13 @@ impl SessionRuntime for SessionManagerRuntime {
         // those guards operate on user-initiated mutations; for a
         // copy's internal reparenting, the parent-validity check above
         // is the right gate.
+        // ADR-078 D3: the copy carries the source's words, so it stays in
+        // the source's compartment wherever it is placed.
+        let source_compartment = crate::security::compartment_of(&metas, source_id);
         let new_session_id = manager.branch_session_by_id(&session_key, title).await?;
+        manager
+            .set_session_compartment(&new_session_id.as_str(), source_compartment)
+            .await?;
 
         if target_parent_id != session_key {
             manager
@@ -1543,6 +1588,129 @@ mod tests {
             .copy_session("/", "/".into(), "root-copy".into(), None)
             .await
             .unwrap();
+    }
+
+    /// ADR-078 D4: a run acting for anyone but the owner sees and
+    /// manages only its own conversation's sessions; everything else
+    /// reads as missing. The owner keeps the whole store.
+    #[tokio::test]
+    async fn a_non_owner_run_reaches_only_its_own_conversation() {
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let h = Harness::new().await;
+        h.create("trunk", None).await;
+        for (id, slug, channel) in [
+            ("owner-dm", "local-user", "dm_owner"),
+            ("guest-dm", "user-x", "dm_x"),
+        ] {
+            h.create(id, Some(sid("trunk").as_str())).await;
+            h.set_slug(id, slug).await;
+            h.manager
+                .read()
+                .await
+                .bind_session_channel(&sid(id), channel)
+                .await
+                .unwrap();
+        }
+        h.create("guest-task", Some(sid("guest-dm").as_str())).await;
+        h.set_slug("guest-task", "task").await;
+        h.add_user_message("owner-dm", "private owner note").await;
+        h.add_user_message("guest-task", "guest work").await;
+        h.set_current("guest-dm").await;
+
+        let guest = h.runtime.as_ref().clone().with_acting_for(ActingFor {
+            actor: "user:hub:x".into(),
+            name: None,
+            trust: Trust::Untrusted,
+            compartment: Compartment::Conversation {
+                channel: "dm_x".into(),
+            },
+            origin: Origin::Ingress { channel: None },
+        });
+        let visible: std::collections::HashSet<String> = guest
+            .list_sessions(None, None, 50, None, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(
+            visible,
+            [sid("guest-dm"), sid("guest-task")].into_iter().collect(),
+            "a guest lists only its own conversation"
+        );
+        for reference in ["sess:/local-user", "sess:/", &sid("owner-dm")] {
+            let err = guest.get_history(reference, 10, false).await.unwrap_err();
+            let err = format!("{err:#}");
+            assert!(
+                !err.contains("local-user") || err.contains("no child"),
+                "{reference}: {err}"
+            );
+            assert!(
+                !err.contains("[local-user") && !err.contains(", local-user"),
+                "{err}"
+            );
+        }
+        let err = guest
+            .delete_session("sess:/local-user", false)
+            .await
+            .unwrap_err();
+        assert!(!format!("{err:#}").contains("[local-user"), "{err:#}");
+        assert!(guest
+            .search_sessions("private owner note", None, 10, None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            guest
+                .get_history("sess:/user-x/task", 10, false)
+                .await
+                .unwrap()
+                .0
+                .len(),
+            1,
+            "its own sessions stay reachable by path"
+        );
+
+        // A copy carries its source's words, so it keeps the source's
+        // compartment wherever it lands.
+        let copy = guest
+            .copy_session(
+                "sess:/user-x/task",
+                "sess:/user-x".into(),
+                "copy".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        let metas = h
+            .manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::security::compartment_of(
+                &metas,
+                peko_session::SessionId::from(copy.new_session_id.as_str())
+            ),
+            Compartment::Conversation {
+                channel: "dm_x".into()
+            }
+        );
+
+        // The owner sees the whole store.
+        let owner = h
+            .runtime
+            .as_ref()
+            .clone()
+            .with_acting_for(ActingFor::runtime());
+        assert!(owner
+            .list_sessions(None, None, 50, None, None)
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.session_id == sid("owner-dm")));
     }
 
     #[tokio::test]

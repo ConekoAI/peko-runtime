@@ -349,7 +349,8 @@ mod tests {
         async fn call(&self, who: &Principal, params: Value) -> anyhow::Result<Value> {
             let ctx = ToolContext::for_hook_run("run", "call", "Cron")
                 .with_principal_id(who.id.0.clone())
-                .with_session_id("session-1");
+                .with_session_id("session-1")
+                .with_acting_for(peko_tools_core::ActingFor::runtime());
             self.tool.execute_with_context(params, &ctx).await
         }
 

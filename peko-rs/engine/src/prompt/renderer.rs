@@ -182,6 +182,7 @@ impl PromptRenderer {
             principal_id: ctx.principal_id.clone(),
             workspace: ctx.workspace.to_string_lossy().to_string(),
             session_id: ctx.session_id.clone(),
+            acting_for: ctx.acting_for.clone(),
         };
         let (rendered, mcp) = tokio::join!(
             self.tooling.render_prompt_sections(&section_request),
@@ -303,6 +304,7 @@ impl PromptRenderer {
                 principal_id: ctx.principal_id.clone(),
                 workspace: ctx.workspace.to_string_lossy().to_string(),
                 session_id: ctx.session_id.clone(),
+                acting_for: ctx.acting_for.clone(),
             })
             .await;
         let identity = rendered.get("identity").unwrap_or("").to_string();
@@ -1036,17 +1038,15 @@ fn format_project_context_section(ctx: &TurnPromptContext) -> String {
 }
 
 fn format_session_context_section(ctx: &TurnPromptContext, text: &str) -> String {
-    // Peer-conversation lines (peer-ingress turns only): the DM
-    // channel that reaches the user + the peer's subject, so the
-    // model can target `ChannelSend` / cron reminders correctly.
+    // Peer-conversation line (peer-ingress turns only): the DM
+    // channel that reaches the user, so the model can target
+    // `ChannelSend` / cron reminders correctly. Whom the run acts for
+    // renders in the `identity` section (ADR-078).
     // `None` fields are skipped; a run with neither renders exactly
     // the pre-conversation-mode section.
     let mut lines = String::new();
     if let Some(channel) = ctx.conversation_channel.as_deref() {
         lines.push_str(&format!("conversation channel: {channel}\n"));
-    }
-    if let Some(peer) = ctx.conversation_peer.as_deref() {
-        lines.push_str(&format!("peer: {peer}\n"));
     }
     let trimmed = text.trim();
     if !trimmed.is_empty() {
@@ -1111,6 +1111,7 @@ mod tests {
         async fn list_tool_definitions(
             &self,
             _principal_id: &PrincipalId,
+            _acting_for: Option<&peko_tools_core::ActingFor>,
         ) -> crate::tooling::ToolCatalogSnapshot {
             crate::tooling::ToolCatalogSnapshot::default()
         }
@@ -1218,7 +1219,7 @@ mod tests {
             model_aliases: vec![],
             has_gateway: false,
             conversation_channel: None,
-            conversation_peer: None,
+            acting_for: None,
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,

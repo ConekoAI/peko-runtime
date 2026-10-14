@@ -88,11 +88,6 @@ pub struct AgenticLoop {
     system_prompt: String,
     /// Host tool execution, prompt sections, and lifecycle/bookkeeping ports.
     pub tooling: Arc<dyn ToolingSeam>,
-    /// Resolved caller identity (pekohub sub, API key id, or `None` for
-    /// local CLI invocations). Propagated to `HookInput::ToolCall::caller_id`
-    /// on every tool invocation so downstream permission checks and audit
-    /// logging can attribute the call to a real user — see issue #17.
-    caller_id: Option<String>,
     /// Spawning principal's runtime id. Always present for a loop constructed
     /// from an `Agent`. Propagated to `HookInput::ToolCall::principal_id` so
     /// extension-scoped tools such as `Skill` can resolve per-principal state
@@ -281,7 +276,6 @@ impl AgenticLoop {
             compactor_factory,
             system_prompt: placeholder_prompt,
             tooling,
-            caller_id: None,
             agent_principal_id,
             async_completion_queue: None,
             cancel: None,
@@ -370,16 +364,6 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_quota_meter(mut self, meter: Arc<peko_quota::QuotaMeter>) -> Self {
         self.quota_meter = meter;
-        self
-    }
-
-    /// Set the resolved caller identity for this loop (issue #17).
-    /// Local CLI invocations leave this as `None`; tunneled requests
-    /// set it to the pekohub user sub so every tool call inside the
-    /// loop carries attribution.
-    #[must_use]
-    pub fn with_caller_id(mut self, caller_id: Option<String>) -> Self {
-        self.caller_id = caller_id;
         self
     }
 
@@ -654,6 +638,10 @@ impl AgenticLoop {
         // summaries) before the new user turn. These are intentionally not
         // persisted; only the raw `user_text` is stored in the session JSONL.
         messages.extend(pre_user_messages);
+
+        // ADR-078: incoming text may not impersonate runtime blocks.
+        let user_text = peko_tools_core::neutralize_runtime_tags(user_text);
+        let user_text = user_text.as_str();
 
         // Add user message
         messages.push(LlmMessage::user(user_text.to_string()));
@@ -1170,7 +1158,9 @@ impl AgenticLoop {
                     &session_id,
                 )
                 .await;
-                for msg in steering {
+                for mut msg in steering {
+                    // ADR-078: queued text may not impersonate runtime blocks.
+                    msg.content = peko_tools_core::neutralize_runtime_tags(&msg.content);
                     debug!(
                         "AgenticLoop: injecting queued steering message {} ({} bytes) at iteration {}",
                         msg.id,
@@ -1229,7 +1219,10 @@ impl AgenticLoop {
             // never references it (F36 wire-only catalogs).
             let snapshot = self
                 .tooling
-                .list_tool_definitions(&peko_subject::PrincipalId(self.agent_principal_id.clone()))
+                .list_tool_definitions(
+                    &peko_subject::PrincipalId(self.agent_principal_id.clone()),
+                    self.agent.acting_for(),
+                )
                 .await;
             let tool_defs = snapshot.definitions.clone();
             let iteration_tooling: Arc<dyn crate::tooling::ToolingSeam> =
@@ -2015,7 +2008,7 @@ impl AgenticLoop {
                             session,
                             &session_id,
                             &run_id,
-                            self.caller_id.as_deref(),
+                            self.agent.acting_for(),
                             &self.agent_principal_id,
                             self.agent.principal_name().unwrap_or(""),
                             self.cancel.clone(),
@@ -2274,7 +2267,7 @@ impl AgenticLoop {
         let principal_id = peko_subject::PrincipalId(self.agent_principal_id.clone());
         let defs = self
             .tooling
-            .list_tool_definitions(&principal_id)
+            .list_tool_definitions(&principal_id, self.agent.acting_for())
             .await
             .definitions;
 
@@ -2407,10 +2400,11 @@ impl AgenticLoop {
             model_aliases: self.agent.model_aliases().to_vec(),
             has_gateway: true,
             // Peer-conversation context (peer-ingress turns): the DM
-            // channel that reaches the user + the peer's subject,
-            // rendered into the `{{session_context}}` section.
+            // channel that reaches the user, rendered into the
+            // `{{session_context}}` section. The run's stamp renders
+            // through the `identity` section (ADR-078).
             conversation_channel: self.agent.conversation_channel().map(str::to_string),
-            conversation_peer: self.agent.conversation_peer().map(str::to_string),
+            acting_for: self.agent.acting_for().cloned(),
             // Phase 3: control surfaces fully populated each iteration.
             iteration_budget,
             quota_tripped,
@@ -2673,6 +2667,10 @@ impl AgenticLoop {
         // summaries) before the new user turn. These are intentionally not
         // persisted; only the raw `user_text` is stored in the session JSONL.
         messages.extend(pre_user_messages);
+
+        // ADR-078: incoming text may not impersonate runtime blocks.
+        let user_text = peko_tools_core::neutralize_runtime_tags(user_text);
+        let user_text = user_text.as_str();
 
         // Add user message
         messages.push(LlmMessage::user(user_text.to_string()));

@@ -94,10 +94,11 @@ impl Tool for CronTriggerAction {
             .map_err(|e| anyhow::anyhow!("Invalid Cron action trigger arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
+            verify_id_belongs_to_principal(&*runtime, &id, &principal_id, &ctx.acting_for())
+                .await?;
             id
         } else if let Some(label) = args.label {
-            resolve_id_by_label(&*runtime, &label, &principal_id).await?
+            resolve_id_by_label(&*runtime, &label, &principal_id, &ctx.acting_for()).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for Cron action trigger"

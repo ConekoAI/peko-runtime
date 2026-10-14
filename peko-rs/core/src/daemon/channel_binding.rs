@@ -108,8 +108,16 @@ pub(crate) type StreamingRuns = Arc<std::sync::Mutex<HashMap<String, StreamingRu
 pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
     /// Run a turn in `session_id` (a canonical id — the responder
     /// resolves `/`-paths before calling) with `message` as the user
-    /// input. Returns the final response text.
-    async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String>;
+    /// input. `author` is the human whose post started the turn; the
+    /// run acts for them (ADR-078). `None` (queued successors and
+    /// completion wakes) continues under the session's natural stamp.
+    /// Returns the final response text.
+    async fn drive_turn(
+        &self,
+        session_id: &str,
+        message: &str,
+        author: Option<&Subject>,
+    ) -> anyhow::Result<String>;
 
     /// The daemon-shared steering inbox registry this driver's turns
     /// drain, when bound. `None` (the default) disables the run-active
@@ -171,7 +179,7 @@ impl ResponderInner {
     /// reply threaded onto the triggering event (`event_id`). Failures
     /// are log-only: a broken wake must never post errors into a channel
     /// other members read.
-    async fn run_turn(&self, event_id: String, text: String) {
+    async fn run_turn(&self, event_id: String, text: String, author: Option<Subject>) {
         let _turn_guard = self.turn_lock.lock().await;
 
         let session_id = match self
@@ -190,7 +198,11 @@ impl ResponderInner {
             }
         };
 
-        match self.driver.drive_turn(&session_id, &text).await {
+        match self
+            .driver
+            .drive_turn(&session_id, &text, author.as_ref())
+            .await
+        {
             Ok(reply) => {
                 let reply = reply.trim();
                 if reply.is_empty() {
@@ -302,7 +314,11 @@ impl ResponderInner {
         };
         let leftovers = inbox.drain_steering().await;
         for envelope in leftovers {
-            match self.driver.drive_turn(session_id, &envelope.content).await {
+            match self
+                .driver
+                .drive_turn(session_id, &envelope.content, None)
+                .await
+            {
                 Ok(reply) => {
                     let reply = reply.trim();
                     if reply.is_empty() {
@@ -352,6 +368,7 @@ impl ResponderInner {
                 .drive_turn(
                     session_id,
                     crate::async_exec::executor::wake::WAKE_TURN_MARKER,
+                    None,
                 )
                 .await
             {
@@ -391,7 +408,11 @@ impl ResponderInner {
 /// module docs). The turn lock inside `run_turn` serializes concurrent
 /// arrivals.
 fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
-    tokio::spawn(async move { inner.run_turn(ctx.event_id, input).await });
+    let author = match &ctx.event {
+        ChannelEvent::Posted { author, .. } => Subject::from_str(author).ok(),
+        _ => None,
+    };
+    tokio::spawn(async move { inner.run_turn(ctx.event_id, input, author).await });
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +634,12 @@ impl Drop for RunRegistration {
 
 #[async_trait]
 impl BoundTurnDriver for PeerTurnDriver {
-    async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+    async fn drive_turn(
+        &self,
+        session_id: &str,
+        message: &str,
+        author: Option<&Subject>,
+    ) -> anyhow::Result<String> {
         let cancel = tokio_util::sync::CancellationToken::new();
         // Register a stop handle unless another run already holds the
         // session's entry (that run's preflight refusal follows below).
@@ -640,6 +666,20 @@ impl BoundTurnDriver for PeerTurnDriver {
                 marker,
             })
         });
+        // ADR-078: a group member's mention passes membership, not a
+        // permission check, so the member is also the authority.
+        let driver = match author {
+            Some(author) => Some(self.turns.driver(author, author).await),
+            None => None,
+        };
+        let acting_for = self
+            .turns
+            .root_stamp(
+                driver.as_ref(),
+                session_id,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
         let outcome = self
             .turns
             .drive_turn_streaming(
@@ -648,6 +688,7 @@ impl BoundTurnDriver for PeerTurnDriver {
                 Arc::new(|_event| {}),
                 Some(cancel.clone()),
                 None,
+                acting_for,
             )
             .await;
         match outcome {
@@ -1110,7 +1151,12 @@ mod tests {
 
     #[async_trait]
     impl BoundTurnDriver for StubDriver {
-        async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+        async fn drive_turn(
+            &self,
+            session_id: &str,
+            message: &str,
+            _author: Option<&Subject>,
+        ) -> anyhow::Result<String> {
             let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(now, Ordering::SeqCst);
             if self.delay > Duration::ZERO {
@@ -1421,7 +1467,12 @@ mod tests {
 
     #[async_trait]
     impl BoundTurnDriver for CollisionStubDriver {
-        async fn drive_turn(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+        async fn drive_turn(
+            &self,
+            session_id: &str,
+            message: &str,
+            _author: Option<&Subject>,
+        ) -> anyhow::Result<String> {
             self.calls
                 .lock()
                 .unwrap()
@@ -2146,7 +2197,7 @@ mod tests {
         // assertion pins guard passage + turn execution + output
         // extraction — the message text flowing into the turn.
         let reply = driver
-            .drive_turn(&sid("child-1"), "hello from the channel")
+            .drive_turn(&sid("child-1"), "hello from the channel", None)
             .await
             .unwrap();
         assert!(
@@ -2173,7 +2224,7 @@ mod tests {
             },
         );
         let driver = peer_turn_driver(manager, Some(Arc::clone(&runs)));
-        let _ = driver.drive_turn(&sid("child-1"), "hi").await;
+        let _ = driver.drive_turn(&sid("child-1"), "hi", None).await;
         let runs = runs.lock().unwrap();
         let kept = runs.get(&sid("child-1")).expect("their entry survives");
         theirs.cancel();
@@ -2188,7 +2239,7 @@ mod tests {
         // The root session itself is not a spawned session — the
         // resume guard refuses it (bound sessions must be spawned).
         let err = driver
-            .drive_turn(&sid("root:user:alice"), "hi")
+            .drive_turn(&sid("root:user:alice"), "hi", None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("spawn"), "{err}");

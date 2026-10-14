@@ -363,6 +363,7 @@ fn permission_name(p: &Permission) -> String {
         Permission::ManageMembers => "ManageMembers".to_string(),
         Permission::Expose => "Expose".to_string(),
         Permission::Delete => "Delete".to_string(),
+        Permission::Trusted => "Trusted".to_string(),
     }
 }
 

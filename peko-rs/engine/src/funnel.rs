@@ -43,8 +43,8 @@ pub async fn execute_tool_via_core(
 /// session, caller, and principal context.
 ///
 /// `agent_id` / `session_id` drive reserved parameter injection.
-/// `caller_id` drives per-user permission checks and audit logging
-/// (issue #17).
+/// `acting_for` is the run's stamp (ADR-078); the dispatcher enforces
+/// the trust floor against it and audits it.
 /// `principal_id` (P2-audit) is threaded into `ToolContext` so
 /// extension-scoped tools (e.g. `Skill`) can resolve per-principal
 /// state via `ExtensionStateRegistry` at handle time.
@@ -71,7 +71,7 @@ pub async fn execute_tool_via_core_with_context(
     workspace: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
-    caller_id: Option<String>,
+    acting_for: Option<peko_tools_core::ActingFor>,
     principal_id: Option<String>,
     principal_name: Option<String>,
     cancel: Option<tokio_util::sync::CancellationToken>,
@@ -83,7 +83,7 @@ pub async fn execute_tool_via_core_with_context(
         workspace,
         agent_id,
         session_id,
-        caller_id,
+        acting_for,
         principal_id,
         principal_name,
         cancel,
@@ -101,7 +101,7 @@ pub async fn execute_tool_via_core_with_invocation(
     workspace: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
-    caller_id: Option<String>,
+    acting_for: Option<peko_tools_core::ActingFor>,
     principal_id: Option<String>,
     principal_name: Option<String>,
     cancel: Option<tokio_util::sync::CancellationToken>,
@@ -124,7 +124,7 @@ pub async fn execute_tool_via_core_with_invocation(
         workspace,
         agent_id,
         session_id,
-        caller_id,
+        acting_for,
         principal_id,
         principal_name,
         abort_signal,

@@ -32,8 +32,9 @@ pub struct ToolDispatchContext {
     pub agent_id: Option<String>,
     /// Session ID driving the dispatch. Used by reserved-param injection.
     pub session_id: Option<String>,
-    /// Caller ID for per-user permission checks and audit logging.
-    pub caller_id: Option<String>,
+    /// The spawning run's stamp (ADR-078). The background call inherits
+    /// it; `None` makes the call unattributed (fail-closed).
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 
     /// Principal ID (the principal's [`String`] representation).
     /// `None` means the system principal — F19 metering will see
@@ -60,7 +61,7 @@ impl ToolDispatchContext {
             workspace: None,
             agent_id: None,
             session_id: None,
-            caller_id: None,
+            acting_for: None,
             principal_id: None,
             principal_name: None,
         }
@@ -95,10 +96,10 @@ impl ToolDispatchContext {
         self
     }
 
-    /// Set the caller ID.
+    /// Set the inherited acting-for stamp.
     #[must_use]
-    pub fn with_caller_id(mut self, caller_id: impl Into<String>) -> Self {
-        self.caller_id = Some(caller_id.into());
+    pub fn with_acting_for(mut self, acting_for: peko_tools_core::ActingFor) -> Self {
+        self.acting_for = Some(acting_for);
         self
     }
 

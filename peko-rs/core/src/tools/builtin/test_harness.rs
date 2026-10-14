@@ -53,6 +53,10 @@ pub(crate) const SESSION: &str = "harness-session";
 pub(crate) struct Caller {
     pub principal: String,
     pub session: String,
+    /// Whom the call acts for (ADR-078). The default caller is the owner
+    /// working in the principal's internal tree; floor tests pick a
+    /// lower stamp with [`Caller::acting_for`].
+    pub acting_for: peko_tools_core::ActingFor,
 }
 
 impl Default for Caller {
@@ -60,6 +64,7 @@ impl Default for Caller {
         Self {
             principal: PRINCIPAL.into(),
             session: SESSION.into(),
+            acting_for: peko_tools_core::ActingFor::runtime(),
         }
     }
 }
@@ -68,6 +73,14 @@ impl Caller {
     pub(crate) fn principal(principal: &str) -> Self {
         Self {
             principal: principal.into(),
+            ..Self::default()
+        }
+    }
+
+    /// The default caller, acting for `stamp` instead of the owner.
+    pub(crate) fn acting_for(stamp: peko_tools_core::ActingFor) -> Self {
+        Self {
+            acting_for: stamp,
             ..Self::default()
         }
     }
@@ -279,6 +292,10 @@ impl ToolHarness {
             backends.async_runtime.clone(),
             executor,
         );
+        // ADR-078: the path floor confines and protects against this root.
+        tooling
+            .dispatcher()
+            .bind_workspace(PrincipalId(PRINCIPAL.into()), workspace.clone());
         let fakes = Fakes::default();
         for tool in builtin_tools(&backends, &fakes) {
             tooling
@@ -355,6 +372,7 @@ impl ToolHarness {
         call.session_id = Some(caller.session.clone());
         call.agent_id = Some("harness-agent".into());
         call.workspace = Some(self.workspace.to_string_lossy().into_owned());
+        call.acting_for = Some(caller.acting_for.clone());
         match self.tooling.dispatcher().execute(call).await {
             Ok((display, value, success)) => Outcome {
                 display,

@@ -124,6 +124,7 @@ pub trait SubagentRuntime: Send + Sync {
         prompt: &str,
         agent: &str,
         caller_session_key: &str,
+        acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView>;
 
@@ -153,6 +154,7 @@ pub trait SubagentRuntime: Send + Sync {
         overwrite: bool,
         page_limit: Option<u32>,
         caller_session_key: &str,
+        acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView>;
 

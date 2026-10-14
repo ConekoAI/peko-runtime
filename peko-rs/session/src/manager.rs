@@ -1430,6 +1430,22 @@ impl SessionManager {
         controller.update_metadata(metadata).await
     }
 
+    /// Stamp a session's compartment (ADR-078). Callers set it once, at
+    /// creation; `move` and later writes never change it.
+    pub async fn set_session_compartment(
+        &self,
+        session_id: &str,
+        compartment: peko_tools_core::Compartment,
+    ) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        let mut metadata = controller
+            .get_metadata(session_id, false)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session {session_id} not found"))?;
+        metadata.compartment = Some(compartment);
+        controller.update_metadata(metadata).await
+    }
+
     /// Set the slug on a session's metadata (passthrough to the
     /// `MetadataController`, which validates the format and enforces
     /// per-parent uniqueness). Errors when the session does not exist

@@ -107,7 +107,13 @@ impl crate::tools::prompt_sections::PromptSectionProvider for ChannelDigestSessi
             name: &principal_name(&input.workspace),
         };
 
-        render_channel_digest(&port, &metas, session_id, &me).await
+        // ADR-078 D4: only an owner run sees the principal's other
+        // conversations; any other run sees its own channel.
+        let owner = input
+            .acting_for
+            .as_ref()
+            .is_some_and(peko_tools_core::ActingFor::is_owner);
+        render_channel_digest(&port, &metas, session_id, &me, owner).await
     }
 }
 
@@ -157,6 +163,7 @@ async fn render_channel_digest(
     metas: &[peko_session::metadata::SessionMetadata],
     session_id: peko_session::id::SessionId,
     me: &Me<'_>,
+    owner: bool,
 ) -> Option<String> {
     let own_meta = metas.iter().find(|m| m.session_id == session_id)?;
     let own_path = peko_session::path::compute_path(metas, session_id);
@@ -165,7 +172,7 @@ async fn render_channel_digest(
     // a spawned subagent works a narrow task and sees only its bound
     // channels.
     let conversation = crate::principal::conversation::binding(own_meta);
-    let sees_elsewhere = own_meta.parent_session_id.is_none() || conversation.is_some();
+    let sees_elsewhere = owner && (own_meta.parent_session_id.is_none() || conversation.is_some());
 
     // Group sessions bind directly to a channel; the shared classifier also
     // recognizes legacy group stamps and excludes internal placeholder peers.
@@ -416,8 +423,10 @@ fn render_channel_block(
 }
 
 /// Truncate a preview body to [`DIGEST_PREVIEW_MAX_CHARS`] characters
-/// (char-safe — never slices a multi-byte boundary).
+/// (char-safe — never slices a multi-byte boundary). Other parties'
+/// posts may not impersonate runtime blocks (ADR-078).
 fn truncate_preview(text: &str) -> String {
+    let text = peko_tools_core::neutralize_runtime_tags(text);
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(DIGEST_PREVIEW_MAX_CHARS).collect();
     if chars.next().is_some() {
@@ -674,7 +683,7 @@ mod tests {
         let metas = tree(None);
 
         // First observation: nothing rendered, tip adopted.
-        let first = render_channel_digest(&port, &metas, child_id(), &ME).await;
+        let first = render_channel_digest(&port, &metas, child_id(), &ME, true).await;
         assert!(first.is_none(), "first observation must not dump history");
         let mark = port
             .read_mark(&channel, &child_id().as_str())
@@ -692,7 +701,7 @@ mod tests {
         .await
         .unwrap();
 
-        let text = render_channel_digest(&port, &metas, child_id(), &ME)
+        let text = render_channel_digest(&port, &metas, child_id(), &ME, true)
             .await
             .expect("digest must render the new post");
         assert!(
@@ -715,7 +724,7 @@ mod tests {
         );
 
         // Third run: nothing new ⇒ no render (change-detection stays quiet).
-        assert!(render_channel_digest(&port, &metas, child_id(), &ME)
+        assert!(render_channel_digest(&port, &metas, child_id(), &ME, true)
             .await
             .is_none());
     }
@@ -743,7 +752,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            render_channel_digest(&port, &metas, child_id(), &ME)
+            render_channel_digest(&port, &metas, child_id(), &ME, true)
                 .await
                 .is_none(),
             "first observation must not dump history"
@@ -758,7 +767,7 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            render_channel_digest(&port, &metas, child_id(), &ME)
+            render_channel_digest(&port, &metas, child_id(), &ME, true)
                 .await
                 .is_none(),
             "a mention woke the session — no digest"
@@ -775,7 +784,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let text = render_channel_digest(&port, &metas, child_id(), &ME)
+        let text = render_channel_digest(&port, &metas, child_id(), &ME, true)
             .await
             .expect("unmentioned and other-principal posts must digest");
         assert!(text.contains("2 new message(s)"), "{text}");
@@ -809,7 +818,7 @@ mod tests {
         metas[2].peer_type = Some("principal".into());
         metas[2].peer_id = Some("spawn_placeholder".into());
         for session in [trunk_id(), child_id(), spawned_id()] {
-            assert!(render_channel_digest(&port, &metas, session, &ME)
+            assert!(render_channel_digest(&port, &metas, session, &ME, true)
                 .await
                 .is_none());
         }
@@ -822,15 +831,23 @@ mod tests {
         )
         .await
         .unwrap();
+        // ADR-078 D4: a run acting for anyone but the owner never sees
+        // the principal's other conversations.
+        assert!(
+            render_channel_digest(&port, &metas, child_id(), &ME, false)
+                .await
+                .is_none_or(|text| !text.contains("looks good")),
+            "a non-owner run must not see other channels"
+        );
         for session in [trunk_id(), child_id()] {
-            let text = render_channel_digest(&port, &metas, session, &ME)
+            let text = render_channel_digest(&port, &metas, session, &ME, true)
                 .await
                 .expect("the reply must show");
             assert!(text.starts_with("unread on your other channels"), "{text}");
             assert!(text.contains("looks good"), "{text}");
         }
         assert!(
-            render_channel_digest(&port, &metas, spawned_id(), &ME)
+            render_channel_digest(&port, &metas, spawned_id(), &ME, true)
                 .await
                 .is_none(),
             "spawned subagents see only their bound channels"
@@ -859,7 +876,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let text = render_channel_digest(&port, &metas, trunk_id(), &ME)
+        let text = render_channel_digest(&port, &metas, trunk_id(), &ME, true)
             .await
             .expect("the opening message must show");
         assert!(text.contains("hello, I'm new"), "{text}");

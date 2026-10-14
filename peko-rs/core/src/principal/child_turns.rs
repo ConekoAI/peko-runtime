@@ -96,6 +96,22 @@ pub(crate) fn peer_child_agent_config(
     build_agent_config(&prompt, config.preferred_model_id.clone())
 }
 
+/// The trust source of test bundles built from parts: everyone is the
+/// owner.
+#[cfg(test)]
+struct TestOwnerTrust;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl crate::security::TrustSource for TestOwnerTrust {
+    async fn trust_of(&self, _actor: &Subject) -> peko_tools_core::Trust {
+        peko_tools_core::Trust::Owner
+    }
+    async fn owner(&self) -> Subject {
+        Subject::User("local".into())
+    }
+}
+
 /// Result of [`PeerChildTurns::ensure_child_ingress`]: the peer's
 /// standing-child session id plus, when a channel port is attached and
 /// provisioning succeeded, the peer's DM channel (Phase 11 — the
@@ -165,6 +181,9 @@ pub(crate) struct PeerChildTurns {
     /// principal). `None` falls back to unsynchronized provisioning
     /// (tests only).
     dm_lock: Option<Arc<tokio::sync::Mutex<()>>>,
+    /// ADR-078: who each actor is to this principal. `None` only for
+    /// test bundles built from parts.
+    trust: Option<Arc<dyn crate::security::TrustSource>>,
 }
 
 impl PeerChildTurns {
@@ -248,6 +267,13 @@ impl PeerChildTurns {
         // Persona inheritance — see module docs.
         .with_agent_config(agent_config);
         executor.set_caller_principal_did(principal.did().await.0);
+        let trust: Arc<dyn crate::security::TrustSource> =
+            Arc::new(crate::principal::trust::PrincipalTrust::new(principal));
+        let executor = executor.with_stamps(Some(crate::security::Stamps::new(
+            principal.id.clone(),
+            Arc::clone(&trust),
+            None,
+        )));
 
         // Tool-bag parity with the root-agent path
         // (`PrincipalContext::core` + `agent_runner`): the peer-ingress
@@ -287,6 +313,7 @@ impl PeerChildTurns {
             channel_port: None,
             dm_subscriber_hook: None,
             dm_lock: None,
+            trust: Some(trust),
         })
     }
 
@@ -298,8 +325,17 @@ impl PeerChildTurns {
         session_manager: Arc<RwLock<SessionManager>>,
         parent_session_key: String,
     ) -> Self {
+        // Test bundles treat every actor as the owner: they exercise turn
+        // plumbing, not the trust floor.
+        let trust: Arc<dyn crate::security::TrustSource> = Arc::new(TestOwnerTrust);
+        let principal_id = executor.principal_id().clone();
+        let executor = executor.with_stamps(Some(crate::security::Stamps::new(
+            principal_id.clone(),
+            Arc::clone(&trust),
+            None,
+        )));
         Self {
-            principal_id: executor.principal_id().clone(),
+            principal_id,
             executor,
             session_manager,
             parent_session_key,
@@ -307,6 +343,7 @@ impl PeerChildTurns {
             channel_port: None,
             dm_subscriber_hook: None,
             dm_lock: None,
+            trust: Some(trust),
         }
     }
 
@@ -317,8 +354,74 @@ impl PeerChildTurns {
         mut self,
         port: Option<Arc<dyn peko_channel::ChannelPort>>,
     ) -> Self {
+        // ADR-078: stamps read conversation rosters through the port.
+        if let Some(trust) = &self.trust {
+            self.executor = self.executor.with_stamps(Some(crate::security::Stamps::new(
+                self.principal_id.clone(),
+                Arc::clone(trust),
+                port.clone(),
+            )));
+        }
         self.channel_port = port;
         self
+    }
+
+    /// Whom `author` is, as a run driver, given the subject permissions
+    /// were checked against (ADR-057 D2).
+    pub(crate) async fn driver(
+        &self,
+        author: &Subject,
+        authority: &Subject,
+    ) -> crate::security::Driver {
+        match self.executor.stamps() {
+            Some(stamps) => stamps.driver(author, authority).await,
+            None => crate::security::Driver {
+                actor: peko_channel::ActorInfo::from_subject(author, None).address,
+                name: None,
+                trust: peko_tools_core::Trust::Untrusted,
+            },
+        }
+    }
+
+    /// The stamp a run root gives a turn in `session_id` (ADR-078 D1).
+    /// With a driver, the run acts for it, capped at the session's
+    /// ceiling; without one (a completion wake), the session continues
+    /// its own work under its natural stamp.
+    pub(crate) async fn root_stamp(
+        &self,
+        driver: Option<&crate::security::Driver>,
+        session_id: &str,
+        origin: peko_tools_core::Origin,
+    ) -> peko_tools_core::ActingFor {
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .unwrap_or_default();
+        let compartment =
+            crate::security::compartment_of(&metas, peko_session::SessionId::from(session_id));
+        let origin = match origin {
+            peko_tools_core::Origin::Ingress { channel: None } => {
+                peko_tools_core::Origin::Ingress {
+                    channel: compartment.channel().map(str::to_string),
+                }
+            }
+            other => other,
+        };
+        match (self.executor.stamps(), driver) {
+            (Some(stamps), Some(driver)) => stamps.enter(driver, compartment, origin).await,
+            (Some(stamps), None) => stamps.natural(compartment, origin).await,
+            (None, Some(driver)) => peko_tools_core::ActingFor {
+                actor: driver.actor.clone(),
+                name: driver.name.clone(),
+                trust: driver.trust,
+                compartment,
+                origin,
+            },
+            (None, None) => peko_tools_core::ActingFor::unattributed(),
+        }
     }
 
     /// Phase 10: attach the post-create subscriber kickoff hook.
@@ -455,14 +558,10 @@ impl PeerChildTurns {
         }
     }
 
-    /// Conversation-prompt context for a peer turn: the peer's
-    /// subject (wire form) read back from the child session's
-    /// metadata, and the peer's DM channel id resolved through the
-    /// channel port's Phase 11 passive binding. Both are best-effort:
-    /// a standalone/test context with no channel port yields `None`
-    /// for the channel, and a session without stamped peer metadata
-    /// yields `None` for the peer.
-    async fn conversation_context(&self, session_id: &str) -> (Option<String>, Option<String>) {
+    /// The conversation channel a peer turn's session is bound to
+    /// (ADR-073: the binding is solely `channel_id`). `None` for an
+    /// unknown or unbound session.
+    async fn conversation_channel(&self, session_id: &str) -> Option<String> {
         let metas = self
             .session_manager
             .write()
@@ -470,13 +569,10 @@ impl PeerChildTurns {
             .list_all_sessions(false)
             .await
             .unwrap_or_default();
-        let Some(meta) = metas
+        metas
             .iter()
             .find(|m| m.session_id.to_string() == session_id)
-        else {
-            return (None, None);
-        };
-        (None, meta.channel_id.clone())
+            .and_then(|meta| meta.channel_id.clone())
     }
 
     /// Drive one streaming turn in the peer's standing child session.
@@ -501,6 +597,11 @@ impl PeerChildTurns {
     /// has no wall-clock timeout (`timeout_seconds: 0`) — parity with
     /// the retired root-agent ingress path; cancellation is via
     /// `cancel` (the IPC `PrincipalStop` token).
+    ///
+    /// `acting_for` is the run root's stamp (ADR-078): the ingress
+    /// driver, the cron job's creator, or the session's own natural
+    /// stamp for a completion wake. The executor re-caps it against the
+    /// session before the run starts.
     pub(crate) async fn drive_turn_streaming(
         &self,
         session_id: &str,
@@ -508,8 +609,36 @@ impl PeerChildTurns {
         on_event: AgenticEventSink,
         cancel: Option<tokio_util::sync::CancellationToken>,
         override_model: Option<String>,
+        acting_for: peko_tools_core::ActingFor,
     ) -> Result<StreamingResumeOutcome> {
-        let (conversation_peer, conversation_channel) = self.conversation_context(session_id).await;
+        let conversation_channel = self.conversation_channel(session_id).await;
+        // ADR-078 D7: when the policy reviews replies, a reply to anyone
+        // but the owner is held back from live streaming until reviewed.
+        let gate = self.executor.tooling().dispatcher().policy_gate();
+        let review_reply = !acting_for.is_owner()
+            && gate.is_some()
+            && self
+                .executor
+                .principal_workspace()
+                .as_deref()
+                .and_then(crate::security::policy::load)
+                .is_some_and(|policy| policy.review_replies);
+        let reviewed_stamp = acting_for.clone();
+        let sink = on_event;
+        let on_event: AgenticEventSink = if review_reply {
+            let inner = Arc::clone(&sink);
+            Arc::new(move |event| {
+                if !matches!(
+                    event,
+                    peko_engine::AgenticEvent::AssistantDelta { .. }
+                        | peko_engine::AgenticEvent::AssistantText { .. }
+                ) {
+                    inner(event);
+                }
+            })
+        } else {
+            Arc::clone(&sink)
+        };
         let config = ExecutionConfig {
             timeout_seconds: 0,
             model_override: override_model,
@@ -519,10 +648,11 @@ impl PeerChildTurns {
             // using the same principal-wide run admission.
             conversation: true,
             conversation_channel,
-            conversation_peer,
+            acting_for: Some(acting_for),
             ..ExecutionConfig::default()
         };
-        self.executor
+        let mut outcome = self
+            .executor
             .resume_streaming(
                 message,
                 session_id,
@@ -531,7 +661,27 @@ impl PeerChildTurns {
                 on_event,
                 cancel,
             )
-            .await
+            .await?;
+        if let (true, Some(gate)) = (review_reply, gate) {
+            if let crate::security::judge::Verdict::Deny(reason) = gate
+                .review_reply(&reviewed_stamp, &self.principal_id.0, &outcome.final_text)
+                .await
+            {
+                tracing::info!(
+                    actor = %reviewed_stamp.actor,
+                    "reply withheld by the owner's policy: {reason}"
+                );
+                outcome.final_text =
+                    "I can't share that here. The owner's policy doesn't allow it.".to_string();
+            }
+            sink(peko_engine::AgenticEvent::AssistantText {
+                run_id: outcome.run_id.clone(),
+                text: outcome.final_text.clone(),
+                sequence: 0,
+                is_interstitial: false,
+            });
+        }
+        Ok(outcome)
     }
 }
 
@@ -542,7 +692,7 @@ impl PeerChildTurns {
 /// NON-ingress path — the root agent's `SubagentExecutor` (so the Agent
 /// tool can target `/local-user`-style peer sessions) and the cron
 /// cold-start builder. The lookup mirrors
-/// [`PeerChildTurns::conversation_context`] but additionally requires
+/// [`PeerChildTurns::conversation_channel`] but additionally requires
 /// the session to be STANDING and to have a DM channel: plain spawned
 /// subagent sessions carry `peer_type: "principal"` + a `spawn_*` peer
 /// id and must not be mistaken for peer-bound sessions.
@@ -568,7 +718,7 @@ impl PeerTurnSurfaceImpl {
 
 #[async_trait::async_trait]
 impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
-    async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)> {
+    async fn conversation_channel(&self, session_id: &str) -> Option<String> {
         let metas = self
             .session_manager
             .write()
@@ -588,7 +738,7 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
             .ok()?
             .contains(&Subject::from(&self.principal_id))
         {
-            Some((None, channel.clone()))
+            Some(channel.clone())
         } else {
             None
         }
@@ -814,12 +964,12 @@ mod tests {
                 .unwrap();
         let surface = PeerTurnSurfaceImpl::new(manager.clone(), port.clone(), id);
         assert_eq!(
-            surface.peer_surface(&session).await,
-            Some((None, "group:eng".into()))
+            surface.conversation_channel(&session).await,
+            Some("group:eng".into())
         );
         let outsider =
             PeerTurnSurfaceImpl::new(manager, port, peko_subject::PrincipalId("other".into()));
-        assert_eq!(outsider.peer_surface(&session).await, None);
+        assert_eq!(outsider.conversation_channel(&session).await, None);
     }
 
     /// Minimal principal config for persona tests — everything
@@ -1056,6 +1206,7 @@ mod tests {
             channel_port,
             dm_subscriber_hook: hook,
             dm_lock,
+            trust: None,
         }
     }
 
@@ -1264,7 +1415,7 @@ mod tests {
     /// port's passive binding; a no-port context yields `None` for
     /// the channel (the section simply omits the line).
     #[tokio::test]
-    async fn conversation_context_resolves_peer_and_dm_channel() {
+    async fn conversation_channel_resolves_the_dm_channel() {
         let (_dir, manager, store) = dm_fixture().await;
         let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
         let turns = bare_turns(
@@ -1278,20 +1429,20 @@ mod tests {
         let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
         let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
 
-        let (peer_str, channel) = turns.conversation_context(&ingress.child_id).await;
-        assert_eq!(peer_str.as_deref(), None);
+        let channel = turns.conversation_channel(&ingress.child_id).await;
         assert_eq!(channel.as_deref(), Some(dm.to_string().as_str()));
 
         // Unknown session id ⇒ no context.
-        let (peer_str, channel) = turns.conversation_context("no-such-session").await;
-        assert!(peer_str.is_none());
-        assert!(channel.is_none());
+        assert!(turns
+            .conversation_channel("no-such-session")
+            .await
+            .is_none());
     }
 
-    /// No channel port (standalone/test contexts): the peer still
-    /// resolves from session metadata; the channel line is omitted.
+    /// No channel port (standalone/test contexts): ingress needs a
+    /// channel store to bind the conversation.
     #[tokio::test]
-    async fn conversation_context_without_port_omits_channel() {
+    async fn ingress_without_port_is_refused() {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
         let error = turns
@@ -1333,6 +1484,7 @@ mod tests {
             last_compaction_at: None,
             consecutive_auto_compactions: 0,
             consecutive_compaction_failures: 0,
+            compartment: None,
         }
     }
 

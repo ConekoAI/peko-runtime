@@ -108,6 +108,12 @@ pub struct RouterContext {
     /// `None` ⇒ unlimited (matches the F19 default when no quota is
     /// configured). Bug A, 2026-08-01 v2.
     pub quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
+    /// The principal's stamp service (ADR-078), bound onto the routed
+    /// agent's executor so its spawns re-cap their stamps.
+    pub stamps: Option<crate::security::Stamps>,
+    /// Whom the routed run acts for (ADR-078). The trunk route requires
+    /// an owner stamp.
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 // Manual `Debug` impl — `InboxRegistry` (peko-session) contains an
@@ -137,6 +143,7 @@ impl std::fmt::Debug for RouterContext {
                 "quota_meter",
                 &self.quota_meter.as_ref().map(|m| m.is_exhausted()),
             )
+            .field("acting_for", &self.acting_for)
             .finish()
     }
 }
@@ -160,6 +167,8 @@ impl Clone for RouterContext {
             observability: self.observability.clone(),
             override_model: self.override_model.clone(),
             quota_meter: self.quota_meter.as_ref().map(Arc::clone),
+            stamps: self.stamps.clone(),
+            acting_for: self.acting_for.clone(),
         }
     }
 }

@@ -92,7 +92,7 @@ impl RequestHandler for ToolHandler {
     async fn handle(
         &self,
         request: RequestPacket,
-        _caller: &CallerContext,
+        caller: &CallerContext,
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
@@ -112,6 +112,7 @@ impl RequestHandler for ToolHandler {
                     session_key,
                     workspace,
                     run_token,
+                    caller.is_operator(),
                     sink,
                 )
                 .await?;
@@ -137,6 +138,7 @@ struct SessionAttribution {
     /// cron) can resolve per-principal state at handle time.
     principal_id: Option<String>,
     principal_name: Option<String>,
+    principal: Option<Arc<crate::principal::Principal>>,
 }
 
 impl ToolHandler {
@@ -171,6 +173,7 @@ impl ToolHandler {
             Some(principal) => SessionAttribution {
                 principal_id: Some(principal.id.0.clone()),
                 principal_name: Some(principal.name().await),
+                principal: Some(principal),
             },
             None => {
                 warn!(
@@ -180,6 +183,7 @@ impl ToolHandler {
                 SessionAttribution {
                     principal_id: None,
                     principal_name: None,
+                    principal: None,
                 }
             }
         }
@@ -213,6 +217,7 @@ impl ToolHandler {
         session_key: String,
         workspace: PathBuf,
         run_token: Option<String>,
+        operator: bool,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
         // Run-token authentication (phase 2b). Never log the token.
@@ -223,6 +228,9 @@ impl ToolHandler {
         // in place of the session-key string so tree-relative tools
         // classify the workflow caller as that node.
         let mut token_caller_session_id: Option<String> = None;
+        // ADR-078: a token carries its workflow's stamp; a tokenless call
+        // is the local operator acting directly (owner, internal tree).
+        let mut token_acting_for: Option<peko_tools_core::ActingFor> = None;
         if let Some(token) = run_token.as_deref() {
             let caller_principal = parse_session_key(&session_key).agent.to_string();
             let validated = self
@@ -236,6 +244,7 @@ impl ToolHandler {
                 Some(entry) => {
                     token_depth = Some(entry.workflow_depth);
                     token_caller_session_id = entry.caller_session_id;
+                    token_acting_for = entry.acting_for;
                 }
                 None => {
                     let response = ResponsePacket::Error {
@@ -293,6 +302,27 @@ impl ToolHandler {
         // unknown/stale ids as dangling — no new privilege logic.
         let threaded_session_id = token_caller_session_id.unwrap_or_else(|| session_key.clone());
 
+        let acting_for = match (run_token.is_some(), &attribution.principal) {
+            (true, _) => token_acting_for,
+            (false, Some(principal)) if operator => {
+                let stamps = crate::principal::trust::stamps_for(
+                    principal,
+                    self.host.principal_manager().channel_port(),
+                );
+                let owner = stamps.owner_driver().await;
+                Some(
+                    stamps
+                        .enter(
+                            &owner,
+                            peko_tools_core::Compartment::Internal,
+                            peko_tools_core::Origin::Runtime,
+                        )
+                        .await,
+                )
+            }
+            _ => None,
+        };
+
         let tool_runtime = self.host.tool_runtime();
         let triplet = tool_runtime
             .execute_tool_full_with_workspace(
@@ -302,6 +332,7 @@ impl ToolHandler {
                 Some(threaded_session_id),
                 attribution.principal_id,
                 attribution.principal_name,
+                acting_for,
             )
             .await;
 
@@ -713,6 +744,7 @@ mod tests {
             "agent:tokprincipal:cli:default",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
 
@@ -775,6 +807,7 @@ mod tests {
             "agent:tokmismatch:workflow:run-1",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
 
@@ -807,6 +840,7 @@ mod tests {
             "agent:tokexpired:cli:default",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::ZERO,
         );
 
@@ -843,6 +877,7 @@ mod tests {
             "agent:toka:cli:default",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
 
@@ -893,6 +928,7 @@ mod tests {
             "agent:deepwf:workflow:run-1",
             crate::tools::builtin::MAX_WORKFLOW_DEPTH,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1053,6 +1089,7 @@ mod tests {
             "agent:calleraware:workflow:run-1",
             1,
             Some(child_id.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1106,6 +1143,7 @@ mod tests {
             "agent:noctx:workflow:direct",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1173,6 +1211,7 @@ mod tests {
             "agent:stale:workflow:run-9",
             1,
             Some(stale.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1313,6 +1352,7 @@ mod tests {
             "agent:sesshead:workflow:run-1",
             1,
             Some(child.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1381,6 +1421,7 @@ mod tests {
             "agent:sesstrunk:workflow:run-1",
             1,
             Some(trunk.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1419,6 +1460,7 @@ mod tests {
             "agent:sessdang:workflow:direct",
             1,
             None,
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1514,6 +1556,7 @@ mod tests {
             "agent:sessA:workflow:run-1",
             1,
             Some(child_a.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1587,6 +1630,7 @@ mod tests {
             "agent:asyncwf:workflow:run-1",
             1,
             Some(node.clone()),
+            Some(peko_tools_core::ActingFor::runtime()),
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(

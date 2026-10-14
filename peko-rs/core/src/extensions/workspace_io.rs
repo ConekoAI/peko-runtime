@@ -51,11 +51,8 @@ pub enum HookInput {
         agent_id: Option<String>,
         /// Session identifier for reserved parameter injection (optional)
         session_id: Option<String>,
-        /// Resolved caller identity (pekohub sub, API key id, or `local`)
-        /// — populated on tunneled requests so per-user permission
-        /// checks (issue #17) and audit logging can attribute the call
-        /// to a real user. `None` for local CLI invocations.
-        caller_id: Option<String>,
+        /// Whom the run acts for (ADR-078).
+        acting_for: Option<peko_tools_core::ActingFor>,
         /// Owning principal scope for observation and attribution.
         principal_id: Option<String>,
         /// Human-readable Principal name. Cron-scoped tools use this to
@@ -72,7 +69,7 @@ pub enum HookInput {
 pub struct ToolRuntimeContext {
     pub agent_id: Option<String>,
     pub session_id: Option<String>,
-    pub peer_id: Option<String>,
+    pub acting_for: Option<peko_tools_core::ActingFor>,
     pub workspace: Option<String>,
     pub run_id: Option<String>,
     pub principal_id: Option<String>,
@@ -105,8 +102,8 @@ impl ToolRuntimeContext {
     }
 
     #[must_use]
-    pub fn with_peer_id(mut self, peer_id: impl Into<String>) -> Self {
-        self.peer_id = Some(peer_id.into());
+    pub fn with_acting_for(mut self, acting_for: peko_tools_core::ActingFor) -> Self {
+        self.acting_for = Some(acting_for);
         self
     }
 

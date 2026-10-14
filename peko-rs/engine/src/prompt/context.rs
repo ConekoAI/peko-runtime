@@ -88,11 +88,9 @@ pub struct TurnPromptContext {
     /// rendered into the `{{session_context}}` section as the channel
     /// that reaches the user. `None` for non-conversation runs.
     pub conversation_channel: Option<String>,
-    /// Peer-conversation peer subject in wire form (`user:alice`,
-    /// `principal:did:…`; peer-ingress turns only), rendered into the
-    /// `{{session_context}}` section. `None` for non-conversation
-    /// runs.
-    pub conversation_peer: Option<String>,
+    /// Whom the run acts for (ADR-078). Forwarded to the prompt-section
+    /// providers, which render it as the `<acting-for>` block.
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 
     // ---- Control surfaces ----
     /// Iteration counter state (`None` ⇒ `{{iteration_budget}}` not rendered).

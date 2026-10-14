@@ -270,17 +270,20 @@ impl ToolCatalog {
     pub(crate) fn replace_mcp(
         &self,
         owner: &PrincipalId,
-        tools: Vec<(String, Arc<dyn Tool>)>,
+        tools: Vec<(String, bool, Arc<dyn Tool>)>,
         context: String,
     ) {
         let entries = tools
             .into_iter()
-            .map(|(server, tool)| {
+            .map(|(server, untrusted_ok, tool)| {
                 let metadata = ToolMetadata::new(
                     tool.name(),
                     tool.description(),
                     tool.parameters(),
-                    crate::tools::metadata::ToolSource::Mcp { server },
+                    crate::tools::metadata::ToolSource::Mcp {
+                        server,
+                        untrusted_ok,
+                    },
                 );
                 (metadata.name.clone(), CatalogEntry { tool, metadata })
             })
@@ -340,6 +343,44 @@ impl ToolCatalog {
                 mcp_context,
             })),
         }
+    }
+
+    /// `snapshot` without the tools the ADR-078 floor refuses `stamp`.
+    /// The binding keeps every entry; only the wire definitions narrow.
+    #[must_use]
+    pub(crate) fn narrow_for(
+        &self,
+        mut snapshot: peko_engine::tooling::ToolCatalogSnapshot,
+        stamp: &peko_tools_core::ActingFor,
+    ) -> peko_engine::tooling::ToolCatalogSnapshot {
+        if !stamp.is_untrusted() {
+            return snapshot;
+        }
+        let Some(binding) = snapshot
+            .binding
+            .as_ref()
+            .and_then(|b| b.as_any().downcast_ref::<CatalogBinding>())
+        else {
+            return snapshot;
+        };
+        let refused: std::collections::HashSet<String> = binding
+            .entries
+            .iter()
+            .filter(|(name, entry)| {
+                let mcp = match &entry.metadata.source {
+                    crate::tools::metadata::ToolSource::Mcp { untrusted_ok, .. } => {
+                        Some(*untrusted_ok)
+                    }
+                    crate::tools::metadata::ToolSource::BuiltIn => None,
+                };
+                crate::security::floor::tool_refusal(stamp, name, mcp).is_some()
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        snapshot
+            .definitions
+            .retain(|definition| !refused.contains(&definition.name));
+        snapshot
     }
 
     /// Number of tools visible to `principal_id`.
@@ -433,6 +474,7 @@ mod tests {
                 stub("model_list"),
                 ToolSource::Mcp {
                     server: "test".into(),
+                    untrusted_ok: false,
                 },
                 &owner,
             )

@@ -268,6 +268,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         prompt: &str,
         agent: &str,
         caller_session_key: &str,
+        acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView> {
         let _ = agent; // validated tool-side; the run continues the session's own agent
@@ -275,6 +276,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             force_compact: true,
             // Agent tool runs have no time limit.
             timeout_seconds: 0,
+            acting_for,
             ..Default::default()
         };
         let view = self
@@ -302,6 +304,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
         overwrite: bool,
         page_limit: Option<u32>,
         caller_session_key: &str,
+        acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<SubagentRunView> {
         let _ = agent; // validated tool-side; the run uses the resolved role prompt
@@ -309,6 +312,7 @@ impl SubagentRuntime for SubagentExecutorRuntime {
             page_limit,
             // Agent tool runs have no time limit.
             timeout_seconds: 0,
+            acting_for,
             ..Default::default()
         };
         let view = self
@@ -401,7 +405,7 @@ fn build_root_execution_config(
         // conversations — keep the subagent task framing.
         conversation: false,
         conversation_channel: None,
-        conversation_peer: None,
+        acting_for: request.config.acting_for.clone(),
         role_prompt,
     }
 }

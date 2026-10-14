@@ -12,9 +12,9 @@
 //! - The boundary error type ([`error::PlanError`]).
 //! - One typed id newtype ([`schema::NodeId`]) for in-plan references.
 //!
-//! What does not live here (deferred to follow-on PRs):
-//! - `ContextInjectionKind::Plan` extension in `peko-core` (PR #3).
-//! - Resume-on-session-start re-injection (PR #4).
+//! What does not live here: the injection of open plans into a run's
+//! context (`ContextInjectionKind::Plan`, PRs #3–#4), which lives in
+//! `peko-core`'s `PrincipalManager::build_router_context`.
 //!
 //! What lives here as of PR #2 (shipped 2026-07-31):
 //! - The 7 `Plan*` tool handlers are NOT in this crate — they live

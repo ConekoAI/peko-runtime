@@ -93,9 +93,11 @@ pub trait AgentView: Send + Sync + 'static {
     /// non-conversation runs (Agent-tool spawns, trunk turns).
     fn conversation_channel(&self) -> Option<&str>;
 
-    /// Peer-conversation peer subject in wire form (conversation
-    /// runs only), rendered into the `{{session_context}}` section.
-    fn conversation_peer(&self) -> Option<&str>;
+    /// Whom this run acts for (ADR-078). Rendered into the `identity`
+    /// section and forwarded with every tool call. `None` only in
+    /// standalone contexts; the dispatcher then treats calls as
+    /// unattributed.
+    fn acting_for(&self) -> Option<&peko_tools_core::ActingFor>;
 
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     /// Field access at `agentic_loop.rs:1934` —

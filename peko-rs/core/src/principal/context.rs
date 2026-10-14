@@ -109,6 +109,10 @@ pub struct PrincipalContext {
     // and read by `agent_runner` to charge the per-cycle counter on
     // every LLM call (Bug A).
     quota_meter: OnceLock<Arc<peko_quota::QuotaMeter>>,
+    /// ADR-078: the principal's stamp service and the routed run's
+    /// stamp, set once in `RootRouter::build_context`.
+    stamps: OnceLock<crate::security::Stamps>,
+    acting_for: OnceLock<peko_tools_core::ActingFor>,
     // Phase 4 (`feature/multi-model-subagents`):
     // per-principal set of model ids the principal has called.
     // `mark_model_seen(model_id)` returns `true` on the first use of
@@ -175,6 +179,8 @@ impl PrincipalContext {
             caller_runtime_id: OnceLock::new(),
             observability: OnceLock::new(),
             quota_meter: OnceLock::new(),
+            stamps: OnceLock::new(),
+            acting_for: OnceLock::new(),
             seen_models: Arc::new(Mutex::new(initial_seen.models)),
         }
     }
@@ -269,6 +275,30 @@ impl PrincipalContext {
     #[must_use]
     pub fn quota_meter(&self) -> Option<&Arc<peko_quota::QuotaMeter>> {
         self.quota_meter.get()
+    }
+
+    /// Bind the stamp service and the run's stamp (ADR-078).
+    pub fn set_acting_for(
+        &self,
+        stamps: Option<crate::security::Stamps>,
+        acting_for: Option<peko_tools_core::ActingFor>,
+    ) {
+        if let Some(stamps) = stamps {
+            let _ = self.stamps.set(stamps);
+        }
+        if let Some(stamp) = acting_for {
+            let _ = self.acting_for.set(stamp);
+        }
+    }
+
+    #[must_use]
+    pub fn stamps(&self) -> Option<&crate::security::Stamps> {
+        self.stamps.get()
+    }
+
+    #[must_use]
+    pub fn acting_for(&self) -> Option<&peko_tools_core::ActingFor> {
+        self.acting_for.get()
     }
 
     /// Phase 4 (`feature/multi-model-subagents`):
@@ -432,12 +462,48 @@ impl PrincipalContext {
 /// `PrincipalContext`) so peer-child turns see the same tool bag as
 /// the root agent. Installs workspace tools and hooks once per principal;
 /// shared prompt providers resolve the workspace from each render request.
+/// Install a principal's tools onto `core` for work that starts outside
+/// an agent run (cron tool jobs, owner-approved replays): the agent
+/// fallback, the workspace bag, principal services, and Async.
+pub(crate) async fn install_principal_tooling(
+    pm: &Arc<crate::principal::manager::PrincipalManager>,
+    principal: &Arc<crate::principal::Principal>,
+    core: &Arc<crate::tools::runtime::ToolingRuntime>,
+    observability: Arc<peko_observability::Observability>,
+) -> anyhow::Result<()> {
+    crate::tools::installation::install_agent_fallback(
+        core.catalog(),
+        Arc::downgrade(pm),
+        observability,
+    )
+    .await?;
+    ensure_principal_tool_bag(Arc::clone(core), &principal.workspace_path, &principal.id).await;
+    let caller_did = principal.did().await.0;
+    crate::tools::installation::install_principal_services(
+        core,
+        &principal.id,
+        crate::tools::installation::PrincipalBindings {
+            sessions_dir: Some(principal.memory.sessions_dir().clone()),
+            plan: Some(Arc::clone(&principal.plan_port)),
+            model_catalog: pm
+                .llm_resolver()
+                .map(|resolver| Arc::clone(resolver.catalog())),
+            caller_did: Some(&caller_did),
+        },
+    )
+    .await?;
+    crate::tools::installation::install_async(core, &principal.id, pm.shared_inbox_registry()).await
+}
+
 pub(crate) async fn ensure_principal_tool_bag(
     runtime: Arc<crate::tools::runtime::ToolingRuntime>,
     workspace_path: &Path,
     principal_id: &peko_subject::PrincipalId,
 ) -> Arc<crate::tools::runtime::ToolingRuntime> {
     let core = runtime;
+    // ADR-078: the path floor confines and protects against this root.
+    core.dispatcher()
+        .bind_workspace(principal_id.clone(), workspace_path.to_path_buf());
     let mut installed = core.installed_principals.lock().await;
     if installed
         .get(principal_id)
@@ -538,7 +604,9 @@ async fn install_principal_tool_bag(
     crate::tools::installation::install_workspace(core.catalog(), workspace, principal_id).await?;
 
     if !core.tool_bag_installed() {
-        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 4] = [
+        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 5] = [
+            // ADR-078 D1: whom the run acts for, ahead of who it is.
+            Arc::new(crate::principal::acting_for_prompt::ActingForPromptHandler),
             Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
             Arc::new(WorkspaceRolesPromptHandler::new()),
             Arc::new(WorkspaceSkillsPromptHandler::new()),
@@ -1014,6 +1082,7 @@ mod tooling_install_tests {
                     principal_id: principal_id.to_string(),
                     workspace: dir.to_string_lossy().into_owned(),
                     session_id: String::new(),
+                    acting_for: None,
                 })
                 .await;
             let skills = sections.get("skills").unwrap();

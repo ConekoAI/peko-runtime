@@ -228,6 +228,10 @@ pub mod auth_compat;
 // port traits (RootAgentRunner + ToolingRuntimeProvider).
 pub mod principal;
 
+// ADR-078: acting-for stamps and the trust floor. Kept free of
+// `principal/` so `agents/` can enforce it.
+pub mod security;
+
 // (Phase 15: peko-quota shim deleted; callers use peko_quota::* directly)
 
 // Phase 4 of `feature/multi-model-subagents`: root-side

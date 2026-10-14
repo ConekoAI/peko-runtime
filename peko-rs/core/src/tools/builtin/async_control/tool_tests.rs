@@ -431,7 +431,9 @@ async fn background_bash_is_owned_by_the_calling_principal() {
 async fn principal_less_dispatch_cannot_start_background_work() {
     let harness = harness().await;
     let dispatch = |tool: &str, params: Value| {
-        let call = peko_engine::ToolCallSpec::new(tool, params);
+        // The owner's stamp: this test is about the missing principal.
+        let mut call = peko_engine::ToolCallSpec::new(tool, params);
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         harness.tooling.dispatcher().execute(call)
     };
 

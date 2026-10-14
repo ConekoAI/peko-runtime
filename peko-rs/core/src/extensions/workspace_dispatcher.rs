@@ -73,8 +73,10 @@ impl WorkspaceHookContext {
                 workspace,
                 agent_id,
                 session_id,
+                acting_for,
                 ..
             } => {
+                runtime.acting_for = acting_for.clone();
                 runtime.principal_id = principal_id.clone();
                 runtime.principal_name = principal_name.clone();
                 runtime.workspace = workspace.clone();
@@ -341,6 +343,7 @@ mod tests {
             .register_system(Arc::new(Echo), crate::tools::metadata::ToolSource::BuiltIn)
             .await;
         let mut call = ToolCallSpec::new("echo", serde_json::json!({"ok":true}));
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.principal_id = Some(p1.to_string());
         let start = std::time::Instant::now();
         let result = runtime.execute(call).await.unwrap();
@@ -399,6 +402,7 @@ mod tests {
                 principal_id: p1.to_string(),
                 workspace: "/tmp/workspace".into(),
                 session_id: "session".into(),
+                acting_for: None,
             })
             .await;
         assert_eq!(sections.get("custom"), Some("first\nsecond"));

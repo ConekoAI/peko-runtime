@@ -151,8 +151,8 @@ rather than a passive request handler.
   child (`/local-user`, `/user-x`, `/principal-{did-fragment}`) parented
   at the trunk; bound channels wake their bound child. External traffic
   NEVER lands in the trunk — the root is cron-only (Phase 7, sprint 2).
-  The owner's child (`/local-user`) is `privileged`: whole-store reach in
-  the ownership guards; strangers' children stay subtree-scoped.
+  Each conversation child is its own compartment (ADR-078): a run acting
+  for anyone but the owner reaches only its own conversation's sessions.
 - **Move** reparents a session and its subtree with a cycle guard
   (`err_move_cycle`); refused on `root:*` source, live-run target, and
   ancestor descent.
@@ -162,14 +162,11 @@ rather than a passive request handler.
   this holds for DMs too: every peer has a per-peer DM channel, and
   that channel's event log IS the consumer-visible conversation
   record `peko log` reads (the chat-log projection store is
-  retired). **Sprint 4 unifies the write surface**: `ChannelSend` is
-  one tool whose `channel` parameter's wire form
-  (`chan_<8 base36>` / `principal:<did>` / `user:<id>` / `group:<slug>`)
-  selects the dispatch — bare post, principal RPC (ensure_peer_child
-  + await reply + mirror), peer messenger note, or group post. The
-  parallel `send_peer` tool retired outright; the design promise
-  "`send_peer` and `ChannelSend` share one delivery mechanism" is
-  now literal.
+  retired). `ChannelSend` is one tool whose `to` parameter (a channel
+  id or an ADR-073 actor reference) selects the dispatch — channel
+  post, principal DM, peer messenger note, or group post. Every send
+  posts and returns; an answer is read with `ChannelRead`, never awaited
+  (ADR-072 D3).
 
 ---
 

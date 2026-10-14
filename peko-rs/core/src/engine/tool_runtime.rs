@@ -172,7 +172,8 @@ impl ToolRuntime {
     }
 
     /// Execute a tool with an explicit workspace override. Test-only: it
-    /// dispatches without a principal, and production calls must carry one.
+    /// dispatches without a principal, as the owner; production calls
+    /// carry their run's own stamp.
     #[cfg(test)]
     pub async fn execute_tool_with_workspace(
         &self,
@@ -181,7 +182,15 @@ impl ToolRuntime {
         workspace: &std::path::Path,
     ) -> Result<serde_json::Value> {
         let (display, json, success) = self
-            .execute_tool_full_with_workspace(tool_name, params, workspace, None, None, None)
+            .execute_tool_full_with_workspace(
+                tool_name,
+                params,
+                workspace,
+                None,
+                None,
+                None,
+                Some(peko_tools_core::ActingFor::runtime()),
+            )
             .await?;
 
         if !success {
@@ -222,6 +231,7 @@ impl ToolRuntime {
         session_id: Option<String>,
         principal_id: Option<String>,
         principal_name: Option<String>,
+        acting_for: Option<peko_tools_core::ActingFor>,
     ) -> Result<(String, serde_json::Value, bool)> {
         peko_engine::funnel::execute_tool_via_core_with_context(
             &*self.tooling,
@@ -230,7 +240,7 @@ impl ToolRuntime {
             Some(workspace.to_string_lossy().to_string()),
             None,
             session_id,
-            None,
+            acting_for,
             principal_id,
             principal_name,
             None,

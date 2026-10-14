@@ -22,6 +22,40 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Acting-for stamps and the trust floor (ADR-078)
+
+- `SessionEntry.compartment` (optional; `{"kind":"internal"}` or
+  `{"kind":"conversation","channel":"<id>"}`): written once at creation —
+  conversation children take their channel, spawns take the calling run's
+  compartment, copies and branches take their source's. Absent on older
+  sessions, which derive it from the nearest channel-bound ancestor.
+- `CronJob.created_by` (optional `ActingFor`): the stamp of the run that
+  created the job. Seeded `keepalive`/`genesis` jobs carry the runtime stamp
+  (`actor: "runtime"`, owner, internal). Unstamped non-seeded jobs fail at
+  fire time.
+- `ActingFor` JSON: `{actor, name?, trust: "owner"|"trusted"|"untrusted",
+  compartment, origin: {kind: "ingress"|"cron"|"wake"|"runtime"|"approval", …}}`.
+  Carried on tool calls, audit events (`tool.call`'s `acting_for`), run-token
+  entries, and background-task dispatch; never read from a packet.
+- `<workspace>/POLICY.md` (protected, seeded create-once): optional front
+  matter (`judge_model`, `review_replies`), default rules, and
+  `## <actor address>` sections. *Always allow* approvals append to the
+  actor's section.
+- `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner
+  run's write to a protected file, with the proposer's stamp and the change.
+  Runtime-written only; at most 50 per compartment.
+- `<local>/approvals/apr_<12 hex>.json`: an owner-approval request
+  (`call`, `reason`, `created_at`, `expires_at` (24 h), `status`:
+  `pending`|`approved`|`denied`, `digest` of tool + arguments).
+- `Permission::Trusted` (`"trusted"`) in `principal.toml` grants: the owner's
+  consent to give one named actor full tools. Never `public`, never in invites.
+- MCP definitions gain `untrusted_ok` (default `false`) and the reserved
+  runtime fields `acting_for` / `acting_for_trust`; the retired reserved field
+  `peer_id` is replaced by `acting_for`. Workspace hooks receive
+  `PEKO_ACTING_FOR` and `PEKO_ACTING_FOR_TRUST`.
+
+---
+
 ## Built-in tool names and availability
 
 Native tools use exact PascalCase names, including Session, ModelList, and
@@ -1524,7 +1558,8 @@ are never created anymore:
   `originating_peer` resolves peer-child sessions from their stamped
   `peer_type`/`peer_id` metadata plus the parent-linkage walk
   (`resolve_peer_via_parent_walk`, sprint 6 commit 1 — replaces the
-  deleted `peer_from_session_key`).
+  deleted `peer_from_session_key`). *Retired by ADR-078:* whom a run
+  serves is its `ActingFor` stamp; `originating_peer` is removed.
 
 **Cron targeting (Phase 7).** `CronJobAction::Send`'s optional
 `target` field (`#[serde(default, skip_serializing_if =

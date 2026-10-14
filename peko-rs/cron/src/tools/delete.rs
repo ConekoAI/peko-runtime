@@ -103,10 +103,11 @@ impl Tool for CronDeleteAction {
             .map_err(|e| anyhow::anyhow!("Invalid Cron action delete arguments: {e}"))?;
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
+            verify_id_belongs_to_principal(&*runtime, &id, &principal_id, &ctx.acting_for())
+                .await?;
             id
         } else if let Some(label) = args.label {
-            resolve_id_by_label(&*runtime, &label, &principal_id).await?
+            resolve_id_by_label(&*runtime, &label, &principal_id, &ctx.acting_for()).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for Cron action delete"
@@ -126,10 +127,15 @@ pub(crate) async fn resolve_id_by_label(
     runtime: &dyn crate::tools::CronRuntime,
     label: &str,
     principal_id: &str,
+    stamp: &peko_tools_core::ActingFor,
 ) -> anyhow::Result<String> {
     let jobs = runtime.list_jobs().await?;
     jobs.into_iter()
-        .find(|j| j.name == label && j.principal_id.0 == principal_id)
+        .find(|j| {
+            j.name == label
+                && j.principal_id.0 == principal_id
+                && crate::tools::job_visible_to(j, stamp)
+        })
         .ok_or_else(|| anyhow::anyhow!("Job with label '{label}' not found"))
         .map(|j| j.id)
 }
@@ -139,12 +145,14 @@ pub(crate) async fn verify_id_belongs_to_principal(
     runtime: &dyn crate::tools::CronRuntime,
     job_id: &str,
     principal_id: &str,
+    stamp: &peko_tools_core::ActingFor,
 ) -> anyhow::Result<()> {
     let jobs = runtime.list_jobs().await?;
-    if jobs
-        .into_iter()
-        .any(|j| j.id == job_id && j.principal_id.0 == principal_id)
-    {
+    if jobs.into_iter().any(|j| {
+        j.id == job_id
+            && j.principal_id.0 == principal_id
+            && crate::tools::job_visible_to(&j, stamp)
+    }) {
         Ok(())
     } else {
         Err(anyhow::anyhow!(

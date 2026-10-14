@@ -146,6 +146,12 @@ impl CommandHookHandler {
         if let Some(agent_id) = &ctx.runtime.agent_id {
             env.insert("PEKO_AGENT_ID".into(), agent_id.clone());
         }
+        // ADR-078: owner-authored hooks can apply their own policy to
+        // the party the run acts for.
+        if let Some(stamp) = &ctx.runtime.acting_for {
+            env.insert("PEKO_ACTING_FOR".into(), stamp.actor.clone());
+            env.insert("PEKO_ACTING_FOR_TRUST".into(), stamp.trust.as_str().into());
+        }
 
         // Superpowers compatibility: the upstream script branches on this.
         env.insert(

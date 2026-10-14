@@ -595,11 +595,13 @@ impl PrincipalMcpRuntime {
         Ok(())
     }
 
-    pub async fn tools(self: &Arc<Self>) -> Vec<(String, Arc<dyn Tool>)> {
+    pub async fn tools(self: &Arc<Self>) -> Vec<(String, bool, Arc<dyn Tool>)> {
         self.catalog().await.0
     }
 
-    pub async fn catalog(self: &Arc<Self>) -> (Vec<(String, Arc<dyn Tool>)>, String) {
+    /// Every method tool with its server id and the owner's
+    /// `untrusted_ok` declaration, plus the prompt context.
+    pub async fn catalog(self: &Arc<Self>) -> (Vec<(String, bool, Arc<dyn Tool>)>, String) {
         let mut tools = Vec::new();
         let mut registered_names = std::collections::HashSet::new();
         let mut lines = Vec::new();
@@ -645,6 +647,7 @@ impl PrincipalMcpRuntime {
                 for descriptor in &inventory.tools {
                     tools.push((
                         server.id.clone(),
+                        server.definition.untrusted_ok,
                         Arc::new(proxy::MethodTool::new(
                             self.clone(),
                             server.clone(),

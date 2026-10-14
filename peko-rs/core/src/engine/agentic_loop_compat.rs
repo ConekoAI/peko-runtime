@@ -1844,7 +1844,6 @@ mod tests {
                 provider,
                 Some(session_id),
                 None,
-                None,
                 Arc::new(peko_quota::QuotaMeter::unlimited()),
             )
             .await
@@ -2797,7 +2796,7 @@ mod tests {
             model_aliases: vec![],
             has_gateway: false,
             conversation_channel: None,
-            conversation_peer: None,
+            acting_for: None,
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
@@ -2882,7 +2881,7 @@ mod tests {
             model_aliases: vec![],
             has_gateway: false,
             conversation_channel: None,
-            conversation_peer: None,
+            acting_for: None,
             iteration_budget: None,
             quota_tripped: false,
             soft_cancel_pending: false,
@@ -2934,7 +2933,7 @@ mod tests {
         model_aliases: vec!["sonnet".into(), "haiku".into()],
         has_gateway: true,
         conversation_channel: None,
-        conversation_peer: None,
+        acting_for: None,
         iteration_budget: None,
         quota_tripped: false,
         soft_cancel_pending: false,
@@ -2943,22 +2942,20 @@ mod tests {
     }
 
     /// Conversation context (peer-ingress turns, 2026-09-06): the
-    /// peer's DM channel id + subject render into the
-    /// `{{session_context}}` section; a run with neither renders no
-    /// section (unchanged non-peer behavior).
+    /// peer's DM channel id renders into the `{{session_context}}`
+    /// section (whom the run acts for renders in `identity`, ADR-078); a
+    /// run without one renders no section.
     #[tokio::test]
-    async fn session_context_renders_conversation_channel_and_peer() {
+    async fn session_context_renders_conversation_channel() {
         let renderer = PromptRenderer::new(crate::tools::runtime::ToolingRuntime::standalone());
         let ctx = TurnPromptContext {
             body: "{{session_context}}".into(),
             conversation_channel: Some("chan_abc123".into()),
-            conversation_peer: Some("user:alice".into()),
             ..inert_ctx()
         };
         let rendered = renderer.render_for_iteration(&ctx).await;
         assert!(rendered.contains("## Session context"));
         assert!(rendered.contains("conversation channel: chan_abc123"));
-        assert!(rendered.contains("peer: user:alice"));
 
         // No conversation context ⇒ no section (hook text is empty
         // with a bare ToolingRuntime).

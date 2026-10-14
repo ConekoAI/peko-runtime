@@ -374,6 +374,7 @@ impl ToolingRuntime {
             workspace: std::path::PathBuf::from(&request.workspace),
             session_id: request.session_id.clone(),
             channel_port: self.services.channel_port(),
+            acting_for: request.acting_for.clone(),
         };
         let providers: Vec<Arc<dyn PromptSectionProvider>> = self
             .prompt_providers
@@ -532,9 +533,16 @@ impl ToolFunnel for ToolingRuntime {
     async fn list_tool_definitions(
         &self,
         principal_id: &PrincipalId,
+        acting_for: Option<&peko_tools_core::ActingFor>,
     ) -> peko_engine::tooling::ToolCatalogSnapshot {
         self.prepare_mcp(principal_id).await;
-        self.catalog.snapshot(principal_id).await
+        let snapshot = self.catalog.snapshot(principal_id).await;
+        // ADR-078 D6: a run never sees tools the floor would refuse it
+        // (the dispatcher refuses them regardless).
+        let stamp = acting_for
+            .cloned()
+            .unwrap_or_else(peko_tools_core::ActingFor::unattributed);
+        self.catalog.narrow_for(snapshot, &stamp)
     }
 
     async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections {
@@ -723,6 +731,7 @@ mod tests {
 
     fn call(principal: &PrincipalId, session: &str, tool: &str, params: Value) -> ToolCallSpec {
         let mut call = ToolCallSpec::new(tool, params);
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.principal_id = Some(principal.0.clone());
         call.session_id = Some(session.into());
         call

@@ -30,6 +30,12 @@
 //! The `privileged` flag (sprint 2 peer-child provisioning) is
 //! removed with it.
 //!
+//! **ADR-078.** Reach is now a property of the run, not the tree: an
+//! owner run reaches the whole store; any other run reaches only its
+//! own compartment (`crate::security::visible_metas` / `may_reach`),
+//! enforced in `SessionManagerRuntime` and the subagent executor before
+//! these guards run.
+//!
 //! The principal's trunk session (`root:self` — the only `root:*` id
 //! left after Phase 7 retired the per-peer `root:{peer}` /
 //! `root:cron:{peer}` sessions) is **continuous**: the engine owns its

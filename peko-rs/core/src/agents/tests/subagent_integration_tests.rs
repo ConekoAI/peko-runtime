@@ -2587,9 +2587,9 @@ async fn peer_bound_run_delivers_reply_via_surface() {
 
     #[async_trait::async_trait]
     impl PeerTurnSurface for RecordingSurface {
-        async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)> {
+        async fn conversation_channel(&self, session_id: &str) -> Option<String> {
             self.probed.lock().unwrap().push(session_id.to_string());
-            Some((Some("user:local".to_string()), "chan_test".to_string()))
+            Some("chan_test".to_string())
         }
 
         async fn post_reply(&self, channel_id: &str, text: &str) {
@@ -3203,4 +3203,91 @@ async fn test_branch_overwrite_reseeds_in_place() {
         .expect("target survives");
     assert_eq!(meta.page_limit, None, "0 clears the cap");
     assert_eq!(meta.pruned_pages, 1, "no page pruned under no cap");
+}
+
+/// ADR-078 D3/D4: a session a guest's run spawns belongs to the guest's
+/// conversation wherever it sits, and the guest cannot resume a session
+/// outside that conversation.
+#[tokio::test]
+async fn a_guests_spawn_stays_in_its_conversation_and_cannot_reach_out() {
+    use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+    let (session_manager, registry, agent_name) = create_test_components().await;
+    let mut ids = Vec::new();
+    for channel in ["dm_owner", "dm_x"] {
+        let manager = session_manager.write().await;
+        let mut manager = manager;
+        let handle = manager
+            .create_session(
+                &agent_name,
+                &Subject::User(channel.into()),
+                peko_session::SessionCreateOptions::new(),
+            )
+            .await
+            .unwrap();
+        let id = handle.session_id().to_string();
+        manager.bind_session_channel(&id, channel).await.unwrap();
+        ids.push(id);
+    }
+    let (owner_dm, guest_dm) = (ids[0].clone(), ids[1].clone());
+    let guest = ActingFor {
+        actor: "user:hub:x".into(),
+        name: None,
+        trust: Trust::Untrusted,
+        compartment: Compartment::Conversation {
+            channel: "dm_x".into(),
+        },
+        origin: Origin::Ingress { channel: None },
+    };
+    let executor = SubagentExecutor::with_registry(
+        registry,
+        session_manager.clone(),
+        agent_name,
+        peko_subject::PrincipalId::generate(),
+        crate::tools::runtime::ToolingRuntime::standalone(),
+    );
+    let config = ExecutionConfig {
+        slug: Some("task".into()),
+        acting_for: Some(guest.clone()),
+        ..ExecutionConfig::default()
+    };
+    let _ = executor
+        .spawn_and_execute("work", &guest_dm, config.clone(), None)
+        .await;
+    let metas = session_manager
+        .write()
+        .await
+        .list_all_sessions(false)
+        .await
+        .unwrap();
+    let child = metas
+        .iter()
+        .find(|m| m.slug.as_deref() == Some("task"))
+        .expect("the spawn created its session");
+    assert_eq!(child.compartment, Some(guest.compartment.clone()));
+
+    let refused = executor
+        .resume_and_execute("read it", &owner_dm, &guest_dm, config.clone(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("not found"),
+        "the owner's session must read as missing: {refused:#}"
+    );
+
+    let refused = executor
+        .spawn_and_execute(
+            "escape",
+            &guest_dm,
+            ExecutionConfig {
+                slug: Some("/elsewhere".into()),
+                ..config
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("only sessions inside this conversation"),
+        "{refused:#}"
+    );
 }

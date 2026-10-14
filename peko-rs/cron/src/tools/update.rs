@@ -116,16 +116,27 @@ impl Tool for CronUpdateAction {
         }
 
         let job_id = if let Some(id) = args.id.filter(|s| !s.is_empty()) {
-            verify_id_belongs_to_principal(&*runtime, &id, &principal_id).await?;
+            verify_id_belongs_to_principal(&*runtime, &id, &principal_id, &ctx.acting_for())
+                .await?;
             id
         } else if let Some(label) = args.label {
-            resolve_id_by_label(&*runtime, &label, &principal_id).await?
+            resolve_id_by_label(&*runtime, &label, &principal_id, &ctx.acting_for()).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for Cron action update"
             ));
         };
 
+        // ADR-078 D5: re-enabling a non-owner job counts against its
+        // compartment's limit like creating one.
+        if args.enabled == Some(true) {
+            let jobs = runtime.list_jobs().await?;
+            if let Some(job) = jobs.iter().find(|j| j.id == job_id) {
+                let mut job = job.clone();
+                job.enabled = true;
+                crate::tools::check_non_owner_job(&job, &jobs)?;
+            }
+        }
         runtime
             .update_job(&job_id, args.enabled, args.wake_on_completion)
             .await?;

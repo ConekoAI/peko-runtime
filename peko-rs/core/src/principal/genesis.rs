@@ -294,7 +294,15 @@ fn job_base(
         consecutive_failures: 0,
         max_retries: None,
         origin_session: None,
+        // ADR-078 D5: the runtime seeds these for the owner.
+        created_by: Some(peko_tools_core::ActingFor::runtime()),
     }
+}
+
+/// Whether `job_id` names one of the jobs the runtime seeds itself.
+#[must_use]
+pub fn is_seeded_job(job_id: &str) -> bool {
+    job_id == GENESIS_JOB_ID || job_id == KEEPALIVE_JOB_ID
 }
 
 /// Does `jobs` already carry an enabled RECURRING trunk-targeted send?
@@ -406,6 +414,14 @@ pub async fn seed_boot_defaults(
             }
             Ok(false) => {}
             Err(e) => tracing::warn!("genesis: memory migration failed for '{name}': {e}"),
+        }
+
+        // ADR-078 D7: every principal has a policy file to edit. Create-
+        // once: an existing POLICY.md is the owner's and never touched.
+        match crate::security::policy::seed(&shared_root) {
+            Ok(true) => tracing::info!("genesis: seeded POLICY.md for principal '{name}'"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("genesis: POLICY.md seed failed for '{name}': {e}"),
         }
 
         // 2026-09-28 rename: move a pre-rename `kb/agents/` directory

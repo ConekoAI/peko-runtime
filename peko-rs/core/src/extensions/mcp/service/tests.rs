@@ -99,6 +99,7 @@ for line in sys.stdin:
         call.principal_id = Some(self.runtime.owner.0.clone());
         call.session_id = Some(session.into());
         call.catalog_binding = binding;
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call
     }
 }
@@ -116,9 +117,10 @@ async fn cold_discovery_isolated_owners_and_shared_sibling_startup() {
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
     tooling.bind_mcp(first.runtime.clone()).await;
     tooling.bind_mcp(second.runtime.clone()).await;
+    let owner = peko_tools_core::ActingFor::runtime();
     let (a, b) = tokio::join!(
-        tooling.list_tool_definitions(first.runtime.owner()),
-        tooling.list_tool_definitions(first.runtime.owner())
+        tooling.list_tool_definitions(first.runtime.owner(), Some(&owner)),
+        tooling.list_tool_definitions(first.runtime.owner(), Some(&owner))
     );
     assert!(a
         .definitions
@@ -135,7 +137,12 @@ async fn cold_discovery_isolated_owners_and_shared_sibling_startup() {
             .count(),
         1
     );
-    let c = tooling.list_tool_definitions(second.runtime.owner()).await;
+    let c = tooling
+        .list_tool_definitions(
+            second.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     for (fixture, snapshot, label, session) in [
         (&first, &a, "A", "sibling-1"),
         (&first, &b, "A", "sibling-2"),
@@ -162,7 +169,7 @@ async fn cold_discovery_isolated_owners_and_shared_sibling_startup() {
     let mut foreign = second.call("foreign", "hello", a.binding.clone());
     foreign.principal_id = Some(second.runtime.owner.0.clone());
     assert!(!tooling.execute(foreign).await.unwrap().2);
-    let tool = first.runtime.tools().await.pop().unwrap().1;
+    let tool = first.runtime.tools().await.pop().unwrap().2;
     assert!(tool
         .execute_with_context(json!({"value":"hello"}), &second.context("foreign"))
         .await
@@ -184,7 +191,12 @@ async fn schema_refresh_removal_and_started_call_leases() {
     let fixture = Fixture::new("owner", vault, "A");
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
     tooling.bind_mcp(fixture.runtime.clone()).await;
-    let snapshot = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let snapshot = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     let mut schema: Value =
         serde_json::from_slice(&std::fs::read(fixture.root.join("schema.json")).unwrap()).unwrap();
     schema["description"] = json!("A changed tool description");
@@ -206,7 +218,12 @@ async fn schema_refresh_removal_and_started_call_leases() {
     assert!(!stale.2);
     assert!(stale.0.contains("McpCatalogChanged"));
     assert!(!fixture.root.join("calls.jsonl").exists());
-    let snapshot = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let snapshot = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     let background = {
         let tooling = tooling.clone();
         let call = fixture.call("session", "slow", snapshot.binding.clone());
@@ -220,7 +237,12 @@ async fn schema_refresh_removal_and_started_call_leases() {
     }
     assert!(fixture.root.join("calls.jsonl").exists());
     std::fs::remove_file(&fixture.manifest).unwrap();
-    let updated = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let updated = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     assert!(!updated
         .definitions
         .iter()
@@ -256,7 +278,9 @@ async fn cached_catalog_starts_lazily_and_protocol_errors_remain_structured() {
     );
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
     tooling.bind_mcp(cached.clone()).await;
-    let snapshot = tooling.list_tool_definitions(cached.owner()).await;
+    let snapshot = tooling
+        .list_tool_definitions(cached.owner(), Some(&peko_tools_core::ActingFor::runtime()))
+        .await;
     assert_eq!(cached.status().await["servers"][0]["catalog"], "cached");
     assert_eq!(
         std::fs::read_to_string(fixture.root.join("starts.txt"))
@@ -378,7 +402,7 @@ async fn sdk_sampling_uses_the_explicit_owner_model_and_meter() {
         Some(model),
     );
     fixture.runtime.prepare_catalog().await.unwrap();
-    let tool = fixture.runtime.tools().await.pop().unwrap().1;
+    let tool = fixture.runtime.tools().await.pop().unwrap().2;
     let before = meter.snapshot();
     let result = tool
         .execute_with_context(
@@ -466,7 +490,7 @@ async fn owner_teardown_cancels_calls_on_retired_connections() {
     ));
     let fixture = Fixture::new("owner", vault, "A");
     fixture.runtime.prepare_catalog().await.unwrap();
-    let tool = fixture.runtime.tools().await.pop().unwrap().1;
+    let tool = fixture.runtime.tools().await.pop().unwrap().2;
     let context = fixture.context("session");
     let call = tokio::spawn(async move {
         tool.execute_with_context(json!({"value":"slow"}), &context)
@@ -538,7 +562,12 @@ async fn sdk_notifications_refresh_catalog_and_disconnect_does_not_replay_busine
     let fixture = Fixture::new("owner", vault, "A");
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
     tooling.bind_mcp(fixture.runtime.clone()).await;
-    let initial = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let initial = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     assert!(
         tooling
             .execute(fixture.call("session", "notify", initial.binding.clone()))
@@ -546,7 +575,12 @@ async fn sdk_notifications_refresh_catalog_and_disconnect_does_not_replay_busine
             .unwrap()
             .2
     );
-    let updated = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let updated = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     assert_eq!(
         updated
             .definitions
@@ -588,7 +622,7 @@ async fn cancelling_one_request_keeps_the_shared_connection_usable() {
     ));
     let fixture = Fixture::new("owner", vault, "A");
     fixture.runtime.prepare_catalog().await.unwrap();
-    let tool = fixture.runtime.tools().await.pop().unwrap().1;
+    let tool = fixture.runtime.tools().await.pop().unwrap().2;
     let (abort, receiver) = tokio::sync::watch::channel(false);
     let context = ToolContext::for_hook_run_with_abort("run", "call", "echo", receiver)
         .with_principal_id("owner")
@@ -701,7 +735,12 @@ async fn model_aliases_invoke_exact_remote_methods_and_duplicate_aliases_fail_cl
     std::fs::write(schema_path, descriptor.to_string()).unwrap();
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
     tooling.bind_mcp(fixture.runtime.clone()).await;
-    let snapshot = tooling.list_tool_definitions(fixture.runtime.owner()).await;
+    let snapshot = tooling
+        .list_tool_definitions(
+            fixture.runtime.owner(),
+            Some(&peko_tools_core::ActingFor::runtime()),
+        )
+        .await;
     let registered = super::proxy::registered_name("shared", remote_name);
     assert!(snapshot
         .definitions

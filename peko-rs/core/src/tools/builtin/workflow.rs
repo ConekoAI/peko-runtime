@@ -298,6 +298,8 @@ impl Tool for WorkflowTool {
             &session_key,
             caller_depth + 1,
             caller_session_id,
+            // ADR-078: the workflow's callbacks act as its caller.
+            Some(ctx.acting_for()),
             timeout_ms.map_or(UNCAPPED_RUN_TOKEN_TTL, |ms| {
                 Duration::from_millis(ms) + RUN_TOKEN_TTL_MARGIN
             }),
@@ -1191,6 +1193,7 @@ Path(os.environ["PEKO_WORKSPACE"], sys.argv[1]).write_text("WORKFLOW_EXECUTED")
         let config = ExecutionConfig {
             slug: Some("workflow-worker".into()),
             timeout_seconds: 15,
+            acting_for: Some(peko_tools_core::ActingFor::runtime()),
             ..Default::default()
         };
         mock.queue_tool_call(
@@ -1549,6 +1552,7 @@ print("argv:" + ",".join(sys.argv[1:]))
             workspace: workspace.to_path_buf(),
             session_id: String::new(),
             channel_port: None,
+            acting_for: None,
         }
     }
 

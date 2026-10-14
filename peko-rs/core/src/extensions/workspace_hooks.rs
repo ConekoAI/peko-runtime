@@ -328,6 +328,7 @@ output = "text"
             principal_id: p1.to_string(),
             workspace: temp.path().to_string_lossy().into_owned(),
             session_id: "session".into(),
+            acting_for: None,
         };
         let sections = runtime.render_prompt_sections(&request).await;
         assert_eq!(sections.get("weather"), Some("first\nsecond"));

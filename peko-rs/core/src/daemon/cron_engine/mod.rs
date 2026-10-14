@@ -681,6 +681,18 @@ impl CronEngine {
         let origin = self
             .resolve_origin_session(&principal, job, &trunk_key)
             .await;
+        // ADR-078 D5: the job fires as its creator, re-entered into the
+        // session it lands in.
+        let channels = self
+            .tooling
+            .upgrade()
+            .and_then(|core| core.services().channel_port());
+        let acting_for =
+            match crate::principal::trust::cron_job_stamp(&principal, channels, job, &origin).await
+            {
+                Ok(stamp) => stamp,
+                Err(reason) => return Ok(("failed".to_string(), Some(reason))),
+            };
         if origin != trunk_key {
             let resolver = match pm.llm_resolver() {
                 Some(r) => r,
@@ -703,7 +715,14 @@ impl CronEngine {
                 Ok(turns) => {
                     let sink: crate::agents::subagent_executor::AgenticEventSink = Arc::new(|_| {});
                     let outcome = turns
-                        .drive_turn_streaming(&origin, &job.task_description(), sink, None, None)
+                        .drive_turn_streaming(
+                            &origin,
+                            &job.task_description(),
+                            sink,
+                            None,
+                            None,
+                            acting_for.clone(),
+                        )
                         .await;
                     return match outcome {
                         Ok(outcome) => {
@@ -720,8 +739,8 @@ impl CronEngine {
                                             principal.id.clone(),
                                         );
                                     use crate::agents::subagent_executor::PeerTurnSurface as _;
-                                    if let Some((_peer, channel)) =
-                                        surface.peer_surface(&origin).await
+                                    if let Some(channel) =
+                                        surface.conversation_channel(&origin).await
                                     {
                                         surface.post_reply(&channel, &outcome.final_text).await;
                                     }
@@ -748,7 +767,12 @@ impl CronEngine {
         }
 
         match pm
-            .receive_trunk(principal.id.clone(), job.task_description(), None)
+            .receive_trunk(
+                principal.id.clone(),
+                job.task_description(),
+                None,
+                acting_for,
+            )
             .await
         {
             Ok(response) => {
@@ -864,6 +888,18 @@ impl CronEngine {
         let caller_session_key = self
             .resolve_origin_session(&principal, job, &trunk_session_key)
             .await;
+        // ADR-078 D5: the spawned tool call runs as the job's creator.
+        let acting_for = match crate::principal::trust::cron_job_stamp(
+            &principal,
+            core.services().channel_port(),
+            job,
+            &caller_session_key,
+        )
+        .await
+        {
+            Ok(stamp) => stamp,
+            Err(reason) => return Ok(("failed".to_string(), None, Some(reason))),
+        };
         // Snapshot the principal's grants at fire time, then derive active
         // extensions from that same snapshot. Both values flow through the
         // canonical tool funnel so extension ownership requirements cannot be
@@ -883,34 +919,13 @@ impl CronEngine {
         };
 
         // Principal services are defaults, shared with turn and IPC setup.
-        crate::tools::installation::install_agent_fallback(
-            core.catalog(),
-            Arc::downgrade(pm),
+        crate::principal::context::install_principal_tooling(
+            pm,
+            &principal,
+            &core,
             Arc::clone(&self.observability),
         )
         .await?;
-        crate::principal::context::ensure_principal_tool_bag(
-            Arc::clone(&core),
-            &principal.workspace_path,
-            &principal.id,
-        )
-        .await;
-        let caller_did = principal.did().await.0;
-        crate::tools::installation::install_principal_services(
-            &core,
-            &principal.id,
-            crate::tools::installation::PrincipalBindings {
-                sessions_dir: Some(principal.memory.sessions_dir().clone()),
-                plan: Some(Arc::clone(&principal.plan_port)),
-                model_catalog: pm
-                    .llm_resolver()
-                    .map(|resolver| Arc::clone(resolver.catalog())),
-                caller_did: Some(&caller_did),
-            },
-        )
-        .await?;
-        crate::tools::installation::install_async(&core, &principal.id, pm.shared_inbox_registry())
-            .await?;
 
         let wake = wake_on_completion.unwrap_or(false);
         // Uncapped unless the job set its own limit.
@@ -955,7 +970,8 @@ impl CronEngine {
         // session/Task attribution) refuse the funnel's "unknown"
         // default, and relative `Agent` paths follow the creating
         // conversation.
-        .with_session_id(caller_session_key.clone());
+        .with_session_id(caller_session_key.clone())
+        .with_acting_for(acting_for);
 
         let receipt = executor.dispatch_tool(&core, context, config).await?;
 
@@ -1277,6 +1293,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         }
     }
 
@@ -1838,6 +1855,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -1911,6 +1929,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2034,6 +2053,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2216,6 +2236,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2374,6 +2395,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
         engine.execute_job(job.clone()).await.unwrap();
@@ -2510,6 +2532,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -2632,6 +2655,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
         // No PrincipalManager in this test: install the scheduler into
@@ -2917,6 +2941,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
 
         // The engine now awaits the tool's outcome, so the stub has
@@ -3048,6 +3073,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -3144,6 +3170,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 
@@ -3289,6 +3316,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
         };
         scheduler.add_job(&job).unwrap();
 

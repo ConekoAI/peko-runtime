@@ -231,12 +231,12 @@ impl ChannelSendTool {
     /// session via the peer-messenger port. Fire-and-forget — users do
     /// not reply synchronously; the note appears in their next turn.
     ///
-    /// 2026-09-08: cross-user sends are permitted — the principal is
-    /// the trust boundary, and any of its conversations may address a
-    /// user. The originating peer is still resolved for ATTRIBUTION:
-    /// a cross-user note's default label records which conversation it
-    /// came from (`via user:alice`), so the recipient can tell who
-    /// initiated it. Self-sends keep the plain `agent` label.
+    /// ADR-078: attribution comes from the run's stamp. A note an owner
+    /// run sends, or one a run sends back to the actor it serves, keeps
+    /// the agent's label. A note a non-owner run sends to anyone else
+    /// carries a runtime-written `via <actor> (<trust>)` label the model
+    /// cannot override, so the recipient knows on whose behalf it came.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_user_target(
         messenger: &dyn crate::principal::messenger::PeerMessenger,
         principal_id: &str,
@@ -245,6 +245,7 @@ impl ChannelSendTool {
         label: Option<&str>,
         target: &Subject,
         message: &str,
+        acting_for: &peko_tools_core::ActingFor,
     ) -> serde_json::Value {
         let user_error = |err: String| {
             serde_json::to_value(ChannelSendResult {
@@ -263,22 +264,17 @@ impl ChannelSendTool {
             .expect("ChannelSendResult must serialize to JSON")
         };
 
-        let originating = messenger
-            .originating_peer(principal_id, session_id)
-            .await
-            .ok()
-            .flatten();
-        let default_label = match &originating {
-            // Cross-user: attribute the note to the originating
-            // conversation for audit.
-            Some(o) if o != target => format!("via {o}"),
-            _ => "agent".to_string(),
+        let to_actor =
+            peko_channel::ActorInfo::from_subject(target, None).address == acting_for.actor;
+        let attributed = (!acting_for.is_owner() && !to_actor)
+            .then(|| format!("via {} ({})", acting_for.actor, acting_for.trust.as_str()));
+        let label = match &attributed {
+            Some(attributed) => attributed.as_str(),
+            None => label
+                .filter(|l| !l.is_empty())
+                .or(agent_label.filter(|l| !l.is_empty()))
+                .unwrap_or("agent"),
         };
-
-        let label = label
-            .filter(|l| !l.is_empty())
-            .or(agent_label.filter(|l| !l.is_empty()))
-            .unwrap_or(default_label.as_str());
         let note = format!("📨 [{label}] {message}");
         let caller_label = format!("agent {session_id}");
         match messenger
@@ -1030,6 +1026,7 @@ impl ChannelSendTool {
             label.as_deref(),
             &target,
             text,
+            &ctx.acting_for(),
         )
         .await)
     }
@@ -1296,7 +1293,6 @@ mod tests {
 
     #[derive(Default)]
     struct StubMessenger {
-        origin: Option<Subject>,
         notes: Mutex<Vec<(String, String)>>,
         /// `Some(false)`: the target has no session; `None`: delivery errors.
         delivered: Option<bool>,
@@ -1328,25 +1324,53 @@ mod tests {
             self.delivered
                 .ok_or_else(|| anyhow::anyhow!("messenger offline"))
         }
+    }
 
-        async fn originating_peer(
-            &self,
-            _principal_id: &str,
-            _session_id: &str,
-        ) -> anyhow::Result<Option<Subject>> {
-            Ok(self.origin.clone())
+    fn stamp_for(actor: &str, trust: peko_tools_core::Trust) -> peko_tools_core::ActingFor {
+        peko_tools_core::ActingFor {
+            actor: actor.into(),
+            name: None,
+            trust,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: "dm_x".into(),
+            },
+            origin: peko_tools_core::Origin::Ingress { channel: None },
         }
     }
 
-    /// Cross-user sends are permitted; the note's default label
-    /// records which conversation initiated it.
+    /// ADR-078: a non-owner run's note to someone else carries the
+    /// runtime's attribution, which the model's label cannot replace.
     #[tokio::test]
-    async fn cross_user_send_is_attributed_to_originating_conversation() {
-        let messenger = StubMessenger {
-            origin: Some(Subject::User("alice".to_string())),
-            ..StubMessenger::delivering()
-        };
-        let target = Subject::User("bob".to_string());
+    async fn notes_for_someone_else_carry_the_runtime_attribution() {
+        let messenger = StubMessenger::delivering();
+        let target = Subject::User("hub:bob".to_string());
+        let out = ChannelSendTool::execute_user_target(
+            &messenger,
+            "prin_x",
+            "sess-1",
+            None,
+            Some("from the owner"),
+            &target,
+            "hello bob",
+            &stamp_for("user:hub:alice", peko_tools_core::Trust::Untrusted),
+        )
+        .await;
+        assert_eq!(out["success"], true, "{out}");
+        let notes = messenger.notes.lock().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].0, "user:hub:bob");
+        assert!(
+            notes[0].1.contains("[via user:hub:alice (untrusted)]"),
+            "note must carry the runtime attribution: {}",
+            notes[0].1
+        );
+    }
+
+    /// A note back to the actor the run serves keeps the agent's label.
+    #[tokio::test]
+    async fn notes_to_the_served_actor_keep_the_agent_label() {
+        let messenger = StubMessenger::delivering();
+        let target = Subject::User("hub:bob".to_string());
         let out = ChannelSendTool::execute_user_target(
             &messenger,
             "prin_x",
@@ -1354,30 +1378,8 @@ mod tests {
             None,
             None,
             &target,
-            "hello bob",
-        )
-        .await;
-        assert_eq!(out["success"], true, "{out}");
-        let notes = messenger.notes.lock().unwrap();
-        assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].0, "user:bob");
-        assert!(
-            notes[0].1.contains("[via user:alice]"),
-            "cross-user note must carry origin attribution: {}",
-            notes[0].1
-        );
-    }
-
-    /// Same-user sends keep the plain `agent` label.
-    #[tokio::test]
-    async fn self_user_send_keeps_agent_label() {
-        let messenger = StubMessenger {
-            origin: Some(Subject::User("bob".to_string())),
-            ..StubMessenger::delivering()
-        };
-        let target = Subject::User("bob".to_string());
-        let out = ChannelSendTool::execute_user_target(
-            &messenger, "prin_x", "sess-1", None, None, &target, "hi",
+            "hi",
+            &stamp_for("user:hub:bob", peko_tools_core::Trust::Untrusted),
         )
         .await;
         assert_eq!(out["success"], true, "{out}");
@@ -1395,10 +1397,7 @@ mod tests {
             (Some(""), Some(""), "[agent]"),
             (Some("worker"), Some("deploy"), "[deploy]"),
         ] {
-            let messenger = StubMessenger {
-                origin: Some(Subject::User("bob".to_string())),
-                ..StubMessenger::delivering()
-            };
+            let messenger = StubMessenger::delivering();
             ChannelSendTool::execute_user_target(
                 &messenger,
                 "prin_x",
@@ -1407,6 +1406,7 @@ mod tests {
                 label,
                 &target,
                 "hi",
+                &peko_tools_core::ActingFor::runtime(),
             )
             .await;
             let notes = messenger.notes.lock().unwrap();
@@ -1428,7 +1428,14 @@ mod tests {
                 ..Default::default()
             };
             let out = ChannelSendTool::execute_user_target(
-                &messenger, "prin_x", "sess-1", None, None, &target, "hi",
+                &messenger,
+                "prin_x",
+                "sess-1",
+                None,
+                None,
+                &target,
+                "hi",
+                &peko_tools_core::ActingFor::runtime(),
             )
             .await;
             assert_eq!(out["success"], false, "{out}");

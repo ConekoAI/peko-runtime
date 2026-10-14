@@ -252,6 +252,89 @@ pub struct CronJob {
     /// falls back to the trunk session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_session: Option<String>,
+    /// The stamp of the run that created the job (ADR-078 D5). The job
+    /// fires with it and never above it. `None` only on jobs written
+    /// before ADR-078; the engine refuses to fire those unless they are
+    /// the runtime's own seeded jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<peko_tools_core::ActingFor>,
+}
+
+/// Most enabled jobs one non-owner compartment may hold (ADR-078 D5).
+pub const NON_OWNER_MAX_JOBS: usize = 5;
+
+/// Shortest interval a non-owner job may repeat at (ADR-078 D5).
+pub const NON_OWNER_MIN_INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
+
+/// Whether a run acting for `stamp` may see and manage `job`: owner runs
+/// see every job of the principal, every other run only the jobs created
+/// from its own compartment.
+#[must_use]
+pub fn job_visible_to(job: &CronJob, stamp: &peko_tools_core::ActingFor) -> bool {
+    stamp.is_owner()
+        || job.created_by.as_ref().is_some_and(|creator| {
+            creator.compartment == stamp.compartment
+                && stamp.compartment != peko_tools_core::Compartment::Detached
+        })
+}
+
+/// The limits a non-owner run's job must respect (ADR-078 D5): it runs
+/// in its creator's own conversation, never on the trunk; it repeats no
+/// faster than [`NON_OWNER_MIN_INTERVAL`]; and its compartment holds at
+/// most [`NON_OWNER_MAX_JOBS`] enabled jobs, counting `existing`.
+pub fn check_non_owner_job(job: &CronJob, existing: &[CronJob]) -> Result<()> {
+    let Some(creator) = job.created_by.as_ref() else {
+        anyhow::bail!("a cron job needs the stamp of the run that creates it");
+    };
+    if creator.is_owner() {
+        return Ok(());
+    }
+    if creator.compartment == peko_tools_core::Compartment::Detached {
+        anyhow::bail!("an unattributed run cannot schedule cron jobs");
+    }
+    if job.origin_session.as_deref().is_none_or(str::is_empty) {
+        anyhow::bail!(
+            "a job created for someone other than the owner runs in that conversation; \
+             it cannot target the trunk"
+        );
+    }
+    let too_fast = match &job.schedule {
+        ScheduleKind::At { .. } => false,
+        ScheduleKind::Every { every_ms } => {
+            chrono::Duration::milliseconds(*every_ms as i64) < NON_OWNER_MIN_INTERVAL
+        }
+        ScheduleKind::Idle { minutes } => {
+            chrono::Duration::minutes(*minutes as i64) < NON_OWNER_MIN_INTERVAL
+        }
+        ScheduleKind::Cron { .. } => {
+            let first = calculate_next_run(&job.schedule, Utc::now())?;
+            let second = calculate_next_run(&job.schedule, first)?;
+            second - first < NON_OWNER_MIN_INTERVAL
+        }
+    };
+    if too_fast {
+        anyhow::bail!(
+            "jobs created for someone other than the owner repeat at most every {} minutes",
+            NON_OWNER_MIN_INTERVAL.num_minutes()
+        );
+    }
+    let enabled_here = existing
+        .iter()
+        .filter(|other| other.id != job.id && other.enabled)
+        .filter(|other| {
+            other
+                .created_by
+                .as_ref()
+                .is_some_and(|c| c.compartment == creator.compartment)
+        })
+        .count();
+    if job.enabled && enabled_here >= NON_OWNER_MAX_JOBS {
+        anyhow::bail!(
+            "this conversation already has {NON_OWNER_MAX_JOBS} enabled cron jobs; \
+             disable or delete one first"
+        );
+    }
+    Ok(())
 }
 
 impl CronJob {
@@ -651,6 +734,89 @@ mod tests {
     //! asserting equality proves the wire shapes still match.
     use super::*;
 
+    fn stamped_job(id: &str, trust: peko_tools_core::Trust, every_ms: u64) -> CronJob {
+        CronJob {
+            id: id.into(),
+            name: id.into(),
+            principal_id: PrincipalId("prin_x".into()),
+            schedule: ScheduleKind::Every { every_ms },
+            action: CronJobAction::Send {
+                message: "ping".into(),
+                target: None,
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: Some("guest-session".into()),
+            created_by: Some(peko_tools_core::ActingFor {
+                actor: "user:hub:x".into(),
+                name: None,
+                trust,
+                compartment: peko_tools_core::Compartment::Conversation {
+                    channel: "dm_x".into(),
+                },
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+            }),
+        }
+    }
+
+    /// ADR-078 D5: a non-owner job stays in its conversation, repeats no
+    /// faster than the floor, and its conversation holds a few at most.
+    #[test]
+    fn non_owner_jobs_are_bounded() {
+        use peko_tools_core::Trust;
+        let ok = stamped_job("ok", Trust::Untrusted, 3_600_000);
+        assert!(check_non_owner_job(&ok, &[]).is_ok());
+
+        let mut trunk = ok.clone();
+        trunk.origin_session = None;
+        assert!(check_non_owner_job(&trunk, &[]).is_err(), "no trunk target");
+
+        let fast = stamped_job("fast", Trust::Trusted, 60_000);
+        assert!(check_non_owner_job(&fast, &[]).is_err(), "too frequent");
+
+        let existing: Vec<_> = (0..NON_OWNER_MAX_JOBS)
+            .map(|i| stamped_job(&format!("j{i}"), Trust::Untrusted, 3_600_000))
+            .collect();
+        assert!(check_non_owner_job(&ok, &existing).is_err(), "cap reached");
+
+        let mut unattributed = ok.clone();
+        unattributed.created_by = Some(peko_tools_core::ActingFor::unattributed());
+        assert!(check_non_owner_job(&unattributed, &[]).is_err());
+
+        let mut owner = stamped_job("owner", Trust::Owner, 60_000);
+        owner.origin_session = None;
+        assert!(
+            check_non_owner_job(&owner, &existing).is_ok(),
+            "the owner is unbounded"
+        );
+    }
+
+    #[test]
+    fn non_owner_runs_see_only_their_conversations_jobs() {
+        use peko_tools_core::{ActingFor, Trust};
+        let job = stamped_job("j", Trust::Untrusted, 3_600_000);
+        let same = job.created_by.clone().unwrap();
+        let mut other = same.clone();
+        other.compartment = peko_tools_core::Compartment::Conversation {
+            channel: "dm_y".into(),
+        };
+        assert!(job_visible_to(&job, &same));
+        assert!(!job_visible_to(&job, &other));
+        assert!(job_visible_to(&job, &ActingFor::runtime()));
+        assert!(!job_visible_to(&job, &ActingFor::unattributed()));
+        let mut legacy = job.clone();
+        legacy.created_by = None;
+        assert!(!job_visible_to(&legacy, &same));
+        let _ = Trust::Owner;
+    }
+
     #[test]
     fn anchored_interval_keeps_schedule_period() {
         // Scheduled 10:00:00, every 60s, run finished 15s late (tick
@@ -783,6 +949,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
         let send = |message: &str| CronJobAction::Send {
             message: message.into(),
@@ -902,6 +1069,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
         let json = serde_json::to_string(&job).unwrap();
         let back: CronJob = serde_json::from_str(&json).unwrap();
@@ -1050,6 +1218,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
 
         let json = serde_json::to_string(&job).unwrap();

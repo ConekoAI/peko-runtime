@@ -128,6 +128,7 @@ impl CallerAwareSessionTool {
         inbox_registry: &Arc<InboxRegistry>,
         task_registry: crate::async_exec::executor::SharedAsyncTaskRegistry,
         session_id: Option<String>,
+        acting_for: peko_tools_core::ActingFor,
     ) -> SessionTool {
         let name = principal.name().await;
         let sessions_dir = principal.memory.sessions_dir().clone();
@@ -141,7 +142,8 @@ impl CallerAwareSessionTool {
             Some(Arc::clone(inbox_registry)),
             Some(Arc::clone(&principal.quota_meter)),
         )
-        .with_task_registry(task_registry);
+        .with_task_registry(task_registry)
+        .with_acting_for(acting_for);
         SessionTool::new(Arc::new(runtime) as SharedSessionRuntime)
     }
 }
@@ -209,11 +211,14 @@ impl Tool for CallerAwareSessionTool {
                     inbox_registry,
                     task_registry,
                     ctx.session_id.clone().filter(|s| !s.is_empty()),
+                    ctx.acting_for(),
                 )
                 .await;
                 tool.execute(params).await
             }
             SessionCallerMode::Agent { runtime } => {
+                // ADR-078 D4: every call sees only what its stamp reaches.
+                let runtime = runtime.clone().with_acting_for(ctx.acting_for());
                 match ctx.session_id.clone().filter(|s| !s.is_empty()) {
                     // Per-call override: identical content to the cell
                     // during a run; the token-resolved node on the
@@ -284,7 +289,8 @@ mod tests {
     }
 
     fn ctx_with_session(id: Option<&str>) -> ToolContext {
-        let ctx = ToolContext::default_for_tool("Session");
+        let ctx = ToolContext::default_for_tool("Session")
+            .with_acting_for(peko_tools_core::ActingFor::runtime());
         match id {
             Some(id) => ctx.with_session_id(id),
             None => ctx,
@@ -348,7 +354,9 @@ mod tests {
             Weak::new(),
             crate::async_exec::executor::standalone_inbox_registry(),
         );
-        let ctx = ToolContext::default_for_tool("Session").with_principal_name("ghost");
+        let ctx = ToolContext::default_for_tool("Session")
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
+            .with_principal_name("ghost");
         let err = tool
             .execute_with_context(json!({"action": "list"}), &ctx)
             .await

@@ -165,7 +165,9 @@ pub enum PrincipalCommands {
         /// Subject to grant permission to (e.g. `user:alice`, `public`)
         subject: String,
 
-        /// Permission to grant (e.g. `chat`, `manage_settings`)
+        /// Permission to grant (e.g. `chat`, `manage_settings`). `trusted` is
+        /// the owner's consent to give this actor's agents the full tool
+        /// surface, including the shell (ADR-078).
         permission: String,
     },
 
@@ -694,6 +696,8 @@ async fn provision_principal(
     // `--force` re-create the fresh workspace is empty, so this lays
     // down the full floor.
     let kb_created = peko_core::principal::kb::seed_kb_scaffold(&shared_layout.root)?;
+    // ADR-078 D7: the owner's plain-language policy for everyone else.
+    peko_core::security::policy::seed(&shared_layout.root)?;
 
     // ── P0 provision: stamp the root role + journal birth entry ─────
     // The root role prompt has NO render-time fallback: the trunk
@@ -1320,6 +1324,7 @@ fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
         }
         "expose" => Ok(peko_auth::Permission::Expose),
         "delete" => Ok(peko_auth::Permission::Delete),
+        "trusted" => Ok(peko_auth::Permission::Trusted),
         other => anyhow::bail!("Unknown permission: {other}"),
     }
 }

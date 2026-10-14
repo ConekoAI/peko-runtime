@@ -32,6 +32,9 @@ pub enum Permission {
     Expose,
     /// Delete the resource
     Delete,
+    /// The owner's consent to trust this actor with the principal's full
+    /// tool surface (ADR-078 §2). Never matched through a `Public` grant.
+    Trusted,
 }
 
 impl Permission {
