@@ -180,8 +180,10 @@ grants = []
 # instance ACL (peko-runtime/src/tunnel/dispatcher.rs::
 # compute_allowed_user_ids) lets the request through. Without this,
 # `allowed_users` is empty and the chat is rejected with "Forbidden".
+# Hub users retain their Hub scope in both grants and bridge-token subjects
+# (ADR-077); the bare UUID is not the authenticated caller's subject.
 [[permissions]]
-subject = {{ kind = "user", id = "{chat_user_id}" }}
+subject = {{ kind = "user", id = "hub:{chat_user_id}" }}
 permission = "chat"
 granted_at = "2026-01-01T00:00:00Z"
 granted_by = {{ kind = "user", id = "system" }}

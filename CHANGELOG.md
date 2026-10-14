@@ -17,6 +17,8 @@ All notable changes to Peko.
   principals to Hub-only contacts.
 - Promote imported remote contacts using their immutable actor keys, preserving
   learned relationships, DM pair identity, and history across address changes.
+- Use scoped Hub user grants in the tunnel E2E fixture so private chat tests
+  match authenticated bridge callers under ADR-077.
 
 ### Principal skill isolation and portability (0.1.0, 2026-10-13)
 
