@@ -177,7 +177,6 @@ impl AsyncInboxLike for SessionInbox {
                 result: e.result,
                 status: e.status,
                 completed_at: e.completed_at,
-                output_path: e.output_path,
                 parent_session_key: e.parent_session_key,
             }),
             AsyncInboxItem::Steering(m) => InboxItem::Steering(SteeringMessage {
@@ -208,7 +207,6 @@ mod tests {
                 result: peko_tools_core::ToolResult::success(json!({"ok": true})),
             },
             completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/out"),
             parent_session_key: session.to_string(),
         }
     }

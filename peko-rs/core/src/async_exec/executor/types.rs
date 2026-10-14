@@ -15,8 +15,6 @@ pub struct AsyncTaskReceipt {
     pub task_id: AsyncTaskId,
     pub status: AsyncTaskStatus,
     pub estimated_duration_secs: Option<u64>,
-    /// Path to the task file on disk for polling
-    pub task_file: Option<std::path::PathBuf>,
     /// Parameters the agent used to invoke the tool (audit transparency)
     pub params: Option<serde_json::Value>,
 }
@@ -93,7 +91,7 @@ pub struct AsyncToolConfig {
     /// times out, where no real result ever materializes.
     ///
     /// `serde(skip)`: an `Arc<Mutex<..>>` is process-local shared state,
-    /// not wire data, and the config is serialized into task files.
+    /// not wire data.
     #[serde(skip, default)]
     pub progress: Option<Arc<std::sync::Mutex<String>>>,
 }

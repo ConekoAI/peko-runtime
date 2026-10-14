@@ -231,6 +231,8 @@ impl ToolHandler {
         // ADR-078: a token carries its workflow's stamp; a tokenless call
         // is the local operator acting directly (owner, internal tree).
         let mut token_acting_for: Option<peko_tools_core::ActingFor> = None;
+        // ADR-079: callbacks name the `Workflow` call that minted the token.
+        let mut token_parent: Option<peko_tools_core::CallParent> = None;
         if let Some(token) = run_token.as_deref() {
             let caller_principal = parse_session_key(&session_key).agent.to_string();
             let validated = self
@@ -245,6 +247,9 @@ impl ToolHandler {
                     token_depth = Some(entry.workflow_depth);
                     token_caller_session_id = entry.caller_session_id;
                     token_acting_for = entry.acting_for;
+                    token_parent = entry
+                        .parent_call_id
+                        .map(|call_id| peko_tools_core::CallParent::Workflow { call_id });
                 }
                 None => {
                     let response = ResponsePacket::Error {
@@ -333,6 +338,7 @@ impl ToolHandler {
                 attribution.principal_id,
                 attribution.principal_name,
                 acting_for,
+                token_parent,
             )
             .await;
 
@@ -745,6 +751,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -767,6 +774,57 @@ mod tests {
         };
         assert!(success, "valid token + grants should run: {content}");
         assert!(content.contains("hello.txt"), "content: {content}");
+    }
+
+    /// ADR-079 D4: a workflow callback's ledger record names the
+    /// `Workflow` call that minted its token.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn workflow_callbacks_name_their_workflow_call_in_the_ledger() {
+        let fx = fixture("tokledger").await;
+        let principal = fx
+            .manager
+            .list_all()
+            .await
+            .into_iter()
+            .next()
+            .expect("the fixture's principal");
+        let ledger_dir = fx._temp.path().join("ledger");
+        fx.tool_runtime
+            .tooling()
+            .dispatcher()
+            .bind_ledger(&principal.id, &ledger_dir)
+            .expect("bind ledger");
+        let token = fx.run_tokens.mint(
+            "tokledger",
+            "agent:tokledger:cli:default",
+            1,
+            None,
+            Some(peko_tools_core::ActingFor::runtime()),
+            Some("call_workflow".into()),
+            std::time::Duration::from_mins(1),
+        );
+
+        let response = execute_tool_with_token(
+            &fx.handler,
+            12,
+            "Glob",
+            json!({"pattern": "*.txt", "path": fx.workspace.to_string_lossy()}),
+            "agent:tokledger:cli:default",
+            &fx.workspace,
+            Some(token),
+        )
+        .await;
+        assert!(
+            matches!(response, ResponsePacket::ToolExecuted { success: true, .. }),
+            "{response:?}"
+        );
+        let calls = crate::security::ledger::read::load_calls(&ledger_dir, None).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].start.as_ref().unwrap()["parent"],
+            json!({"kind": "workflow", "call_id": "call_workflow"})
+        );
     }
 
     /// An unknown token fails closed with a transport-level `Error` —
@@ -808,6 +866,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -841,6 +900,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::ZERO,
         );
 
@@ -878,6 +938,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
 
@@ -929,6 +990,7 @@ mod tests {
             crate::tools::builtin::MAX_WORKFLOW_DEPTH,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1090,6 +1152,7 @@ mod tests {
             1,
             Some(child_id.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1144,6 +1207,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1212,6 +1276,7 @@ mod tests {
             1,
             Some(stale.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1353,6 +1418,7 @@ mod tests {
             1,
             Some(child.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1422,6 +1488,7 @@ mod tests {
             1,
             Some(trunk.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1461,6 +1528,7 @@ mod tests {
             1,
             None,
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1557,6 +1625,7 @@ mod tests {
             1,
             Some(child_a.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(
@@ -1631,6 +1700,7 @@ mod tests {
             1,
             Some(node.clone()),
             Some(peko_tools_core::ActingFor::runtime()),
+            None,
             std::time::Duration::from_mins(1),
         );
         let response = execute_tool_with_token(

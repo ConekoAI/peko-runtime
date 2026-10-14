@@ -21,7 +21,6 @@ pub mod completion_queue;
 pub mod dispatch;
 pub mod executor;
 pub mod registry;
-pub mod task_file;
 pub mod types;
 pub mod wake;
 
@@ -38,7 +37,6 @@ pub use registry::{
     AsyncTaskEntry, AsyncTaskRegistry, CancelResult, SharedAsyncTaskRegistry, SubagentMetadata,
     SubagentResult, TaskMetadata,
 };
-pub use task_file::{TaskFileRecord, TaskFileWriter};
 pub use types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, WaitResult,
 };

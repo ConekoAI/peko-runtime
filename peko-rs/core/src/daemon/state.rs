@@ -8,7 +8,7 @@ use peko_subject::Subject;
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::async_exec::inbox::SessionInbox;
-use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl, SessionService};
+use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::types::config::PekoConfig;
 use crate::engine::tool_runtime::ToolRuntime;
 use crate::principal::{
@@ -123,9 +123,6 @@ pub(crate) struct AppState {
 
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
-
-    /// Session service (unified for CLI and API)
-    session_service: Arc<SessionService>,
 
     /// Tool runtime for async task execution (ADR-020)
     pub tool_runtime: Arc<ToolRuntime>,
@@ -555,8 +552,6 @@ impl AppState {
         // separate principal-message service slot is needed.
         let lifecycle = Arc::new(LifecycleManager::new());
 
-        let session_service = Arc::new(SessionService::new(path_resolver.clone()));
-
         // Compose an isolated tooling runtime for each daemon/test state.
         // Its async router must share the inbox registry the engine drains.
         // WS3 (implicit session management, 2026-08-11): hoist the
@@ -798,6 +793,13 @@ impl AppState {
             Arc::clone(&observability),
         )
         .await?;
+        // ADR-079 D3: the ledger redacts the runtime's own secrets.
+        tooling
+            .dispatcher()
+            .set_secret_source(Arc::new(RuntimeSecrets {
+                vault: Arc::clone(&vault),
+                run_tokens: Arc::clone(&run_token_registry),
+            }));
 
         // ADR-034: Initialize auth components
         let auth_config = peko_auth::config::AuthConfig::load(&path_resolver)?;
@@ -901,7 +903,6 @@ impl AppState {
             }),
             peer_registry,
             lifecycle,
-            session_service,
             tool_runtime,
             run_token_registry,
             inbox_registry,
@@ -1088,12 +1089,6 @@ impl AppState {
     #[must_use]
     pub fn peer_registry(&self) -> Option<&Arc<crate::principal::peer::PeerRegistry>> {
         self.peer_registry.as_ref()
-    }
-
-    /// Get the session service
-    #[must_use]
-    pub fn session_service(&self) -> &Arc<SessionService> {
-        &self.session_service
     }
 
     /// Get the auth configuration (ADR-034)
@@ -3061,6 +3056,26 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
             .map(|s| s.trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "https://pekohub.org".to_string())
+    }
+}
+
+/// The secrets this runtime holds — vault credentials and live workflow
+/// run tokens — so the tool ledger can redact them (ADR-079 D3).
+struct RuntimeSecrets {
+    vault: Arc<crate::common::vault::Vault>,
+    run_tokens: Arc<crate::ipc::run_tokens::RunTokenRegistry>,
+}
+
+impl crate::security::ledger::redact::SecretSource for RuntimeSecrets {
+    fn secrets(&self) -> Vec<(String, String)> {
+        let mut secrets = self.vault.secret_materials();
+        secrets.extend(
+            self.run_tokens
+                .live_tokens()
+                .into_iter()
+                .map(|token| ("run_token".to_string(), token)),
+        );
+        secrets
     }
 }
 

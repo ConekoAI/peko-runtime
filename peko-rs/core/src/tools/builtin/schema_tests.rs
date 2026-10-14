@@ -25,6 +25,8 @@ fn tools() -> Vec<Arc<dyn Tool>> {
             )),
             models: Weak::new(),
             sessions: super::test_harness::session_runtime("sessions".into()),
+            sessions_dir: "sessions".into(),
+            ledger_dir: "ledger".into(),
         },
         &Fakes::default(),
     )
@@ -55,6 +57,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("Skill", true),
         ("RoleCatalog", true),
         ("ModelList", true),
+        ("ToolLog", true),
         ("MCP", false),
         ("ModelCall", true),
     ]
@@ -80,7 +83,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 21);
+    assert_eq!(actual.len(), 22);
     for retired in [
         "TaskCreate",
         "TaskGet",

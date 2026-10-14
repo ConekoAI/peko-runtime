@@ -190,6 +190,7 @@ impl ToolRuntime {
                 None,
                 None,
                 Some(peko_tools_core::ActingFor::runtime()),
+                None,
             )
             .await?;
 
@@ -223,6 +224,7 @@ impl ToolRuntime {
     /// e.g. `agent:<principal>:workflow:<uuid>`), not a session UUID.
     /// All three are `None` for unattributed standalone calls.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_tool_full_with_workspace(
         &self,
         tool_name: &str,
@@ -232,20 +234,16 @@ impl ToolRuntime {
         principal_id: Option<String>,
         principal_name: Option<String>,
         acting_for: Option<peko_tools_core::ActingFor>,
+        parent: Option<peko_tools_core::CallParent>,
     ) -> Result<(String, serde_json::Value, bool)> {
-        peko_engine::funnel::execute_tool_via_core_with_context(
-            &*self.tooling,
-            tool_name,
-            params,
-            Some(workspace.to_string_lossy().to_string()),
-            None,
-            session_id,
-            acting_for,
-            principal_id,
-            principal_name,
-            None,
-        )
-        .await
+        let mut spec = peko_engine::ToolCallSpec::new(tool_name, params);
+        spec.workspace = Some(workspace.to_string_lossy().to_string());
+        spec.session_id = session_id;
+        spec.acting_for = acting_for;
+        spec.principal_id = principal_id;
+        spec.principal_name = principal_name;
+        spec.parent = parent;
+        peko_engine::ToolFunnel::execute(&*self.tooling, spec).await
     }
 
     /// List all registered tools visible to the system scope

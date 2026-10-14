@@ -18,6 +18,7 @@
 //! - [`acting_for::ActingFor`] — the runtime stamp of whom a run acts for.
 
 pub mod acting_for;
+pub mod call_parent;
 pub mod constants;
 pub mod exec;
 pub mod interrupt;
@@ -25,6 +26,7 @@ pub mod schema;
 pub mod traits;
 
 pub use acting_for::{neutralize_runtime_tags, ActingFor, Compartment, Origin, Trust};
+pub use call_parent::CallParent;
 pub use constants::HOOK_TIMEOUT;
 pub use exec::{
     bridge_from_cancellation_token, bridge_to_cancellation_token, AbortSignal,

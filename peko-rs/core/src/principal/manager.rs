@@ -2668,6 +2668,7 @@ mod tests {
         let principal = manager.get(id.clone()).await.unwrap();
         let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
         let call = GatedCall {
+            call_id: Some("call_gated".into()),
             principal_id: id.0.clone(),
             principal_name: None,
             session_id: Some("guest-session".into()),
@@ -2723,6 +2724,30 @@ mod tests {
                 .unwrap();
         assert!(approved.starts_with("Approved"), "{approved}");
         assert!(gate.is_approved_replay(&replay).await);
+        // ADR-079 D4: the replay's ledger record names the request and the
+        // call the owner approved.
+        let ledger_dir =
+            crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
+        let mut replayed = None;
+        for _ in 0..50 {
+            replayed = crate::security::ledger::read::load_calls(&ledger_dir, None)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|c| {
+                    c.start
+                        .as_ref()
+                        .is_some_and(|s| s["parent"]["kind"] == "approval")
+                });
+            if replayed.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let replayed = replayed.expect("the approved replay is in the ledger");
+        assert_eq!(
+            replayed.start.as_ref().unwrap()["parent"],
+            serde_json::json!({"kind": "approval", "id": second, "call_id": "call_gated"})
+        );
         let mut altered = replay.clone();
         altered.params = serde_json::json!({"file_path": "finances/q4.md"});
         assert!(

@@ -1127,6 +1127,26 @@ impl Vault {
         providers
     }
 
+    /// Every stored credential's material, labeled `vault:<namespace>/<name>`,
+    /// so the tool ledger can redact it wherever it appears (ADR-079 D3).
+    #[must_use]
+    pub fn secret_materials(&self) -> Vec<(String, String)> {
+        let Ok(inner) = self.inner.read() else {
+            return Vec::new();
+        };
+        inner
+            .file
+            .credentials
+            .values()
+            .map(|c| {
+                (
+                    format!("vault:{}/{}", c.namespace, c.name),
+                    c.material.expose_secret().to_string(),
+                )
+            })
+            .collect()
+    }
+
     /// Cheap format check for a provider key.
     pub fn test_provider_key(&self, provider: &str) -> Option<bool> {
         let key = self.get_provider_key(provider)?;

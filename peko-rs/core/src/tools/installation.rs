@@ -6,7 +6,7 @@ use crate::common::paths::PathResolver;
 use crate::tools::builtin::{
     channel, messaging, AgentCatalogTool, AsyncTool, BashTool, CallerAwareSessionTool,
     ChannelReadTool, EditTool, GlobTool, GrepTool, ModelCallTool, ModelListTool, PlanTool,
-    ReadTool, SkillTool, TaskTool, WorkflowTool, WriteTool,
+    ReadTool, SkillTool, TaskTool, ToolLogTool, WorkflowTool, WriteTool,
 };
 use crate::tools::catalog::ToolCatalog;
 use crate::tools::metadata::ToolSource;
@@ -60,7 +60,7 @@ builtin_manifest! {
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
     WORKSPACE_TOOL_NAMES: Principal, Workspace, false => ["Skill", "RoleCatalog"];
     PRINCIPAL_SERVICE_TOOL_NAMES: Principal, PrincipalServices, false => [
-        "Task", "Plan", "ChannelSend", "Contacts", "ModelList", "MCP"
+        "Task", "Plan", "ChannelSend", "Contacts", "ModelList", "MCP", "ToolLog"
     ];
     ASYNC_TOOL_NAMES: Principal, Async, false => ["Async"];
 }
@@ -223,6 +223,15 @@ pub(crate) async fn install_principal_services(
 ) -> Result<()> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     if let Some(dir) = bindings.sessions_dir {
+        // ADR-079: the tool ledger sits beside the sessions in the Local tier.
+        let ledger_dir = crate::security::ledger::dir_for_sessions(&dir);
+        match tooling.dispatcher().bind_ledger(principal, &ledger_dir) {
+            Ok(()) => tools.push(Arc::new(ToolLogTool::new(ledger_dir, dir.clone()))),
+            Err(e) => tracing::warn!(
+                principal = %principal.0,
+                "tool ledger unavailable; calls are audited only globally: {e:#}"
+            ),
+        }
         let runtime = Arc::new(crate::session::todo_runtime_impl::TodoStorageRuntime::new(
             Arc::new(peko_session::todos::TodoStorage::new(dir)),
         ));

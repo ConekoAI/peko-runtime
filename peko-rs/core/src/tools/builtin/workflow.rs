@@ -300,6 +300,8 @@ impl Tool for WorkflowTool {
             caller_session_id,
             // ADR-078: the workflow's callbacks act as its caller.
             Some(ctx.acting_for()),
+            // ADR-079: and name this call as their parent.
+            ctx.call_id.clone(),
             timeout_ms.map_or(UNCAPPED_RUN_TOKEN_TTL, |ms| {
                 Duration::from_millis(ms) + RUN_TOKEN_TTL_MARGIN
             }),

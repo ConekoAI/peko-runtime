@@ -13,7 +13,6 @@ pub struct CompletionEvent {
     pub result: serde_json::Value,
     pub status: peko_tools_core::AsyncTaskStatus,
     pub completed_at: DateTime<Utc>,
-    pub output_path: std::path::PathBuf,
     pub parent_session_key: String,
 }
 
@@ -67,7 +66,6 @@ impl From<CompletionEvent> for crate::CompletionEnvelope {
             result: e.result,
             status: e.status,
             completed_at: e.completed_at,
-            output_path: e.output_path,
             parent_session_key: e.parent_session_key,
         }
     }

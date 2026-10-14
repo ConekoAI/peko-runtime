@@ -15,6 +15,12 @@
 //!   filesystem. The CLI renders a summary count by `event_type`
 //!   prefix so the user can scan what's been noisy lately.
 //!
+//! - **`ledger`** / **`verify`** — read one principal's tool ledger
+//!   (ADR-079) straight from its Local tier: every tool call with its
+//!   acting-for stamp, redacted params, outcome, and result excerpt;
+//!   `verify` walks the hash chain and cross-checks it against this
+//!   global log. Both work with the daemon stopped.
+//!
 //! Why two paths? The IPC query is bounded by the ring buffer
 //! (10k entries, current session only); the JSONL tail is the
 //! historical record. The user picks based on intent — "what's
@@ -31,6 +37,8 @@ use peko_core::ipc::DaemonClient;
 use peko_observability::{AuditEvent, AuditSeverity};
 
 use crate::commands::GlobalPaths;
+
+mod ledger;
 
 /// `peko audit` subcommands.
 #[derive(Subcommand)]
@@ -58,6 +66,50 @@ pub enum AuditCommands {
         #[arg(short, long)]
         follow: bool,
         /// Output as JSON lines (skip the human-friendly formatter).
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show a principal's tool ledger (ADR-079): newest calls first.
+    Ledger {
+        /// The peko whose ledger to read.
+        peko: String,
+        /// Only calls started at or after this time (`1h`, `2d`, RFC3339).
+        #[arg(long)]
+        since: Option<String>,
+        /// Only calls to this tool (exact name, e.g. `Bash`).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Only calls in this session: a slug path (`/user-x/task`) or id.
+        #[arg(long)]
+        session: Option<String>,
+        /// Only calls acting for this actor address.
+        #[arg(long)]
+        actor: Option<String>,
+        /// Only calls with this outcome (`ok`, `error`, `floor_denied`, …,
+        /// or `in_flight`).
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Print one call in full: its records, parent, and children.
+        #[arg(long, value_name = "CALL_ID")]
+        call: Option<String>,
+        /// Maximum number of calls to print.
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+        /// Keep printing records as they are written.
+        #[arg(short, long)]
+        follow: bool,
+        /// Output as JSON lines.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Check a principal's tool ledger: its hash chain, the checkpoints
+    /// in the global audit log, and every call against `tool.call`.
+    Verify {
+        /// The peko whose ledger to verify.
+        peko: String,
+        /// Output the report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -94,6 +146,36 @@ pub async fn handle_audit(cmd: AuditCommands, paths: &GlobalPaths) -> Result<()>
             follow,
             json,
         } => tail_jsonl(paths, since, event_type, principal, limit, follow, json),
+        AuditCommands::Ledger {
+            peko,
+            since,
+            tool,
+            session,
+            actor,
+            outcome,
+            call,
+            limit,
+            follow,
+            json,
+        } => {
+            ledger::show(
+                paths,
+                &peko,
+                ledger::Query {
+                    since,
+                    tool,
+                    session,
+                    actor,
+                    outcome,
+                    call,
+                    limit,
+                    follow,
+                    json,
+                },
+            )
+            .await
+        }
+        AuditCommands::Verify { peko, json } => ledger::verify(paths, &peko, json),
         AuditCommands::List {
             limit,
             event_type,

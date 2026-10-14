@@ -218,6 +218,19 @@ async fn the_gate_allows_denies_or_asks_the_owner() {
     assert_eq!(asked[0].0.stamp, guest(Trust::Untrusted));
     assert_eq!(asked[0].0.tool_name, "Read");
     assert_eq!(asked[0].1, "unclear");
+
+    // ADR-079: each verdict is the call's ledger outcome, and the gated
+    // call carries its ledger id so an approved replay can name it.
+    let outcomes: Vec<_> = h
+        .ledger_calls()
+        .iter()
+        .map(|call| call.outcome().unwrap_or("in_flight").to_string())
+        .collect();
+    assert_eq!(outcomes, ["ok", "policy_denied", "awaiting_owner"]);
+    assert_eq!(
+        asked[0].0.call_id.as_deref(),
+        Some(h.ledger_calls()[2].call_id.as_str())
+    );
 }
 
 #[tokio::test]

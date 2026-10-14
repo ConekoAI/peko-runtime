@@ -6,12 +6,14 @@
 //! - [`proposals`] files a non-owner's protected write for the owner.
 //! - [`policy`] reads the owner's `POLICY.md`.
 //! - [`judge`] decides which calls a separate reviewer sees, and how.
+//! - [`ledger`] is the per-principal tool ledger (ADR-079).
 //!
 //! The module never imports `principal/`, so `agents/` can depend on it;
 //! the principal layer supplies trust through [`stamps::TrustSource`].
 
 pub mod floor;
 pub mod judge;
+pub mod ledger;
 pub mod policy;
 pub mod proposals;
 pub mod stamps;

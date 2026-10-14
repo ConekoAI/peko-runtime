@@ -464,19 +464,27 @@ impl Daemon {
                         Err(e) => error!("Cron janitor reconciliation failed: {e}"),
                     }
 
-                    let files = crate::async_exec::executor::TaskFileWriter::new(
-                        peko_tools_core::default_data_dir().join("async_tasks"),
-                    )
-                    .cleanup_old(Duration::from_hours(24))
-                    .await
-                    .unwrap_or_else(|e| {
-                        error!("Error cleaning async task files: {e}");
-                        0
-                    });
                     let registry = app_state.tool_runtime.tooling().purge_finished_tasks().await;
-                    if files > 0 || registry > 0 {
-                        info!("Async task janitor cleaned {files} task files and {registry} registry entries");
+                    if registry > 0 {
+                        info!("Async task janitor cleaned {registry} registry entries");
                     }
+
+                    // ADR-079: checkpoint quiet ledgers and prune old days.
+                    let dispatcher = app_state.tool_runtime.tooling().dispatcher().clone();
+                    dispatcher.checkpoint_ledgers(false).await;
+                    let mut retention = std::collections::HashMap::new();
+                    for principal in app_state.principal_manager().list_all().await {
+                        let days = principal.config.read().await.governance.ledger_retention_days;
+                        retention.insert(principal.id.clone(), days.get());
+                    }
+                    dispatcher
+                        .prune_ledgers(|id| {
+                            retention
+                                .get(id)
+                                .copied()
+                                .unwrap_or(crate::security::ledger::DEFAULT_RETENTION_DAYS)
+                        })
+                        .await;
                 }
 
                 // Handle shutdown signal from API
@@ -498,6 +506,14 @@ impl Daemon {
 
         // Mark daemon as not ready
         app_state.set_ready(false).await;
+
+        // ADR-079 D5: anchor every ledger's final head in the global log.
+        app_state
+            .tool_runtime
+            .tooling()
+            .dispatcher()
+            .checkpoint_ledgers(true)
+            .await;
 
         // Signal shutdown to IPC before joining its accept loop. API shutdown
         // already broadcasts; OS-signal shutdown must take the same path.

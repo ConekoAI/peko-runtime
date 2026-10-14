@@ -107,6 +107,9 @@ pub struct LocalLayout {
     /// coordinated atomic writes; per-principal scope matches the
     /// runtime-only nature of plan state (never packaged, never shared).
     pub plans_dir: PathBuf,
+    /// `…/local/ledger/` — the hash-chained tool ledger (ADR-079).
+    /// Written only by the dispatcher; never packaged.
+    pub ledger_dir: PathBuf,
 }
 
 /// Typed paths under `{config_dir}/principals/{name}/`.
@@ -435,6 +438,7 @@ impl PathResolver {
                 cache_dir: local_root.join("cache"),
                 locks_dir: local_root.join("locks"),
                 plans_dir: local_root.join("plans"),
+                ledger_dir: local_root.join("ledger"),
             },
             shared: SharedLayout {
                 root: shared_root.clone(),
@@ -759,14 +763,6 @@ impl PathResolver {
     #[must_use]
     pub fn agent_workspace(&self, agent: &str) -> PathBuf {
         self.agent_workspaces_root(agent).join("personal")
-    }
-
-    /// Get the async tasks directory
-    ///
-    /// Path: `{data_dir}/async_tasks`
-    #[must_use]
-    pub fn async_tasks_dir(&self) -> PathBuf {
-        self.data_dir.join("async_tasks")
     }
 
     // ====================================================================================

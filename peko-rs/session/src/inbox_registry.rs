@@ -187,7 +187,6 @@ mod tests {
     use peko_tools_core::AsyncTaskStatus;
     use peko_tools_core::ToolResult;
     use serde_json::json;
-    use std::path::PathBuf;
     use tokio::sync::Mutex as AsyncMutex;
 
     /// Minimal AsyncInboxLike stub for tests — does not exercise any
@@ -221,7 +220,6 @@ mod tests {
                 result: ToolResult::success(json!({"exit_code": 0})),
             },
             completed_at: chrono::Utc::now(),
-            output_path: PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: session.to_string(),
         })
     }

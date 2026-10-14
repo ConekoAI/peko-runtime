@@ -256,7 +256,6 @@ mod tests {
             result: serde_json::json!({"exit_code": 0, "stdout": "hello"}),
             status,
             completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: session_key.to_string(),
         }
     }
@@ -501,7 +500,6 @@ mod tests {
                 result: ToolResult::success(serde_json::json!({"stdout": big})),
             },
             completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: "session_a".to_string(),
         }];
 

@@ -210,7 +210,7 @@ chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
 
 # UUID
-uuid = { version = "1.7", features = ["v4", "v5", "serde"] }
+uuid = { version = "1.7", features = ["v4", "v5", "v7", "serde"] }
 
 # Directories
 dirs = "5.0"

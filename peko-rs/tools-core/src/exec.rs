@@ -84,8 +84,13 @@ impl From<anyhow::Error> for ToolError {
 pub struct ToolContext {
     /// Run identifier for this execution
     pub run_id: String,
-    /// Tool execution identifier
+    /// Tool execution identifier (the model's tool-call id when known;
+    /// MCP servers receive it as their reserved `tool_call_id`).
     pub tool_id: String,
+    /// The runtime's ledger id for this call (ADR-079), minted by the
+    /// dispatcher. Work a tool starts in the background names it as its
+    /// parent.
+    pub call_id: Option<String>,
     /// Tool name
     pub tool_name: String,
     /// Channel for emitting events (progress updates, etc.)
@@ -137,6 +142,7 @@ impl ToolContext {
         Self {
             run_id: run_id.into(),
             tool_id: tool_id.into(),
+            call_id: None,
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
@@ -165,6 +171,7 @@ impl ToolContext {
         Self {
             run_id: "hook".to_string(),
             tool_id: "hook".to_string(),
+            call_id: None,
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
@@ -198,6 +205,7 @@ impl ToolContext {
         Self {
             run_id: run_id.into(),
             tool_id: tool_id.into(),
+            call_id: None,
             tool_name: tool_name.into(),
             event_tx: None,
             abort_rx,
@@ -254,6 +262,7 @@ impl ToolContext {
         Self {
             run_id: run_id.into(),
             tool_id: tool_id.into(),
+            call_id: None,
             tool_name: tool_name.into(),
             event_tx: Some(event_tx),
             abort_rx,
@@ -283,6 +292,13 @@ impl ToolContext {
     #[must_use]
     pub fn with_timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set the ledger call id (ADR-079).
+    #[must_use]
+    pub fn with_call_id(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
         self
     }
 

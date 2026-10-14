@@ -346,14 +346,6 @@ impl SessionEntry {
     pub fn to_metadata(&self) -> crate::metadata::SessionMetadata {
         self.clone()
     }
-
-    /// Convert to `SessionInfo` for service layer
-    ///
-    /// This is the preferred conversion method when passing to `SessionService`.
-    #[must_use]
-    pub fn to_info(&self) -> crate::session_info::SessionInfo {
-        crate::session_info::SessionInfo::from(self.clone())
-    }
 }
 
 /// Subject routing information
