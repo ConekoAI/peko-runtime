@@ -225,9 +225,9 @@ mod tests {
         assert!(check_permission(
             &principal_resource(&view),
             Permission::Chat,
-            &Subject::User("123".into())
+            &Subject::User("local:123".into())
         )
-        .is_ok());
+        .is_err());
         assert!(check_permission(
             &principal_resource(&view),
             Permission::Chat,
@@ -235,7 +235,7 @@ mod tests {
         )
         .is_err());
 
-        let grantee = Subject::User("local_456".into());
+        let grantee = Subject::User("hub:456".into());
         let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
@@ -251,9 +251,21 @@ mod tests {
         assert!(check_permission(
             &principal_resource(&view),
             Permission::Chat,
-            &Subject::User("456".into())
+            &Subject::User("local_456".into())
         )
         .is_ok());
+        assert!(check_permission(
+            &principal_resource(&view),
+            Permission::Chat,
+            &Subject::User("local:local_456".into())
+        )
+        .is_err());
+        assert!(check_permission(
+            &principal_resource(&view),
+            Permission::Chat,
+            &Subject::User("local:456".into())
+        )
+        .is_err());
         for other_kind in [
             Subject::Principal("456".into()),
             Subject::Visitor("456".into()),

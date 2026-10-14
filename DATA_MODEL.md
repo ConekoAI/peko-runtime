@@ -2963,7 +2963,9 @@ persisted session, task, cron, or workflow fields.
 
 `runtime/actors.json` contains actor records with `info` (`address`, `local_id`,
 `hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
-and optional private `signing_did`. An optional `known_by` array records the local
+and optional private `signing_did`. Private `historical_aliases` preserve address
+resolution for past authors and memberships after promotion/unlinking; they are
+not accepted by public `resolve_actor` routing. An optional `known_by` array records the local
 principal IDs that explicitly learned this contact; absent arrays default to empty.
 Current channel participants are discovered from membership, without adding them
 to `known_by`. Actor profile updates retain the learned relationships. Contact
@@ -2971,9 +2973,18 @@ discovery combines the caller's own actor, current channel rosters, and its
 `known_by` entries; it never enumerates the runtime registry. Legacy registry rows
 do not automatically become every principal's contacts.
 The identity key, signing DID, and `known_by` are omitted
-from tool profiles. Local addresses have the form `kind:local:<id>`; optional
-aliases are `kind:hub:<UUID>`. Registry writes use a file lock and atomic replacement.
-Aliases and immutable keys cannot belong to two local actors.
+from tool profiles. Under ADR-077, `local_id` and `hub_id` are optional, with at
+least one present. Local-only actors have a local ID, registered local principals
+have both, and remote principals/accounts/visitors have only a Hub ID (`local_id:
+null`). Canonical addresses prefer `kind:local:<id>` when a local ID exists,
+otherwise `kind:hub:<UUID>`. Remote actors acquire no local proxy alias.
+Registry writes use a file lock and atomic replacement. Aliases and immutable
+keys cannot belong to distinct actors. Startup reconciles legacy proxies against
+the complete hosted-principal inventory, preserving real hosted IDs and recording
+retired proxy aliases privately. Failed principal loads skip reconciliation. Local
+and Hub scopes remain distinct in authorization checks. Existing bare proxy
+user/visitor grants normalize to scoped Hub subjects; explicitly scoped local
+grants do not.
 
 `principal.toml` stores `id`, `actor_key`, optional `hub_id`, signing `did`, and
 `exposure` (`local_only`, `private`, `public`). The registry is authoritative for the
@@ -2984,8 +2995,8 @@ are vault-backed independently of Hub login.
 `runtime/hub-login.json` stores `{user_id, hub_url}` for the current authenticated
 human. API credentials stay in the vault. Tunnel `pekohub.toml.owner_id` identifies
 the runtime registrar and does not select the local caller. The default user's
-local ID is `local`; authenticated accounts/visitors use `local_<Hub UUID>`, with
-kind preserved. Login state is reread per request and remains cached when offline.
+local ID is `local`; authenticated accounts/visitors use Hub-only identities,
+with kind preserved. Login state is reread per request and remains cached when offline.
 
 Conversation `SessionEntry.channel_id` is the sole binding. Binding clears
 `peer_type`/`peer_id`, and index backfill does not restore actor stamps onto a
@@ -3000,7 +3011,8 @@ principal signing proof and deployment metadata. The Hub replies
 `principal_registration_rejected {registrationId, message}`. Hub actor UUIDs are
 stable across deployment instances; routing instance UUIDs remain separate.
 Invites add `hubId`, `identityKey`, and `name` to each member snapshot. Signed posts
-use Hub actor addresses on the wire and runtime-local canonical addresses on reads.
+use Hub actor addresses on the wire; reads use local addresses for hosted
+actors and Hub addresses for remote actors.
 
 Directory responses contain `{name, hubId, localId, identityKey, principalDid,
 runtimeId, instanceId, ownerSubject, exposure}`. `principalDid` is a signing credential.
@@ -3012,4 +3024,7 @@ private chat permission. These contracts replace the pre-launch identity format.
 ADR-073 snapshots use the same vault-backed `did:key` signing credential as live
 principals. Import writes the seed to the `principal-identity` vault namespace,
 clears the copied Hub ID and exposure projection, and preserves the immutable actor
-key unless keys are rotated. A known contact retains its destination local ID.
+key unless keys are rotated. An already hosted actor retains its destination
+local ID. A remote contact gains a fresh local ID on import, retaining its
+immutable actor key, learned relationships, and verified Hub link when installed
+by the principal manager. DM pair IDs do not change on promotion.

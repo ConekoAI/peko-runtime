@@ -205,7 +205,7 @@ enum CallerBinding {
 
 /// Map a [`CallerContext`] to its [`CallerBinding`].
 ///
-/// JWT callers use the same bare user id for permissions, attribution and
+/// JWT callers use the same scoped Hub identity for permissions, attribution and
 /// membership. Legacy prefixed claims are normalized by CallerContext.
 fn caller_binding(caller: &CallerContext) -> CallerBinding {
     use peko_auth::caller::Identity;
@@ -248,7 +248,7 @@ impl RequestHandler for ChannelHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let actor = caller.attribution_subject();
-        let hub = actor.subject_id().strip_prefix("local_");
+        let hub = actor.subject_id().strip_prefix("hub:");
         self.host
             .channel_port()
             .register_actor(
@@ -1438,7 +1438,7 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .invite(&ch, &creator, &Subject::User("local_alice".to_string()))
+            .invite(&ch, &creator, &Subject::User("hub:alice".to_string()))
             .await
             .expect("invite user");
         adapter
@@ -1509,7 +1509,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(authors, vec!["user:local:local_alice"]);
+        assert_eq!(authors, vec!["user:hub:alice"]);
 
         // A local caller declaring a user sender is refused — even a
         // member one. Identities are derived, never declared.

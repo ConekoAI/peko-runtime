@@ -374,7 +374,7 @@ impl PeerChildTurns {
         let peer = if known.identity_key != known.address {
             known.subject()
         } else {
-            let hub = peer.subject_id().strip_prefix("local_");
+            let hub = peer.subject_id().strip_prefix("hub:");
             port.register_actor(
                 peer,
                 hub,

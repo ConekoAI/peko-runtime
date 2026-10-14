@@ -183,15 +183,11 @@ impl Tool for ContactsTool {
                     result.exposure != crate::tunnel::hub_directory::ResolvedExposure::LocalOnly,
                     "Target is local_only"
                 );
-                let local_id = if result.runtime_id == context.caller_runtime_id {
-                    result.local_id.clone()
-                } else {
-                    format!("local_{hub_id}")
-                };
+                let subject = context.actor_subject(&result).await?;
                 let actor = self
                     .port
                     .register_actor(
-                        &Subject::Principal(local_id.into()),
+                        &subject,
                         Some(hub_id),
                         Some(&result.agent_did),
                         Some(&result.identity_key),

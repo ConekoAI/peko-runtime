@@ -917,30 +917,21 @@ impl ChannelSendTool {
         let resolution = match scope {
             "local" => {
                 let actor = cross_runtime.channel_port.resolve_actor(raw).await?;
-                if cross_runtime
-                    .principal_manager
-                    .get(PrincipalId(actor.local_id.clone()))
-                    .await
-                    .is_some()
-                {
+                let local_id = actor
+                    .local_id
+                    .ok_or_else(|| anyhow::anyhow!("Actor is not local"))?;
+                anyhow::ensure!(
                     cross_runtime
-                        .directory
-                        .resolve_by_handle("", &actor.local_id)
-                        .await?
-                } else {
-                    let hub = actor.hub_id.ok_or_else(|| {
-                        anyhow::anyhow!("Local contact has no remote Hub identity")
-                    })?;
-                    let resolved = cross_runtime
-                        .directory
-                        .resolve_by_hub_id_as(&hub, &caller.did().await.0)
-                        .await?;
-                    anyhow::ensure!(
-                        resolved.hub_id == hub,
-                        "Directory substituted a different Hub identity"
-                    );
-                    resolved
-                }
+                        .principal_manager
+                        .get(PrincipalId(local_id.clone()))
+                        .await
+                        .is_some(),
+                    "Local principal is not hosted by this runtime"
+                );
+                cross_runtime
+                    .directory
+                    .resolve_by_handle("", &local_id)
+                    .await?
             }
             "hub" => {
                 let result = cross_runtime
@@ -969,15 +960,11 @@ impl ChannelSendTool {
                 "Target is local_only"
             );
         }
-        let local_id = if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            resolution.local_id.clone()
-        } else {
-            format!("local_{}", resolution.hub_id)
-        };
+        let subject = cross_runtime.actor_subject(&resolution).await?;
         cross_runtime
             .channel_port
             .register_actor(
-                &Subject::Principal(local_id.into()),
+                &subject,
                 (!resolution.hub_id.is_empty()).then_some(resolution.hub_id.as_str()),
                 Some(&resolution.agent_did),
                 Some(&resolution.identity_key),

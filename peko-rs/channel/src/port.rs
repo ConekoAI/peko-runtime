@@ -38,11 +38,17 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(())
     }
 
-    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
-        ActorInfo::local(subject, None)
+    /// Release a hosted principal's local identity when it is removed. A known
+    /// Hub actor remains a remote contact; local-only history remains local.
+    async fn unhost_principal(&self, _id: &PrincipalId) -> Result<()> {
+        Ok(())
     }
 
-    /// Bind a verified Hub alias to an existing local actor. Signing keys are
+    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
+        ActorInfo::from_subject(subject, None)
+    }
+
+    /// Register a local actor or a verified Hub-only contact. Signing keys are
     /// transport credentials, never user-facing actor references.
     async fn register_actor(
         &self,
@@ -53,8 +59,8 @@ pub trait ChannelPort: Send + Sync + 'static {
         name: Option<&str>,
         registration: &str,
     ) -> Result<ActorInfo> {
-        let mut actor = ActorInfo::local(subject, name);
-        actor.hub_id = hub_id.map(str::to_owned);
+        let mut actor = ActorInfo::from_subject(subject, name);
+        actor.bind_hub_id(hub_id)?;
         actor.registration = registration.into();
         actor.identity_key = identity_key
             .or(signing_did)
@@ -484,7 +490,8 @@ pub trait ChannelPort: Send + Sync + 'static {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActorInfo {
     pub address: String,
-    pub local_id: String,
+    /// Present only for identities hosted by this runtime.
+    pub local_id: Option<String>,
     pub hub_id: Option<String>,
     pub kind: String,
     pub registration: String,
@@ -497,22 +504,60 @@ pub struct ActorInfo {
 }
 
 impl ActorInfo {
-    pub fn local(subject: &Subject, name: Option<&str>) -> Self {
-        let id = subject
-            .subject_id()
-            .strip_prefix("local:")
-            .unwrap_or(subject.subject_id());
-        let address = format!("{}:local:{id}", subject.kind());
+    pub fn from_subject(subject: &Subject, name: Option<&str>) -> Self {
+        let (scope, id) = if let Some(id) = subject.subject_id().strip_prefix("hub:") {
+            ("hub", id)
+        } else {
+            (
+                "local",
+                subject
+                    .subject_id()
+                    .strip_prefix("local:")
+                    .unwrap_or(subject.subject_id()),
+            )
+        };
+        let address = format!("{}:{scope}:{id}", subject.kind());
         Self {
-            local_id: id.into(),
-            hub_id: None,
+            local_id: (scope == "local").then(|| id.into()),
+            hub_id: (scope == "hub").then(|| id.into()),
             kind: subject.kind().to_string(),
-            registration: "local_only".into(),
+            registration: if scope == "local" {
+                "local_only"
+            } else {
+                "registered"
+            }
+            .into(),
             identity_key: address.clone(),
             mention: matches!(subject, Subject::Principal(_)).then(|| format!("@{address}")),
             address,
             name: name.map(str::to_owned),
         }
+    }
+    pub(crate) fn bind_hub_id(&mut self, hub_id: Option<&str>) -> Result<()> {
+        if !matches!(self.kind.as_str(), "principal" | "user" | "visitor")
+            || (self.local_id.is_none() && self.hub_id.is_none())
+            || self
+                .local_id
+                .as_deref()
+                .is_some_and(|id| id.is_empty() || id.contains(':'))
+            || self
+                .hub_id
+                .as_deref()
+                .is_some_and(|id| id.is_empty() || id.contains(':'))
+            || hub_id.is_some_and(|id| id.is_empty() || id.contains(':'))
+        {
+            return Err(ChannelError::Adapter("Invalid actor identity".into()));
+        }
+        if self.local_id.is_none() {
+            if hub_id.is_some() && self.hub_id.as_deref() != hub_id {
+                return Err(ChannelError::Adapter(
+                    "Hub reference and identity disagree".into(),
+                ));
+            }
+        } else {
+            self.hub_id = hub_id.map(str::to_owned);
+        }
+        Ok(())
     }
     pub fn hub_address(&self) -> Option<String> {
         self.hub_id
@@ -520,7 +565,13 @@ impl ActorInfo {
             .map(|id| format!("{}:hub:{id}", self.kind))
     }
     pub fn subject(&self) -> Subject {
-        format!("{}:{}", self.kind, self.local_id)
+        let id = self.local_id.clone().unwrap_or_else(|| {
+            format!(
+                "hub:{}",
+                self.hub_id.as_deref().expect("actor has an address")
+            )
+        });
+        format!("{}:{id}", self.kind)
             .parse()
             .expect("registered actor kind")
     }
@@ -530,11 +581,13 @@ impl ActorInfo {
 pub fn short_name_unambiguous(roster: &[ActorInfo], name: &str, address: &str) -> bool {
     let is_me = |p: &ActorInfo| {
         p.address == address
-            || p.local_id
-                == address
-                    .strip_prefix("principal:local:")
-                    .or_else(|| address.strip_prefix("principal:"))
-                    .unwrap_or(address)
+            || p.local_id.as_deref()
+                == Some(
+                    address
+                        .strip_prefix("principal:local:")
+                        .or_else(|| address.strip_prefix("principal:"))
+                        .unwrap_or(address),
+                )
     };
     roster
         .iter()

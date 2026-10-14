@@ -357,21 +357,23 @@ async fn learned_remote_contacts_persist_without_leaking_to_other_principals() {
     call.principal_id = Some(fx.caller.id.0.clone());
     let (_, resolved, success) = fx.tooling.dispatcher().execute(call).await.unwrap();
     assert!(success, "{resolved}");
-    assert_eq!(
-        resolved["actor"]["address"],
-        "principal:local:local_remote-hub"
-    );
+    assert_eq!(resolved["actor"]["address"], "principal:hub:remote-hub");
     assert_eq!(resolved["actor"]["hub_id"], "remote-hub");
+    assert!(resolved["actor"]["local_id"].is_null());
     assert_eq!(resolved["actor"]["registration"], "public");
     assert_eq!(resolved["runtime_id"], "remote-runtime");
     assert_eq!(resolved["local"], false);
     assert_eq!(*fx.directory.calls.lock().unwrap(), vec![None]);
     let cached = fx
-        .resolve(&fx.caller.id, "principal:local:local_remote-hub")
+        .resolve(&fx.caller.id, "principal:hub:remote-hub")
         .await
         .unwrap();
     assert_eq!(cached["actor"], resolved["actor"]);
     assert_eq!(fx.directory.calls.lock().unwrap().len(), 1);
+    assert!(fx
+        .resolve(&fx.caller.id, "principal:local:local_remote-hub")
+        .await
+        .is_err());
     assert_eq!(
         fx.list(&fx.caller.id).await["actors"]
             .as_array()
@@ -542,4 +544,33 @@ async fn storage_errors_are_not_treated_as_directory_misses() {
         .await
         .is_err());
     assert!(fx.directory.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn same_runtime_directory_claims_must_match_a_hosted_identity() {
+    let fx = Fixture::new().await;
+    let path = fx.temp.path().join("runtime/actors.json");
+    let before = std::fs::read(&path).unwrap();
+    fx.directory.response.lock().unwrap().runtime_id = "local-runtime".into();
+    let unknown = fx
+        .resolve(&fx.caller.id, "principal:hub:remote-hub")
+        .await
+        .unwrap_err();
+    assert!(unknown.to_string().contains("unknown local principal"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    fx.directory.response.lock().unwrap().local_id = fx.other.id.0.clone();
+    let mismatched = fx
+        .resolve(&fx.caller.id, "principal:hub:remote-hub")
+        .await
+        .unwrap_err();
+    assert!(mismatched
+        .to_string()
+        .contains("does not match the hosted principal"));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(fx
+        .port
+        .known_contacts(&fx.caller.id)
+        .await
+        .unwrap()
+        .is_empty());
 }

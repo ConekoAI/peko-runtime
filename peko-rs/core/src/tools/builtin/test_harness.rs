@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 /// Principal every call runs as unless a test overrides the caller.
-pub(crate) const PRINCIPAL: &str = "did:peko:harness";
+pub(crate) const PRINCIPAL: &str = "prin_harness";
 /// Session every call runs in unless a test overrides the caller.
 pub(crate) const SESSION: &str = "harness-session";
 
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn principal_owned_state_is_scoped_to_the_calling_principal() {
         let harness = ToolHarness::new().await;
-        let other = Caller::principal("did:peko:other");
+        let other = Caller::principal("prin_other");
         let job = harness
             .call(
                 "Cron",

@@ -59,7 +59,7 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
             // ADR-058 D5: visitors are ordinary non-owner peers with
             // their own `/visitor-<id>` slug space. The typed-claim
             // gate (`Subject::from_bridge_claim`) already rejects ids
-            // containing `:` and the reserved `local`, so a visitor
+            // whose raw claims contain `:` and the reserved `local`, so a visitor
             // slug can never collide with `/local-user` or smuggle a
             // `principal:` reference.
             let sanitized = sanitize_slug_segment(id);

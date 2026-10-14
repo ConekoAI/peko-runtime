@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Local and Hub actor identities (0.1.0, 2026-10-14)
+
+- Implement ADR-077: local actors have a local ID, registered local principals
+  have both IDs, and remote principals, users, and visitors have only a Hub ID.
+  Contacts and channel rosters expose `local_id: null` for remote actors and
+  canonical Hub addresses instead of synthetic local proxies.
+- Attribute Hub login and bridge callers directly to scoped Hub subjects; keep
+  local and Hub authorities distinct. Preserve per-principal contact discovery.
+- Reconcile existing proxy records against the complete hosted-principal inventory
+  at startup; retain private aliases for history and demote removed registered
+  principals to Hub-only contacts.
+- Promote imported remote contacts using their immutable actor keys, preserving
+  learned relationships, DM pair identity, and history across address changes.
+
 ### Principal skill isolation and portability (0.1.0, 2026-10-13)
 
 - Scope skill discovery caches by workspace and use the same non-link lookup

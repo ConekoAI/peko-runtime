@@ -16,7 +16,7 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     let principal = PrincipalId("prin_a".into());
-    let user = Subject::User("local_account".into());
+    let user = Subject::User("hub:account".into());
     port.register_actor(
         &Subject::from(&principal),
         None,
@@ -63,7 +63,9 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
         before
     );
     let events = port.peek(&before, &Checkpoint::default()).await.unwrap();
-    assert!(events.iter().any(|ev| matches!(ev, ChannelEvent::Posted { author,.. } if author == "user:local:local_account")));
+    assert!(events.iter().any(
+        |ev| matches!(ev, ChannelEvent::Posted { author,.. } if author == "user:hub:account")
+    ));
     assert_eq!(port.list_members(&before).await.unwrap().len(), 2);
     // Both IDs and the immutable pair survive another store handle / restart.
     assert_eq!(
@@ -341,7 +343,7 @@ async fn verified_remote_leave_removes_all_aliases_from_current_roster() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     let owner = PrincipalId::generate();
-    let remote = Subject::Principal("local_remote".into());
+    let remote = Subject::Principal("hub:remote-hub".into());
     port.register_actor(
         &remote,
         Some("remote-hub"),
@@ -373,4 +375,428 @@ async fn verified_remote_leave_removes_all_aliases_from_current_roster() {
     .unwrap();
     assert_eq!(port.participants(&channel).await.unwrap().len(), 1);
     assert!(port.list_remote_members(&channel).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn remote_actors_are_hub_only_and_keep_their_namespace_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    let owner = PrincipalId::generate();
+    let local = port
+        .register_actor(
+            &Subject::from(&owner),
+            None,
+            None,
+            Some("owner-key"),
+            None,
+            "local_only",
+        )
+        .await
+        .unwrap();
+    assert_eq!(local.local_id.as_deref(), Some(owner.0.as_str()));
+    assert_eq!(local.hub_id, None);
+    let channel = port
+        .create(&owner, CreateOpts::runtime("remote contacts"))
+        .await
+        .unwrap();
+    for kind in ["principal", "user", "visitor"] {
+        let reference = format!("{kind}:hub:remote");
+        let subject: Subject = reference.parse().unwrap();
+        let info = port
+            .register_actor(
+                &subject,
+                Some("remote"),
+                None,
+                None,
+                Some(kind),
+                "registered",
+            )
+            .await
+            .unwrap();
+        assert_eq!(info.local_id, None);
+        assert_eq!(info.hub_id.as_deref(), Some("remote"));
+        assert_eq!(info.address, reference);
+        assert_eq!(info.subject(), subject);
+        if kind == "principal" {
+            assert_eq!(info.mention.as_deref(), Some("@principal:hub:remote"));
+        }
+        port.invite(&channel, &owner, &subject).await.unwrap();
+        port.post(&channel, &subject, PostMsg::root(kind))
+            .await
+            .unwrap();
+        assert_eq!(
+            store(temp.path()).resolve_actor(&reference).await.unwrap(),
+            info
+        );
+        assert!(port
+            .resolve_actor(&format!("{kind}:local:local_remote"))
+            .await
+            .is_err());
+        assert!(port
+            .resolve_actor(&format!("{kind}:local:remote"))
+            .await
+            .is_err());
+        assert!(serde_json::to_value(&info).unwrap()["local_id"].is_null());
+    }
+    let restarted = store(temp.path());
+    let actors = restarted.participants(&channel).await.unwrap();
+    assert_eq!(actors.len(), 4);
+    assert_eq!(actors.iter().filter(|a| a.local_id.is_none()).count(), 3);
+    let events = restarted
+        .peek(&channel, &Checkpoint::default())
+        .await
+        .unwrap();
+    for kind in ["principal", "user", "visitor"] {
+        assert!(events.iter().any(|event| matches!(event, ChannelEvent::Posted { author, .. } if author == &format!("{kind}:hub:remote"))));
+    }
+}
+
+#[tokio::test]
+async fn promoting_remote_contact_preserves_pair_history_and_learned_relationships() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    let owner = PrincipalId::generate();
+    let remote: Subject = "principal:hub:remote".parse().unwrap();
+    port.register_actor(
+        &remote,
+        Some("remote"),
+        Some("did:key:remote"),
+        Some("remote-key"),
+        Some("Remote"),
+        "public",
+    )
+    .await
+    .unwrap();
+    let dm = port.ensure_dm(&owner, &remote, "/remote").await.unwrap();
+    port.remember_contact(&owner, &remote).await.unwrap();
+    port.post(&dm, &remote, PostMsg::root("before promotion"))
+        .await
+        .unwrap();
+    let hosted = PrincipalId::generate();
+    let info = port
+        .register_actor(
+            &Subject::from(&hosted),
+            Some("remote"),
+            Some("did:key:remote"),
+            Some("remote-key"),
+            Some("Hosted"),
+            "private",
+        )
+        .await
+        .unwrap();
+    assert_eq!(info.local_id.as_deref(), Some(hosted.0.as_str()));
+    assert_eq!(
+        port.resolve_actor("principal:hub:remote").await.unwrap(),
+        info
+    );
+    assert_eq!(
+        port.ensure_dm(&owner, &remote, "/remote").await.unwrap(),
+        dm
+    );
+    assert_eq!(
+        port.ensure_dm(&hosted, &Subject::from(&owner), "/owner")
+            .await
+            .unwrap(),
+        dm
+    );
+    port.post(
+        &dm,
+        &Subject::from(&hosted),
+        PostMsg::root("after promotion"),
+    )
+    .await
+    .unwrap();
+    let restarted = store(temp.path());
+    assert_eq!(
+        restarted.known_contacts(&owner).await.unwrap(),
+        vec![info.clone()]
+    );
+    assert_eq!(restarted.participants(&dm).await.unwrap().len(), 2);
+    let posts = restarted
+        .peek(&dm, &Checkpoint::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e {
+            ChannelEvent::Posted { author, .. } => Some(author),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(posts, vec![info.address.clone(), info.address.clone()]);
+    // Refreshing the Hub profile cannot turn a hosted actor back into a remote contact.
+    let refreshed = port
+        .register_actor(
+            &remote,
+            Some("remote"),
+            Some("did:key:remote"),
+            Some("remote-key"),
+            None,
+            "private",
+        )
+        .await
+        .unwrap();
+    assert_eq!(refreshed, info);
+}
+
+#[tokio::test]
+async fn invalid_or_substituted_hub_identities_are_rejected_without_registry_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    for subject in [
+        Subject::Public,
+        "user:hub:".parse().unwrap(),
+        "principal:local:".parse().unwrap(),
+    ] {
+        assert!(port
+            .register_actor(&subject, None, None, None, None, "registered")
+            .await
+            .is_err());
+    }
+    assert!(!temp.path().join("actors.json").exists());
+    let remote: Subject = "principal:hub:remote".parse().unwrap();
+    assert!(port
+        .register_actor(&remote, Some("substituted"), None, None, None, "public")
+        .await
+        .is_err());
+    port.register_actor(
+        &remote,
+        Some("remote"),
+        Some("did:key:remote"),
+        Some("key"),
+        None,
+        "public",
+    )
+    .await
+    .unwrap();
+    let before = std::fs::read(temp.path().join("actors.json")).unwrap();
+    let other: Subject = "principal:hub:other".parse().unwrap();
+    assert!(port
+        .register_actor(
+            &other,
+            Some("other"),
+            Some("did:key:remote"),
+            Some("key"),
+            None,
+            "public"
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        std::fs::read(temp.path().join("actors.json")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    let owner = PrincipalId::generate();
+    let hosted = PrincipalId::generate();
+    let hosted_subject = Subject::from(&hosted);
+    port.register_actor(
+        &hosted_subject,
+        Some("hub-hosted"),
+        Some("did:key:hosted"),
+        Some("hosted-key"),
+        Some("Hosted"),
+        "private",
+    )
+    .await
+    .unwrap();
+    let dm = port
+        .ensure_dm(&owner, &hosted_subject, "/hosted")
+        .await
+        .unwrap();
+    port.remember_contact(&owner, &hosted_subject)
+        .await
+        .unwrap();
+    port.post(&dm, &hosted_subject, PostMsg::root("before unhosting"))
+        .await
+        .unwrap();
+    port.unhost_principal(&hosted).await.unwrap();
+    let remote = port
+        .resolve_actor("principal:hub:hub-hosted")
+        .await
+        .unwrap();
+    assert_eq!(remote.local_id, None);
+    assert_eq!(remote.address, "principal:hub:hub-hosted");
+    assert!(port
+        .resolve_actor(&format!("principal:local:{}", hosted.0))
+        .await
+        .is_err());
+    assert_eq!(
+        port.ensure_dm(&owner, &remote.subject(), "/hosted")
+            .await
+            .unwrap(),
+        dm
+    );
+    let events = port.peek(&dm, &Checkpoint::default()).await.unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, ChannelEvent::Posted { author, .. } if author == &remote.address)));
+    assert_eq!(port.known_contacts(&owner).await.unwrap(), vec![remote]);
+    // Rehosting then unlinking the Hub identity preserves earlier Hub authors.
+    port.register_actor(
+        &hosted_subject,
+        Some("hub-hosted"),
+        Some("did:key:hosted"),
+        Some("hosted-key"),
+        None,
+        "private",
+    )
+    .await
+    .unwrap();
+    port.post(
+        &dm,
+        &"principal:hub:hub-hosted".parse().unwrap(),
+        PostMsg::root("Hub author"),
+    )
+    .await
+    .unwrap();
+    port.register_actor(
+        &hosted_subject,
+        None,
+        Some("did:key:hosted"),
+        Some("hosted-key"),
+        None,
+        "local_only",
+    )
+    .await
+    .unwrap();
+    assert!(port
+        .resolve_actor("principal:hub:hub-hosted")
+        .await
+        .is_err());
+    assert_eq!(
+        port.ensure_dm(&owner, &hosted_subject, "/hosted")
+            .await
+            .unwrap(),
+        dm
+    );
+    let canonical = format!("principal:local:{}", hosted.0);
+    let restarted = store(temp.path());
+    assert!(restarted
+        .peek(&dm, &Checkpoint::default())
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            ChannelEvent::Posted { author, .. } => Some(author),
+            _ => None,
+        })
+        .all(|author| author == &canonical));
+    assert!(restarted
+        .register_actor(
+            &Subject::from(&PrincipalId::generate()),
+            Some("hub-hosted"),
+            Some("did:key:other"),
+            Some("other-key"),
+            None,
+            "public"
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn reconciling_legacy_proxies_uses_host_inventory_and_preserves_conversations() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = store(temp.path());
+    let owner = PrincipalId::generate();
+    // This proxy was previously imported and is now a hosted principal.
+    let hosted = PrincipalId("local_hosted".into());
+    port.register_actor(
+        &Subject::from(&hosted),
+        Some("hosted"),
+        Some("did:key:hosted"),
+        Some("hosted-key"),
+        None,
+        "private",
+    )
+    .await
+    .unwrap();
+    let remote = Subject::Principal("local_remote".into());
+    port.register_actor(
+        &remote,
+        Some("remote"),
+        Some("did:key:remote"),
+        Some("remote-key"),
+        None,
+        "public",
+    )
+    .await
+    .unwrap();
+    port.remember_contact(&owner, &remote).await.unwrap();
+    let dm = port.ensure_dm(&owner, &remote, "/remote").await.unwrap();
+    port.post(&dm, &remote, PostMsg::root("legacy history"))
+        .await
+        .unwrap();
+    for kind in ["user", "visitor"] {
+        port.register_actor(
+            &format!("{kind}:local_human").parse().unwrap(),
+            Some("human"),
+            None,
+            None,
+            None,
+            "registered",
+        )
+        .await
+        .unwrap();
+    }
+    port.reconcile_actor_locality(&[owner.clone(), hosted.clone()])
+        .await
+        .unwrap();
+    let actor = port.resolve_actor("principal:hub:remote").await.unwrap();
+    assert!(actor.local_id.is_none());
+    assert_eq!(
+        port.resolve_actor("principal:hub:hosted")
+            .await
+            .unwrap()
+            .local_id,
+        Some(hosted.0.clone())
+    );
+    assert!(port
+        .resolve_actor("principal:local:local_remote")
+        .await
+        .is_err());
+    for kind in ["user", "visitor"] {
+        let actor = port
+            .resolve_actor(&format!("{kind}:hub:human"))
+            .await
+            .unwrap();
+        assert!(actor.local_id.is_none());
+        assert!(port
+            .resolve_actor(&format!("{kind}:local:local_human"))
+            .await
+            .is_err());
+    }
+    assert_eq!(
+        port.known_contacts(&owner).await.unwrap(),
+        vec![actor.clone()]
+    );
+    assert_eq!(
+        port.ensure_dm(&owner, &actor.subject(), "/remote")
+            .await
+            .unwrap(),
+        dm
+    );
+    let restarted = store(temp.path());
+    assert_eq!(restarted.participants(&dm).await.unwrap().len(), 2);
+    assert!(restarted
+        .peek(&dm, &Checkpoint::default())
+        .await
+        .unwrap()
+        .iter()
+        .any(
+            |e| matches!(e, ChannelEvent::Posted { author, .. } if author == "principal:hub:remote")
+        ));
+    let before = std::fs::read(temp.path().join("actors.json")).unwrap();
+    port.reconcile_actor_locality(&[owner, hosted.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(temp.path().join("actors.json")).unwrap(),
+        before
+    );
 }

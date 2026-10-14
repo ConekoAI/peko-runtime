@@ -46,8 +46,8 @@ pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Resul
         AuthCommands::Status => {
             match peko_core::tunnel::HubLogin::load(&paths.config_dir)? {
                 Some(login) => println!(
-                    "Logged in to {} as user:hub:{} (local ID: local_{})",
-                    login.hub_url, login.user_id, login.user_id
+                    "Logged in to {} as user:hub:{}",
+                    login.hub_url, login.user_id
                 ),
                 None => println!("Local user: user:local:local (no Hub login)"),
             }
@@ -170,7 +170,7 @@ pub async fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<Strin
         hub_url: origin.clone(),
     }
     .save(&paths.config_dir)?;
-    println!("Logged in to {origin} as user:hub:{user_id} (local ID: local_{user_id})");
+    println!("Logged in to {origin} as user:hub:{user_id}");
     Ok(())
 }
 
@@ -237,7 +237,7 @@ mod tests {
         );
         assert_eq!(
             super::super::identity_for_config_dir(&paths.config_dir),
-            format!("local_{first}")
+            format!("hub:{first}")
         );
         let accepted = account_server(
             "200 OK",
@@ -249,7 +249,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             super::super::identity_for_config_dir(&paths.config_dir),
-            format!("local_{second}")
+            format!("hub:{second}")
         );
         handle_logout(&paths, None).unwrap();
         assert_eq!(
