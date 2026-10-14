@@ -1,6 +1,5 @@
-//! Cross-boundary protocol helpers (Phase 8b partial move).
+//! Cross-boundary protocol helpers.
 //!
-//! `process_transport.rs` and `validation.rs` move in
-//! Phase 8c.
+//! `shared::schema_filter` is the only remaining helper.
 
 pub mod shared;

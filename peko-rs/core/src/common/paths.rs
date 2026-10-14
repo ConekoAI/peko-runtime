@@ -149,10 +149,6 @@ pub struct RuntimeLayout {
     pub data_dir: PathBuf,
     /// `{data_dir}/runtime` — bucket root.
     pub runtime_dir: PathBuf,
-    /// `{data_dir}/runtime/extensions` — one install per extension id.
-    pub extensions_root: PathBuf,
-    /// `{data_dir}/runtime/mcps` — one install per MCP server id.
-    pub mcps_root: PathBuf,
     /// `{data_dir}/runtime/registry` — OCI layers + manifests cache.
     pub registry_root: PathBuf,
     /// `{data_dir}/runtime/locks` — runtime-wide lock files.
@@ -454,8 +450,7 @@ impl PathResolver {
     /// Resolve the typed layout for runtime-global state.
     ///
     /// Use this anywhere you need to compute a path under `{data_dir}/runtime/`
-    /// (extension install root, MCP server root, OCI registry cache,
-    /// runtime locks) so the layout is centralized.
+    /// (OCI registry cache, runtime locks, audit log) so the layout is centralized.
     #[must_use]
     pub fn runtime_layout(&self) -> RuntimeLayout {
         let runtime_dir = self.data_dir.join("runtime");
@@ -463,32 +458,11 @@ impl PathResolver {
             config_dir: self.config_dir.clone(),
             data_dir: self.data_dir.clone(),
             runtime_dir: runtime_dir.clone(),
-            extensions_root: runtime_dir.join("extensions"),
-            mcps_root: runtime_dir.join("mcps"),
             registry_root: runtime_dir.join("registry"),
             locks_dir: runtime_dir.join("locks"),
             audit_dir: runtime_dir.join("audit"),
             principals_root: self.principals_root_dir(),
         }
-    }
-
-    /// Runtime-global extension install root.
-    ///
-    /// Path: `{data_dir}/runtime/extensions`
-    ///
-    /// Each extension id gets a subdirectory here. Use
-    /// `extensions_root().join(id)` for the per-extension dir.
-    #[must_use]
-    pub fn extensions_root(&self) -> PathBuf {
-        self.runtime_layout().extensions_root
-    }
-
-    /// Runtime-global MCP server install root.
-    ///
-    /// Path: `{data_dir}/runtime/mcps`
-    #[must_use]
-    pub fn mcps_root(&self) -> PathBuf {
-        self.runtime_layout().mcps_root
     }
 
     /// OCI registry cache root.
@@ -805,7 +779,7 @@ impl PathResolver {
     /// or if directories already exist.
     ///
     /// **Phase A.** Also creates the runtime-global bucket at
-    /// `{data_dir}/runtime/{extensions,mcps,registry,locks,audit}` so daemon
+    /// `{data_dir}/runtime/{registry,locks,audit}` so daemon
     /// startup is a no-op when the bucket is fresh.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;
@@ -813,8 +787,6 @@ impl PathResolver {
         std::fs::create_dir_all(&self.cache_dir)?;
         // Phase A: runtime-global bucket.
         let runtime = self.runtime_layout();
-        std::fs::create_dir_all(&runtime.extensions_root)?;
-        std::fs::create_dir_all(&runtime.mcps_root)?;
         std::fs::create_dir_all(&runtime.registry_root)?;
         std::fs::create_dir_all(&runtime.locks_dir)?;
         // Phase 2 (ADR-046 trust + audit): pre-create the audit dir
@@ -1051,26 +1023,10 @@ mod tests {
         let runtime = resolver.runtime_layout();
         // Runtime root lives under `<data_dir>/runtime/`.
         assert!(runtime.runtime_dir.ends_with("/data/runtime"));
-        assert!(runtime
-            .extensions_root
-            .ends_with("/data/runtime/extensions"));
-        assert!(runtime.mcps_root.ends_with("/data/runtime/mcps"));
         assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
         assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
         assert!(runtime.audit_dir.ends_with("/data/runtime/audit"));
         assert!(runtime.principals_root.ends_with("/config/principals"));
-    }
-
-    #[test]
-    fn three_tier_runtime_extensions_root_accessor_matches_layout() {
-        let resolver = PathResolver::with_dirs(
-            PathBuf::from("/config"),
-            PathBuf::from("/data"),
-            PathBuf::from("/cache"),
-        );
-        let via_accessor = resolver.extensions_root();
-        let via_layout = resolver.runtime_layout().extensions_root;
-        assert_eq!(via_accessor, via_layout);
     }
 
     #[test]
@@ -1274,18 +1230,6 @@ impl GlobalPaths {
     #[must_use]
     pub fn runtime_layout(&self) -> RuntimeLayout {
         self.resolver.runtime_layout()
-    }
-
-    /// Runtime-global extension install root.
-    #[must_use]
-    pub fn extensions_root(&self) -> PathBuf {
-        self.resolver.extensions_root()
-    }
-
-    /// Runtime-global MCP server install root.
-    #[must_use]
-    pub fn mcps_root(&self) -> PathBuf {
-        self.resolver.mcps_root()
     }
 
     /// OCI registry cache root.

@@ -335,13 +335,6 @@ impl RuntimeAuthority {
         Ok(SharedPath(layout.shared.root.join("identity")))
     }
 
-    /// Hand out a `SharedPath` for the principal's MCP server configs.
-    pub fn shared_mcps_dir(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
-        self.assert_shared_read_entitled()?;
-        let (_name, layout) = self.principal_layout(principal)?;
-        Ok(SharedPath(layout.shared.mcps_dir))
-    }
-
     // ---------------------------------------------------------------------
     // Runtime tier — runtime-wide binaries. Not principal-scoped; any
     // actor (including `Subject::Public`) can read or write.
@@ -353,18 +346,6 @@ impl RuntimeAuthority {
     #[must_use]
     pub fn runtime_layout(&self) -> RuntimeLayout {
         self.resolver.runtime_layout()
-    }
-
-    /// Hand out a `RuntimePath` for the extensions install root.
-    #[must_use]
-    pub fn runtime_extensions_root(&self) -> RuntimePath {
-        RuntimePath(self.resolver.extensions_root())
-    }
-
-    /// Hand out a `RuntimePath` for the MCP server install root.
-    #[must_use]
-    pub fn runtime_mcps_root(&self) -> RuntimePath {
-        RuntimePath(self.resolver.mcps_root())
     }
 
     /// Hand out a `RuntimePath` for the OCI registry cache root.
@@ -482,32 +463,6 @@ impl RuntimeAuthority {
         Ok(SharedPath(layout.shared.root.join("identity")))
     }
 
-    /// Hand out a `SharedPath` for the MCP server configs IF the actor
-    /// owns the principal.
-    pub async fn shared_mcps_dir_write(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<SharedPath, AuthorityError> {
-        self.assert_shared_read_entitled()?;
-        let (name, layout) = self.principal_layout(principal)?;
-        self.assert_write_owner_for_id(&name, principal, Tier::Shared)
-            .await?;
-        Ok(SharedPath(layout.shared.mcps_dir))
-    }
-
-    /// Hand out a `RuntimePath` for the extensions install root.
-    /// Runtime-tier writes belong to the runtime / operator — a
-    /// principal-typed or visitor actor is denied (and audited).
-    pub async fn runtime_extensions_root_write(&self) -> Result<RuntimePath, AuthorityError> {
-        match self.actor.as_ref() {
-            Subject::Public | Subject::User(_) => {}
-            Subject::Principal(_) | Subject::Visitor(_) => {
-                self.deny_crossing(self.actor_label(), "runtime:extensions", Tier::Runtime)
-                    .await?;
-            }
-        }
-        Ok(RuntimePath(self.resolver.extensions_root()))
-    }
     // ---------------------------------------------------------------------
     // Engine-internal `_runtime` accessors.
     //
@@ -745,9 +700,9 @@ mod tests {
     fn runtime_authority_yields_runtime_paths_without_principal() {
         let resolver = test_resolver();
         let authority = RuntimeAuthority::for_runtime(resolver);
-        let ext = authority.runtime_extensions_root();
+        let locks = authority.runtime_locks_dir();
         assert_eq!(RuntimePath::tier(), Tier::Runtime);
-        assert_eq!(ext.as_path(), Path::new("/data/runtime/extensions"));
+        assert_eq!(locks.as_path(), Path::new("/data/runtime/locks"));
     }
 
     #[test]
@@ -794,15 +749,15 @@ mod tests {
 
     #[test]
     fn tier_path_to_path_buf_matches_as_path() {
-        let path = RuntimePath(PathBuf::from("/data/runtime/extensions"));
+        let path = RuntimePath(PathBuf::from("/data/runtime/locks"));
         assert_eq!(path.to_path_buf(), path.as_path().to_path_buf());
     }
 
     #[test]
     fn tier_path_into_path_buf_drops_wrapper() {
-        let path = RuntimePath(PathBuf::from("/data/runtime/extensions"));
+        let path = RuntimePath(PathBuf::from("/data/runtime/locks"));
         let buf = path.into_path_buf();
-        assert_eq!(buf, PathBuf::from("/data/runtime/extensions"));
+        assert_eq!(buf, PathBuf::from("/data/runtime/locks"));
     }
 
     // ---------------------------------------------------------------------
@@ -866,7 +821,6 @@ mod tests {
         assert!(authority.shared_config_write(&pid).await.is_ok());
         assert!(authority.shared_roles_dir_write(&pid).await.is_ok());
         assert!(authority.shared_identity_dir_write(&pid).await.is_ok());
-        assert!(authority.shared_mcps_dir_write(&pid).await.is_ok());
     }
 
     #[tokio::test]
@@ -1005,29 +959,6 @@ mod tests {
         assert!(result.is_ok());
         let path = result.unwrap().into_path_buf();
         assert!(path.ends_with("ghost/roles"));
-    }
-
-    // ----- Runtime tier ----------------------------------------------------
-
-    #[tokio::test]
-    async fn runtime_tier_write_allows_operator_and_runtime() {
-        let resolver = test_resolver();
-        let as_operator =
-            RuntimeAuthority::for_caller(resolver.clone(), Subject::User("local".into()));
-        assert!(as_operator.runtime_extensions_root_write().await.is_ok());
-        let as_runtime = RuntimeAuthority::for_runtime(resolver);
-        assert!(as_runtime.runtime_extensions_root_write().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn runtime_tier_write_denies_principal_actor() {
-        let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
-        let result = authority.runtime_extensions_root_write().await;
-        assert!(matches!(
-            result,
-            Err(AuthorityError::OwnershipDenied { .. })
-        ));
     }
 
     #[tokio::test]
