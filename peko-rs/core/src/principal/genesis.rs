@@ -569,8 +569,7 @@ mod tests {
         // A full-literal default so the test does not depend on any
         // one helper existing elsewhere.
         use crate::principal::config::{
-            PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalMemoryConfig,
-            PrincipalRoutingConfig,
+            PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
         };
         PrincipalConfig {
             hub_id: None,
@@ -582,7 +581,6 @@ mod tests {
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             exposure: peko_auth::Exposure::Private,
             status: None,

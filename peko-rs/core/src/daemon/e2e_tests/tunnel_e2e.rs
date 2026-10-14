@@ -279,12 +279,8 @@ fn seed_real_llm_catalog_entry(
 // E2E Test
 // ---------------------------------------------------------------------------
 
-// Production daemon runs on a multi-threaded Tokio runtime; the
-// `SystemPromptBuilder` uses `tokio::task::block_in_place` to drive
-// ToolingRuntime hooks synchronously, which requires a multi-threaded
-// runtime. `#[tokio::test]` defaults to `current_thread`, which panics
-// with "can call blocking only when running on the multi-threaded
-// runtime" — pin this test to the production flavor.
+// Production daemon runs on a multi-threaded Tokio runtime — pin this
+// test to the production flavor.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires PekoHub backend and LLM (MOCK_LLM_URL or LLM_API_KEY/LLM_BASE_URL/LLM_MODEL)"]
 async fn test_e2e_tunnel_chat_with_llm() {

@@ -2254,14 +2254,6 @@ mod tests {
         );
     }
 
-    // Directory-context / AGENTS.md auto-injection tests have been
-    // removed alongside the framework wiring (PR: MEMORY.md as
-    // `{{memory}}` placeholder, AGENTS.md not injected). The
-    // underlying helpers (`discover_shared_context`,
-    // `directory_from_tool_params`) remain in
-    // `peko_engine::prompt::memory` for agent extensions that want
-    // to surface AGENTS.md themselves.
-
     // -----------------------------------------------------------------
     // F19: per-principal quota meter wiring
     //
@@ -2768,7 +2760,6 @@ mod tests {
             session_id: "test-session".into(),
             role_name: "test-agent".into(),
             body: "{{tools}} {{skills}} {{roles}}".into(),
-            principal_memory: None,
             project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "default".into(),
@@ -2776,7 +2767,6 @@ mod tests {
             thinking_level: "medium".into(),
             sandbox_enabled: false,
             model_aliases: vec![],
-            has_gateway: false,
             conversation_channel: None,
             acting_for: None,
             iteration_budget: None,
@@ -2851,7 +2841,6 @@ mod tests {
             session_id: "test-session".into(),
             role_name: "test-agent".into(),
             body: "before {{skills}} after".into(),
-            principal_memory: None,
             project_instructions: None,
             workspace: tempdir_unused(),
             resolved_model: "default".into(),
@@ -2859,7 +2848,6 @@ mod tests {
             thinking_level: "medium".into(),
             sandbox_enabled: false,
             model_aliases: vec![],
-            has_gateway: false,
             conversation_channel: None,
             acting_for: None,
             iteration_budget: None,
@@ -2903,7 +2891,6 @@ mod tests {
         session_id: "test-session".into(),
         role_name: "test-agent".into(),
         body: "channel={{channel}} thinking={{thinking_level}} runtime={{runtime}} sandbox={{sandbox}} aliases={{model_aliases}}".into(),
-        principal_memory: None,
         project_instructions: None,
         workspace: tempdir_unused(),
         resolved_model: "claude-sonnet-4-6".into(),
@@ -2911,7 +2898,6 @@ mod tests {
         thinking_level: "high".into(),
         sandbox_enabled: true,
         model_aliases: vec!["sonnet".into(), "haiku".into()],
-        has_gateway: true,
         conversation_channel: None,
         acting_for: None,
         iteration_budget: None,

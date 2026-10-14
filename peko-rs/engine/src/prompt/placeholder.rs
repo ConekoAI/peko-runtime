@@ -12,7 +12,7 @@
 //! Unknown `{{...}}` tokens are stripped by
 //! [`replace_placeholders`] with `remove_missing=true`, which is what
 //! retires retired markers (e.g. `{{tools}}`, `{{quota_state}}`,
-//! `{{mcp_context}}`):
+//! `{{mcp_context}}`, `{{self_update}}`):
 //! old templates keep rendering cleanly with no dead enum variants.
 
 use std::collections::HashMap;
@@ -30,8 +30,6 @@ pub enum Placeholder {
     Sandbox,
     /// Model aliases - {{`model_aliases`}}
     ModelAliases,
-    /// Self-update section - {{`self_update`}}
-    SelfUpdate,
     /// Timezone - {{timezone}}
     Timezone,
     /// Current date/time (local + UTC) - {{current_time}}
@@ -79,7 +77,6 @@ impl Placeholder {
             Self::Runtime => "{{runtime}}",
             Self::Sandbox => "{{sandbox}}",
             Self::ModelAliases => "{{model_aliases}}",
-            Self::SelfUpdate => "{{self_update}}",
             Self::Timezone => "{{timezone}}",
             Self::CurrentTime => "{{current_time}}",
             Self::RoleName => "{{role_name}}",
@@ -146,10 +143,10 @@ mod tests {
     /// untouched — the caller decides.)
     #[test]
     fn retired_markers_are_stripped_by_remove_missing() {
-        let template = "body {{tools}} {{quota_state}} {{mcp_context}} tail";
+        let template = "body {{tools}} {{quota_state}} {{mcp_context}} {{self_update}} tail";
         let values = HashMap::new();
         let rendered = replace_placeholders(template, &values, true);
-        assert_eq!(rendered, "body    tail");
+        assert_eq!(rendered, "body     tail");
     }
 
     #[test]

@@ -1,36 +1,25 @@
-//! Per-principal long-term memory (`kb/MEMORY.md`) and shared
-//! directory-scoped context (`AGENTS.md`).
+//! The principal's hot knowledge-base set and directory-scoped project
+//! instructions (`AGENTS.md`).
 //!
-//! Two complementary surfaces:
+//! - **Hot kb set** (ADR-055 D2/D8): `kb/MEMORY.md`, `kb/CONVENTIONS.md`,
+//!   `kb/index.md`, plus the two targeted scope notes
+//!   (`kb/groups/<channel>.md`, `kb/roles/<name>.md`). [`HotKb::load`]
+//!   reads them under one shared byte budget and the renderer injects
+//!   them as `<runtime-context>` tail sections, on change.
+//! - **Project instructions** (ADR-052 D5): the nearest `AGENTS.md`
+//!   above the run's focus directory, via
+//!   [`discover_project_instructions`].
 //!
-//! - **MEMORY.md** lives at `<principal_workspace>/kb/MEMORY.md` —
-//!   inside the principal's persistent knowledge base (ADR-055), as
-//!   the hot, always-rendered member of the pinned hot set. It is
-//!   loaded at session start and injected into the system prompt at
-//!   the `{{memory}}` placeholder when the template opts in. The
-//!   principal owns this file and may update it via `Write`. The
-//!   second hot file, `kb/index.md` (the kb map), and the targeted
-//!   scope notes (`kb/groups/<channel>.md`, `kb/roles/<name>.md` —
-//!   ADR-055 D8) render as `<runtime-context>` tail sections via
-//!   [`load_kb_index`] / [`load_binding_note`] / [`load_role_note`],
-//!   alongside the shared behavioral rulebook (`kb/CONVENTIONS.md`).
-//!
-//! - **AGENTS.md** lives at arbitrary directories the principal
-//!   touches during a session. The framework no longer auto-injects
-//!   this file; the helpers `discover_shared_context` and
-//!   `directory_from_tool_params` are exposed here so individual
-//!   agent extensions can implement their own AGENTS.md handling if
-//!   they want it. Missing files simply omit the section.
-//!
-//! Both are conventions rather than required files.
+//! Both are conventions rather than required files: a missing or blank
+//! file renders absent.
 
 use std::path::{Path, PathBuf};
 
 /// Directory (relative to the principal workspace) holding the
-/// principal's persistent knowledge base (ADR-055). The pinned hot
-/// set (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) lives here, as do
-/// the cold conventions (`people/`, `groups/`, `roles/`) that feed the
-/// targeted scope injections (`load_binding_note`, `load_role_note`).
+/// principal's persistent knowledge base (ADR-055). The hot set
+/// (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) lives here, as do the
+/// cold conventions (`people/`, `groups/`, `roles/`) that feed the
+/// targeted scope notes.
 pub const KB_DIR: &str = "kb";
 
 /// Filename peko uses for per-principal long-term memory. Resolved
@@ -51,192 +40,178 @@ pub const KB_INDEX_FILE: &str = "index.md";
 pub const KB_GROUPS_DIR: &str = "groups";
 
 /// Subdirectory (under [`KB_DIR`]) of per-role notes keyed by role
-/// name (ADR-055 D8 role-note injection). Named `roles/` (not
-/// `agents/`) to pair with the T1 role files `agents/<name>/AGENT.md`
-/// (ADR-052 D3): the name selects a role, and both its body and its
-/// durable note key on that role.
+/// name (ADR-055 D8 role-note injection). Pairs with the role file
+/// `roles/<name>/ROLE.md` (ADR-064).
 pub const KB_ROLES_DIR: &str = "roles";
 
-/// Filename peko uses for directory-scoped shared notes.
+/// Filename peko uses for directory-scoped project instructions.
 pub const SHARED_CONTEXT_FILE: &str = "AGENTS.md";
 
-/// Maximum total bytes of MEMORY.md to load. Anything larger is
-/// truncated with a notice so a runaway memory file can't blow the
-/// context window.
-pub const PRINCIPAL_MEMORY_MAX_BYTES: u64 = 256 * 1024; // 256 KiB
+/// Shared byte budget for the whole hot kb set (ADR-055 D2): every
+/// agent pays for these bytes on the turn they (re)enter the tail, so
+/// the set is capped as one unit, codex-style. Truncation notices count
+/// against the budget.
+pub const HOT_KB_BUDGET_BYTES: usize = 32 * 1024;
 
-/// Maximum total bytes of the shared conventions file
-/// (`kb/CONVENTIONS.md`) to load. Smaller than MEMORY.md: this is a
-/// curated rulebook, not a memory dump.
-pub const PRINCIPAL_CONVENTIONS_MAX_BYTES: u64 = 16 * 1024; // 16 KiB
+/// Per-file cap for each non-memory member of the hot set
+/// (`CONVENTIONS.md`, `index.md`, the binding note, the role note).
+/// `MEMORY.md` gets whatever these leave of [`HOT_KB_BUDGET_BYTES`], so
+/// a runaway map or note can never starve memory below
+/// [`HOT_KB_MEMORY_FLOOR_BYTES`].
+pub const HOT_KB_SECTION_MAX_BYTES: usize = 4 * 1024;
 
-/// Maximum total bytes of the kb index (`kb/index.md`) to load
-/// (ADR-055 D2 per-section cap — a runaway map cannot starve memory).
-pub const KB_INDEX_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
+/// The least of the budget `MEMORY.md` can be left with: the budget
+/// minus four fully-used [`HOT_KB_SECTION_MAX_BYTES`] sections.
+pub const HOT_KB_MEMORY_FLOOR_BYTES: usize = HOT_KB_BUDGET_BYTES - 4 * HOT_KB_SECTION_MAX_BYTES;
 
-/// Maximum total bytes of a targeted scope note (`kb/groups/<channel>.md`
-/// or `kb/roles/<name>.md`, ADR-055 D8).
-pub const KB_NOTE_MAX_BYTES: u64 = 8 * 1024; // 8 KiB
-
-/// Maximum total bytes of AGENTS.md to load per directory.
-pub const SHARED_CONTEXT_MAX_BYTES: u64 = 64 * 1024; // 64 KiB
-
-/// Maximum total bytes of AGENTS.md content injected as the
+/// Maximum bytes of `AGENTS.md` content injected as the
 /// project-instructions tail section. Matches the 32 KiB cap codex
 /// applies to its whole instruction hierarchy.
-pub const PROJECT_INSTRUCTIONS_MAX_BYTES: u64 = 32 * 1024; // 32 KiB
+pub const PROJECT_INSTRUCTIONS_MAX_BYTES: usize = 32 * 1024;
 
-/// Load the principal's long-term memory from
-/// `<workspace>/kb/MEMORY.md` (ADR-055: memory lives inside the kb).
-///
-/// Returns `None` if the file does not exist, is empty, or cannot be
-/// read. Truncates to `PRINCIPAL_MEMORY_MAX_BYTES` with a notice when
-/// oversized.
-#[must_use]
-pub fn load_principal_memory(workspace: &Path) -> Option<String> {
-    let path = workspace.join(KB_DIR).join(PRINCIPAL_MEMORY_FILE);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    Some(truncate_with_notice(raw, path, PRINCIPAL_MEMORY_MAX_BYTES))
+/// The principal's hot kb set for one run, loaded under
+/// [`HOT_KB_BUDGET_BYTES`]. Each member is `None` when its file is
+/// missing, blank, or unreadable (absence renders absent).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HotKb {
+    /// `kb/MEMORY.md` — curated long-term memory.
+    pub memory: Option<String>,
+    /// `kb/CONVENTIONS.md` — the shared behavioral rulebook.
+    pub conventions: Option<String>,
+    /// `kb/index.md` — the map of the kb tree.
+    pub index: Option<String>,
+    /// `kb/groups/<channel>.md` — the run's binding note.
+    pub binding_note: Option<String>,
+    /// `kb/roles/<role_name>.md` — the named role's standing note.
+    pub role_note: Option<String>,
+}
+
+impl HotKb {
+    /// Load the hot set for a run in `workspace`, bound to `channel`
+    /// and named `role_name`.
+    ///
+    /// The four small members load first, each capped at
+    /// [`HOT_KB_SECTION_MAX_BYTES`]; `MEMORY.md` then gets the rest of
+    /// [`HOT_KB_BUDGET_BYTES`]. An oversized file is cut at a line
+    /// boundary and ends with a notice telling the agent to curate it.
+    /// Channel and role names that are not a single safe path segment
+    /// load no note.
+    #[must_use]
+    pub fn load(workspace: &Path, channel: &str, role_name: &str) -> Self {
+        let kb = workspace.join(KB_DIR);
+        let note = |dir: &str, name: &str| {
+            is_safe_segment(name)
+                .then(|| {
+                    read_capped(
+                        &kb.join(dir).join(format!("{name}.md")),
+                        HOT_KB_SECTION_MAX_BYTES,
+                    )
+                })
+                .flatten()
+        };
+        let conventions = read_capped(
+            &kb.join(PRINCIPAL_CONVENTIONS_FILE),
+            HOT_KB_SECTION_MAX_BYTES,
+        );
+        let index = read_capped(&kb.join(KB_INDEX_FILE), HOT_KB_SECTION_MAX_BYTES);
+        let binding_note = note(KB_GROUPS_DIR, channel);
+        let role_note = note(KB_ROLES_DIR, role_name);
+
+        let used: usize = [&conventions, &index, &binding_note, &role_note]
+            .into_iter()
+            .flatten()
+            .map(String::len)
+            .sum();
+        let memory = read_capped(
+            &kb.join(PRINCIPAL_MEMORY_FILE),
+            HOT_KB_BUDGET_BYTES.saturating_sub(used),
+        );
+
+        Self {
+            memory,
+            conventions,
+            index,
+            binding_note,
+            role_note,
+        }
+    }
+
+    /// Total bytes of the loaded hot set (never above
+    /// [`HOT_KB_BUDGET_BYTES`]).
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        [
+            &self.memory,
+            &self.conventions,
+            &self.index,
+            &self.binding_note,
+            &self.role_note,
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::len)
+        .sum()
+    }
 }
 
 /// Validate a single path segment for the kb scope-note loaders:
 /// non-empty, not a dot-segment, no separators. Prevents a channel id
-/// or agent name from escaping the kb tree.
+/// or role name from escaping the kb tree.
 fn is_safe_segment(segment: &str) -> bool {
     !segment.is_empty() && segment != "." && segment != ".." && !segment.contains(['/', '\\'])
 }
 
-/// Load the kb map from `<workspace>/kb/index.md` (ADR-055 D2: the
-/// second hot file). Returns `None` if the file does not exist, is
-/// empty, or cannot be read. Truncates to [`KB_INDEX_MAX_BYTES`] with
-/// a notice when oversized.
-#[must_use]
-pub fn load_kb_index(workspace: &Path) -> Option<String> {
-    let path = workspace.join(KB_DIR).join(KB_INDEX_FILE);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    Some(truncate_with_notice(raw, path, KB_INDEX_MAX_BYTES))
-}
-
-/// Load the principal's shared behavioral rulebook from
-/// `<workspace>/kb/CONVENTIONS.md`. Rendered as a tail section to
-/// EVERY agent in the principal (ADR-052 T0 prose-conventions layer:
-/// how memory/journaling/external projects are treated). Returns
-/// `None` if the file does not exist, is empty, or cannot be read —
-/// absence renders absent (presence = visibility). Truncates to
-/// [`PRINCIPAL_CONVENTIONS_MAX_BYTES`] with a notice when oversized.
-#[must_use]
-pub fn load_principal_conventions(workspace: &Path) -> Option<String> {
-    let path = workspace.join(KB_DIR).join(PRINCIPAL_CONVENTIONS_FILE);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    Some(truncate_with_notice(
-        raw,
-        path,
-        PRINCIPAL_CONVENTIONS_MAX_BYTES,
-    ))
-}
-
-/// Load the binding note for a run's triggering channel:
-/// `<workspace>/kb/groups/<channel>.md` (ADR-055 D8). Channel-bound
-/// agents see their room's conventions at turn start; agents with no
-/// matching file render nothing. Truncates to [`KB_NOTE_MAX_BYTES`]
-/// with a notice when oversized. Returns `None` for unsafe segments
-/// or missing/empty/unreadable files.
-#[must_use]
-pub fn load_binding_note(workspace: &Path, channel: &str) -> Option<String> {
-    if !is_safe_segment(channel) {
+/// Read `path` and cap it at `max_bytes` (notice included). `None` for
+/// a missing, unreadable, or whitespace-only file.
+fn read_capped(path: &Path, max_bytes: usize) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    if raw.trim().is_empty() {
         return None;
     }
-    let path = workspace
-        .join(KB_DIR)
-        .join(KB_GROUPS_DIR)
-        .join(format!("{channel}.md"));
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    Some(truncate_with_notice(raw, path, KB_NOTE_MAX_BYTES))
+    Some(truncate_with_notice(raw, path, max_bytes))
 }
 
-/// Load the per-role note for a named role:
-/// `<workspace>/kb/roles/<name>.md` (ADR-055 D8 — the durable
-/// per-role layer ADR-052's T1/T2 lacked; renamed from `kb/agents/`
-/// so the note pairs with the role file `agents/<name>/AGENT.md`).
-/// Ephemeral, unnamed spawns get no note. Truncates to
-/// [`KB_NOTE_MAX_BYTES`] with a notice when oversized. Returns `None`
-/// for unsafe segments or missing/empty/unreadable files.
-#[must_use]
-pub fn load_role_note(workspace: &Path, role_name: &str) -> Option<String> {
-    if !is_safe_segment(role_name) {
-        return None;
-    }
-    let path = workspace
-        .join(KB_DIR)
-        .join(KB_ROLES_DIR)
-        .join(format!("{role_name}.md"));
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-    Some(truncate_with_notice(raw, path, KB_NOTE_MAX_BYTES))
-}
-
-/// Walk up from `start` looking for `AGENTS.md`. Stops at
-/// `principal_workspace_root` (inclusive — we DO check the root
-/// itself) so we never escape the principal's authority. Returns the
-/// relative label (path from the principal workspace) and the file
-/// contents.
+/// Walk up from `start` looking for the nearest `AGENTS.md`. Stops
+/// after checking a directory that contains a `.git` entry (the repo
+/// root is checked, but nothing above it), or at the filesystem root.
 ///
-/// Used by the framework after a tool call lands in a directory.
-/// Returns `None` if `start` is not within `principal_workspace_root`,
-/// if no `AGENTS.md` is found, or if the file is empty.
+/// There is NO principal-workspace constraint: agents typically work
+/// on repos outside the principal workspace, so provenance is
+/// communicated via the rendered section's label (the file's own path)
+/// and an explicit environment-provided authority note instead of a
+/// path cap. Returns the file's path and its contents (non-empty
+/// only), truncated at [`PROJECT_INSTRUCTIONS_MAX_BYTES`] with a
+/// notice.
 #[must_use]
-pub fn discover_shared_context(
-    start: &Path,
-    principal_workspace_root: &Path,
-) -> Option<(String, String)> {
-    // Refuse to search outside the principal's authority. We compare
-    // canonicalized paths so symlinks and `..` components don't trick
-    // us into escaping.
-    let start_canon = start.canonicalize().ok()?;
-    let root_canon = principal_workspace_root.canonicalize().ok()?;
-    if !start_canon.starts_with(&root_canon) {
-        return None;
+pub fn discover_project_instructions(start: &Path) -> Option<(PathBuf, String)> {
+    // Walk the path AS GIVEN — no canonicalize — so the returned label
+    // preserves the form the agent actually typed (`/tmp/...` stays
+    // `/tmp/...`, not the `/private/tmp/...` macOS resolves it to —
+    // found by the tiered-prompt-explore e2e experiment). Symlinks and
+    // `..` still work: `is_file` / `read_to_string` follow them, and
+    // `parent()` walks upward regardless.
+    let mut current: PathBuf = start.to_path_buf();
+    if current.is_file() {
+        current = current.parent()?.to_path_buf();
     }
-
-    let mut current: PathBuf = start_canon;
     loop {
         let candidate = current.join(SHARED_CONTEXT_FILE);
         if candidate.is_file() {
-            if let Ok(raw) = std::fs::read_to_string(&candidate) {
-                if !raw.trim().is_empty() {
-                    let label = relative_label(&candidate, &root_canon);
-                    let content =
-                        truncate_with_notice(raw, candidate.clone(), SHARED_CONTEXT_MAX_BYTES);
-                    return Some((label, content));
-                }
+            if let Some(content) = read_capped(&candidate, PROJECT_INSTRUCTIONS_MAX_BYTES) {
+                return Some((candidate, content));
             }
         }
 
-        // We've reached the principal workspace root and didn't find
-        // a file above it; stop walking.
-        if current == root_canon {
+        // Repo boundary: check the directory that owns `.git`, then
+        // stop — an AGENTS.md above the repo root does not describe
+        // this project.
+        if current.join(".git").exists() {
             return None;
         }
 
         match current.parent() {
-            Some(parent) if parent >= root_canon.as_path() => {
-                current = parent.to_path_buf();
-            }
-            _ => return None,
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
         }
     }
 }
@@ -276,283 +251,171 @@ pub fn directory_from_tool_params(
     Some(dir)
 }
 
-/// Walk up from `start` looking for the nearest `AGENTS.md`. Stops
-/// after checking a directory that contains a `.git` entry (the repo
-/// root is checked, but nothing above it), or at the filesystem root.
-///
-/// Unlike [`discover_shared_context`] there is NO principal-workspace
-/// constraint: agents typically work on repos outside the principal
-/// workspace, so provenance is communicated via the rendered section's
-/// label (the file's own path) and an explicit environment-provided
-/// authority note instead of a path cap. Returns the file's path and
-/// its contents (non-empty only), truncated at
-/// [`PROJECT_INSTRUCTIONS_MAX_BYTES`] with a notice.
-#[must_use]
-pub fn discover_project_instructions(start: &Path) -> Option<(PathBuf, String)> {
-    // Walk the path AS GIVEN — no canonicalize — so the returned label
-    // preserves the form the agent actually typed (`/tmp/...` stays
-    // `/tmp/...`, not the `/private/tmp/...` macOS resolves it to —
-    // found by the tiered-prompt-explore e2e experiment). Symlinks and
-    // `..` still work: `is_file` / `read_to_string` follow them, and
-    // `parent()` walks upward regardless.
-    let mut current: PathBuf = start.to_path_buf();
-    if current.is_file() {
-        current = current.parent()?.to_path_buf();
-    }
-    loop {
-        let candidate = current.join(SHARED_CONTEXT_FILE);
-        if candidate.is_file() {
-            if let Ok(raw) = std::fs::read_to_string(&candidate) {
-                if !raw.trim().is_empty() {
-                    let content = truncate_with_notice(
-                        raw,
-                        candidate.clone(),
-                        PROJECT_INSTRUCTIONS_MAX_BYTES,
-                    );
-                    return Some((candidate, content));
-                }
-            }
-        }
-
-        // Repo boundary: check the directory that owns `.git`, then
-        // stop — an AGENTS.md above the repo root does not describe
-        // this project.
-        if current.join(".git").exists() {
-            return None;
-        }
-
-        match current.parent() {
-            Some(parent) => current = parent.to_path_buf(),
-            None => return None,
-        }
-    }
-}
-
-fn truncate_with_notice(raw: String, path: PathBuf, max_bytes: u64) -> String {
-    let len = raw.len() as u64;
+/// Cap `raw` at `max_bytes` UTF-8 bytes, notice included. The kept
+/// text ends at the last line break that fits (or at a char boundary
+/// when a single line is longer than the room left).
+fn truncate_with_notice(raw: String, path: &Path, max_bytes: usize) -> String {
+    let len = raw.len();
     if len <= max_bytes {
         return raw;
     }
-    let truncated: String = raw.chars().take(max_bytes as usize).collect();
-    format!(
-        "{truncated}\n\n<!-- truncated: {path:?} was {len} bytes, \
-         capped at {max_bytes} bytes by peko-runtime -->\n"
-    )
-}
-
-fn relative_label(path: &Path, principal_workspace_root: &Path) -> String {
-    match path.strip_prefix(principal_workspace_root) {
-        Ok(rel) => rel.display().to_string(),
-        Err(_) => path.display().to_string(),
+    let notice = format!(
+        "\n\n<!-- truncated: {} is {len} bytes and only the part above fits \
+         its prompt budget; curate the file — the rest is not in your prompt -->\n",
+        path.display()
+    );
+    let room = max_bytes.saturating_sub(notice.len());
+    let mut end = room.min(len);
+    while !raw.is_char_boundary(end) {
+        end -= 1;
     }
+    if let Some(newline) = raw[..end].rfind('\n') {
+        end = newline;
+    }
+    format!("{}{notice}", &raw[..end])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn load_principal_memory_returns_none_when_missing() {
+    fn kb(files: &[(&str, &str)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_principal_memory(tmp.path()).is_none());
-    }
-
-    #[test]
-    fn load_principal_memory_returns_contents_when_present() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
-        std::fs::write(tmp.path().join("kb").join("MEMORY.md"), "I prefer tabs.").unwrap();
-        let s = load_principal_memory(tmp.path()).unwrap();
-        assert_eq!(s, "I prefer tabs.");
-    }
-
-    #[test]
-    fn load_kb_index_returns_contents_when_present() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
-        std::fs::write(
-            tmp.path().join("kb").join("index.md"),
-            "- people/ — who I know\n- projects/ — what I build\n",
-        )
-        .unwrap();
-        let s = load_kb_index(tmp.path()).unwrap();
-        assert!(s.contains("who I know"));
-    }
-
-    #[test]
-    fn load_kb_index_returns_none_when_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(load_kb_index(tmp.path()).is_none());
-    }
-
-    #[test]
-    fn load_kb_index_truncates_oversized_map() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
-        let big = "x".repeat((KB_INDEX_MAX_BYTES as usize) * 2);
-        std::fs::write(tmp.path().join("kb").join("index.md"), big).unwrap();
-        let s = load_kb_index(tmp.path()).unwrap();
-        assert!(s.len() < KB_INDEX_MAX_BYTES as usize * 2);
-        assert!(s.contains("truncated:"));
-    }
-
-    #[test]
-    fn load_binding_note_reads_matching_channel_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
-        std::fs::write(
-            tmp.path().join("kb").join("groups").join("chan_abc.md"),
-            "The room's language is German.",
-        )
-        .unwrap();
-        let s = load_binding_note(tmp.path(), "chan_abc").unwrap();
-        assert!(s.contains("German"));
-    }
-
-    #[test]
-    fn load_binding_note_returns_none_when_no_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
-        assert!(load_binding_note(tmp.path(), "chan_absent").is_none());
-    }
-
-    #[test]
-    fn load_binding_note_rejects_unsafe_segments() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("groups")).unwrap();
-        std::fs::write(tmp.path().join("kb").join("MEMORY.md"), "mem").unwrap();
-        for bad in ["", ".", "..", "a/b", "a\\b", "../MEMORY"] {
-            assert!(
-                load_binding_note(tmp.path(), bad).is_none(),
-                "segment: {bad}"
-            );
-            assert!(load_role_note(tmp.path(), bad).is_none(), "segment: {bad}");
+        for (relative, body) in files {
+            let path = tmp.path().join(KB_DIR).join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
         }
-        // Nothing escaped: no stray file was read or written.
-        assert!(!tmp.path().join("groups").exists());
+        tmp
     }
 
     #[test]
-    fn load_role_note_reads_matching_role_file() {
+    fn hot_kb_is_empty_without_files() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
-        std::fs::write(
-            tmp.path().join("kb").join("roles").join("channel-comm.md"),
-            "You greet new members.",
-        )
-        .unwrap();
-        let s = load_role_note(tmp.path(), "channel-comm").unwrap();
-        assert!(s.contains("greet new members"));
-    }
-
-    #[test]
-    fn load_role_note_returns_none_when_no_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
-        assert!(load_role_note(tmp.path(), "unnamed").is_none());
-    }
-
-    #[test]
-    fn load_role_note_truncates_oversized_note() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb").join("roles")).unwrap();
-        let big = "y".repeat((KB_NOTE_MAX_BYTES as usize) * 2);
-        std::fs::write(tmp.path().join("kb").join("roles").join("big.md"), big).unwrap();
-        let s = load_role_note(tmp.path(), "big").unwrap();
-        assert!(s.len() < KB_NOTE_MAX_BYTES as usize * 2);
-        assert!(s.contains("truncated:"));
-    }
-
-    #[test]
-    fn load_conventions_returns_contents_when_present() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
-        std::fs::write(
-            tmp.path().join("kb").join("CONVENTIONS.md"),
-            "Journal in kb/journal/YYYY-MM-DD.md.",
-        )
-        .unwrap();
-        let s = load_principal_conventions(tmp.path()).unwrap();
-        assert!(s.contains("Journal"));
-    }
-
-    #[test]
-    fn load_conventions_returns_none_when_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(load_principal_conventions(tmp.path()).is_none());
-    }
-
-    #[test]
-    fn load_conventions_truncates_oversized_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("kb")).unwrap();
-        let big = "z".repeat((PRINCIPAL_CONVENTIONS_MAX_BYTES as usize) * 2);
-        std::fs::write(tmp.path().join("kb").join("CONVENTIONS.md"), big).unwrap();
-        let s = load_principal_conventions(tmp.path()).unwrap();
-        assert!(s.len() < PRINCIPAL_CONVENTIONS_MAX_BYTES as usize * 2);
-        assert!(s.contains("truncated:"));
-    }
-
-    #[test]
-    fn discover_shared_context_finds_file_in_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        std::fs::write(project.join("AGENTS.md"), "Use make.sh").unwrap();
-
-        let (label, content) = discover_shared_context(&project, tmp.path()).unwrap();
-        assert!(content.contains("Use make.sh"));
-        assert!(
-            label.contains("AGENTS.md"),
-            "label should include AGENTS.md, got: {label}"
+        assert_eq!(
+            HotKb::load(tmp.path(), "chan_a", "worker"),
+            HotKb::default()
         );
     }
 
     #[test]
-    fn discover_shared_context_walks_up_to_find_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project = tmp.path().join("project");
-        let nested = project.join("src").join("deep");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(project.join("AGENTS.md"), "Don't push to main.").unwrap();
-
-        let (label, content) = discover_shared_context(&nested, tmp.path()).unwrap();
-        assert!(content.contains("Don't push to main."));
-        assert!(label.contains("project"));
+    fn hot_kb_loads_every_member() {
+        let tmp = kb(&[
+            ("MEMORY.md", "I prefer tabs."),
+            ("CONVENTIONS.md", "Journal daily."),
+            ("index.md", "- people/ — who I know"),
+            ("groups/chan_abc.md", "The room's language is German."),
+            ("roles/channel-comm.md", "You greet new members."),
+        ]);
+        let hot = HotKb::load(tmp.path(), "chan_abc", "channel-comm");
+        assert_eq!(hot.memory.as_deref(), Some("I prefer tabs."));
+        assert_eq!(hot.conventions.as_deref(), Some("Journal daily."));
+        assert!(hot.index.unwrap().contains("who I know"));
+        assert!(hot.binding_note.unwrap().contains("German"));
+        assert!(hot.role_note.unwrap().contains("greet new members"));
     }
 
     #[test]
-    fn discover_shared_context_does_not_escape_principal_workspace() {
-        let tmp = tempfile::tempdir().unwrap();
-        // AGENTS.md exists OUTSIDE the principal workspace
-        std::fs::write(tmp.path().join("AGENTS.md"), "outside content").unwrap();
-        let sub = tmp.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
+    fn hot_kb_skips_blank_files_and_unmatched_notes() {
+        let tmp = kb(&[("MEMORY.md", "  \n"), ("groups/chan_other.md", "x")]);
+        let hot = HotKb::load(tmp.path(), "chan_absent", "unnamed");
+        assert_eq!(hot, HotKb::default());
+    }
 
-        // sub is the principal workspace root; AGENTS.md is at the
-        // principal workspace root, which is allowed. To verify the
-        // cap, we use a path that goes ABOVE the principal workspace.
-        let principal_root = sub.clone();
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("AGENTS.md"), "should not load").unwrap();
+    #[test]
+    fn hot_kb_rejects_unsafe_note_segments() {
+        let tmp = kb(&[("MEMORY.md", "mem"), ("groups/x.md", "note")]);
+        for bad in ["", ".", "..", "a/b", "a\\b", "../MEMORY"] {
+            let hot = HotKb::load(tmp.path(), bad, bad);
+            assert!(hot.binding_note.is_none(), "segment: {bad}");
+            assert!(hot.role_note.is_none(), "segment: {bad}");
+        }
+    }
 
-        // Querying from `outside` should not find the file at
-        // `principal_root`'s parent because we cap at the principal
-        // workspace root.
-        let result = discover_shared_context(&outside, &principal_root);
+    #[test]
+    fn hot_kb_caps_small_members_per_section() {
+        let big = "y\n".repeat(HOT_KB_SECTION_MAX_BYTES);
+        let tmp = kb(&[
+            ("CONVENTIONS.md", &big),
+            ("index.md", &big),
+            ("groups/chan_a.md", &big),
+            ("roles/worker.md", &big),
+        ]);
+        let hot = HotKb::load(tmp.path(), "chan_a", "worker");
+        for member in [
+            &hot.conventions,
+            &hot.index,
+            &hot.binding_note,
+            &hot.role_note,
+        ] {
+            let text = member.as_deref().unwrap();
+            assert!(
+                text.len() <= HOT_KB_SECTION_MAX_BYTES,
+                "{} bytes",
+                text.len()
+            );
+            assert!(text.contains("truncated:"));
+        }
+    }
+
+    #[test]
+    fn memory_gets_the_whole_budget_when_alone() {
+        let big = "m\n".repeat(HOT_KB_BUDGET_BYTES);
+        let tmp = kb(&[("MEMORY.md", &big)]);
+        let memory = HotKb::load(tmp.path(), "cli", "root").memory.unwrap();
+        assert!(memory.len() <= HOT_KB_BUDGET_BYTES);
         assert!(
-            result.is_none(),
-            "discovery should not escape principal workspace: {result:?}"
+            memory.len() > HOT_KB_BUDGET_BYTES - 512,
+            "{} bytes",
+            memory.len()
         );
+        assert!(memory.contains("truncated:"));
     }
 
     #[test]
-    fn discover_shared_context_returns_none_when_no_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sub = tmp.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        assert!(discover_shared_context(&sub, tmp.path()).is_none());
+    fn memory_keeps_its_floor_when_every_other_member_is_full() {
+        let big = "z\n".repeat(HOT_KB_BUDGET_BYTES);
+        let tmp = kb(&[
+            ("MEMORY.md", &big),
+            ("CONVENTIONS.md", &big),
+            ("index.md", &big),
+            ("groups/chan_a.md", &big),
+            ("roles/worker.md", &big),
+        ]);
+        let hot = HotKb::load(tmp.path(), "chan_a", "worker");
+        assert!(
+            hot.total_bytes() <= HOT_KB_BUDGET_BYTES,
+            "{}",
+            hot.total_bytes()
+        );
+        assert!(hot.memory.unwrap().len() >= HOT_KB_MEMORY_FLOOR_BYTES - 512);
+    }
+
+    #[test]
+    fn small_hot_set_is_untouched() {
+        let tmp = kb(&[("MEMORY.md", "a\nb\n"), ("index.md", "map")]);
+        let hot = HotKb::load(tmp.path(), "cli", "root");
+        assert_eq!(hot.memory.as_deref(), Some("a\nb\n"));
+        assert_eq!(hot.total_bytes(), 7);
+    }
+
+    #[test]
+    fn truncation_counts_bytes_not_chars() {
+        // 3-byte chars: a char-count cap would keep three times the
+        // byte budget.
+        let raw = "記".repeat(HOT_KB_SECTION_MAX_BYTES);
+        let out = truncate_with_notice(raw, Path::new("kb/index.md"), HOT_KB_SECTION_MAX_BYTES);
+        assert!(out.len() <= HOT_KB_SECTION_MAX_BYTES, "{} bytes", out.len());
+        assert!(out.starts_with('記'));
+    }
+
+    #[test]
+    fn truncation_cuts_at_a_line_boundary() {
+        let raw = format!("{}\n{}", "a".repeat(100), "b".repeat(400));
+        let out = truncate_with_notice(raw, Path::new("kb/MEMORY.md"), 400);
+        assert!(out.starts_with(&"a".repeat(100)));
+        assert!(!out.contains("bb"), "kept a partial line: {out}");
+        assert!(out.contains("truncated: kb/MEMORY.md is 501 bytes"));
     }
 
     #[test]
@@ -630,12 +493,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let project = tmp.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let big = "x".repeat((PROJECT_INSTRUCTIONS_MAX_BYTES + 4096) as usize);
+        let big = "x".repeat(PROJECT_INSTRUCTIONS_MAX_BYTES + 4096);
         std::fs::write(project.join("AGENTS.md"), big).unwrap();
 
         let (_, content) = discover_project_instructions(&project).unwrap();
         assert!(
-            content.len() < (PROJECT_INSTRUCTIONS_MAX_BYTES + 4096) as usize,
+            content.len() < PROJECT_INSTRUCTIONS_MAX_BYTES + 4096,
             "content was not capped: {} bytes",
             content.len()
         );

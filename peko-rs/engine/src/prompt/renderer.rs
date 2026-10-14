@@ -70,6 +70,7 @@
 // them as unused. Allow explicitly to keep `--lib` clean.
 #[allow(unused_imports)]
 use super::context::{render_quota_tripped_section, IterationBudgetState, TurnPromptContext};
+use super::memory::HotKb;
 use super::placeholder::{replace_placeholders, Placeholder};
 use crate::tooling::{PromptSectionRequest, ToolingSeam};
 use chrono::{Local, Utc};
@@ -246,6 +247,10 @@ impl PromptRenderer {
         let workflows = rendered.get("workflows").unwrap_or("").to_string();
         let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
 
+        // ADR-055 D2: the hot kb set loads once per render under its
+        // shared byte budget.
+        let hot = HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name);
+
         let mut sections: Vec<String> = Vec::new();
 
         // On-change sections. A changed section is re-injected with an
@@ -262,7 +267,8 @@ impl PromptRenderer {
         if let Some(section) = state.take_changed(SectionSlot::CurrentTime, render_current_time()) {
             sections.push(section);
         }
-        if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(ctx)) {
+        if let Some(section) = state.take_changed(SectionSlot::Memory, format_memory_section(&hot))
+        {
             sections.push(section);
         }
         // ADR-052 T0 prose-conventions layer: the principal's shared
@@ -271,7 +277,7 @@ impl PromptRenderer {
         // empty (presence = visibility); genesis seeds it for new
         // principals.
         if let Some(section) =
-            state.take_changed(SectionSlot::Conventions, format_conventions_section(ctx))
+            state.take_changed(SectionSlot::Conventions, format_conventions_section(&hot))
         {
             sections.push(section);
         }
@@ -280,17 +286,18 @@ impl PromptRenderer {
         // for the named role). On-change tail sections like memory;
         // absence renders empty, which the tracker retracts.
         if let Some(section) =
-            state.take_changed(SectionSlot::KbIndex, format_kb_index_section(ctx))
+            state.take_changed(SectionSlot::KbIndex, format_kb_index_section(&hot))
         {
             sections.push(section);
         }
-        if let Some(section) =
-            state.take_changed(SectionSlot::BindingNote, format_binding_note_section(ctx))
-        {
+        if let Some(section) = state.take_changed(
+            SectionSlot::BindingNote,
+            format_binding_note_section(ctx, &hot),
+        ) {
             sections.push(section);
         }
         if let Some(section) =
-            state.take_changed(SectionSlot::RoleNote, format_role_note_section(ctx))
+            state.take_changed(SectionSlot::RoleNote, format_role_note_section(ctx, &hot))
         {
             sections.push(section);
         }
@@ -596,10 +603,9 @@ fn build_placeholder_values(
     values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
     values.insert(
-        Placeholder::SelfUpdate,
-        format_self_update_section(ctx.has_gateway),
+        Placeholder::Memory,
+        format_memory_section(&HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name)),
     );
-    values.insert(Placeholder::Memory, format_memory_section(ctx));
     values.insert(
         Placeholder::SessionContext,
         format_session_context_section(ctx, session_ctx),
@@ -636,7 +642,7 @@ fn build_placeholder_values(
 ///
 /// Same shape as `build_placeholder_values`, but only fills the
 /// placeholders that are byte-stable across iterations: inline
-/// identity, runtime, sandbox, model aliases, and self-update.
+/// identity, runtime, sandbox, and model aliases.
 /// `skills` and `agents` moved to the tail
 /// runtime-context message ([`PromptRenderer::render_runtime_context`])
 /// so new workspace files appear on the next iteration; the other
@@ -662,10 +668,6 @@ fn build_stable_placeholder_values(ctx: &TurnPromptContext) -> HashMap<Placehold
     values.insert(Placeholder::Runtime, format_runtime_section(ctx));
     values.insert(Placeholder::Sandbox, format_sandbox_section(ctx));
     values.insert(Placeholder::ModelAliases, format_model_aliases_section(ctx));
-    values.insert(
-        Placeholder::SelfUpdate,
-        format_self_update_section(ctx.has_gateway),
-    );
     // Memory, SessionContext, IterationBudget, QuotaTripped, SoftCancel,
 
     values
@@ -673,13 +675,12 @@ fn build_stable_placeholder_values(ctx: &TurnPromptContext) -> HashMap<Placehold
 
 /// The generated sections that every frozen prefix must carry, in
 /// append order. These are run-stable (host, OS, model, workspace,
-/// sandbox, aliases, gateway), so appending them keeps the prefix
-/// byte-identical across iterations.
-const GENERATED_STABLE_SECTIONS: [Placeholder; 4] = [
+/// sandbox, aliases), so appending them keeps the prefix byte-identical
+/// across iterations.
+const GENERATED_STABLE_SECTIONS: [Placeholder; 3] = [
     Placeholder::Runtime,
     Placeholder::Sandbox,
     Placeholder::ModelAliases,
-    Placeholder::SelfUpdate,
 ];
 
 /// Append the generated stable sections the template didn't place
@@ -838,20 +839,8 @@ fn format_model_aliases_section(ctx: &TurnPromptContext) -> String {
     lines.join("\n")
 }
 
-fn format_self_update_section(has_gateway: bool) -> String {
-    if has_gateway {
-        "## Self-Update\n\
-            Get Updates (self-update) is ONLY allowed when the user explicitly asks for it.\n\
-            Do not run config.apply or update.run unless the user explicitly requests an update or config change; if it's not explicit, ask first.\n\
-            Actions: config.get, config.schema, config.apply (validate + write full config, then restart), update.run (update deps or git, then restart).\n\
-            After restart, OpenClaw pings the last active session automatically.".to_string()
-    } else {
-        String::new()
-    }
-}
-
-fn format_memory_section(ctx: &TurnPromptContext) -> String {
-    let Some(memory) = ctx.principal_memory.as_deref() else {
+fn format_memory_section(hot: &HotKb) -> String {
+    let Some(memory) = hot.memory.as_deref() else {
         return String::new();
     };
     let trimmed = memory.trim();
@@ -865,9 +854,8 @@ fn format_memory_section(ctx: &TurnPromptContext) -> String {
 /// behavioral rulebook (`kb/CONVENTIONS.md`) — journaling habits,
 /// external-project conventions, memory discipline. Rendered to every
 /// agent in the tree; empty when the file is absent.
-fn format_conventions_section(ctx: &TurnPromptContext) -> String {
-    let Some(conventions) = crate::prompt::memory::load_principal_conventions(&ctx.workspace)
-    else {
+fn format_conventions_section(hot: &HotKb) -> String {
+    let Some(conventions) = hot.conventions.as_deref() else {
         return String::new();
     };
     let trimmed = conventions.trim();
@@ -886,8 +874,8 @@ fn format_conventions_section(ctx: &TurnPromptContext) -> String {
 /// tree, pointing the agent at the cold areas (people/, groups/,
 /// refs/, …) it should look up via Read/Glob instead of having them
 /// cataloged into every prompt.
-fn format_kb_index_section(ctx: &TurnPromptContext) -> String {
-    let Some(index) = crate::prompt::memory::load_kb_index(&ctx.workspace) else {
+fn format_kb_index_section(hot: &HotKb) -> String {
+    let Some(index) = hot.index.as_deref() else {
         return String::new();
     };
     let trimmed = index.trim();
@@ -906,8 +894,8 @@ fn format_kb_index_section(ctx: &TurnPromptContext) -> String {
 /// `kb/groups/<channel>.md` file, so the channel-bound agent sees its
 /// room's conventions at turn start. No match renders empty (the
 /// content stays reachable cold through the kb index).
-fn format_binding_note_section(ctx: &TurnPromptContext) -> String {
-    let Some(note) = crate::prompt::memory::load_binding_note(&ctx.workspace, &ctx.channel) else {
+fn format_binding_note_section(ctx: &TurnPromptContext, hot: &HotKb) -> String {
+    let Some(note) = hot.binding_note.as_deref() else {
         return String::new();
     };
     let trimmed = note.trim();
@@ -925,8 +913,8 @@ fn format_binding_note_section(ctx: &TurnPromptContext) -> String {
 /// ADR-055 D8 (role note): the named role has a durable per-role
 /// memory file (`kb/roles/<name>.md`) — the persistent layer
 /// ADR-052's T1/T2 lacked. Unnamed/ephemeral spawns render empty.
-fn format_role_note_section(ctx: &TurnPromptContext) -> String {
-    let Some(note) = crate::prompt::memory::load_role_note(&ctx.workspace, &ctx.role_name) else {
+fn format_role_note_section(ctx: &TurnPromptContext, hot: &HotKb) -> String {
+    let Some(note) = hot.role_note.as_deref() else {
         return String::new();
     };
     let trimmed = note.trim();
@@ -1136,7 +1124,6 @@ mod tests {
             session_id: "test-session".to_string(),
             role_name: "test-agent".to_string(),
             body: "You are {{agent_name}} on {{workspace}}.".to_string(),
-            principal_memory: None,
             project_instructions: None,
             workspace: PathBuf::from("/tmp/workspace"),
             resolved_model: "default".to_string(),
@@ -1144,7 +1131,6 @@ mod tests {
             thinking_level: "medium".to_string(),
             sandbox_enabled: false,
             model_aliases: vec![],
-            has_gateway: false,
             conversation_channel: None,
             acting_for: None,
             iteration_budget: None,
@@ -1152,6 +1138,24 @@ mod tests {
             soft_cancel_pending: false,
             tool_definitions: vec![],
         }
+    }
+
+    /// Point `ctx` at `dir` as its workspace and set (or remove)
+    /// `kb/MEMORY.md` there.
+    fn write_memory(ctx: &mut TurnPromptContext, dir: &tempfile::TempDir, text: Option<&str>) {
+        ctx.workspace = dir.path().to_path_buf();
+        let path = dir.path().join("kb").join("MEMORY.md");
+        match text {
+            Some(text) => {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+            None => std::fs::remove_file(path).unwrap(),
+        }
+    }
+
+    fn hot(ctx: &TurnPromptContext) -> HotKb {
+        HotKb::load(&ctx.workspace, &ctx.channel, &ctx.role_name)
     }
 
     #[tokio::test]
@@ -1312,7 +1316,8 @@ mod tests {
         ctx.body = "You are {{agent_name}}.\n{{current_time}}\n{{memory}}\n\
                     {{iteration_budget}}\n{{agents}}\n{{skills}}\n{{session_context}}"
             .to_string();
-        ctx.principal_memory = Some("remember this".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
         ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
         let prefix = renderer.render_cache_stable(&ctx).await;
@@ -1374,10 +1379,9 @@ mod tests {
             "prefix was: {prefix}"
         );
         // Empty generated sections stay out: sandbox disabled, no
-        // aliases, no gateway in `empty_ctx()`.
+        // aliases in `empty_ctx()`.
         assert!(!prefix.contains("## Sandbox"), "prefix was: {prefix}");
         assert!(!prefix.contains("## Model Aliases"), "prefix was: {prefix}");
-        assert!(!prefix.contains("## Self-Update"), "prefix was: {prefix}");
     }
 
     /// A template that places a generated section via its placeholder
@@ -1436,7 +1440,8 @@ mod tests {
         let renderer = PromptRenderer::new(catalog_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.principal_memory = Some("remember this".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
         ctx.conversation_channel = Some("chan_abc123".to_string());
         ctx.iteration_budget = Some(IterationBudgetState { iteration: 1 });
 
@@ -1468,7 +1473,7 @@ mod tests {
         assert!(!second.contains("## Skills (mandatory)"), "got: {second}");
 
         // Iteration 3: memory changed → only memory is re-injected.
-        ctx.principal_memory = Some("remember this AND that".to_string());
+        write_memory(&mut ctx, &dir, Some("remember this AND that"));
         ctx.iteration_budget = Some(IterationBudgetState { iteration: 3 });
         let third = renderer
             .render_runtime_context(&ctx, &mut state)
@@ -1733,12 +1738,13 @@ mod tests {
         let renderer = PromptRenderer::new(catalog_funnel());
         let mut state = RuntimeContextState::default();
         let mut ctx = empty_ctx();
-        ctx.principal_memory = Some("remember this".to_string());
+        let dir = tempfile::tempdir().unwrap();
+        write_memory(&mut ctx, &dir, Some("remember this"));
 
         let _ = renderer.render_runtime_context(&ctx, &mut state).await;
 
         // Memory changes → the re-injected section carries the notice.
-        ctx.principal_memory = Some("remember something else".to_string());
+        write_memory(&mut ctx, &dir, Some("remember something else"));
         let body = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -1749,7 +1755,7 @@ mod tests {
         );
 
         // Memory disappears → one retraction line, and no header.
-        ctx.principal_memory = None;
+        write_memory(&mut ctx, &dir, None);
         let body = renderer
             .render_runtime_context(&ctx, &mut state)
             .await
@@ -2061,7 +2067,7 @@ mod tests {
         .unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        let rendered = format_kb_index_section(&ctx);
+        let rendered = format_kb_index_section(&hot(&ctx));
         assert!(rendered.starts_with("## Knowledge base index (kb/index.md)"));
         assert!(rendered.contains("people/ — who I know"));
     }
@@ -2071,7 +2077,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        assert_eq!(format_kb_index_section(&ctx), String::new());
+        assert_eq!(format_kb_index_section(&hot(&ctx)), String::new());
     }
 
     #[test]
@@ -2085,7 +2091,7 @@ mod tests {
         .unwrap();
         let mut ctx = empty_ctx(); // channel: "discord"
         ctx.workspace = dir.path().to_path_buf();
-        let rendered = format_binding_note_section(&ctx);
+        let rendered = format_binding_note_section(&ctx, &hot(&ctx));
         assert!(rendered.starts_with("## Group conventions (discord)"));
         assert!(rendered.contains("German"));
     }
@@ -2096,7 +2102,7 @@ mod tests {
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
         ctx.channel = "no-such-channel".to_string();
-        assert_eq!(format_binding_note_section(&ctx), String::new());
+        assert_eq!(format_binding_note_section(&ctx, &hot(&ctx)), String::new());
     }
 
     #[test]
@@ -2110,7 +2116,7 @@ mod tests {
         .unwrap();
         let mut ctx = empty_ctx(); // agent_name: "test-agent"
         ctx.workspace = dir.path().to_path_buf();
-        let rendered = format_role_note_section(&ctx);
+        let rendered = format_role_note_section(&ctx, &hot(&ctx));
         assert!(rendered.starts_with("## Your standing notes (test-agent)"));
         assert!(rendered.contains("release checklist"));
         assert!(rendered.contains("kb/roles/test-agent.md"));
@@ -2121,7 +2127,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        assert_eq!(format_role_note_section(&ctx), String::new());
+        assert_eq!(format_role_note_section(&ctx, &hot(&ctx)), String::new());
     }
 
     #[test]
@@ -2135,7 +2141,7 @@ mod tests {
         .unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        let rendered = format_conventions_section(&ctx);
+        let rendered = format_conventions_section(&hot(&ctx));
         assert!(rendered.starts_with("## Principal conventions (kb/CONVENTIONS.md)"));
         assert!(rendered.contains("Journal"));
     }
@@ -2145,7 +2151,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
-        assert_eq!(format_conventions_section(&ctx), String::new());
+        assert_eq!(format_conventions_section(&hot(&ctx)), String::new());
     }
 
     #[test]

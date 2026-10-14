@@ -2348,7 +2348,6 @@ impl AgenticLoop {
             session_id: session_id.to_string(),
             role_name: self.agent.name().to_string(),
             body,
-            principal_memory: crate::load_principal_memory(&workspace),
             project_instructions,
             workspace,
             resolved_model,
@@ -2360,7 +2359,6 @@ impl AgenticLoop {
             thinking_level: self.agent.thinking_level().unwrap_or("medium").to_string(),
             sandbox_enabled: self.agent.sandbox_enabled(),
             model_aliases: self.agent.model_aliases().to_vec(),
-            has_gateway: true,
             // Peer-conversation context (peer-ingress turns): the DM
             // channel that reaches the user, rendered into the
             // `{{session_context}}` section. The run's stamp renders

@@ -18,7 +18,7 @@ use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_core::principal::config::{
     PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-    PrincipalMemoryConfig, PrincipalRoutingConfig,
+    PrincipalRoutingConfig,
 };
 use peko_core::principal::{
     factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
@@ -1593,7 +1593,6 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         identity: PrincipalIdentityConfig::default(),
         intent: PrincipalIntentConfig::default(),
         governance: PrincipalGovernanceConfig::default(),
-        memory: PrincipalMemoryConfig::default(),
         routing: PrincipalRoutingConfig::default(),
         exposure: peko_auth::Exposure::Private,
         status: None,
@@ -1610,8 +1609,8 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
 
 fn default_agent_prompt(name: &str) -> String {
     // The `{{{{...}}}}` quadruple-braces emit the literal `{{memory}}`
-    // placeholder that `SystemPromptBuilder::build` substitutes for the
-    // principal's MEMORY.md content. Doubled braces are needed because
+    // placeholder, which the prompt renderer fills with the principal's
+    // budgeted `kb/MEMORY.md`. Doubled braces are needed because
     // `format!` treats `{...}` as a substitution argument and `{{` as
     // a literal `{`.
     format!(

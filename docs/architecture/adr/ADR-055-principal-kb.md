@@ -301,9 +301,7 @@ the principal can retire.
 
 - **Runtime-tier docs + web-hosted manual pointer** (D6) — the URL
   pointer file seeded into `kb/`, once the manual site exists.
-- **Shared hot budget**: tighten `PRINCIPAL_MEMORY_MAX_BYTES` (256 KiB
-  single-file) onto the 32 KiB across-hot-sections budget from D2,
-  registered via ADR-052 D6 `PromptSystemSection`.
+- ~~**Shared hot budget**~~ — shipped in rev 3 (§8).
 - **Binding-note stamping**: whether a fresh `kb/groups/<id>.md` is
   seeded (create-once) when an ADR-049 channel binding is created, or
   stays pure convention. Injection reads whatever exists either way.
@@ -354,4 +352,34 @@ Two contract changes, shipped together:
    T1 role bodies, where it was either duplicated per role or missing
    for the named workers.
 
-*Version 0.3.0 · Principal Knowledge Base · 2026-09-28 (rev 2)*
+## 8. Amendment (rev 3, 2026-10-14) — one shared hot budget
+
+D2's shared budget ships. The whole hot set — `kb/MEMORY.md`,
+`kb/CONVENTIONS.md`, `kb/index.md`, and the two D8 scope notes —
+renders under **one 32 KiB budget** (`HOT_KB_BUDGET_BYTES`), loaded once
+per render by `HotKb::load` (`peko_engine::prompt::memory`):
+
+- The four small members load first, each capped at 4 KiB
+  (`HOT_KB_SECTION_MAX_BYTES`). `MEMORY.md` gets the rest of the
+  budget: all 32 KiB when the others are absent, never less than
+  16 KiB (`HOT_KB_MEMORY_FLOOR_BYTES`). A runaway map or note cannot
+  starve memory, and memory cannot crowd out the map.
+- Caps count UTF-8 bytes (the old loaders counted chars, so CJK text
+  could run to ~3× its cap) and include the truncation notice. An
+  oversized file is cut at the last line break that fits; the notice
+  tells the agent to curate the file because the rest is not in its
+  prompt.
+- Blank files render absent, like missing ones.
+
+Before rev 3 the caps were per file — `MEMORY.md` 256 KiB, conventions
+16 KiB, index and each note 8 KiB — up to 296 KiB (~74k tokens) for
+every agent each time a section re-entered the tail. Memory's budget
+now depends on the other members' sizes only when memory is already
+truncated, so a small edit to the index can re-inject a truncated
+memory section; that is the price of one shared budget.
+
+`TurnPromptContext.principal_memory` is removed: the renderer loads the
+hot set from the context's workspace, channel, and role name, so memory
+follows the same path as every other hot file.
+
+*Version 0.4.0 · Principal Knowledge Base · 2026-10-14 (rev 3)*

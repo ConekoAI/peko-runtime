@@ -50,9 +50,8 @@ pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;
 pub use catalog::{CatalogEntry, PrincipalCatalog};
 pub use config::{
-    ArtifactKind, BootState, ChildDeclaration, ConsolidationConfig, DelegationGrant, MemoryTier,
-    PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-    PrincipalMemoryConfig, PrincipalRoutingConfig, Status, TtlPolicy,
+    BootState, ChildDeclaration, PrincipalConfig, PrincipalGovernanceConfig,
+    PrincipalIdentityConfig, PrincipalIntentConfig, PrincipalRoutingConfig, Status,
 };
 pub use factory::{
     DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory, PrincipalMemoryFactory,

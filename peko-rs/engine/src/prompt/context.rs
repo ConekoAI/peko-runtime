@@ -58,9 +58,6 @@ pub struct TurnPromptContext {
     pub role_name: String,
     /// Agent prompt body template (Markdown with `{{placeholder}}` tokens).
     pub body: String,
-    /// Per-principal long-term memory loaded from `<workspace>/MEMORY.md`.
-    /// Rendered into the system prompt at the `{{memory}}` placeholder.
-    pub principal_memory: Option<String>,
     /// ADR-052 D5 (T2): the nearest `AGENTS.md` discovered above the
     /// run's focus directory, as `(label, content)` where the label is
     /// the file's path. Rendered as the `## Project instructions`
@@ -81,8 +78,6 @@ pub struct TurnPromptContext {
     pub sandbox_enabled: bool,
     /// Configured model aliases (for `{{model_aliases}}`).
     pub model_aliases: Vec<String>,
-    /// Whether the daemon has a gateway attached (gates `{{self_update}}`).
-    pub has_gateway: bool,
 
     /// Peer-conversation DM channel id (peer-ingress turns only),
     /// rendered into the `{{session_context}}` section as the channel
