@@ -78,12 +78,10 @@ pub struct AgentConfig {
     #[serde(default)]
     pub conversation_channel: Option<String>,
 
-    /// Peer-conversation peer subject in wire form (`user:alice`,
-    /// `principal:did:…`; peer-ingress turns only). Surfaced in the
-    /// `{{session_context}}` section. `None` for non-conversation
-    /// runs.
-    #[serde(default)]
-    pub conversation_peer: Option<String>,
+    /// Whom the run acts for (ADR-078). Runtime-minted only: never read
+    /// from or written to a role file.
+    #[serde(skip)]
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 impl AgentConfig {
@@ -125,7 +123,7 @@ impl Default for AgentConfig {
             sandbox_enabled: false,
             model_aliases: Vec::new(),
             conversation_channel: None,
-            conversation_peer: None,
+            acting_for: None,
         }
     }
 }

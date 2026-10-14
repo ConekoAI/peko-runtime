@@ -12,6 +12,36 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Acting-for stamps and the trust floor (ADR-078)
+
+- `peko_tools_core::{ActingFor, Trust, Compartment, Origin, neutralize_runtime_tags}`;
+  `ToolContext.acting_for` + `with_acting_for` / `acting_for()` (fail-closed
+  `ActingFor::unattributed()`), replacing the unused `peer_id` / `with_peer_id`.
+- `peko_engine::ToolCallSpec.acting_for` (replaces `caller_id`) and
+  `with_acting_for`; `AgentView::acting_for` replaces `conversation_peer`;
+  `TurnPromptContext.acting_for`, `PromptSectionRequest.acting_for`;
+  `ToolFunnel::list_tool_definitions(principal, acting_for)` narrows the wire
+  catalog for untrusted runs. `AgenticLoop::with_caller_id` and the
+  `caller_id` parameters of the funnel, tool executor, and `Agent` run
+  methods are removed.
+- `peko::security`: `stamps` (`Stamps`, `TrustSource`, `Driver`,
+  `trust_for`, `compartment_of`, `visible_metas`, `may_reach`), `floor`,
+  `proposals`, `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
+  `GatedCall`, `Verdict`, `needs_review`).
+- `ToolDispatcher::{set_policy_gate, policy_gate}`;
+  `PrincipalManager::install_policy_gate`; `PrincipalManager::receive_trunk`
+  takes the run's `ActingFor` and refuses non-owner stamps.
+- `SessionManager::set_session_compartment`; `SessionManagerRuntime::with_acting_for`.
+- `ExecutionConfig.acting_for` (both the executor's and the messaging DTO)
+  replaces `conversation_peer`; `SubagentRuntime::{compact,branch}_and_execute`
+  take the caller's stamp; `PeerTurnSurface::peer_surface` becomes
+  `conversation_channel`; `PeerMessenger::originating_peer` is removed.
+- `peko_cron::{job_visible_to, check_non_owner_job, NON_OWNER_MAX_JOBS, NON_OWNER_MIN_INTERVAL}`;
+  `peko_auth::Permission::Trusted`; `common::hub_login::HubLogin` (moved from
+  `tunnel::credential`, still re-exported there).
+
+---
+
 ## Built-in tool wire contracts
 
 All 19 compiled built-ins advertise exact PascalCase names. ToolCatalog uses

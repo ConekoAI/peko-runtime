@@ -16,6 +16,7 @@
 // routers) continue to live alongside the `Principal` struct
 // definition here.
 
+pub mod acting_for_prompt;
 pub mod agent_prompt;
 pub mod agent_runner;
 pub mod catalog;
@@ -35,6 +36,7 @@ pub mod messenger;
 pub mod peer;
 pub mod peer_children;
 pub(crate) mod peer_dm;
+pub mod policy_gate;
 pub mod router;
 pub mod routers;
 // Phase 4 of `feature/multi-model-subagents` (plan:
@@ -42,6 +44,7 @@ pub mod routers;
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
 // helper that powers the first-use-per-model audit-warning UX.
 pub mod seen_models;
+pub(crate) mod trust;
 
 pub use agent_prompt::{load_agent_prompt, AgentPrompt, AgentPromptFrontmatter};
 pub use agent_runner::build_agent_config;

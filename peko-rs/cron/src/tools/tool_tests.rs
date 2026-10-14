@@ -32,6 +32,7 @@ impl Fixture {
 
     async fn call(&self, principal: &str, params: Value) -> anyhow::Result<Value> {
         let ctx = ToolContext::for_hook_run("run", "call", "Cron")
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
             .with_principal_id(principal)
             .with_session_id("session-1");
         self.tool.execute_with_context(params, &ctx).await
@@ -70,7 +71,9 @@ const ACTIONS: [&str; 6] = ["create", "list", "delete", "update", "trigger", "hi
 
 #[tokio::test]
 async fn unbound_tool_reports_missing_runtime() {
-    let ctx = ToolContext::for_hook_run("run", "call", "Cron").with_principal_id(ALICE);
+    let ctx = ToolContext::for_hook_run("run", "call", "Cron")
+        .with_acting_for(peko_tools_core::ActingFor::runtime())
+        .with_principal_id(ALICE);
     for action in ACTIONS {
         let error = CronTool::new()
             .execute_with_context(json!({"action": action}), &ctx)
@@ -139,7 +142,8 @@ async fn every_action_requires_a_principal_context() {
             .tool
             .execute_with_context(
                 json!({"action": action, "id": "x", "message": "m", "delay": "5m"}),
-                &ToolContext::for_hook_run("run", "call", "Cron"),
+                &ToolContext::for_hook_run("run", "call", "Cron")
+                    .with_acting_for(peko_tools_core::ActingFor::runtime()),
             )
             .await
             .unwrap_err();

@@ -541,6 +541,7 @@ color: '#ff0000'
             workspace: workspace.to_path_buf(),
             session_id: String::new(),
             channel_port: None,
+            acting_for: None,
         }
     }
 

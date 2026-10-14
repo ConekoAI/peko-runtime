@@ -630,6 +630,30 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
+                // ADR-078: `trusted` is the owner's own consent for one
+                // named actor; a settings delegate cannot extend it.
+                if permission == Permission::Trusted {
+                    let owner = resource.owner().normalized_for_auth();
+                    let refusal = if subject == peko_auth::Subject::Public {
+                        Some("`trusted` must name an actor; it cannot be granted to `public`")
+                    } else if caller
+                        .permission_subject(resource.owner())
+                        .normalized_for_auth()
+                        != owner
+                    {
+                        Some("only the owner can grant `trusted`")
+                    } else {
+                        None
+                    };
+                    if let Some(message) = refusal {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: message.to_string(),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                }
                 // ADR-066 D9: ownership gate — `update_config`
                 // rewrites `principal.toml`, so the actor must own
                 // this principal (or be the operator). The tier gate
@@ -1100,6 +1124,19 @@ impl RequestHandler for PrincipalHandler {
                 // that, the daemon should refuse and the CLI should
                 // prompt the user to re-mint.
                 let bounded_ttl = ttl_secs.min(30 * 24 * 60 * 60);
+
+                // ADR-078: trust is consent for one named actor. An
+                // invite is redeemable by whoever holds it, so it can
+                // never carry the consent bit.
+                if scope.contains(&peko_auth::Permission::Trusted) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: "an invite cannot grant `trusted`; permit the actor by name                                   with `peko permit <peko> <actor> trusted`"
+                            .to_string(),
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
                 let exp = chrono::Utc::now() + chrono::Duration::seconds(bounded_ttl as i64);
 
                 let claims = crate::tunnel::InviteClaims {
@@ -1971,6 +2008,40 @@ async fn run_principal_send(
         return Ok(());
     }
 
+    // ADR-078 D7: the owner's approval commands are answered by the
+    // runtime before any agent turn, so no model can approve on the
+    // owner's behalf.
+    let stamps =
+        crate::principal::trust::stamps_for(&principal, host.principal_manager().channel_port());
+    if stamps.driver(&peer, &permission_subject).await.trust == peko_tools_core::Trust::Owner {
+        if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
+            host.principal_manager(),
+            &principal,
+            &message,
+        )
+        .await
+        {
+            let packet = match response_kind {
+                PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentChunk {
+                    request_id,
+                    delta: reply,
+                },
+                PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
+                    request_id,
+                    content: reply,
+                },
+            };
+            send_response(sink, packet).await?;
+            let done = ResponsePacket::Done {
+                request_id,
+                success: true,
+                error: None,
+            };
+            send_response(sink, done).await?;
+            return Ok(());
+        }
+    }
+
     // Phase 7: the turn runs in the peer's standing child of the
     // trunk (provisioned on first contact). The child session id keys
     // the run permit, the steering inbox, and the streaming run's
@@ -2145,6 +2216,16 @@ async fn run_principal_send(
     let session_id_for_task = session_id.clone();
     let message_for_task = message.clone();
     let override_model_for_task = override_model.clone();
+    // ADR-078: the run acts for the peer who spoke, at the trust their
+    // permission subject earns.
+    let driver = turns.driver(&peer, &permission_subject).await;
+    let acting_for = turns
+        .root_stamp(
+            Some(&driver),
+            &session_id,
+            peko_tools_core::Origin::Ingress { channel: None },
+        )
+        .await;
     let child_turn_handle = tokio::spawn(async move {
         let _permit_held = permit_for_task;
         let result = turns_for_task
@@ -2154,6 +2235,7 @@ async fn run_principal_send(
                 Arc::new(on_event),
                 Some(cancel),
                 override_model_for_task,
+                acting_for,
             )
             .await;
         let _ = result_tx.send(result);
@@ -2674,7 +2756,7 @@ async fn run_steering_successor(
         .build_router_context_as(
             principal,
             peer.clone(),
-            authority,
+            authority.clone(),
             steering.content.clone(),
             channel,
             override_model.clone(),
@@ -2721,6 +2803,16 @@ async fn run_steering_successor(
             registry: host.streaming_runs(),
             session_id: session_id.to_string(),
         };
+        // ADR-078: the successor acts for the same peer, re-derived so
+        // a grant change between turns applies.
+        let driver = turns.driver(&peer, &authority).await;
+        let acting_for = turns
+            .root_stamp(
+                Some(&driver),
+                session_id,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
         // `drive_turn_streaming` with an event sink that drops
         // everything except `Lifecycle{Error}` (captured in the
         // hoisted `run_error` above).
@@ -2740,6 +2832,7 @@ async fn run_steering_successor(
                 }),
                 Some(cancel),
                 override_model,
+                acting_for,
             )
             .await
     };

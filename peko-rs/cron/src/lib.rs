@@ -501,6 +501,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
 
         scheduler.add_job(&job).unwrap();
@@ -542,6 +543,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
         scheduler.add_job(&job).unwrap();
         scheduler
@@ -596,6 +598,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
         scheduler.add_job(&job).unwrap();
 
@@ -666,6 +669,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
 
         let future_job = CronJob {
@@ -687,6 +691,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
 
         scheduler.add_job(&past_job).unwrap();
@@ -742,6 +747,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries,
             origin_session: None,
+            created_by: None,
         }
     }
 
@@ -910,6 +916,7 @@ mod tests {
             consecutive_failures: 0,
             max_retries: None,
             origin_session: None,
+            created_by: None,
         };
         let err = scheduler.add_job(&job).unwrap_err();
         assert!(err.to_string().contains("in the past"), "got: {err}");
@@ -963,6 +970,7 @@ mod tests {
                 consecutive_failures: 0,
                 max_retries: None,
                 origin_session: None,
+                created_by: None,
             };
             scheduler.add_job(&job).unwrap();
         }

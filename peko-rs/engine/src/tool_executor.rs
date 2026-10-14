@@ -156,10 +156,8 @@ impl ToolExecutor {
     ///   internally via `session.read().await`; the trait port keeps
     ///   the read out of `peko-engine`.
     /// * `run_id` - The current run ID (for events)
-    /// * `caller_id` - The resolved caller identity (pekohub sub, API key id,
-    ///   or `None` for local CLI invocations) — propagated to the tool via
-    ///   `HookInput::ToolCall::caller_id` for per-user permission checks and
-    ///   audit logging (issue #17).
+    /// * `acting_for` - The run's stamp (ADR-078), forwarded to the
+    ///   dispatcher, which enforces the trust floor and audits it.
     /// * `principal_id` - Principal scope for extension-scoped tool state.
     ///   Required in the agentic-loop path; converted back to an option only
     ///   at the `HookInput::ToolCall` boundary for legacy/standalone callers.
@@ -182,7 +180,7 @@ impl ToolExecutor {
         session: &dyn SessionView,
         session_id: &str,
         run_id: &str,
-        caller_id: Option<&str>,
+        acting_for: Option<&peko_tools_core::ActingFor>,
         principal_id: &str,
         principal_name: &str,
         cancel: Option<tokio_util::sync::CancellationToken>,
@@ -261,7 +259,7 @@ impl ToolExecutor {
                 workspace.clone(),
                 Some(agent_id.clone()),
                 Some(session_id_owned.clone()),
-                caller_id.map(str::to_string),
+                acting_for.cloned(),
                 Some(principal_id.to_string()),
                 Some(principal_name.to_string()),
                 cancel,

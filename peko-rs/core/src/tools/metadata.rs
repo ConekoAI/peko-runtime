@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 pub enum ToolSource {
     /// Built-in tool (part of the core codebase)
     BuiltIn,
-    /// MCP tool from an MCP server
-    Mcp { server: String },
+    /// MCP tool from an MCP server. `untrusted_ok` is the owner's
+    /// declaration (`untrusted_ok` in the server's configuration) that
+    /// its methods are safe for runs acting for untrusted actors
+    /// (ADR-078 D6).
+    Mcp { server: String, untrusted_ok: bool },
 }
 
 impl ToolSource {
@@ -19,7 +22,7 @@ impl ToolSource {
     pub fn description(&self) -> String {
         match self {
             ToolSource::BuiltIn => "built-in".to_string(),
-            ToolSource::Mcp { server } => format!("MCP server: {server}"),
+            ToolSource::Mcp { server, .. } => format!("MCP server: {server}"),
         }
     }
 }

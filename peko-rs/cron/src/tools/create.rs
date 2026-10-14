@@ -321,7 +321,10 @@ impl Tool for CronCreateAction {
             // message-job delivery all follow it). Trunk-context calls
             // carry the trunk id here, which is the default anyway.
             origin_session: ctx.session_id.clone(),
+            // ADR-078 D5: the job fires as the run that created it.
+            created_by: Some(ctx.acting_for()),
         };
+        crate::tools::check_non_owner_job(&job, &runtime.list_jobs().await?)?;
         add_job_via_runtime(&runtime, job).await
     }
 }

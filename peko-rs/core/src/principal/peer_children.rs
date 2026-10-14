@@ -157,6 +157,15 @@ pub async fn ensure_channel_child(
         }
     }
     manager.bind_session_channel(&id, channel).await?;
+    // ADR-078 D3: a conversation's session is its own compartment.
+    manager
+        .set_session_compartment(
+            &id,
+            peko_tools_core::Compartment::Conversation {
+                channel: channel.to_string(),
+            },
+        )
+        .await?;
     Ok(id)
 }
 /// Sanitize a user id into a slug segment: lowercase ascii

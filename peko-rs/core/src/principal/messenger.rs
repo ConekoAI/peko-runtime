@@ -27,11 +27,6 @@ use std::sync::Arc;
 
 use crate::principal::manager::PrincipalManager;
 
-/// Maximum parent-linkage hops when resolving the originating peer of
-/// a deeply nested subagent session (cycle guard; spawn depth is
-/// capped well below this elsewhere).
-const MAX_PEER_WALK_DEPTH: usize = 8;
-
 /// Port: deliver a note into a peer's conversational session (its
 /// standing child of the trunk), and resolve the originating peer of
 /// a run session.
@@ -69,16 +64,6 @@ pub trait PeerMessenger: Send + Sync {
         source: MessageSource,
         caller_label: Option<&str>,
     ) -> Result<bool>;
-
-    /// The human (or principal) peer that started the run owning
-    /// `session_id`, walking subagent/spawn parentage as needed.
-    /// `None` when the chain bottoms out without a peer (the tool
-    /// turns this into a clear error).
-    async fn originating_peer(
-        &self,
-        principal_id: &str,
-        session_id: &str,
-    ) -> Result<Option<Subject>>;
 }
 
 /// Production [`PeerMessenger`] over the loaded principal set.
@@ -90,16 +75,6 @@ impl PrincipalPeerMessenger {
     #[must_use]
     pub fn new(principal_manager: Arc<PrincipalManager>) -> Self {
         Self { principal_manager }
-    }
-
-    async fn sessions_dir_for(&self, principal_id: &str) -> Result<std::path::PathBuf> {
-        let principal = crate::daemon::cron_engine::resolve_principal(
-            &self.principal_manager,
-            &peko_subject::PrincipalId(principal_id.to_string()),
-        )
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Principal '{principal_id}' not loaded"))?;
-        Ok(principal.memory.sessions_dir().clone())
     }
 }
 
@@ -264,55 +239,6 @@ impl PeerMessenger for PrincipalPeerMessenger {
 
         Ok(appended)
     }
-
-    async fn originating_peer(
-        &self,
-        principal_id: &str,
-        session_id: &str,
-    ) -> Result<Option<Subject>> {
-        // Walk parent links until a channel binding provides the conversation roster.
-        let sessions_dir = self.sessions_dir_for(principal_id).await?;
-        let session_manager =
-            peko_session::manager::SessionManager::new().with_sessions_dir_internal(sessions_dir);
-        let trunk = crate::principal::routers::root::trunk_session_id();
-        let mut current = session_id.to_string();
-        for _ in 0..MAX_PEER_WALK_DEPTH {
-            let Ok(meta) = session_manager.get_session_metadata(&current).await else {
-                return Ok(None);
-            };
-            if current != trunk {
-                match crate::principal::conversation::binding(&meta) {
-                    Some(crate::principal::conversation::Conversation::Channel(channel)) => {
-                        if let Some(port) = self.principal_manager.channel_port() {
-                            if let Some(id) = peko_channel::ChannelId::parse(&channel) {
-                                if port.passive_binding(&id).await.ok().flatten().is_some() {
-                                    let members = port.participants(&id).await?;
-                                    let me = port
-                                        .actor_info(&Subject::Principal(principal_id.into()))
-                                        .await;
-                                    let peers = members
-                                        .into_iter()
-                                        .filter(|p| p.address != me.address)
-                                        .collect::<Vec<_>>();
-                                    if peers.len() == 1 {
-                                        return Ok(Some(peers[0].subject()));
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(None);
-                    }
-                    None => {}
-                }
-            }
-            let Some(parent) = meta.parent_session_id else {
-                return Ok(None);
-            };
-            let parent_str = parent.to_string();
-            current = parent_str;
-        }
-        Ok(None)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +369,12 @@ mod tests {
             .await
             .expect("conversational turn");
         manager
-            .receive_trunk(principal.id.clone(), "self upkeep".to_string(), None)
+            .receive_trunk(
+                principal.id.clone(),
+                "self upkeep".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
             .await
             .expect("trunk turn");
 
@@ -511,28 +442,6 @@ mod tests {
         assert!(
             trunk_jsonl.contains("[notify] 📨 agent some-session sent to user:local"),
             "trunk must carry the notify self-view: {trunk_jsonl}"
-        );
-        assert_eq!(
-            messenger
-                .originating_peer(&principal.id.0, &child_id)
-                .await
-                .unwrap(),
-            Some(owner)
-        );
-        let group_id = crate::principal::peer_children::ensure_group_child(
-            &trunk_id,
-            "group:team",
-            &Arc::new(tokio::sync::RwLock::new(sm)),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            messenger
-                .originating_peer(&principal.id.0, &group_id)
-                .await
-                .unwrap(),
-            None,
-            "a group conversation has no single originating actor"
         );
     }
 }

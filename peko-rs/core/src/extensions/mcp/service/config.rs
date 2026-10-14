@@ -120,6 +120,11 @@ pub struct Definition {
     pub reserved_parameters: BTreeMap<String, ReservedParameter>,
     #[serde(default)]
     pub sampling: Option<Sampling>,
+    /// The owner's declaration that this server's methods are safe for
+    /// runs acting for untrusted actors (ADR-078 D6). Off by default:
+    /// servers usually carry the owner's credentials.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted_ok: bool,
 }
 
 impl Definition {
@@ -198,6 +203,8 @@ impl Definition {
                             | "workspace"
                             | "run_id"
                             | "tool_call_id"
+                            | "acting_for"
+                            | "acting_for_trust"
                     ),
                     "unsupported runtime field '{field}'"
                 ),
@@ -222,7 +229,12 @@ impl Definition {
         let object = value
             .as_object_mut()
             .context("configuration is not an object")?;
-        for field in ["tool_timeout_ms", "startup", "reserved_parameters"] {
+        for field in [
+            "tool_timeout_ms",
+            "startup",
+            "reserved_parameters",
+            "untrusted_ok",
+        ] {
             object.remove(field);
         }
         Ok(value)

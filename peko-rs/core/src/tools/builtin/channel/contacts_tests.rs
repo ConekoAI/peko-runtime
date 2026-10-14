@@ -8,7 +8,8 @@ use peko_channel::{ChannelConfig, ChannelStore, CreateOpts};
 use std::sync::Mutex;
 
 fn context(principal: &PrincipalId) -> ToolContext {
-    let mut ctx = ToolContext::default_for_tool("Contacts");
+    let mut ctx = ToolContext::default_for_tool("Contacts")
+        .with_acting_for(peko_tools_core::ActingFor::runtime());
     ctx.principal_id = Some(principal.0.clone());
     ctx
 }
@@ -144,6 +145,7 @@ async fn strict_arguments_and_principal_context_are_required() {
         .execute_with_context(
             json!({"action":"list"}),
             &ToolContext::default_for_tool("Contacts")
+                .with_acting_for(peko_tools_core::ActingFor::runtime())
         )
         .await
         .unwrap_err()
@@ -354,6 +356,7 @@ async fn learned_remote_contacts_persist_without_leaking_to_other_principals() {
             "action":"resolve", "reference":"principal:hub:remote-hub"
         }),
     );
+    call.acting_for = Some(peko_tools_core::ActingFor::runtime());
     call.principal_id = Some(fx.caller.id.0.clone());
     let (_, resolved, success) = fx.tooling.dispatcher().execute(call).await.unwrap();
     assert!(success, "{resolved}");

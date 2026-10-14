@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Acting-for stamps and the trust floor (0.1.0, 2026-10-14)
+
+- Implement ADR-078. Every run carries a runtime-minted `ActingFor` stamp
+  (whom it acts for, at owner / trusted / untrusted trust), minted at ingress,
+  cron, and completion wakes and inherited by spawns, background tasks,
+  workflow callbacks, and cron jobs. Every agent sees it in an `<acting-for>`
+  block. Retire `ToolContext.peer_id`, `ToolCallSpec.caller_id`,
+  `conversation_peer`, and `PeerMessenger::originating_peer`.
+- Sessions belong to a compartment (the internal tree or one conversation).
+  Runs acting for anyone but the owner see and manage only their own
+  conversation's sessions, channel digest, `ChannelRead`, and cron jobs.
+  The trunk refuses non-owner runs.
+- The dispatcher enforces a fixed floor: no `Bash`/`MCP` and no unmarked MCP
+  servers for untrusted runs (also hidden from their catalog), workspace
+  confinement, the cross-principal write boundary in the file tools, and
+  owner-only protected files (`POLICY.md`, the constitution, hot kb) — other
+  runs' writes become proposals in `kb/inbox/`.
+- Add `POLICY.md` and a policy reviewer for non-owner runs' sensitive calls;
+  unclear calls wait for the owner's `approve <id>` / `deny <id>` message,
+  handled before any agent turn. Add `peko permit <peko> <actor> trusted`.
+- Cron jobs record their creator; non-owner jobs stay in their conversation,
+  repeat at most every 15 minutes, and are capped at 5 per conversation.
+  Recreate pre-existing jobs other than the seeded ones.
+
 ### Local and Hub actor identities (0.1.0, 2026-10-14)
 
 - Implement ADR-077: local actors have a local ID, registered local principals

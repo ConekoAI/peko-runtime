@@ -301,6 +301,13 @@ impl Tool for ChannelReadTool {
             )
         })?;
 
+        // ADR-078 D4: a run acting for anyone but the owner reads only its
+        // own conversation; every other channel reads as missing.
+        let stamp = ctx.acting_for();
+        if !stamp.is_owner() && stamp.compartment.channel() != Some(channel_id.as_str()) {
+            anyhow::bail!("ChannelRead: channel '{channel_str}' not found");
+        }
+
         let since = params
             .get("since")
             .and_then(|v| v.as_str())
@@ -575,6 +582,7 @@ mod tests {
 
         fn ctx(&self, session: Option<&str>) -> ToolContext {
             let ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+                .with_acting_for(peko_tools_core::ActingFor::runtime())
                 .with_principal_id(self.alice.0.clone())
                 .with_principal_name("alice");
             match session {
@@ -696,6 +704,7 @@ mod tests {
         );
 
         let outsider = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
             .with_principal_id(PrincipalId::generate().0);
         let got = fx
             .tool
@@ -720,7 +729,8 @@ mod tests {
                 "{params}"
             );
         }
-        let no_principal = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME);
+        let no_principal = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_acting_for(peko_tools_core::ActingFor::runtime());
         let error = fx
             .tool
             .execute_with_context(json!({ "channel": fx.channel.as_str() }), &no_principal)
@@ -940,6 +950,7 @@ mod tests {
         let signal = peko_tools_core::AbortSignal::new();
         let ctx = signal
             .create_context("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
             .with_principal_id(fx.alice.0.clone());
         let err = while_posting(
             fx.tool.execute_with_context(

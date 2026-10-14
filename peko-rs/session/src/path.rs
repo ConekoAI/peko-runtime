@@ -471,6 +471,7 @@ mod tests {
             last_compaction_at: None,
             consecutive_auto_compactions: 0,
             consecutive_compaction_failures: 0,
+            compartment: None,
         }
     }
 

@@ -145,6 +145,12 @@ pub struct SessionEntry {
     /// failure backoff across runs.
     #[serde(default)]
     pub consecutive_compaction_failures: u32,
+    /// Which part of the principal's store this session belongs to
+    /// (ADR-078). Written once at creation and never changed by `move`.
+    /// Sessions created before ADR-078 have none; their compartment is
+    /// derived from their nearest channel-bound ancestor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compartment: Option<peko_tools_core::Compartment>,
 }
 
 impl SessionEntry {
@@ -185,6 +191,7 @@ impl SessionEntry {
             last_compaction_at: None,
             consecutive_auto_compactions: 0,
             consecutive_compaction_failures: 0,
+            compartment: None,
         }
     }
 

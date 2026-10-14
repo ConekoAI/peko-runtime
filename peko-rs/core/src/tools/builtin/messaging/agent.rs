@@ -508,6 +508,7 @@ A call is refused when the target is your own session or an ancestor, already ha
                     timeout_seconds,
                     model_override: model.clone(),
                     page_limit,
+                    acting_for: ctx.and_then(|ctx| ctx.acting_for.clone()),
                 },
                 timeout_seconds,
                 parent_cancel,
@@ -696,7 +697,14 @@ A call is refused when the target is your own session or an ancestor, already ha
 
         match self
             .runtime
-            .compact_and_execute(&args.path, &args.prompt, &args.role, &caller, parent_cancel)
+            .compact_and_execute(
+                &args.path,
+                &args.prompt,
+                &args.role,
+                &caller,
+                ctx.and_then(|ctx| ctx.acting_for.clone()),
+                parent_cancel,
+            )
             .await
         {
             Ok(run) => {
@@ -786,6 +794,7 @@ A call is refused when the target is your own session or an ancestor, already ha
                 args.overwrite.unwrap_or(false),
                 args.page_limit.map(|v| v as u32),
                 &caller,
+                ctx.and_then(|ctx| ctx.acting_for.clone()),
                 parent_cancel,
             )
             .await
@@ -1274,6 +1283,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         prompt: &str,
         agent: &str,
         caller_session_key: &str,
+        _acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
         let _ = parent_cancel;
@@ -1322,6 +1332,7 @@ impl SubagentRuntime for TestSubagentRuntime {
         overwrite: bool,
         _page_limit: Option<u32>,
         caller_session_key: &str,
+        _acting_for: Option<peko_tools_core::ActingFor>,
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<crate::tools::builtin::messaging::dto::SubagentRunView> {
         let _ = parent_cancel;

@@ -135,7 +135,12 @@ async fn same_http_endpoint_uses_independent_principal_credentials_and_catalogs(
             ))
             .unwrap();
         tooling.bind_mcp(runtime.clone()).await;
-        let snapshot = tooling.list_tool_definitions(runtime.owner()).await;
+        let snapshot = tooling
+            .list_tool_definitions(
+                runtime.owner(),
+                Some(&peko_tools_core::ActingFor::runtime()),
+            )
+            .await;
         assert!(
             snapshot
                 .definitions
@@ -153,6 +158,7 @@ async fn same_http_endpoint_uses_independent_principal_credentials_and_catalogs(
             peko_engine::ToolCallSpec::new(format!("mcp__shared__account_{owner}"), json!({}));
         call.principal_id = Some(owner.into());
         call.catalog_binding = snapshot.binding;
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         let (text, value, success) = tooling.execute(call).await.unwrap();
         assert!(success, "{text}");
         assert_eq!(value["structuredContent"]["account"], owner);
@@ -192,7 +198,7 @@ async fn oauth_discovery_registration_pkce_callback_and_refresh_are_owner_scoped
             .tools()
             .await
             .iter()
-            .any(|(_, tool)| tool.name() == "mcp__shared__account_a"),
+            .any(|(_, _, tool)| tool.name() == "mcp__shared__account_a"),
         "{}",
         runtime.status().await
     );
@@ -250,7 +256,7 @@ async fn legacy_sse_uses_the_advertised_message_endpoint() {
     runtime.prepare_catalog().await.unwrap();
     let tools = runtime.tools().await;
     assert!(!tools.is_empty(), "{}", runtime.status().await);
-    let tool = tools.into_iter().next().unwrap().1;
+    let tool = tools.into_iter().next().unwrap().2;
     let context =
         ToolContext::for_hook_run("run", "call", "account_a").with_principal_id("sse-owner");
     let result = tool

@@ -132,10 +132,10 @@ pub struct ExecutionConfig {
     /// channel that reaches the user. `None` for non-conversation
     /// runs (and standalone/test contexts with no channel port).
     pub conversation_channel: Option<String>,
-    /// Conversation-mode prompt context: the peer's subject in wire
-    /// form (`user:alice`, `principal:did:…`). `None` for
-    /// non-conversation runs.
-    pub conversation_peer: Option<String>,
+    /// Whom the run acts for (ADR-078): the caller's stamp. The executor
+    /// re-caps it against the target session before the run starts.
+    /// `None` leaves the run unattributed (fail-closed).
+    pub acting_for: Option<peko_tools_core::ActingFor>,
     /// ADR-052 D3: the spawned role's Markdown body, resolved by the
     /// `Agent` tool from `<workspace>/agents/<name>.md` (or
     /// `<name>/AGENT.md`) and threaded by the runtime adapter from
@@ -158,7 +158,7 @@ impl Default for ExecutionConfig {
             force_compact: false,
             conversation: false,
             conversation_channel: None,
-            conversation_peer: None,
+            acting_for: None,
             role_prompt: None,
             page_limit: None,
         }
@@ -238,12 +238,53 @@ enum AttachKind {
 /// one party posts.
 #[async_trait::async_trait]
 pub trait PeerTurnSurface: Send + Sync {
-    /// `(peer_address, channel_id)` for a bound conversation, else `None`.
-    /// Group sessions have a channel and no single actor peer.
-    async fn peer_surface(&self, session_id: &str) -> Option<(Option<String>, String)>;
+    /// The conversation channel a session is bound to, when this
+    /// principal is still a member of it.
+    async fn conversation_channel(&self, session_id: &str) -> Option<String>;
     /// Post a completed turn's reply text to the peer's DM channel.
     /// Warn-only on failure (the reply is also returned to the caller).
     async fn post_reply(&self, channel_id: &str, text: &str);
+}
+
+/// ADR-078 D4: the sessions a caller acting for `stamp` may see — the
+/// whole store for the owner, else its compartment plus path anchors.
+fn visible_for(
+    stamp: Option<&peko_tools_core::ActingFor>,
+    metas: Vec<peko_session::SessionMetadata>,
+) -> Vec<peko_session::SessionMetadata> {
+    match stamp {
+        Some(stamp) if !stamp.is_owner() => crate::security::visible_metas(stamp, &metas),
+        _ => metas,
+    }
+}
+
+/// ADR-078 D4: refuse a resolved target outside the caller's reach, as if
+/// it did not exist.
+fn ensure_reach(
+    stamp: Option<&peko_tools_core::ActingFor>,
+    metas: &[peko_session::SessionMetadata],
+    id: peko_session::SessionId,
+    reference: &str,
+) -> Result<()> {
+    match stamp {
+        Some(stamp) if !crate::security::may_reach(stamp, metas, id) => {
+            Err(crate::security::err_out_of_reach(reference))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// ADR-078 D4: a non-owner run creates sessions only inside its own
+/// conversation, addressed relative to itself.
+fn ensure_may_mint_at_root(stamp: Option<&peko_tools_core::ActingFor>, path: &str) -> Result<()> {
+    match stamp {
+        Some(stamp) if !stamp.is_owner() => Err(anyhow::anyhow!(
+            "no session exists at '{path}'. While acting for {} only sessions inside this \
+             conversation can be created; use a relative name",
+            stamp.actor
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Executor for subagent tasks
@@ -322,6 +363,10 @@ pub struct SubagentExecutor {
     inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
     /// Optional peer-turn delivery surface — see [`PeerTurnSurface`].
     peer_turn_surface: Option<Arc<dyn PeerTurnSurface>>,
+    /// ADR-078: re-caps a caller's stamp against the session a run
+    /// enters. `None` (tests, CLI one-shots) passes the caller's stamp
+    /// through unchanged.
+    stamps: Option<crate::security::Stamps>,
     /// The shared tooling runtime (ADR-066 P3): catalog + dispatcher +
     /// hooks, threaded explicitly — spawned child agents register and
     /// dispatch through it.
@@ -373,6 +418,7 @@ impl SubagentExecutor {
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
             peer_turn_surface: None,
+            stamps: None,
             tooling,
         }
     }
@@ -411,6 +457,19 @@ impl SubagentExecutor {
     pub fn with_peer_turn_surface(mut self, surface: Option<Arc<dyn PeerTurnSurface>>) -> Self {
         self.peer_turn_surface = surface;
         self
+    }
+
+    /// Bind the principal's stamp service (ADR-078).
+    #[must_use]
+    pub fn with_stamps(mut self, stamps: Option<crate::security::Stamps>) -> Self {
+        self.stamps = stamps;
+        self
+    }
+
+    /// The principal's stamp service, when bound.
+    #[must_use]
+    pub fn stamps(&self) -> Option<&crate::security::Stamps> {
+        self.stamps.as_ref()
     }
 
     /// F39: set the spawning principal's `QuotaMeter`. The subagent
@@ -555,6 +614,7 @@ impl SubagentExecutor {
             caller_principal_did: std::sync::OnceLock::new(),
             inbox_registry: None,
             peer_turn_surface: None,
+            stamps: None,
             tooling,
         }
     }
@@ -696,7 +756,10 @@ impl SubagentExecutor {
             use crate::session::ownership::{caller_context, descendants_of};
             let (caller, metas) = {
                 let mut manager = self.session_manager.write().await;
-                let metas = manager.list_all_sessions(false).await?;
+                let metas = visible_for(
+                    config.acting_for.as_ref(),
+                    manager.list_all_sessions(false).await?,
+                );
                 (caller_context(parent_session_key, &metas), metas)
             };
             let path = peko_session::path::strip_scheme_prefix(path).to_string();
@@ -707,6 +770,7 @@ impl SubagentExecutor {
                 let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
                 match peko_session::path::resolve_reference(&metas, caller_id, &path) {
                     Ok(resolved) => {
+                        ensure_reach(config.acting_for.as_ref(), &metas, resolved, &path)?;
                         let found = metas
                             .iter()
                             .find(|m| m.session_id == resolved)
@@ -739,6 +803,7 @@ impl SubagentExecutor {
                             ));
                         }
                         peko_session::path::validate_slug(segment)?;
+                        ensure_may_mint_at_root(config.acting_for.as_ref(), &path)?;
                         // Mint at the top level: the caller's tree root.
                         effective_parent_key = caller
                             .ancestors
@@ -872,6 +937,15 @@ impl SubagentExecutor {
             }
         }
 
+        // ADR-078: an unattributed run creates nothing.
+        if config
+            .acting_for
+            .as_ref()
+            .is_some_and(|stamp| stamp.compartment == peko_tools_core::Compartment::Detached)
+        {
+            anyhow::bail!("an unattributed run cannot create sessions");
+        }
+
         // Generate run ID
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
@@ -894,6 +968,16 @@ impl SubagentExecutor {
         let child_session_key = spawn_resolved.context.full_session_key.clone();
         let child_session_id = spawn_resolved.context.session_id.clone();
         let child_base = spawn_resolved.handle.base().clone();
+
+        // ADR-078 D3: the child belongs to its creator's compartment,
+        // wherever it sits in the tree.
+        if let Some(stamp) = &config.acting_for {
+            self.session_manager
+                .read()
+                .await
+                .set_session_compartment(&child_session_id, stamp.compartment.clone())
+                .await?;
+        }
 
         // Stamp the child's slug (Agent tool `path`) onto the same
         // index entry `stamp_spawn_parent_linkage` just patched. The
@@ -1006,7 +1090,12 @@ impl SubagentExecutor {
         parent_cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         let pre = self
-            .resume_preflight(resume_session_id, parent_session_key, AttachKind::Resume)
+            .resume_preflight(
+                resume_session_id,
+                parent_session_key,
+                AttachKind::Resume,
+                config.acting_for.as_ref(),
+            )
             .await?;
 
         info!(
@@ -1070,7 +1159,12 @@ impl SubagentExecutor {
         };
 
         let pre = self
-            .resume_preflight(resume_session_id, parent_session_key, AttachKind::Resume)
+            .resume_preflight(
+                resume_session_id,
+                parent_session_key,
+                AttachKind::Resume,
+                config.acting_for.as_ref(),
+            )
             .await?;
 
         info!(
@@ -1126,6 +1220,7 @@ impl SubagentExecutor {
         resume_session_id: &str,
         parent_session_key: &str,
         kind: AttachKind,
+        stamp: Option<&peko_tools_core::ActingFor>,
     ) -> Result<ResumePreflight> {
         use crate::session::ownership::{
             caller_context, err_compact_ancestor, err_resume_into_own_run, err_resume_not_spawned,
@@ -1142,7 +1237,7 @@ impl SubagentExecutor {
 
         let (caller, metas) = {
             let mut manager = self.session_manager.write().await;
-            let metas = manager.list_all_sessions(false).await?;
+            let metas = visible_for(stamp, manager.list_all_sessions(false).await?);
             (caller_context(parent_session_key, &metas), metas)
         };
 
@@ -1157,6 +1252,7 @@ impl SubagentExecutor {
         // match any metadata, see PR review finding B2).
         let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
         let resolved = peko_session::path::resolve_reference(&metas, caller_id, resume_session_id)?;
+        ensure_reach(stamp, &metas, resolved, resume_session_id)?;
         let resume_session_id = resolved.as_str();
 
         // Guard: target must exist. Defense-in-depth — `resolve_reference`
@@ -1283,7 +1379,12 @@ impl SubagentExecutor {
         };
 
         let pre = self
-            .resume_preflight(target, parent_session_key, AttachKind::Compact)
+            .resume_preflight(
+                target,
+                parent_session_key,
+                AttachKind::Compact,
+                config.acting_for.as_ref(),
+            )
             .await?;
 
         info!(
@@ -1383,7 +1484,10 @@ impl SubagentExecutor {
 
         let (caller, metas) = {
             let mut manager = self.session_manager.write().await;
-            let metas = manager.list_all_sessions(false).await?;
+            let metas = visible_for(
+                config.acting_for.as_ref(),
+                manager.list_all_sessions(false).await?,
+            );
             (caller_context(parent_session_key, &metas), metas)
         };
 
@@ -1394,9 +1498,17 @@ impl SubagentExecutor {
             None => caller.current_session_id.clone(),
             Some(path) => {
                 let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
-                peko_session::path::resolve_reference(&metas, caller_id, path)?.to_string()
+                let id = peko_session::path::resolve_reference(&metas, caller_id, path)?;
+                ensure_reach(config.acting_for.as_ref(), &metas, id, path)?;
+                id.to_string()
             }
         };
+        // ADR-078 D3: a branch carries its source's words, so it lands in
+        // the source's compartment.
+        let branch_compartment = crate::security::compartment_of(
+            &metas,
+            peko_session::SessionId::from(source_id.as_str()),
+        );
 
         // Page-consistent snapshot of the source's cache window (D1):
         // verbatim raw events from the newest compaction boundary
@@ -1429,6 +1541,7 @@ impl SubagentExecutor {
             let caller_id = peko_session::SessionId::from(caller.current_session_id.as_str());
             match peko_session::path::resolve_reference(&metas, caller_id, &target) {
                 Ok(resolved) => {
+                    ensure_reach(config.acting_for.as_ref(), &metas, resolved, &target)?;
                     let found = metas
                         .iter()
                         .find(|m| m.session_id == resolved)
@@ -1455,6 +1568,16 @@ impl SubagentExecutor {
                             None,
                         ));
                     }
+                    // ADR-078 D3: an overwrite may not carry one
+                    // compartment's words into another.
+                    if crate::security::compartment_of(&metas, found.session_id)
+                        != branch_compartment
+                    {
+                        anyhow::bail!(
+                            "cannot overwrite '{target}' with a branch of '{source_id}': they \
+                             belong to different conversations"
+                        );
+                    }
                     overwrite_target = Some(found.clone());
                     effective_parent_key = found
                         .parent_session_id
@@ -1475,6 +1598,7 @@ impl SubagentExecutor {
                         );
                     }
                     peko_session::path::validate_slug(segment)?;
+                    ensure_may_mint_at_root(config.acting_for.as_ref(), &target)?;
                     effective_parent_key = caller
                         .ancestors
                         .last()
@@ -1718,6 +1842,13 @@ impl SubagentExecutor {
                 (full_key, session_id, base)
             };
 
+            // ADR-078 D3: the branch lives in its source's compartment.
+            self.session_manager
+                .read()
+                .await
+                .set_session_compartment(&child_session_id, branch_compartment.clone())
+                .await?;
+
             // Stamp the target slug onto the child.
             if let Some(ref slug) = effective_slug {
                 self.session_manager
@@ -1869,17 +2000,33 @@ impl SubagentExecutor {
         // channel at completion. The bound target session determines the
         // conversation, including clearing a caller's peer for a group resume.
         let deliver_to_channel: Option<String> = match self.peer_turn_surface.as_ref() {
-            Some(surface) => match surface.peer_surface(&child_session_id).await {
-                Some((peer, channel)) => {
+            Some(surface) => match surface.conversation_channel(&child_session_id).await {
+                Some(channel) => {
                     config.conversation = true;
                     config.conversation_channel = Some(channel.clone());
-                    config.conversation_peer = peer;
                     Some(channel)
                 }
                 None => None,
             },
             None => None,
         };
+
+        // ADR-078 D3: the run acts for its caller, re-capped against the
+        // session it enters (a resume into another conversation acts for
+        // that conversation, at no more than its ceiling).
+        if let (Some(caller), Some(stamps)) = (config.acting_for.clone(), self.stamps.as_ref()) {
+            let metas = self
+                .session_manager
+                .write()
+                .await
+                .list_all_sessions(false)
+                .await?;
+            let target = crate::security::compartment_of(
+                &metas,
+                peko_session::SessionId::from(child_session_id.as_str()),
+            );
+            config.acting_for = Some(stamps.derive(&caller, target).await);
+        }
 
         // Build the metadata extension that carries subagent-specific data
         let metadata = TaskMetadata::Subagent(SubagentMetadata {
@@ -1960,7 +2107,7 @@ impl SubagentExecutor {
         // closure like `force_compact`.
         let conversation_for_closure = config.conversation;
         let conversation_channel_clone = config.conversation_channel.clone();
-        let conversation_peer_clone = config.conversation_peer.clone();
+        let acting_for_clone = config.acting_for.clone();
         // Peer-bound delivery: moved into the task closure; at
         // completion the final reply posts to the peer's DM channel.
         let peer_surface_for_closure = self.peer_turn_surface.clone();
@@ -1968,6 +2115,7 @@ impl SubagentExecutor {
         // ...and propagated onto the child Agent's shared executor so
         // its `Agent`-tool re-registration keeps the surface.
         let peer_surface_for_task = peer_surface_for_closure.clone();
+        let stamps_for_task = self.stamps.clone();
         // The principal's plan port rides the closure so the spawned
         // Agent registers the `Plan*` tools — previously dropped
         // between the executor field and the Agent build (the daemon
@@ -2061,7 +2209,7 @@ impl SubagentExecutor {
                         force_compact_for_closure,
                         conversation_for_closure,
                         conversation_channel_clone,
-                        conversation_peer_clone,
+                        acting_for_clone,
                         plan_port_clone,
                         provider_clone,
                         agent_config_clone,
@@ -2079,6 +2227,7 @@ impl SubagentExecutor {
                         stream_events_for_closure,
                         inbox_registry_for_closure,
                         peer_surface_for_task,
+                        stamps_for_task,
                     );
                     let result = if timeout > 0 {
                         match tokio::time::timeout(
@@ -2459,7 +2608,7 @@ async fn execute_subagent_task(
     // `{{session_context}}` section tells the model which channel
     // reaches the user.
     conversation_channel: Option<String>,
-    conversation_peer: Option<String>,
+    acting_for: Option<peko_tools_core::ActingFor>,
     // The spawning principal's plan DAG port, propagated from the
     // executor so the child Agent registers the seven `Plan*` tools.
     principal_plan_port: Option<Arc<dyn peko_plan::PlanPort>>,
@@ -2513,6 +2662,8 @@ async fn execute_subagent_task(
     // the cron-registered executor, then the child run's re-registration
     // silently drops the surface and fires #2+ stop reaching the user.
     peer_turn_surface: Option<Arc<dyn PeerTurnSurface>>,
+    // ADR-078: the stamp service rides down the tree with the surface.
+    stamps: Option<crate::security::Stamps>,
 ) -> Result<SubagentTaskOutput> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -2604,7 +2755,9 @@ async fn execute_subagent_task(
     // Peer-turn delivery propagates down the tree (see the parameter
     // docs): the child Agent's `Agent`-tool registration replaces the
     // global per-principal one, so the surface must ride along.
-    let shared_executor_builder = shared_executor_builder.with_peer_turn_surface(peer_turn_surface);
+    let shared_executor_builder = shared_executor_builder
+        .with_peer_turn_surface(peer_turn_surface)
+        .with_stamps(stamps);
     let shared_executor = Arc::new(shared_executor_builder);
 
     // Create a subagent that shares the parent's session manager and executor registry.
@@ -2696,15 +2849,16 @@ async fn execute_subagent_task(
         subagent = subagent.with_principal_plan_port(plan_port);
     }
 
-    // Conversation mode: surface the peer's DM channel + subject in
-    // the rendered system prompt (the `{{session_context}}` section)
-    // so the model can target `ChannelSend` / cron reminders at the
-    // channel that reaches the user.
+    // Conversation mode: surface the peer's DM channel in the rendered
+    // system prompt (the `{{session_context}}` section) so the model can
+    // target `ChannelSend` / cron reminders at the channel that reaches
+    // the user.
     if let Some(channel) = conversation_channel {
         subagent = subagent.with_conversation_channel(channel);
     }
-    if let Some(peer) = conversation_peer {
-        subagent = subagent.with_conversation_peer(peer);
+    // ADR-078: the stamp rides the agent; every tool call carries it.
+    if let Some(stamp) = acting_for {
+        subagent = subagent.with_acting_for(stamp);
     }
 
     // B4 cleanup: `DynamicSessionKeyProvider::set_session_key` was the
@@ -2810,7 +2964,6 @@ async fn execute_subagent_task(
             Vec::new(), // subagents carry no recalled context
             child_session,
             history.clone(), // compact runs load the transcript (see above)
-            None,            // caller_id: child turns attribute at the principal boundary
             move |event| sink(event),
             cancel,
             None, // explicit_meter override: None = use the task-local meter
@@ -3381,7 +3534,7 @@ mod tests {
         // spawns keep the task framing + fresh context.
         assert!(!config.conversation);
         assert!(config.conversation_channel.is_none());
-        assert!(config.conversation_peer.is_none());
+        assert!(config.acting_for.is_none());
     }
 
     #[tokio::test]

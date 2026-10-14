@@ -127,6 +127,7 @@ impl AsyncExecutorRuntime {
             context.workspace = caller.workspace.clone().filter(|w| !w.is_empty());
             context.agent_id = caller.agent_id.clone();
             context.principal_name = caller.principal_name.clone();
+            context.acting_for = caller.acting_for.clone();
         }
         // Capture the live caller's binding before scheduling, so a task
         // keeps its executor/config even if the foreground turn ends.

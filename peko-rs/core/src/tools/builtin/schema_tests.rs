@@ -621,6 +621,7 @@ async fn task_domain_dispatch_preserves_session_ownership_and_audits_actions_onc
         ("a", json!({"action":"list"})),
     ] {
         let mut call = peko_engine::ToolCallSpec::new("Task", params);
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.session_id = Some(session.into());
         call.principal_id = Some("principal".into());
         let (_, result, success) = dispatcher.execute(call).await.unwrap();
@@ -641,10 +642,10 @@ async fn task_domain_dispatch_preserves_session_ownership_and_audits_actions_onc
             .is_none());
     }
     let (_, _, success) = dispatcher
-        .execute(peko_engine::ToolCallSpec::new(
-            "Task",
-            json!({"action":"private argument text"}),
-        ))
+        .execute(
+            peko_engine::ToolCallSpec::new("Task", json!({"action":"private argument text"}))
+                .with_acting_for(peko_tools_core::ActingFor::runtime()),
+        )
         .await
         .unwrap();
     assert!(!success);
@@ -693,10 +694,13 @@ async fn workflow_dispatch_preserves_hidden_depth_for_the_recursion_guard() {
         None,
     );
     let (display, _, success) = dispatcher
-        .execute(ToolCallSpec::new(
-            "Workflow",
-            json!({"path":"anything.py", "_workflow_depth":MAX_WORKFLOW_DEPTH}),
-        ))
+        .execute(
+            ToolCallSpec::new(
+                "Workflow",
+                json!({"path":"anything.py", "_workflow_depth":MAX_WORKFLOW_DEPTH}),
+            )
+            .with_acting_for(peko_tools_core::ActingFor::runtime()),
+        )
         .await
         .unwrap();
     assert!(!success);
@@ -720,10 +724,13 @@ async fn agent_dispatch_requires_the_role_argument() {
         .await;
     let (display, _, success) = tooling
         .dispatcher()
-        .execute(peko_engine::ToolCallSpec::new(
-            "Agent",
-            json!({"prompt":"work", "agent":"worker", "path":"child"}),
-        ))
+        .execute(
+            peko_engine::ToolCallSpec::new(
+                "Agent",
+                json!({"prompt":"work", "agent":"worker", "path":"child"}),
+            )
+            .with_acting_for(peko_tools_core::ActingFor::runtime()),
+        )
         .await
         .unwrap();
     assert!(!success);
@@ -756,7 +763,9 @@ async fn glob_dispatch_uses_the_callers_workspace_and_preserves_explicit_paths()
         ),
     ] {
         let mut call = peko_engine::ToolCallSpec::new("Glob", params);
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.workspace = Some(caller.path().to_string_lossy().into_owned());
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         let (_, result, success) = tooling.dispatcher().execute(call).await.unwrap();
         assert!(success, "{result}");
         let output = result.to_string();

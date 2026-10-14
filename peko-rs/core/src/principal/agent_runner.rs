@@ -295,7 +295,13 @@ where
     .with_caller_principal_did(ctx.caller_principal_did().cloned())
     // The run's Agent binding uses this metered executor in its private overlay.
     .with_quota_meter(ctx.quota_meter().map(Arc::clone))
-    .with_subagent_observability(ctx.observability().cloned());
+    .with_subagent_observability(ctx.observability().cloned())
+    .with_stamps(ctx.stamps().cloned());
+    // ADR-078: the routed run acts for whom its root stamped.
+    let agent = match ctx.acting_for() {
+        Some(stamp) => agent.with_acting_for(stamp.clone()),
+        None => agent,
+    };
 
     // Phase 4 of `feature/multi-model-subagents`: bind the audit
     // sink + first-use lookup so the engine loop emits a
@@ -360,7 +366,6 @@ where
             pre_user_messages,
             session,
             Some(history),
-            None, // caller_id: attribution is handled at the dispatcher boundary
             on_event,
             cancel,
             quota_meter,

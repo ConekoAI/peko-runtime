@@ -27,6 +27,9 @@ pub struct PromptSectionInput {
     /// The daemon's channel port (channel-digest / peer-list providers
     /// read channel state through it; `None` in tests).
     pub channel_port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    /// Whom the rendering run acts for (ADR-078). `None` renders as
+    /// unattributed: the least a section may show.
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 /// Join catalog `lines` with newlines within `max_bytes`. On overflow the

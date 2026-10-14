@@ -32,9 +32,9 @@ pub struct ToolCallSpec {
     pub agent_id: Option<String>,
     /// Session id — reserved-param injection + session attribution.
     pub session_id: Option<String>,
-    /// Resolved caller identity (pekohub sub, API key id, or `local`)
-    /// for per-user permission checks and audit logging (issue #17).
-    pub caller_id: Option<String>,
+    /// Whom the run acts for (ADR-078). `None` is treated as
+    /// [`peko_tools_core::ActingFor::unattributed`].
+    pub acting_for: Option<peko_tools_core::ActingFor>,
     /// Owning principal id — per-principal tool state + quota
     /// attribution.
     pub principal_id: Option<String>,
@@ -64,12 +64,19 @@ impl ToolCallSpec {
             workspace: None,
             agent_id: None,
             session_id: None,
-            caller_id: None,
+            acting_for: None,
             principal_id: None,
             principal_name: None,
             abort_signal: None,
             background_progress: None,
         }
+    }
+
+    /// The same call, acting for `stamp` (ADR-078).
+    #[must_use]
+    pub fn with_acting_for(mut self, stamp: peko_tools_core::ActingFor) -> Self {
+        self.acting_for = Some(stamp);
+        self
     }
 }
 
@@ -86,6 +93,8 @@ pub struct PromptSectionRequest {
     pub workspace: String,
     /// The running session's id (session-context providers key off it).
     pub session_id: String,
+    /// Whom the run acts for (ADR-078); the `identity` section renders it.
+    pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
 /// The rendered per-turn tail sections: `(section_name, text)` pairs.
@@ -121,10 +130,12 @@ pub trait ToolFunnel: Send + Sync + 'static {
     async fn execute(&self, call: ToolCallSpec) -> Result<(String, serde_json::Value, bool)>;
 
     /// The wire catalog for `principal_id` (`tools[]` JSON-schema
-    /// array shape). Every registered tool is visible (ADR-066 D1/D5).
+    /// array shape): every registered tool the run's stamp may use
+    /// (ADR-066 D1/D5, narrowed by the ADR-078 floor).
     async fn list_tool_definitions(
         &self,
         principal_id: &peko_subject::PrincipalId,
+        acting_for: Option<&peko_tools_core::ActingFor>,
     ) -> ToolCatalogSnapshot;
 
     /// Render the per-turn prompt tail sections (identity, workspace
@@ -189,7 +200,11 @@ impl ToolFunnel for CatalogBoundTooling {
         call.catalog_binding = self.snapshot.binding.clone();
         self.inner.execute(call).await
     }
-    async fn list_tool_definitions(&self, _: &peko_subject::PrincipalId) -> ToolCatalogSnapshot {
+    async fn list_tool_definitions(
+        &self,
+        _: &peko_subject::PrincipalId,
+        _: Option<&peko_tools_core::ActingFor>,
+    ) -> ToolCatalogSnapshot {
         self.snapshot.clone()
     }
     async fn render_prompt_sections(&self, request: &PromptSectionRequest) -> PromptSections {

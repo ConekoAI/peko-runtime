@@ -322,13 +322,16 @@ mod tests {
             .create_context("run_abc", "tool_1", "test_tool")
             .with_agent_id("agent_456")
             .with_session_id("sess_123")
-            .with_peer_id("peer_789")
+            .with_acting_for(peko_tools_core::ActingFor {
+                actor: "user:hub:789".into(),
+                ..peko_tools_core::ActingFor::unattributed()
+            })
             .with_workspace("/tmp/test");
 
         let config = ReservedParamsConfig::new()
             .with_runtime("agent_id", "agent_id")
             .with_runtime("session_id", "session_id")
-            .with_runtime("peer_id", "peer_id")
+            .with_runtime("acting_for", "acting_for")
             .with_static("static_val", "hardcoded");
 
         let resolved = crate::extensions::mcp::reserved_params::resolve_reserved_params(
@@ -339,7 +342,7 @@ mod tests {
 
         assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
         assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
-        assert_eq!(resolved.get("peer_id"), Some(&json!("peer_789")));
+        assert_eq!(resolved.get("acting_for"), Some(&json!("user:hub:789")));
         assert_eq!(resolved.get("static_val"), Some(&json!("hardcoded")));
     }
 

@@ -159,8 +159,13 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
         }
         chained += 1;
         let sink: AgenticEventSink = Arc::new(|_| {});
+        // ADR-078: a wake continues the session's own work, under the
+        // session's natural stamp.
+        let acting_for = turns
+            .root_stamp(None, &session_key, peko_tools_core::Origin::Wake)
+            .await;
         match turns
-            .drive_turn_streaming(&session_key, WAKE_TURN_MARKER, sink, None, None)
+            .drive_turn_streaming(&session_key, WAKE_TURN_MARKER, sink, None, None, acting_for)
             .await
         {
             Ok(outcome) => {
@@ -173,7 +178,7 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
                     Arc::clone(&ctx.channel_port),
                     principal.id.clone(),
                 );
-                if let Some((_peer, channel)) = surface.peer_surface(&session_key).await {
+                if let Some(channel) = surface.conversation_channel(&session_key).await {
                     surface.post_reply(&channel, &outcome.final_text).await;
                 }
             }

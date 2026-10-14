@@ -412,6 +412,10 @@ impl Daemon {
             info!("📨 Peer messenger port installed (PrincipalPeerMessenger)");
         }
 
+        // ADR-078 D7: the policy reviewer and the owner's approval desk.
+        app_state.principal_manager().install_policy_gate();
+        info!("🛡️ Policy gate installed (reviewer + owner approvals)");
+
         // §6.1b: install the completion-driven wake handler so a
         // terminal async task whose session is idle gets a successor
         // turn (previously completions waited for the next unrelated

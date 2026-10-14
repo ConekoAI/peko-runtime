@@ -26,7 +26,7 @@ pub struct ContextResolver;
 pub trait ContextSource {
     fn get_session_id(&self) -> Option<String>;
     fn get_agent_id(&self) -> Option<String>;
-    fn get_peer_id(&self) -> Option<String>;
+    fn get_acting_for(&self) -> Option<String>;
     fn get_workspace(&self) -> Option<String>;
     fn get_run_id(&self) -> Option<String>;
 }
@@ -37,7 +37,7 @@ impl ContextResolver {
     /// # Supported Fields
     /// - `session_id`: The current session identifier
     /// - `agent_id`: The current agent identifier
-    /// - `peer_id`: The peer/user identifier (optional)
+    /// - `acting_for`: The actor address the run acts for (ADR-078)
     /// - `workspace`: The workspace directory path
     /// - `run_id`: The unique run identifier
     ///
@@ -48,7 +48,7 @@ impl ContextResolver {
         match field {
             "session_id" => source.get_session_id().map_or(Value::Null, Value::String),
             "agent_id" => source.get_agent_id().map_or(Value::Null, Value::String),
-            "peer_id" => source.get_peer_id().map_or(Value::Null, Value::String),
+            "acting_for" => source.get_acting_for().map_or(Value::Null, Value::String),
             "workspace" => source.get_workspace().map_or(Value::Null, Value::String),
             "run_id" => source.get_run_id().map_or(Value::Null, Value::String),
             _ => {
@@ -61,7 +61,13 @@ impl ContextResolver {
     /// Get all available field names
     #[must_use]
     pub fn available_fields() -> &'static [&'static str] {
-        &["session_id", "agent_id", "peer_id", "workspace", "run_id"]
+        &[
+            "session_id",
+            "agent_id",
+            "acting_for",
+            "workspace",
+            "run_id",
+        ]
     }
 }
 
@@ -83,7 +89,7 @@ mod tests {
     struct MockContext {
         session_id: Option<String>,
         agent_id: Option<String>,
-        peer_id: Option<String>,
+        acting_for: Option<String>,
         workspace: Option<String>,
         run_id: Option<String>,
     }
@@ -97,8 +103,8 @@ mod tests {
             self.agent_id.clone()
         }
 
-        fn get_peer_id(&self) -> Option<String> {
-            self.peer_id.clone()
+        fn get_acting_for(&self) -> Option<String> {
+            self.acting_for.clone()
         }
 
         fn get_workspace(&self) -> Option<String> {
@@ -115,7 +121,7 @@ mod tests {
         let ctx = MockContext {
             session_id: Some("sess_123".to_string()),
             agent_id: Some("agent_test".to_string()),
-            peer_id: Some("peer_456".to_string()),
+            acting_for: Some("user:hub:456".to_string()),
             workspace: Some("/tmp/test".to_string()),
             run_id: Some("run_789".to_string()),
         };
@@ -129,8 +135,8 @@ mod tests {
             Value::String("agent_test".to_string())
         );
         assert_eq!(
-            ContextResolver::resolve_field(&ctx, "peer_id"),
-            Value::String("peer_456".to_string())
+            ContextResolver::resolve_field(&ctx, "acting_for"),
+            Value::String("user:hub:456".to_string())
         );
         assert_eq!(
             ContextResolver::resolve_field(&ctx, "workspace"),
@@ -147,7 +153,7 @@ mod tests {
         let ctx = MockContext {
             session_id: None,
             agent_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             run_id: None,
         };
@@ -167,7 +173,7 @@ mod tests {
         let ctx = MockContext {
             session_id: Some("test".to_string()),
             agent_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             run_id: None,
         };
@@ -183,7 +189,7 @@ mod tests {
         let fields = ContextResolver::available_fields();
         assert!(fields.contains(&"session_id"));
         assert!(fields.contains(&"agent_id"));
-        assert!(fields.contains(&"peer_id"));
+        assert!(fields.contains(&"acting_for"));
         assert!(fields.contains(&"workspace"));
         assert!(fields.contains(&"run_id"));
     }

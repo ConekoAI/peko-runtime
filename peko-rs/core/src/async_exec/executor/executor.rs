@@ -836,7 +836,7 @@ impl AsyncExecutor {
                     workspace: context.workspace,
                     agent_id: context.agent_id,
                     session_id: context.session_id,
-                    caller_id: context.caller_id,
+                    acting_for: context.acting_for,
                     principal_id: context.principal_id,
                     principal_name: context.principal_name,
                     abort_signal: Some(rx),
@@ -1809,7 +1809,8 @@ mod dispatch_tool_tests {
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
-            .with_principal_id("system".to_string());
+            .with_principal_id("system".to_string())
+            .with_acting_for(peko_tools_core::ActingFor::runtime());
 
         let receipt = executor
             .dispatch_tool(&core, context, AsyncToolConfig::default())
@@ -1865,7 +1866,8 @@ mod dispatch_tool_tests {
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
-            .for_principal("system".to_string());
+            .for_principal("system".to_string())
+            .with_acting_for(peko_tools_core::ActingFor::runtime());
 
         let receipt = executor
             .dispatch_tool(&core, context, AsyncToolConfig::default())
@@ -1916,7 +1918,8 @@ mod dispatch_tool_tests {
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context =
             ToolDispatchContext::builder("abortable_stub", serde_json::json!({}), "session_x")
-                .for_principal("system".to_string());
+                .for_principal("system".to_string())
+                .with_acting_for(peko_tools_core::ActingFor::runtime());
 
         let receipt = executor
             .dispatch_tool_with_signal(&core, context, AsyncToolConfig::default(), None)
@@ -1963,7 +1966,8 @@ mod dispatch_tool_tests {
 
         let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
         let context = ToolDispatchContext::builder("stub_tool", serde_json::json!({}), "session_x")
-            .for_principal("system".to_string());
+            .for_principal("system".to_string())
+            .with_acting_for(peko_tools_core::ActingFor::runtime());
 
         let token = tokio_util::sync::CancellationToken::new();
         let token_clone = token.clone();

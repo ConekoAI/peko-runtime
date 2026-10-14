@@ -481,6 +481,15 @@ impl Agent {
         self
     }
 
+    /// Bind the principal's stamp service onto the agent's executor, so
+    /// its `Agent`-tool spawns re-cap their stamps (ADR-078).
+    #[must_use]
+    pub fn with_stamps(mut self, stamps: Option<crate::security::Stamps>) -> Self {
+        let executor = (*self.subagent_executor).clone().with_stamps(stamps);
+        self.subagent_executor = Arc::new(executor);
+        self
+    }
+
     /// Keep child-run audits on the same principal observability hub.
     pub(crate) fn with_subagent_observability(
         mut self,
@@ -619,11 +628,10 @@ impl Agent {
         self
     }
 
-    /// Set the peer-conversation peer subject (conversation runs
-    /// only — rendered into the `{{session_context}}` section).
+    /// Attach the run's acting-for stamp (ADR-078).
     #[must_use]
-    pub fn with_conversation_peer(mut self, peer: impl Into<String>) -> Self {
-        self.config.conversation_peer = Some(peer.into());
+    pub fn with_acting_for(mut self, acting_for: peko_tools_core::ActingFor) -> Self {
+        self.config.acting_for = Some(acting_for);
         self
     }
 
@@ -923,7 +931,7 @@ impl Agent {
         // an unlimited meter (no charging, no persistence).
         let quota_meter = Arc::new(peko_quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(agent_arc, provider, session_key, None, None, quota_meter)
+            .build_agentic_loop(agent_arc, provider, session_key, None, quota_meter)
             .await?;
 
         // Phase 9b.N.5b.9d: inline `AgenticLoop::run`'s session-creation
@@ -1017,14 +1025,7 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(peko_quota::QuotaMeter::unlimited()));
         let loop_ = self
-            .build_agentic_loop(
-                agent_arc,
-                provider,
-                Some(session_id),
-                None,
-                cancel,
-                quota_meter,
-            )
+            .build_agentic_loop(agent_arc, provider, Some(session_id), cancel, quota_meter)
             .await?;
 
         let result = match loop_
@@ -1051,12 +1052,6 @@ impl Agent {
     /// inserted immediately before the user turn (e.g. recalled context
     /// from prior sessions); they are never persisted.
     ///
-    /// `caller_id` is the resolved caller identity for the request
-    /// (pekohub sub, API key id, or `None` for local CLI invocations) —
-    /// propagated to every `HookInput::ToolCall` so per-user permission
-    /// checks and audit logging can attribute tool calls to a real user
-    /// (issue #17).
-    ///
     /// F19: optional `quota_meter` is the principal's quota meter
     /// from `Principal::quota_meter`. When supplied, every LLM call
     /// auto-charges via `StackedMeteredProvider`; when omitted, defaults
@@ -1073,7 +1068,6 @@ impl Agent {
         pre_user_messages: Vec<peko_message::LlmMessage>,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
-        caller_id: Option<String>,
         on_event: F,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Option<Arc<peko_quota::QuotaMeter>>,
@@ -1111,14 +1105,7 @@ impl Agent {
         let quota_meter =
             quota_meter.unwrap_or_else(|| Arc::new(peko_quota::QuotaMeter::unlimited()));
         let loop_ = match self
-            .build_agentic_loop(
-                agent_arc,
-                provider,
-                session_id,
-                caller_id,
-                cancel,
-                quota_meter,
-            )
+            .build_agentic_loop(agent_arc, provider, session_id, cancel, quota_meter)
             .await
         {
             Ok(loop_) => loop_,
@@ -1160,7 +1147,6 @@ impl Agent {
         on_event: F,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
-        caller_id: Option<String>,
     ) -> Result<peko_engine::AgenticResult>
     where
         F: Fn(peko_engine::AgenticEvent) + Send + Sync + 'static,
@@ -1180,14 +1166,7 @@ impl Agent {
         // F19: same unlimited fallback as the other `execute_*` paths.
         let quota_meter = Arc::new(peko_quota::QuotaMeter::unlimited());
         let loop_ = self
-            .build_agentic_loop(
-                agent_arc,
-                provider,
-                session_id,
-                caller_id,
-                None,
-                quota_meter,
-            )
+            .build_agentic_loop(agent_arc, provider, session_id, None, quota_meter)
             .await?;
 
         let streaming_config = peko_engine::OrchestratorConfig::live();
@@ -1228,7 +1207,6 @@ impl Agent {
         agent_arc: Arc<Agent>,
         provider: Arc<peko_providers::Provider>,
         session_key: Option<String>,
-        caller_id: Option<String>,
         cancel: Option<tokio_util::sync::CancellationToken>,
         quota_meter: Arc<peko_quota::QuotaMeter>,
     ) -> Result<peko_engine::agentic_loop::AgenticLoop> {
@@ -1293,7 +1271,6 @@ impl Agent {
         )
         .await
         .with_async_completion_queue(async_completion_queue)
-        .with_caller_id(caller_id)
         .with_quota_meter(quota_meter)
         // Phase 2 PR 2: forward the agent's bound MCP context
         // provider so the `{{mcp_context}}` placeholder renders
@@ -1394,11 +1371,10 @@ impl Agent {
         self.config.conversation_channel.as_deref()
     }
 
-    /// Peer-conversation peer subject (conversation runs only),
-    /// rendered into the `{{session_context}}` section.
+    /// Whom the run acts for (ADR-078).
     #[must_use]
-    pub fn conversation_peer(&self) -> Option<&str> {
-        self.config.conversation_peer.as_deref()
+    pub fn acting_for(&self) -> Option<&peko_tools_core::ActingFor> {
+        self.config.acting_for.as_ref()
     }
 
     // Session overlay methods
@@ -1483,11 +1459,15 @@ impl Agent {
     /// do not conflict with each other or the user's real data.
     #[cfg(test)]
     pub async fn new_for_test(
-        config: AgentConfig,
+        mut config: AgentConfig,
         temp_dir: &std::path::Path,
         tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
         use peko_identity::storage::KeyStorage;
+        // Test agents act for the owner unless a test stamps otherwise.
+        if config.acting_for.is_none() {
+            config.acting_for = Some(peko_tools_core::ActingFor::runtime());
+        }
 
         let path_resolver: Arc<dyn peko_subject::PathResolverLike> = Arc::new(
             peko_session::DefaultPathResolver::with_data_dir(temp_dir.join("data")),
@@ -1707,8 +1687,8 @@ impl peko_engine::AgentView for Agent {
         Agent::conversation_channel(self)
     }
 
-    fn conversation_peer(&self) -> Option<&str> {
-        Agent::conversation_peer(self)
+    fn acting_for(&self) -> Option<&peko_tools_core::ActingFor> {
+        Agent::acting_for(self)
     }
 
     fn config_prompt_body(&self) -> Option<String> {

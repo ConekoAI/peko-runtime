@@ -49,7 +49,29 @@ pub struct ToolDispatcher {
     principal_async: Arc<
         std::sync::RwLock<std::collections::HashMap<peko_subject::PrincipalId, PrincipalAsync>>,
     >,
+    /// Each principal's workspace root, bound when its tool bag is
+    /// installed. The ADR-078 path floor confines and protects against
+    /// it. Shared with run overlays.
+    principal_workspaces: Arc<
+        std::sync::RwLock<std::collections::HashMap<peko_subject::PrincipalId, std::path::PathBuf>>,
+    >,
+    /// The ADR-078 D7 policy gate, bound by the daemon. Unbound, a call
+    /// that needs review is refused. Shared with run overlays.
+    policy_gate: Arc<std::sync::RwLock<Option<Arc<dyn crate::security::judge::PolicyGate>>>>,
+    /// Recent review verdicts per `(actor, call digest)`, so a run
+    /// repeating a call does not pay for a second review.
+    review_cache: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                (std::time::Instant, crate::security::judge::Verdict),
+            >,
+        >,
+    >,
 }
+
+/// How long a review verdict is reused for the same actor and call.
+const REVIEW_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(10);
 
 /// A principal's Async runtime and the executor behind it.
 #[derive(Clone)]
@@ -97,7 +119,74 @@ impl ToolDispatcher {
             router,
             audit,
             principal_async: Arc::default(),
+            principal_workspaces: Arc::default(),
+            policy_gate: Arc::default(),
+            review_cache: Arc::default(),
         }
+    }
+
+    /// Bind the ADR-078 D7 policy gate.
+    pub fn set_policy_gate(&self, gate: Arc<dyn crate::security::judge::PolicyGate>) {
+        *self.policy_gate.write().expect("policy gate lock poisoned") = Some(gate);
+    }
+
+    /// The bound policy gate, if any.
+    pub fn policy_gate(&self) -> Option<Arc<dyn crate::security::judge::PolicyGate>> {
+        self.policy_gate
+            .read()
+            .expect("policy gate lock poisoned")
+            .clone()
+    }
+
+    /// The gate's verdict on `call`: approved replays pass, recent
+    /// verdicts are reused, and an unbound gate refuses.
+    async fn review(
+        &self,
+        call: &crate::security::judge::GatedCall,
+    ) -> crate::security::judge::Verdict {
+        use crate::security::judge::Verdict;
+        let Some(gate) = self.policy_gate() else {
+            return Verdict::Deny("no policy reviewer is configured on this runtime".into());
+        };
+        if gate.is_approved_replay(call).await {
+            return Verdict::Allow;
+        }
+        let key = format!("{}|{}", call.stamp.actor, call.digest());
+        {
+            let mut cache = self.review_cache.lock().expect("review cache poisoned");
+            cache.retain(|_, (at, _)| at.elapsed() < REVIEW_CACHE_TTL);
+            if let Some((_, verdict)) = cache.get(&key) {
+                return verdict.clone();
+            }
+        }
+        let verdict = gate.review(call).await;
+        if !matches!(verdict, Verdict::AskOwner(_)) {
+            self.review_cache
+                .lock()
+                .expect("review cache poisoned")
+                .insert(key, (std::time::Instant::now(), verdict.clone()));
+        }
+        verdict
+    }
+
+    /// Bind `principal`'s workspace root for the ADR-078 path floor.
+    pub(crate) fn bind_workspace(
+        &self,
+        principal: peko_subject::PrincipalId,
+        workspace: std::path::PathBuf,
+    ) {
+        self.principal_workspaces
+            .write()
+            .expect("principal workspaces lock poisoned")
+            .insert(principal, workspace);
+    }
+
+    fn workspace_for(&self, principal: &peko_subject::PrincipalId) -> Option<std::path::PathBuf> {
+        self.principal_workspaces
+            .read()
+            .expect("principal workspaces lock poisoned")
+            .get(principal)
+            .cloned()
     }
 
     /// Bind `principal`'s Async runtime (its background spawner) and the
@@ -218,6 +307,25 @@ impl ToolDispatcher {
             return Ok((text.clone(), Value::String(text), false));
         }
 
+        // 3. ADR-078 floor: a call without a stamp is unattributed and
+        //    reaches nothing; an untrusted run never gets the shell or an
+        //    MCP server its owner did not mark safe.
+        let stamp = call
+            .acting_for
+            .clone()
+            .unwrap_or_else(peko_tools_core::ActingFor::unattributed);
+        let mcp_untrusted_ok = match &metadata.source {
+            crate::tools::metadata::ToolSource::Mcp { untrusted_ok, .. } => Some(*untrusted_ok),
+            crate::tools::metadata::ToolSource::BuiltIn => None,
+        };
+        if let Some(reason) =
+            crate::security::floor::tool_refusal(&stamp, &tool_name, mcp_untrusted_ok)
+        {
+            self.emit_floor_denial(call, &stamp, &reason).await;
+            let text = format!("Error: {reason}");
+            return Ok((text.clone(), Value::String(text), false));
+        }
+
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
         //    fields.
@@ -230,6 +338,9 @@ impl ToolDispatcher {
         )
         .with_agent_id(call.agent_id.clone().unwrap_or_default())
         .with_session_id(call.session_id.clone().unwrap_or_default());
+        if let Some(stamp) = call.acting_for.clone() {
+            base_ctx = base_ctx.with_acting_for(stamp);
+        }
         // No workspace stays `None`: an empty one would be copied into a
         // background task's dispatch and injected as `cwd: ""`.
         if let Some(workspace) = call.workspace.as_deref().filter(|w| !w.is_empty()) {
@@ -302,6 +413,119 @@ impl ToolDispatcher {
 
         let mut params = call.params.clone();
         apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());
+
+        // ADR-078 path floor: confinement, the cross-principal boundary,
+        // and protected files (a non-owner's write becomes a proposal).
+        let workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
+        if stamp.is_untrusted() {
+            // The file tools default to a runtime-wide directory; an
+            // untrusted run's relative paths are its workspace's instead.
+            confine_relative_paths(&mut params, &tool_name, workspace.as_deref());
+        }
+        if let Some((target, write)) = crate::security::floor::file_tool_target(&tool_name, &params)
+        {
+            if stamp.is_untrusted()
+                && tool_name == "Glob"
+                && params["pattern"]
+                    .as_str()
+                    .is_some_and(crate::security::floor::glob_pattern_escapes)
+            {
+                let reason = "Glob patterns may not leave their base path while acting for an \
+                              untrusted actor";
+                self.emit_floor_denial(call, &stamp, reason).await;
+                let text = format!("Error: {reason}");
+                return Ok((text.clone(), Value::String(text), false));
+            }
+            match crate::security::floor::check_path(&stamp, workspace.as_deref(), &target, write) {
+                crate::security::floor::PathDecision::Allow => {}
+                crate::security::floor::PathDecision::Deny(reason) => {
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok((text.clone(), Value::String(text), false));
+                }
+                crate::security::floor::PathDecision::Propose { relative } => {
+                    let workspace = workspace.expect("a proposal needs a workspace");
+                    let filed = crate::security::proposals::file(
+                        &workspace, &stamp, &relative, &tool_name, &params,
+                    )
+                    .await;
+                    return Ok(match filed {
+                        Ok(path) => {
+                            let text = format!(
+                                "`{relative}` is protected: only the owner writes it. Your \
+                                 change was filed for the owner's review at {}; it is not \
+                                 applied.",
+                                path.display()
+                            );
+                            let json = serde_json::json!({
+                                "proposed": true,
+                                "target": relative,
+                                "proposal": path.display().to_string(),
+                                "message": text,
+                            });
+                            (text, json, true)
+                        }
+                        Err(e) => {
+                            let text = format!("Error: could not file the proposal: {e:#}");
+                            (text.clone(), Value::String(text), false)
+                        }
+                    });
+                }
+            }
+        }
+
+        // ADR-078 D7: a non-owner run's sensitive call goes to the
+        // policy reviewer, which never sees the conversation behind it.
+        if crate::security::judge::needs_review(&stamp, &tool_name, &params) {
+            use crate::security::judge::{GatedCall, Verdict};
+            let gated = GatedCall {
+                principal_id: principal_id.0.clone(),
+                principal_name: call.principal_name.clone(),
+                session_id: call.session_id.clone(),
+                agent_id: call.agent_id.clone(),
+                workspace: call.workspace.clone(),
+                stamp: stamp.clone(),
+                tool_name: tool_name.clone(),
+                params: params.clone(),
+            };
+            match self.review(&gated).await {
+                Verdict::Allow => {}
+                Verdict::Deny(reason) => {
+                    let reason = format!("not allowed by the owner's policy: {reason}");
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok((text.clone(), Value::String(text), false));
+                }
+                Verdict::AskOwner(reason) => {
+                    let filed = match self.policy_gate() {
+                        Some(gate) => gate.ask_owner(&gated, &reason).await,
+                        None => Err(anyhow::anyhow!("no policy reviewer is configured")),
+                    };
+                    let (text, json) = match filed {
+                        Ok(id) => {
+                            let text = format!(
+                                "Waiting for the owner's approval ({id}): {reason}. Nothing was \
+                                 done yet. If the owner approves, the result arrives in this \
+                                 conversation as a completed task."
+                            );
+                            let json = serde_json::json!({
+                                "pending_approval": id,
+                                "reason": reason,
+                                "message": text,
+                            });
+                            (text, json)
+                        }
+                        Err(e) => {
+                            let text = format!(
+                                "Error: the owner must approve this, but asking failed: {e:#}"
+                            );
+                            (text.clone(), Value::String(text))
+                        }
+                    };
+                    return Ok((text, json, false));
+                }
+            }
+        }
 
         // Detached tools (including Workflow subprocesses) retain their
         // caller's binding until execution ends, without a registry cycle.
@@ -387,12 +611,43 @@ impl ToolDispatcher {
             workspace: call.workspace.clone(),
             agent_id: call.agent_id.clone(),
             session_id: call.session_id.clone(),
-            caller_id: call.caller_id.clone(),
+            acting_for: call.acting_for.clone(),
             principal_id: call.principal_id.clone(),
             principal_name: call.principal_name.clone(),
             abort_signal: None,
         };
         let _ = self.hooks.invoke_hook(point, input).await;
+    }
+
+    /// Emit a `Security` audit event for a call the ADR-078 floor refused.
+    async fn emit_floor_denial(
+        &self,
+        call: &ToolCallSpec,
+        stamp: &peko_tools_core::ActingFor,
+        reason: &str,
+    ) {
+        tracing::info!(tool = %call.tool_name, actor = %stamp.actor, "trust floor refused a call: {reason}");
+        let Some(audit) = self.audit.as_ref() else {
+            return;
+        };
+        let caller = stamp.actor.parse::<peko_subject::Subject>().ok();
+        let result = audit
+            .audit_security_with_caller(
+                caller.as_ref(),
+                "tool.floor_denied",
+                call.agent_id.as_deref(),
+                serde_json::json!({
+                    "tool_name": call.tool_name,
+                    "principal_id": call.principal_id,
+                    "session_id": call.session_id,
+                    "acting_for": stamp,
+                    "reason": reason,
+                }),
+            )
+            .await;
+        if let Err(e) = result {
+            debug!("failed to emit tool.floor_denied audit event: {e}");
+        }
     }
 
     /// Emit the `tool.call` audit event (Info severity). Tool name,
@@ -432,10 +687,12 @@ impl ToolDispatcher {
             let digest = Sha256::digest(canonical.as_bytes());
             format!("sha256:{}", hex_encode(&digest))
         };
-        let caller = call.caller_id.as_deref().map(|id| {
-            id.parse::<peko_subject::Subject>()
-                .unwrap_or_else(|_| peko_subject::Subject::User(id.to_string()))
-        });
+        // ADR-078: the stamp's actor is the attributed caller. A group
+        // stamp names a channel, not an actor, and attributes to nobody.
+        let caller = call
+            .acting_for
+            .as_ref()
+            .and_then(|stamp| stamp.actor.parse::<peko_subject::Subject>().ok());
         let result = audit
             .audit_with_caller(
                 caller.as_ref(),
@@ -448,7 +705,7 @@ impl ToolDispatcher {
                     "principal_id": call.principal_id,
                     "principal_name": call.principal_name,
                     "session_id": call.session_id,
-                    "caller_id": call.caller_id,
+                    "acting_for": call.acting_for,
                     "params_digest": params_digest,
                     "success": success,
                     "duration_ms": elapsed.as_millis() as u64,
@@ -470,6 +727,40 @@ fn hex_encode(bytes: &[u8]) -> String {
             write!(out, "{b:02x}").expect("writing to String cannot fail");
             out
         })
+}
+
+/// Anchor an untrusted run's file-tool paths at its principal's
+/// workspace (ADR-078 D6): relative paths join it, and a `Glob`/`Grep`
+/// without a `path` searches it. With no bound workspace, nothing changes
+/// and the floor denies the call.
+fn confine_relative_paths(
+    params: &mut Value,
+    tool_name: &str,
+    workspace: Option<&std::path::Path>,
+) {
+    let (Some(obj), Some(workspace)) = (params.as_object_mut(), workspace) else {
+        return;
+    };
+    let key = match tool_name {
+        "Read" | "Write" | "Edit" => "file_path",
+        "Glob" | "Grep" => "path",
+        _ => return,
+    };
+    let anchored = match obj.get(key).and_then(Value::as_str) {
+        Some(raw) => {
+            let path = crate::tools::builtin::paths::expand_tilde(raw);
+            if path.is_absolute() {
+                return;
+            }
+            workspace.join(path)
+        }
+        None if key == "path" => workspace.to_path_buf(),
+        None => return,
+    };
+    obj.insert(
+        key.to_string(),
+        Value::String(anchored.to_string_lossy().into_owned()),
+    );
 }
 
 /// Inject the caller's workspace into filesystem-tool params.
@@ -592,6 +883,7 @@ mod tests {
             None,
         );
         let mut call = ToolCallSpec::new("Failing", serde_json::json!({}));
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.principal_id = Some("principal".into());
         let (text, _, success) = dispatcher.execute(call).await.unwrap();
         assert!(!success);
@@ -630,7 +922,10 @@ mod tests {
             call.agent_id = Some("did:agent".into());
             call.session_id = Some("session".into());
             call.principal_id = Some("principal".into());
-            call.caller_id = Some("user:alice".into());
+            call.acting_for = Some(peko_tools_core::ActingFor {
+                actor: "user:hub:alice".into(),
+                ..peko_tools_core::ActingFor::runtime()
+            });
             call.workspace = Some(workspace.to_string_lossy().into_owned());
             let (_, result, success) = dispatcher.execute(call).await.unwrap();
             assert_eq!(success, expected);
@@ -653,7 +948,7 @@ mod tests {
             assert_eq!(event.agent_did.as_deref(), Some("did:agent"));
             assert_eq!(event.details["principal_id"], "principal");
             assert_eq!(event.details["session_id"], "session");
-            assert_eq!(event.details["caller_id"], "user:alice");
+            assert_eq!(event.details["acting_for"]["actor"], "user:hub:alice");
             assert!(!event.details.to_string().contains("secret"));
             assert_eq!(event.details["params_digest"].as_str().unwrap().len(), 71);
         }
@@ -728,6 +1023,7 @@ mod tests {
         );
         let (tx, rx) = tokio::sync::watch::channel(abort_after == Some(Default::default()));
         let mut call = ToolCallSpec::new("Interruptible", serde_json::json!({}));
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
         call.principal_id = Some("principal".into());
         call.abort_signal = Some(rx);
         if let Some(delay) = abort_after.filter(|d| !d.is_zero()) {

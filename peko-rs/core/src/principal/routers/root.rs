@@ -254,6 +254,7 @@ impl RootRouter {
                 tracing::debug!("RootRouter::build_context: quota_meter already set");
             }
         }
+        principal_ctx.set_acting_for(ctx.stamps.clone(), ctx.acting_for.clone());
         principal_ctx
     }
 }

@@ -6,7 +6,7 @@
 //! reader so "why did my reminder not fire / fail" is answerable without
 //! shelling out to the schedule file.
 
-use crate::tools::delete::resolve_id_by_label;
+use crate::tools::delete::{resolve_id_by_label, verify_id_belongs_to_principal};
 use crate::tools::RuntimeBinding;
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
@@ -107,9 +107,15 @@ impl Tool for CronHistoryAction {
             if !runtime.owns_job_history(&owner, &id).await? {
                 anyhow::bail!("Job '{id}' not found for Principal '{principal_id}'");
             }
+            // ADR-078: a non-owner run reads only its own conversation's
+            // live jobs; a deleted job's history belongs to the owner.
+            let stamp = ctx.acting_for();
+            if !stamp.is_owner() {
+                verify_id_belongs_to_principal(&*runtime, &id, &principal_id, &stamp).await?;
+            }
             id
         } else if let Some(label) = args.label {
-            resolve_id_by_label(&*runtime, &label, &principal_id).await?
+            resolve_id_by_label(&*runtime, &label, &principal_id, &ctx.acting_for()).await?
         } else {
             return Err(anyhow::anyhow!(
                 "Either id or label is required for Cron action history"

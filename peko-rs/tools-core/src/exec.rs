@@ -111,8 +111,10 @@ pub struct ToolContext {
     pub agent_id: Option<String>,
     /// Session identifier (for reserved parameter injection)
     pub session_id: Option<String>,
-    /// Subject identifier for distributed contexts
-    pub peer_id: Option<String>,
+    /// Whom this run acts for (ADR-078). Minted by the runtime, never by
+    /// a tool or a packet; `None` is treated as
+    /// [`crate::ActingFor::unattributed`].
+    pub acting_for: Option<crate::ActingFor>,
     /// Workspace path
     pub workspace: Option<String>,
     /// Spawning principal runtime id (post-PR-#94). Extension-scoped
@@ -147,7 +149,7 @@ impl ToolContext {
             timeout: None,
             agent_id: None,
             session_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             principal_id: None,
             principal_name: None,
@@ -176,7 +178,7 @@ impl ToolContext {
             timeout: None,
             agent_id: None,
             session_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             principal_id: None,
             principal_name: None,
@@ -207,7 +209,7 @@ impl ToolContext {
             timeout: None,
             agent_id: None,
             session_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             principal_id: None,
             principal_name: None,
@@ -263,7 +265,7 @@ impl ToolContext {
             timeout: None,
             agent_id: None,
             session_id: None,
-            peer_id: None,
+            acting_for: None,
             workspace: None,
             principal_id: None,
             principal_name: None,
@@ -299,11 +301,20 @@ impl ToolContext {
         self
     }
 
-    /// Set peer ID for distributed contexts
+    /// Attach the run's acting-for stamp (ADR-078).
     #[must_use]
-    pub fn with_peer_id(mut self, peer_id: impl Into<String>) -> Self {
-        self.peer_id = Some(peer_id.into());
+    pub fn with_acting_for(mut self, acting_for: crate::ActingFor) -> Self {
+        self.acting_for = Some(acting_for);
         self
+    }
+
+    /// The run's stamp, or the fail-closed unattributed stamp when none
+    /// was attached.
+    #[must_use]
+    pub fn acting_for(&self) -> crate::ActingFor {
+        self.acting_for
+            .clone()
+            .unwrap_or_else(crate::ActingFor::unattributed)
     }
 
     /// Set workspace path
@@ -725,8 +736,11 @@ impl ContextSource for ToolContextAdapter<'_> {
         self.ctx.agent_id.clone()
     }
 
-    fn get_peer_id(&self) -> Option<String> {
-        self.ctx.peer_id.clone()
+    fn get_acting_for(&self) -> Option<String> {
+        self.ctx
+            .acting_for
+            .as_ref()
+            .map(|stamp| stamp.actor.clone())
     }
 
     fn get_workspace(&self) -> Option<String> {

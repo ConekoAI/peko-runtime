@@ -138,7 +138,12 @@ impl Tool for MethodTool {
                     Value::String(self.runtime.secret(&self.server.id, credential)?)
                 }
                 ReservedParameter::Runtime { field } => {
+                    // ADR-078: owner-run servers can apply their own
+                    // policy to whom the call is for.
+                    let stamp = context.acting_for();
                     let value = match field.as_str() {
+                        "acting_for" => Some(stamp.actor.as_str()),
+                        "acting_for_trust" => Some(stamp.trust.as_str()),
                         "principal_id" => context.principal_id.as_deref(),
                         "principal_name" => context.principal_name.as_deref(),
                         "session_id" => context.session_id.as_deref(),

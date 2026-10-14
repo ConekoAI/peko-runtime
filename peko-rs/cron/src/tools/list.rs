@@ -68,6 +68,7 @@ impl Tool for CronListAction {
         let filtered: Vec<_> = jobs
             .into_iter()
             .filter(|j| j.principal_id.0 == principal_id)
+            .filter(|j| crate::tools::job_visible_to(j, &ctx.acting_for()))
             .collect();
         Ok(render_job_list(filtered))
     }
