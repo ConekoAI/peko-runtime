@@ -95,9 +95,9 @@ pub struct HookManifest {
 /// hooks that successfully registered, never a hard error for
 /// individual hook misconfigurations.
 ///
-/// Mirrors [`crate::extensions::mcp::workspace::load_workspace_mcp_servers`]
-/// in shape: a single canonical workspace scanner per tool surface,
-/// called once per principal boot.
+/// Mirrors [`crate::extensions::mcp::service::config::scan`] in shape: a
+/// single canonical workspace scanner per tool surface, called once per
+/// principal boot.
 pub async fn load_workspace_hooks(
     hooks_dir: &Path,
     core: &WorkspaceHookDispatcher,

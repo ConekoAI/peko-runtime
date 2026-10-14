@@ -6,7 +6,6 @@
 //! - Delivery/announcement of results
 //! - Graceful shutdown
 
-pub(crate) mod background_runtime;
 pub(crate) mod channel_binding;
 pub(crate) mod completion_wake;
 pub(crate) mod config_drift;
@@ -308,24 +307,6 @@ impl Daemon {
         // Mark daemon as ready (server is listening)
         app_state.set_ready(true).await;
         info!("✅ Daemon ready to accept requests");
-
-        // Auto-start extensions registered with the runtime starter registry (ADR-026).
-        // This brings up MCP servers marked `auto_start: true` without requiring a
-        // manual `peko ext start`, matching Claude Code's MCP lifecycle UX.
-        let starter_ctx = app_state.starter_context();
-        let started = app_state
-            .runtime_starter_registry()
-            .auto_start_all(&starter_ctx)
-            .await;
-        if !started.is_empty() {
-            info!(
-                "🚀 Auto-started {} runtime(s): {:?}",
-                started.len(),
-                started
-            );
-        } else {
-            debug!("No runtimes requested auto-start");
-        }
 
         // Start PekoHub tunnel if credentials exist (ADR-035)
         match app_state

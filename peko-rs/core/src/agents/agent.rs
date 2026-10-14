@@ -119,8 +119,8 @@ pub struct Agent {
     /// `{{mcp_context}}` system-prompt section. Default `None`
     /// means the loop's `EmptyMcpPromptContextProvider` is used
     /// (placeholder is stripped to empty via `remove_missing=true`).
-    /// Production wiring at `principal/agent_runner.rs` binds the
-    /// real provider wrapping the global `McpManager`.
+    /// No production path binds a provider: principal-owned MCP
+    /// (ADR-075) reaches the prompt through the tool catalog binding.
     mcp_context_provider: Option<Arc<dyn peko_engine::McpPromptContextProvider>>,
 }
 
@@ -564,9 +564,8 @@ impl Agent {
     /// that the `AgenticLoop` consults for the `{{mcp_context}}`
     /// system-prompt section. The default `None` makes the loop
     /// fall back to its `EmptyMcpPromptContextProvider` (the
-    /// placeholder is stripped to empty). Production wiring
-    /// (`principal/agent_runner.rs`) passes a provider wrapping
-    /// the global `McpManager` when one is reachable.
+    /// placeholder is stripped to empty). No production path binds
+    /// a provider (ADR-075 MCP context rides the tool catalog binding).
     #[must_use]
     pub fn with_mcp_context_provider(
         mut self,
@@ -1276,10 +1275,9 @@ impl Agent {
         // provider so the `{{mcp_context}}` placeholder renders
         // real Markdown describing the configured MCP servers.
         // Default `None` leaves the loop's
-        // `EmptyMcpPromptContextProvider` in place (CLI one-shot
-        // path, test fixtures); production wiring at
-        // `principal/agent_runner.rs` binds a provider wrapping
-        // the global `McpManager` via `Agent::with_mcp_context_provider`.
+        // `EmptyMcpPromptContextProvider` in place, which is what
+        // every current caller gets (ADR-075 MCP context rides the
+        // tool catalog binding instead).
         .with_mcp_context_provider(
             self.mcp_context_provider
                 .clone()
