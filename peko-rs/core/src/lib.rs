@@ -270,9 +270,8 @@ pub mod async_exec;
 // 2. `LaunchMode` is part of the public IPC wire envelope
 //    (`ipc::packet::Status::mode`); `ipc` is `pub`.
 //
-// The daemon's internals (`background_runtime`, `cron_engine`,
-// `state`, `DaemonStatus`) stay `pub(crate)`. Only the entry
-// surface is widened.
+// The daemon's internals (`cron_engine`, `state`, `DaemonStatus`) stay
+// `pub(crate)`. Only the entry surface is widened.
 pub mod daemon;
 
 // [extract:phase-12b] peko-ipc

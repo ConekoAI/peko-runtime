@@ -1,11 +1,7 @@
 //! Graceful and forceful process termination
 
-use super::job_object::JobObject;
 use anyhow::Result;
 use std::time::Duration;
-use tokio::process::Child;
-use tokio::time::timeout;
-use tracing::{debug, warn};
 
 /// Check if a process with the given PID is currently running
 #[must_use]
@@ -102,113 +98,6 @@ pub async fn wait_for_exit(pid: u32, timeout: Duration, interval: Duration) -> R
         tokio::time::sleep(interval).await;
     }
     Ok(!is_process_running(pid))
-}
-
-/// Gracefully shut down a child process
-///
-/// First attempts graceful shutdown by closing stdin, then waits for the process
-/// to exit. If it doesn't exit within the timeout, it force kills the process.
-/// On Windows, if a `job` is provided it will be dropped (closing its handle)
-/// after the force-kill attempt, which triggers OS-level termination of the
-/// entire process tree via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
-pub async fn graceful_shutdown(
-    mut child: Child,
-    kill_timeout: Duration,
-    pid: u32,
-    #[allow(unused_variables)] job: Option<JobObject>,
-) -> Result<()> {
-    // Take stdin to close it and signal EOF to the process
-    drop(child.stdin.take());
-
-    // Wait for process to exit with timeout
-    match timeout(kill_timeout, child.wait()).await {
-        Ok(Ok(status)) => {
-            debug!("Process[{}] exited gracefully: {:?}", pid, status);
-            // `job` drops on return: on Windows closing its handle kills
-            // any surviving descendants (kill-on-close).
-            Ok(())
-        }
-        Ok(Err(e)) => {
-            warn!("Process[{}] error waiting: {}", pid, e);
-            force_kill_child(&mut child, pid).await?;
-            // Give the OS a moment to finish terminating the process tree,
-            // then wait for the child handle to resolve.
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            // `job` drops on return, killing any surviving descendants.
-            Ok(())
-        }
-        Err(_) => {
-            warn!(
-                "Process[{}] did not exit within {:?}, force killing",
-                pid, kill_timeout
-            );
-            force_kill_child(&mut child, pid).await?;
-            // Give the OS a moment to finish terminating the process tree,
-            // then wait for the child handle to resolve.
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let _ = timeout(Duration::from_secs(2), child.wait()).await;
-            // `job` drops on return, killing any surviving descendants.
-            Ok(())
-        }
-    }
-}
-
-/// Force kill a child process immediately.
-///
-/// On Windows this first attempts `taskkill /T /F /PID` so that the entire
-/// process tree is killed; it falls back to `child.kill()` if that fails.
-pub async fn force_kill_child(child: &mut Child, pid: u32) -> Result<()> {
-    #[cfg(unix)]
-    {
-        // Send SIGTERM first for graceful termination
-        if let Some(id) = child.id() {
-            unsafe {
-                libc::kill(id as i32, libc::SIGTERM);
-            }
-        }
-        // Brief pause for graceful shutdown
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    #[cfg(windows)]
-    {
-        // Try to kill the whole tree first.  This is more reliable than
-        // child.kill() alone because it also targets grandchildren.
-        match tokio::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                debug!("Process[{}] tree killed via taskkill", pid);
-                // taskkill is asynchronous; give the OS a moment to actually
-                // terminate the processes before callers assume handles are free.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                return Ok(());
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                warn!("taskkill /T /F /PID {} failed: {}", pid, stderr.trim());
-            }
-            Err(e) => {
-                warn!("Failed to spawn taskkill for PID {}: {}", pid, e);
-            }
-        }
-    }
-
-    match child.kill().await {
-        Ok(()) => {
-            debug!("Process[{}] force killed", pid);
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-            // Process already exited
-            debug!("Process[{}] already exited", pid);
-            Ok(())
-        }
-        Err(e) => Err(anyhow::anyhow!("Failed to kill process[{pid}]: {e}")),
-    }
 }
 
 #[cfg(test)]

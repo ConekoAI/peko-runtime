@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Legacy MCP stack removed (0.1.0, 2026-10-14)
+
+- Delete the pre-ADR-075 shared-manager MCP path, which had no production
+  caller: `extensions/mcp/runtime/` (`McpClientRegistry`,
+  `McpRuntimeAdapter`, `McpRuntimeStarter`, `McpToolProxy`,
+  `InjectableMcpToolProxy`), `mcp/workspace.rs`
+  (`load_workspace_mcp_servers`, `discover_workspace_mcp_servers`,
+  `render_mcp_prompt_context`), `protocol/manager.rs` (`McpManager`),
+  `protocol/discovery.rs`, `mcp/reserved_params.rs`, `McpServerConfig` /
+  `McpConfig`, and `StdioTransport`. `protocol/` keeps the client, SSE
+  transport, OAuth, sampling, and `McpAuthConfig` that the principal service
+  uses for legacy SSE peers.
+- Delete the daemon's `background_runtime` supervisor and its
+  `ExtensionRuntimeStarterRegistry`. No starter ever registered, so the boot
+  auto-start step did nothing. Also delete `AppState::{mcp_client_registry,
+  background_runtime_manager, runtime_starter_registry, starter_context}`
+  and the process helpers only it used (`common::process::{config, spawn}`,
+  `graceful_shutdown`, `force_kill_child`).
+- Delete `peko_tools_core::{ContextResolver, ContextSource, ToContextValue,
+  ToolContextAdapter}`, `extensions::framework::vault::VaultAccess`, and
+  `framework::protocols::shared::proxy_utils`. The service proxy resolves
+  reserved runtime fields directly from `ToolContext`.
+
 ### Acting-for stamps and the trust floor (0.1.0, 2026-10-14)
 
 - Implement ADR-078. Every run carries a runtime-minted `ActingFor` stamp

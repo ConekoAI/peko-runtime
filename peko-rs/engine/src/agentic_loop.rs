@@ -215,9 +215,8 @@ pub struct AgenticLoop {
     /// system-prompt section. The framework `McpAdapter` was deleted;
     /// the renderer consults this provider directly. Default
     /// [`EmptyMcpPromptContextProvider`] (returns ""), which is what
-    /// tests and unit-test fixtures get; the daemon binds a real
-    /// provider that wraps the global `McpManager` via
-    /// [`with_mcp_context_provider`].
+    /// tests and unit-test fixtures get; callers may bind a real
+    /// provider via [`with_mcp_context_provider`].
     ///
     /// [`with_mcp_context_provider`]: AgenticLoop::with_mcp_context_provider
     mcp_context_provider: Arc<dyn McpPromptContextProvider>,
@@ -320,9 +319,8 @@ impl AgenticLoop {
             audit_first_use_for_model: None,
             // Phase 2 PR 2: default to the empty provider so
             // existing tests / fixtures continue to render
-            // `{{mcp_context}}` as the empty string. The daemon
-            // overrides this via `with_mcp_context_provider`
-            // once it has the global `McpManager` in hand.
+            // `{{mcp_context}}` as the empty string. Callers may
+            // override this via `with_mcp_context_provider`.
             mcp_context_provider: Arc::new(EmptyMcpPromptContextProvider),
         }
     }
@@ -497,9 +495,8 @@ impl AgenticLoop {
     /// [`EmptyMcpPromptContextProvider`] (returns ""), which makes
     /// the placeholder expand to nothing via `remove_missing=true`.
     ///
-    /// Called from root (after constructing the loop) once the
-    /// global `McpManager` is reachable, so the engine crate never
-    /// imports `peko_core::extensions::mcp` directly.
+    /// Root binds providers after constructing the loop, so the
+    /// engine crate never imports `peko_core::extensions::mcp` directly.
     #[must_use]
     pub fn with_mcp_context_provider(
         mut self,

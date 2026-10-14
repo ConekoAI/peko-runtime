@@ -332,7 +332,6 @@ session-state hooks were removed from `EngineHooks`.
 | `SessionSnapshot`, `SpawnCleanupPolicy` | `peko_session::{snapshot, types}` |
 | `ToolMetadata`, `ToolSource` | `tools::metadata` |
 | `HookInput`, `HookOutput`, `HookResult`, `ToolRuntimeContext` | `extensions::workspace_io` |
-| Reserved parameter configuration and runtime/vault resolution | `extensions::mcp::reserved_params` |
 | Workspace role id, name, description | `extensions::role::adapter::RoleMetadata` |
 
 The workspace observer payloads contain only the live tool, session, JSON, and
@@ -344,8 +343,13 @@ reserved-parameter configuration; MCP injection belongs to its proxy.
 
 Workspace adapters live under `builtin/`, `role/`, `skill/`, and `mcp/`.
 Installation registers native tools directly in `ToolCatalog`; role and
-skill scanners supply plain prompt providers. MCP owns protocol/runtime,
-reserved injection, tool proxies, and sampling. `workspace_hooks` loads the
+skill scanners supply plain prompt providers. MCP is `mcp::service`
+(ADR-075: definitions with reserved parameters, `PrincipalMcpRuntime`, the
+proxy that injects them) plus `mcp::protocol` (JSON-RPC client, SSE transport,
+OAuth, sampling for legacy SSE peers). The shared-manager stack
+(`McpManager`, `McpClientRegistry`, runtime starter/adapter/proxies,
+`load_workspace_mcp_servers`, `McpServerConfig`, `reserved_params`) and the
+daemon's `background_runtime` supervisor are deleted. `workspace_hooks` loads the
 six observer points documented above, using `command_handler` for subprocesses.
 There is no adapter trait, extension manager, global store, or enable/disable API.
 

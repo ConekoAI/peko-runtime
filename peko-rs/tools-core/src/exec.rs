@@ -12,7 +12,6 @@
 //! These primitives live in `tools::core` and are the canonical home. There
 //! are no re-exports anywhere else in the crate.
 
-use super::context_source::ContextSource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -710,46 +709,6 @@ pub fn bridge_to_cancellation_token(
             handle: Some(handle),
         },
     )
-}
-
-/// Adapter that implements `ContextSource` for `ToolContext`
-///
-/// This bridges the tool execution primitives to the extension framework's
-/// context resolver for reserved parameter injection.
-pub struct ToolContextAdapter<'a> {
-    ctx: &'a ToolContext,
-}
-
-impl<'a> ToolContextAdapter<'a> {
-    #[must_use]
-    pub fn new(ctx: &'a ToolContext) -> Self {
-        Self { ctx }
-    }
-}
-
-impl ContextSource for ToolContextAdapter<'_> {
-    fn get_session_id(&self) -> Option<String> {
-        self.ctx.session_id.clone()
-    }
-
-    fn get_agent_id(&self) -> Option<String> {
-        self.ctx.agent_id.clone()
-    }
-
-    fn get_acting_for(&self) -> Option<String> {
-        self.ctx
-            .acting_for
-            .as_ref()
-            .map(|stamp| stamp.actor.clone())
-    }
-
-    fn get_workspace(&self) -> Option<String> {
-        self.ctx.workspace.clone()
-    }
-
-    fn get_run_id(&self) -> Option<String> {
-        Some(self.ctx.run_id.clone())
-    }
 }
 
 /// Trait for tools that support context-aware execution

@@ -93,8 +93,7 @@ pub(crate) use peko_tools_core::HOOK_TIMEOUT;
 /// `McpPromptContextProvider` directly. The default
 /// [`EmptyMcpPromptContextProvider] returns the empty string
 /// (templates that reference `{{mcp_context}}` get the placeholder
-/// stripped by `remove_missing=true`); the daemon constructs a real
-/// provider wrapping the global `McpManager`.
+/// stripped by `remove_missing=true`).
 #[async_trait]
 pub trait McpPromptContextProvider: Send + Sync {
     /// Render the `mcp_context` Markdown body. The empty string means
@@ -102,9 +101,9 @@ pub trait McpPromptContextProvider: Send + Sync {
     async fn render_mcp_context(&self) -> String;
 }
 
-/// Default no-op provider — used by tests and any process that has
-/// no global `McpManager` initialised (so MCP context never
-/// silently leaks state from a prior test in the same process).
+/// Default no-op provider — used whenever no MCP context provider is
+/// bound (so MCP context never silently leaks state from a prior test
+/// in the same process).
 #[derive(Default)]
 pub struct EmptyMcpPromptContextProvider;
 
@@ -143,9 +142,6 @@ impl PromptRenderer {
     }
 
     /// Create a new renderer with an explicit MCP context provider.
-    /// Used by the daemon which wraps the global `McpManager` in a
-    /// provider that calls
-    /// `peko_extensions_mcp::render_mcp_prompt_context`.
     #[must_use]
     pub fn with_mcp_context_provider(
         tooling: Arc<dyn ToolingSeam>,

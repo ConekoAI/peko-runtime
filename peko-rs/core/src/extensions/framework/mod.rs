@@ -15,5 +15,3 @@ pub mod protocols;
 pub mod registry;
 /// Async task routing and transport adapters.
 pub mod transport;
-/// Vault access port.
-pub mod vault;

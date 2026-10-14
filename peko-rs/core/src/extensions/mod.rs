@@ -66,9 +66,7 @@ pub mod workspace_hooks;
 // PR-C: `extensions/validation.rs` (788 lines) deleted. The
 // `ExtensionValidationService` it hosted had zero production callers —
 // only its own unit tests referenced it. The `peko ext validate`
-// subcommand was retired in Phase 5 (ADR-047 §2.1). Doc comments in
-// `mcp/workspace.rs` that pointed to `peko ext validate` have been
-// reworded.
+// subcommand was retired in Phase 5 (ADR-047 §2.1).
 
 // ============================================================================
 // Utilities

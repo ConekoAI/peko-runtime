@@ -16,8 +16,8 @@ path = "src/main.rs"
 # the daemon entry surface (`Daemon`, `DaemonConfig`, `LaunchMode`).
 # Phase 0.Z-A: root lib was renamed `peko` → `peko_core` (only
 # `[lib].name` flipped; `[package].name` and `[[bin]].name` stay
-# `peko`). The lib's daemon internals (`background_runtime`,
-# `cron_engine`, `state`, `DaemonStatus`) stay `pub(crate)` — only
+# `peko`). The lib's daemon internals (`cron_engine`, `state`,
+# `DaemonStatus`) stay `pub(crate)` — only
 # the entry surface is reachable.
 # Phase 0.Z-D: root moved to peko-rs/core/. `package = "peko"` is still
 # required because Cargo matches dep names to `[lib].name` by default.

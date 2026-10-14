@@ -3,16 +3,8 @@
 //! Shared state accessible to the daemon and IPC server.
 //! This is the daemon's composition root — all services are initialized here.
 
-use crate::daemon::background_runtime::{
-    BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, StarterContext,
-};
 use peko_channel::ChannelPort;
 use peko_subject::Subject;
-// Sprint 9 Commit 3: chat-gateway adapter framework retired.
-// `GatewayRouter` and `GatewayRuntimeStarter` are gone — external
-// ingress flows exclusively through per-peer standing children under
-// the agent-session paradigm (Phase 7 of sprint 2).
-use crate::extensions::mcp::runtime::McpClientRegistry;
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::async_exec::inbox::SessionInbox;
@@ -149,17 +141,6 @@ pub(crate) struct AppState {
     /// completion events here, and the in-flight `AgenticLoop` drains
     /// from here at the top of every iteration.
     pub inbox_registry: Arc<InboxRegistry>,
-
-    /// Shared MCP client registry — populated by McpRuntimeAdapter (ADR-025)
-    mcp_client_registry: Arc<McpClientRegistry>,
-
-    /// Background runtime manager for MCP servers (ADR-025).
-    /// Sprint 9 Commit 3 retired the gateway framework that previously
-    /// shared this manager; only MCP servers run under it now.
-    background_runtime_manager: Arc<BackgroundRuntimeManager>,
-
-    /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
-    runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -313,12 +294,6 @@ impl std::fmt::Debug for AppState {
             .field("principal_manager", &"<PrincipalManager>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("inbox_registry", &"<InboxRegistry>")
-            .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
-            .field("mcp_client_registry", &"<McpClientRegistry>")
-            .field(
-                "runtime_starter_registry",
-                &"<ExtensionRuntimeStarterRegistry>",
-            )
             .field("runtime_identity", &self.runtime_identity.runtime_did)
             .field("runtime_metadata", &self.runtime_metadata.display_name)
             .field("auth", &"<AuthConfig>")
@@ -695,20 +670,7 @@ impl AppState {
         // block (WS3, 2026-08-11) so the AsyncExecutionRouter can be
         // wired to it; we just `Arc::clone` it here.
 
-        // ADR-025: Initialize BackgroundRuntimeManager.
-        // Sprint 9 Commit 3: the chat-gateway adapter framework was
-        // retired, so `GatewayRouter` + `GatewayRuntimeStarter` are gone
-        // — external ingress now flows exclusively through per-peer
-        // standing children under the agent-session paradigm.
-        let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
-
-        // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
-        let mcp_client_registry = Arc::new(McpClientRegistry::new());
-
-        // ADR-025/026: Extension runtime starter registry.
-        // Native MCP lifetimes are managed by each principal service (ADR-075).
-        let runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
-        let runtime_starter_registry = Arc::new(runtime_starter_registry);
+        // MCP server lifetimes are owned by each principal's service (ADR-075).
 
         // Observability hub is constructed early so it can be shared with the
         // PrincipalManager and threaded through to subagent spawn audit events.
@@ -910,8 +872,7 @@ impl AppState {
             config_dir,
             data_dir,
             cache_dir,
-            // Phase A: carry the typed resolver forward so starters
-            // and IPC handlers can reach `extensions_root()`,
+            // Phase A: carry the typed resolver forward so IPC handlers can reach `extensions_root()`,
             // `principal_layout(name).local.root`, etc. without
             // re-deriving them from `data_dir`.
             path_resolver: path_resolver.clone(),
@@ -944,9 +905,6 @@ impl AppState {
             tool_runtime,
             run_token_registry,
             inbox_registry,
-            background_runtime_manager,
-            mcp_client_registry,
-            runtime_starter_registry,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
             runtime_identity,
@@ -1138,24 +1096,6 @@ impl AppState {
         &self.session_service
     }
 
-    /// Get the background runtime manager (ADR-025)
-    #[must_use]
-    pub fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
-        &self.background_runtime_manager
-    }
-
-    /// Get the shared MCP client registry (ADR-025)
-    #[must_use]
-    pub fn mcp_client_registry(&self) -> &Arc<McpClientRegistry> {
-        &self.mcp_client_registry
-    }
-
-    /// Get the extension runtime starter registry (ADR-025/026)
-    #[must_use]
-    pub fn runtime_starter_registry(&self) -> &Arc<ExtensionRuntimeStarterRegistry> {
-        &self.runtime_starter_registry
-    }
-
     /// Get the auth configuration (ADR-034)
     #[must_use]
     pub fn auth_config(&self) -> peko_auth::config::AuthConfig {
@@ -1254,23 +1194,6 @@ impl AppState {
             .ok()
             .flatten()
             .map(|login| login.user_id)
-    }
-
-    /// Build a `StarterContext` for use by runtime starters.
-    ///
-    /// This bundles all daemon-scoped services that starters may need.
-    #[must_use]
-    pub fn starter_context(&self) -> StarterContext {
-        StarterContext {
-            background_runtime_manager: Arc::clone(&self.background_runtime_manager),
-            mcp_client_registry: Arc::clone(&self.mcp_client_registry),
-            data_dir: self.data_dir.clone(),
-            // Phase A: hand the typed resolver through so starters
-            // can reach `extensions_root()`, `mcps_root()`, etc.
-            path_resolver: self.path_resolver.clone(),
-            vault: Some(Arc::clone(&self.vault)),
-            resolver: Some(Arc::clone(&self.resolver)),
-        }
     }
 
     /// Get the runtime identity (ADR-032)
