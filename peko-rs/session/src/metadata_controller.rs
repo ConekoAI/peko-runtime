@@ -649,20 +649,6 @@ impl MetadataController {
         Ok(entries.into_iter().map(|e| e.to_metadata()).collect())
     }
 
-    /// List sessions for a specific peer and return `SessionInfo` directly
-    ///
-    /// This is a convenience method for the service layer that avoids double conversion.
-    pub async fn list_session_info_for_peer(
-        &mut self,
-        peer_key: &str,
-        sync_from_jsonl: bool,
-    ) -> Result<Vec<crate::session_info::SessionInfo>> {
-        let entries = self
-            .list_entries_for_peer(peer_key, sync_from_jsonl)
-            .await?;
-        Ok(entries.into_iter().map(|e| e.to_info()).collect())
-    }
-
     // ====================================================================================
     // JSONL Sync (Source of Truth)
     // ====================================================================================

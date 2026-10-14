@@ -12,6 +12,7 @@
 //! log, metrics collector, and tracer are pure infrastructure.
 
 pub mod audit;
+pub mod chain;
 pub mod metrics;
 pub mod tracer;
 

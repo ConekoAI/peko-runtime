@@ -1955,7 +1955,6 @@ mod tests {
                 ),
             },
             completed_at: Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: session_id.clone(),
         });
 
@@ -2104,7 +2103,6 @@ mod tests {
                 result: peko_tools_core::ToolResult::success(serde_json::json!({"exit_code": 0})),
             },
             completed_at: chrono::Utc::now(),
-            output_path: std::path::PathBuf::from("/tmp/fake.ndjson"),
             parent_session_key: session_id.clone(),
         });
 

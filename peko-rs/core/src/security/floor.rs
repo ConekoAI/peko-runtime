@@ -38,6 +38,17 @@ pub const PROTECTED_DIRS: &[&str] = &[
 /// Where proposals land. The runtime writes here; no run may.
 pub const INBOX_DIR: &str = "kb/inbox";
 
+/// Whether `path` lies in some principal's tool ledger
+/// (`…/principals/<name>/local/ledger/`, ADR-079 D5). Only the
+/// dispatcher writes there. `path` must already be [`resolve`]d.
+#[must_use]
+pub fn in_tool_ledger(path: &Path) -> bool {
+    let parts: Vec<_> = path.components().map(Component::as_os_str).collect();
+    parts
+        .windows(4)
+        .any(|w| w[0] == "principals" && w[2] == "local" && w[3] == "ledger")
+}
+
 /// Why `stamp` may not call `tool_name`, if it may not. `mcp_untrusted_ok`
 /// is `Some` for an MCP method: the owner's declaration on its server.
 #[must_use]
@@ -121,7 +132,7 @@ pub enum PathDecision {
 /// The floor's decision for `stamp` touching `path` (ADR-078 D6).
 ///
 /// - Every run: no write into another principal's workspace (ADR-066 D9),
-///   and no write into the proposal inbox.
+///   into the proposal inbox, or into any tool ledger (ADR-079).
 /// - Non-owner runs: no read of another principal's workspace, and a
 ///   write to a protected file becomes a proposal.
 /// - Untrusted runs: nothing outside the principal's own workspace.
@@ -133,6 +144,12 @@ pub fn check_path(
     write: bool,
 ) -> PathDecision {
     let target = resolve(path);
+    if write && in_tool_ledger(&target) {
+        return PathDecision::Deny(format!(
+            "{} is a tool ledger; only the runtime writes it",
+            target.display()
+        ));
+    }
     let workspace = workspace.map(resolve);
     if let Some(workspace) = &workspace {
         let principals_root = workspace
@@ -251,6 +268,34 @@ mod tests {
         assert!(tool_refusal(&low, "mcp__docs__search", Some(true)).is_none());
         assert!(tool_refusal(&low, "Read", None).is_none());
         assert!(tool_refusal(&stamp(Trust::Trusted), "Bash", None).is_none());
+    }
+
+    #[test]
+    fn no_run_writes_a_tool_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("data/principals/mine/local/ledger");
+        std::fs::create_dir_all(&ledger).unwrap();
+        let file = ledger.join("ledger-2026-10-14.jsonl");
+        for trust in [Trust::Owner, Trust::Trusted, Trust::Untrusted] {
+            let decision = check_path(&stamp(trust), None, &file, true);
+            assert!(
+                matches!(decision, PathDecision::Deny(ref reason) if reason.contains("tool ledger")),
+                "{trust:?}: {decision:?}"
+            );
+        }
+        let sneaky = dir
+            .path()
+            .join("data/principals/mine/local/cache/../ledger/x.jsonl");
+        assert!(matches!(
+            check_path(&stamp(Trust::Owner), None, &sneaky, true),
+            PathDecision::Deny(_)
+        ));
+        assert_eq!(
+            check_path(&stamp(Trust::Owner), None, &file, false),
+            PathDecision::Allow,
+            "reading stays open to owner runs"
+        );
+        assert!(!in_tool_ledger(Path::new("/w/ledger/notes.md")));
     }
 
     #[test]

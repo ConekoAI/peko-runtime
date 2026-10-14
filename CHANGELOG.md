@@ -4,6 +4,38 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Per-principal tool ledger (0.1.0, 2026-10-14)
+
+- ADR-079: every tool call a principal makes — agent turns, subagents, MCP,
+  Workflow callbacks, background bodies, cron jobs, approved replays — is
+  written to its hash-chained ledger in
+  `local/ledger/ledger-YYYY-MM-DD.jsonl`: a `start` record before the call
+  runs and an `end` record after, with ids, parent, acting-for stamp,
+  redacted params, outcome, Bash exit code, and a redacted result excerpt.
+  A call detached on timeout gets a second, late end when it finishes.
+- Redaction replaces the runtime's own secrets (vault credentials, live run
+  tokens) with `[secret:<label>]`, plus sensitive keys and common credential
+  shapes. Params cap at 8 KiB, excerpts at 4 KiB.
+- If the ledger cannot be written or opened, only owner runs' calls proceed,
+  and a `ledger.write_failed` Security event is logged. `Write`/`Edit` refuse
+  every principal's `local/ledger/`.
+- The global `tool.call` event adds `call_id`, `run_id`, `tool_call_id`,
+  `parent`, and `outcome`. Hourly and shutdown `ledger.checkpoint` events, and
+  `ledger.pruned` events, anchor each chain in the global log.
+- New builtin `ToolLog` (`search`, `get`), scoped like sessions: owner runs see
+  everything, other runs only their own compartment. New CLI commands
+  `peko audit ledger <peko>` (filters, `--call`, `--follow`, `--json`) and
+  `peko audit verify <peko>` (chain, checkpoints, and cross-check against
+  `tool.call`; exits 1 when not intact).
+- `principal.toml` `[governance] ledger_retention_days` (default 90) replaces
+  the never-read `[governance] audit` level, which is ignored on load.
+- Retired: per-task files under `{data_dir}/async_tasks/` (write-only,
+  cross-principal, plaintext params; existing directories are left on disk),
+  `CompletionEvent.output_path`, the uncalled `SessionService` and the
+  `peko_session::session_info` DTOs only it used, the never-written
+  `tool.call` / `tool.result` session events, and the policy reviewer's
+  exemption for a nonexistent `Sleep` tool.
+
 ### Dead protocol helpers and runtime install roots removed (0.1.0, 2026-10-14)
 
 - Delete `framework::protocols::shared::process_transport`

@@ -142,6 +142,8 @@ pub(crate) struct Backends {
     pub async_runtime: SharedAsyncRuntime,
     pub models: Weak<peko_providers::catalog::ModelCatalog>,
     pub sessions: SharedSessionRuntime,
+    pub sessions_dir: PathBuf,
+    pub ledger_dir: PathBuf,
 }
 
 /// The production Session backend over a session store in `dir`.
@@ -206,13 +208,19 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(TaskTool::new(fakes.todos.clone())),
         Arc::new(PlanTool::new(fakes.plans.clone())),
         Arc::new(peko_cron::CronTool::with_runtime(backends.cron.clone())),
+        Arc::new(ToolLogTool::new(
+            backends.ledger_dir.clone(),
+            backends.sessions_dir.clone(),
+        )),
     ]
 }
 
-/// All 20 built-in tools behind the production dispatcher.
+/// Every built-in tool behind the production dispatcher, with the
+/// harness principal's tool ledger bound (ADR-079).
 pub(crate) struct ToolHarness {
     _root: tempfile::TempDir,
     workspace: PathBuf,
+    ledger_dir: PathBuf,
     pub tooling: Arc<ToolingRuntime>,
     pub audit: Arc<Observability>,
     pub cron: Arc<FileCronRuntime>,
@@ -284,6 +292,8 @@ impl ToolHarness {
             async_runtime,
             models: Arc::downgrade(&models),
             sessions: session_runtime(root.path().join("sessions")),
+            sessions_dir: root.path().join("sessions"),
+            ledger_dir: root.path().join("ledger"),
         };
         // As `install_async` does: the principal's Async runtime is also the
         // background spawner for its calls (Bash `run_in_background`).
@@ -296,6 +306,10 @@ impl ToolHarness {
         tooling
             .dispatcher()
             .bind_workspace(PrincipalId(PRINCIPAL.into()), workspace.clone());
+        tooling
+            .dispatcher()
+            .bind_ledger(&PrincipalId(PRINCIPAL.into()), &backends.ledger_dir)
+            .expect("harness tool ledger");
         let fakes = Fakes::default();
         for tool in builtin_tools(&backends, &fakes) {
             tooling
@@ -305,6 +319,7 @@ impl ToolHarness {
         }
         Self {
             workspace,
+            ledger_dir: backends.ledger_dir,
             tooling,
             audit,
             cron: backends.cron,
@@ -313,6 +328,16 @@ impl ToolHarness {
             fakes,
             _root: root,
         }
+    }
+
+    /// The harness principal's tool ledger directory.
+    pub(crate) fn ledger_dir(&self) -> &Path {
+        &self.ledger_dir
+    }
+
+    /// The harness principal's ledger, grouped into calls.
+    pub(crate) fn ledger_calls(&self) -> Vec<crate::security::ledger::read::Call> {
+        crate::security::ledger::read::load_calls(&self.ledger_dir, None).expect("read ledger")
     }
 
     /// The caller's workspace: relative tool paths resolve here.
@@ -501,6 +526,11 @@ mod tests {
                 "Cron",
                 json!({"action":"create", "message":"tick", "delay":"5m"}),
                 "registered",
+            ),
+            (
+                "ToolLog",
+                json!({"action":"search", "tool":"Bash"}),
+                "\"tool\":\"Bash\"",
             ),
         ];
         // Unbound in the harness: these need a PrincipalManager and must

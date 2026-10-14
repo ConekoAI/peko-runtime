@@ -6,7 +6,6 @@ use super::registry::{
     AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata,
     PARTIAL_OUTPUT_PREVIEW_BYTES,
 };
-use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use super::wake::{notify_completion_wake, CompletionWakeNotice};
 use crate::async_exec::inbox::SessionInbox;
@@ -36,17 +35,6 @@ pub fn default_inbox_factory() -> peko_session::InboxFactory {
 #[must_use]
 pub fn standalone_inbox_registry() -> Arc<InboxRegistry> {
     Arc::new(InboxRegistry::new(default_inbox_factory()))
-}
-
-/// Where an executor records task files unless given a writer. Unit tests
-/// use a directory under the system temp dir so they never write into the
-/// user's real data directory.
-fn default_task_file_dir() -> std::path::PathBuf {
-    if cfg!(test) {
-        std::env::temp_dir().join("peko-test-async-tasks")
-    } else {
-        peko_tools_core::default_data_dir().join("async_tasks")
-    }
 }
 
 /// Process-global slot for the daemon-shared `InboxRegistry`.
@@ -139,8 +127,6 @@ enum TaskOutcome {
 pub struct AsyncExecutor {
     /// Task registry for tracking all async operations
     registry: SharedAsyncTaskRegistry,
-    /// Task file writer for disk-based polling
-    task_file_writer: Option<TaskFileWriter>,
     /// Per-session inbox registry. The executor looks up the
     /// session's `SessionInbox` by `parent_session_key` on each
     /// completion and pushes the event there. Replaces the older
@@ -171,10 +157,8 @@ impl AsyncExecutor {
     /// per-call scopes, placeholders, and tests.
     #[must_use]
     pub fn new(inbox_registry: Arc<InboxRegistry>) -> Self {
-        let task_file_writer = default_task_file_dir();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
-            task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
             permits: Arc::new(tokio::sync::Semaphore::new(
                 DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
@@ -190,10 +174,8 @@ impl AsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         inbox_registry: Arc<InboxRegistry>,
     ) -> Self {
-        let task_file_writer = default_task_file_dir();
         Self {
             registry,
-            task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
             inbox_registry,
             permits: Arc::new(tokio::sync::Semaphore::new(
                 DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR,
@@ -213,18 +195,6 @@ impl AsyncExecutor {
     #[must_use]
     pub fn inbox_registry(&self) -> &Arc<InboxRegistry> {
         &self.inbox_registry
-    }
-
-    /// Set a custom task file writer
-    pub fn with_task_file_writer(mut self, writer: TaskFileWriter) -> Self {
-        self.task_file_writer = Some(writer);
-        self
-    }
-
-    /// Get the task file writer
-    #[must_use]
-    pub fn task_file_writer(&self) -> Option<&TaskFileWriter> {
-        self.task_file_writer.as_ref()
     }
 
     /// Get a reference to the task registry
@@ -335,12 +305,6 @@ impl AsyncExecutor {
             }
         }
 
-        let output_path = self
-            .task_file_writer
-            .as_ref()
-            .map(|w| w.task_file_path(&task_id))
-            .unwrap_or_else(std::path::PathBuf::new);
-
         let steer_target = claimed
             .config
             .principal_root_session_key
@@ -363,7 +327,6 @@ impl AsyncExecutor {
                 result,
                 status,
                 completed_at: chrono::Utc::now(),
-                output_path,
                 parent_session_key: parent_session_key.clone(),
             };
             let inbox = self.inbox_registry.get_or_create(&parent_session_key).await;
@@ -413,31 +376,6 @@ impl AsyncExecutor {
         cancel_signal: Option<tokio::sync::watch::Sender<bool>>,
         execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
-        // Determine task file path
-        let task_file = self
-            .task_file_writer
-            .as_ref()
-            .map(|w| w.task_file_path(&task_id));
-
-        // Create initial task file record
-        if let Some(ref writer) = self.task_file_writer {
-            let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
-            record.params = Some(params.clone());
-            // Persist the seconds-equivalent timeout for audit. If the caller
-            // supplied `timeout_millis`, round up so the recorded value never
-            // under-reports the actual wait.
-            record.timeout_requested = config
-                .timeout_millis
-                .map(|ms| ms.div_ceil(1000))
-                .or(config.timeout_secs);
-            // `callback_mode` was the legacy delivery-target audit field;
-            // the delivery stack is gone, so it stays unset.
-            record.callback_mode = None;
-            if let Err(e) = writer.write(&record).await {
-                tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
-            }
-        }
-
         // Create task entry (with metadata if provided)
         let mut entry = if matches!(metadata, TaskMetadata::None) {
             AsyncTaskEntry::new(
@@ -470,7 +408,6 @@ impl AsyncExecutor {
         // Clone what we need for the spawned task
         let registry_clone = self.registry.clone();
         let task_id_clone = task_id.clone();
-        let task_file_writer_clone = self.task_file_writer.clone();
         // `None` means no timeout; the task runs until completion or cancellation.
         // `timeout_millis` takes precedence so callers can request sub-second
         // timeouts (e.g. `Bash { run_in_background, timeout: 100 }`).
@@ -482,12 +419,10 @@ impl AsyncExecutor {
             .timeout_millis
             .map(std::time::Duration::from_millis)
             .or(config.timeout_secs.map(std::time::Duration::from_secs));
-        let params_for_spawn = params.clone();
         let permits = self.permits.clone();
         // The delivery pass runs inside the spawned task but goes through
         // a clone of the executor, so it shares this executor's registry,
-        // inbox registry, and task-file writer (see
-        // `deliver_terminal_outcome`).
+        // and inbox registry (see `deliver_terminal_outcome`).
         let executor_for_delivery = self.clone();
 
         // Spawn the background execution
@@ -524,21 +459,6 @@ impl AsyncExecutor {
                 let mut registry = registry_clone.write().await;
                 registry.update_status(&task_id_clone, AsyncTaskStatus::Running);
             }
-            if let Some(ref writer) = task_file_writer_clone {
-                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
-                record.params = Some(params_for_spawn.clone());
-                record.timeout_requested = timeout_secs;
-                record.callback_mode = None;
-                record.set_running();
-                if let Err(e) = writer.write(&record).await {
-                    tracing::warn!(
-                        "Failed to write running task file for {}: {}",
-                        task_id_clone,
-                        e
-                    );
-                }
-            }
-
             // Execute the work with optional timeout enforcement.
             let outcome = match timeout_duration {
                 Some(duration) => match tokio::time::timeout(duration, execution_fn()).await {
@@ -600,32 +520,6 @@ impl AsyncExecutor {
                 }
             }
 
-            // Write final task file record
-            if let Some(ref writer) = task_file_writer_clone {
-                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
-                record.params = Some(params_for_spawn.clone());
-                record.timeout_requested = timeout_secs;
-                record.callback_mode = None;
-                match outcome {
-                    TaskOutcome::Success(value) => {
-                        record.set_completed(value);
-                    }
-                    TaskOutcome::Failure(e) => {
-                        record.set_failed(e.to_string());
-                    }
-                    TaskOutcome::Timeout(secs) => {
-                        record.set_timed_out(format!("Task timed out after {secs}s"));
-                    }
-                }
-                if let Err(e) = writer.write(&record).await {
-                    tracing::warn!(
-                        "Failed to write final task file for {}: {}",
-                        task_id_clone,
-                        e
-                    );
-                }
-            }
-
             // Deliver the terminal outcome: claim under the registry's
             // write lock, then push a `CompletionEvent` into the parent
             // session's inbox (or a cron `SteeringMessage` into the
@@ -643,7 +537,6 @@ impl AsyncExecutor {
             task_id: task_id.clone(),
             status: AsyncTaskStatus::Pending,
             estimated_duration_secs: None,
-            task_file,
             params: Some(params.clone()),
         })
     }
@@ -825,6 +718,14 @@ impl AsyncExecutor {
         // 3. Build the factory closure that does the actual dispatch.
         //    It owns `context` (moved) and `rx`.
         let tooling_for_closure = tooling.clone();
+        // ADR-079 D4: the body names the task and the call that started it.
+        let parent = context
+            .parent
+            .clone()
+            .unwrap_or_else(|| peko_tools_core::CallParent::Task {
+                id: task_id.clone(),
+                call_id: context.spawned_by.clone(),
+            });
         let boxed_fn: BoxedExecutionFn = Box::new(move || {
             Box::pin(async move {
                 let spec = peko_engine::ToolCallSpec {
@@ -841,6 +742,7 @@ impl AsyncExecutor {
                     principal_name: context.principal_name,
                     abort_signal: Some(rx),
                     background_progress: Some(progress),
+                    parent: Some(parent),
                 };
                 let (text, json, success) =
                     peko_engine::ToolFunnel::execute(&*tooling_for_closure, spec).await?;
@@ -1461,7 +1363,6 @@ impl std::fmt::Debug for AsyncExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AsyncExecutor")
             .field("registry", &"<AsyncTaskRegistry>")
-            .field("task_file_writer", &self.task_file_writer)
             .field("inbox_registry", &"<InboxRegistry>")
             .field("available_permits", &self.permits.available_permits())
             .finish()
@@ -1475,18 +1376,16 @@ mod completion_queue_fan_out_tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>, tempfile::TempDir) {
+    fn make_executor_with_registry() -> (AsyncExecutor, Arc<InboxRegistry>) {
         let registry = Arc::new(InboxRegistry::new(
             super::super::executor::default_inbox_factory(),
         ));
-        let task_dir = tempfile::tempdir().unwrap();
-        let exec = AsyncExecutor::new(registry.clone())
-            .with_task_file_writer(TaskFileWriter::new(task_dir.path().to_path_buf()));
-        (exec, registry, task_dir)
+        let exec = AsyncExecutor::new(registry.clone());
+        (exec, registry)
     }
 
-    // Delivery follows asynchronous task-file writes. Await observable inbox
-    // state instead of assuming those writes finish within a latency budget.
+    // Delivery is asynchronous. Await observable inbox state instead of
+    // assuming it lands within a latency budget.
     async fn wait_for_inbox_items(
         registry: &InboxRegistry,
         session: &str,
@@ -1507,7 +1406,7 @@ mod completion_queue_fan_out_tests {
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_success() {
-        let (exec, registry, _task_dir) = make_executor_with_registry();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:test-success".to_string();
 
         let receipt = exec
@@ -1539,7 +1438,7 @@ mod completion_queue_fan_out_tests {
 
     #[tokio::test]
     async fn test_completion_event_pushed_on_failure() {
-        let (exec, registry, _task_dir) = make_executor_with_registry();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:test-fail".to_string();
 
         let _ = exec
@@ -1568,7 +1467,7 @@ mod completion_queue_fan_out_tests {
     async fn test_completion_event_routed_by_parent_session_key() {
         // Tasks with different parent_session_keys land in different
         // inboxes in the same registry.
-        let (exec, registry, _task_dir) = make_executor_with_registry();
+        let (exec, registry) = make_executor_with_registry();
         let task_a = "shell:a".to_string();
         let task_b = "shell:b".to_string();
 
@@ -1616,7 +1515,7 @@ mod completion_queue_fan_out_tests {
     /// The agent picks the message up at the next iteration start.
     #[tokio::test]
     async fn test_wake_on_completion_delivers_steer_to_principal_inbox() {
-        let (exec, registry, _task_dir) = make_executor_with_registry();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:cron-wake".to_string();
         let principal_root = "root:alice".to_string();
 
@@ -1668,7 +1567,7 @@ mod completion_queue_fan_out_tests {
     /// is ignored when wake is off.
     #[tokio::test]
     async fn test_no_wake_keeps_completion_event_delivery() {
-        let (exec, registry, _task_dir) = make_executor_with_registry();
+        let (exec, registry) = make_executor_with_registry();
         let task_id = "shell:cron-no-wake".to_string();
 
         let config = AsyncToolConfig {

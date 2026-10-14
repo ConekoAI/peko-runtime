@@ -326,7 +326,6 @@ impl AsyncExecutionRouter {
             "task_id": receipt.task_id,
             "status": "running",
             "tool_name": tool_name,
-            "task_file": receipt.task_file,
             "detached_after_secs": timeout_secs,
             "reason": "timeout",
             "note": format!(
@@ -666,7 +665,6 @@ mod tests {
                 task_id,
                 status: AsyncTaskStatus::Running,
                 estimated_duration_secs: None,
-                task_file: None,
                 params: None,
             })
         }

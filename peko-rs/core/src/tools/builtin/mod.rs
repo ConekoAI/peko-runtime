@@ -20,6 +20,7 @@ pub(crate) mod test_harness;
 pub mod model_call;
 pub mod model_list;
 pub mod role_catalog;
+pub mod tool_log;
 pub mod workflow;
 
 // Public domain tools and runtime ports.
@@ -38,6 +39,7 @@ pub use session::caller_aware::CallerAwareSessionTool;
 pub use session::{SessionInfo, SessionTool, SharedSessionRuntime};
 pub use skill::{SharedSkillRuntime, SkillEntry, SkillFrontmatter, SkillTool};
 pub use tasks::{TaskTool, Todo, TodoStatus};
+pub use tool_log::{ToolLogTool, TOOL_LOG_TOOL_NAME};
 pub use workflow::{
     WorkflowTool, WorkspaceWorkflowsPromptHandler, MAX_WORKFLOW_DEPTH,
     WORKFLOW_CATALOG_HOOK_PRIORITY, WORKFLOW_TOOL_NAME,

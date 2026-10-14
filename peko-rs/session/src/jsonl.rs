@@ -708,7 +708,7 @@ impl SessionStorage {
 
     /// Convert Event Format to `NormalizedEntry`
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
-        use crate::events::SessionEvent::{SessionCreated, ToolResult};
+        use crate::events::SessionEvent::SessionCreated;
         use peko_message::MessageRole;
 
         // Try unified message conversion first
@@ -764,12 +764,6 @@ impl SessionStorage {
                 version: 3,
                 timestamp: e.envelope.ts,
                 cwd: None,
-            }),
-            ToolResult(e) => Some(NormalizedEntry::ToolResult {
-                tool_call_id: e.tool_call_id,
-                tool_name: String::new(),
-                content: e.output.unwrap_or_default(),
-                is_error: e.error.is_some(),
             }),
             crate::events::SessionEvent::System(sys_event) => match sys_event.event.as_str() {
                 "compaction" => {

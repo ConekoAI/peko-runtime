@@ -515,6 +515,10 @@ async fn replay(
     context.principal_name = call.principal_name.clone();
     context.agent_id = call.agent_id.clone();
     context.workspace = call.workspace.clone();
+    context.parent = Some(peko_tools_core::CallParent::Approval {
+        id: record.id.clone(),
+        call_id: call.call_id.clone(),
+    });
     let config = crate::async_exec::executor::AsyncToolConfig {
         wake_on_completion: true,
         label: Some(format!("approved {}", record.id)),
@@ -554,6 +558,7 @@ mod tests {
 
     fn call() -> GatedCall {
         GatedCall {
+            call_id: None,
             principal_id: "prin_x".into(),
             principal_name: None,
             session_id: Some("s".into()),

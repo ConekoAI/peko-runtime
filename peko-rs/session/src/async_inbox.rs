@@ -1,7 +1,5 @@
 //! Session inbox port and completion/steering envelopes.
 
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 
 use peko_tools_core::AsyncTaskStatus;
@@ -32,7 +30,6 @@ pub struct CompletionEnvelope {
     pub result: serde_json::Value,
     pub status: AsyncTaskStatus,
     pub completed_at: DateTime<Utc>,
-    pub output_path: PathBuf,
     pub parent_session_key: String,
 }
 

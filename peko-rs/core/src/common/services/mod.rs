@@ -8,7 +8,8 @@ pub mod daemon_process_service;
 // ADR-047 Phase 5d: extension_management_service deleted — extensions
 // are now workspace-resident (ADR-047 §2.1); the legacy push/pull
 // registry flow for the .ext archive format was the only caller.
-pub mod session_service;
+// ADR-079: session_service deleted — nothing called it; session reads go
+// through the session runtime and the IPC principal-log reader.
 
 // ConfigAuthority - the new central config system
 pub mod config_authority;
@@ -17,12 +18,9 @@ pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImp
 pub use credentials_service::CredentialsService;
 pub use daemon_process_service::{DaemonProcessService, DaemonStatus};
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
-// B8c.5: session DTOs (SessionInfo / HistoryEvent / HistoryQuery /
-// HistoryResult / BranchResult / SessionDetails / HistorySummary /
-// session_event_to_history) live in `peko_session::session_info`.
-// Import directly from there — the cleanup-invariant forbids new
-// `pub use peko_*::*` shims.
-pub use session_service::SessionService;
+// Session DTOs (SessionInfo / HistoryEvent / session_event_to_history)
+// live in `peko_session::session_info`. Import directly from there — the
+// cleanup-invariant forbids new `pub use peko_*::*` shims.
 
 // Note: ConfigSource is exported from the config_authority module above.
 

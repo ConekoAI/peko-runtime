@@ -129,6 +129,7 @@ pub async fn execute_tool_via_core_with_invocation(
         principal_name,
         abort_signal,
         background_progress: None,
+        parent: None,
     };
     core.execute(spec).await
 }

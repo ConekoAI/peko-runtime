@@ -21,8 +21,8 @@ pub struct ToolDispatchContext {
     pub tool_name: String,
     /// JSON params passed to the tool.
     pub params: serde_json::Value,
-    /// Session key for completion-event routing + `parent_session_key`
-    /// stamping on the spawned task file.
+    /// Session key for completion-event routing; stamped on the task's
+    /// registry entry as `parent_session_key`.
     pub parent_session_key: String,
 
     /// Working directory override. `None` means the tool's default.
@@ -43,6 +43,12 @@ pub struct ToolDispatchContext {
     /// Human-readable principal name (for Principal-scoped tools like
     /// `Cron action create`).
     pub principal_name: Option<String>,
+    /// The ledger id of the call that started this task (ADR-079 D4).
+    /// The body's record names it as `parent.call_id`.
+    pub spawned_by: Option<String>,
+    /// An explicit parent for the body, overriding the default
+    /// `CallParent::Task` (an approved replay names its request).
+    pub parent: Option<peko_tools_core::CallParent>,
 }
 
 impl ToolDispatchContext {
@@ -64,6 +70,8 @@ impl ToolDispatchContext {
             acting_for: None,
             principal_id: None,
             principal_name: None,
+            spawned_by: None,
+            parent: None,
         }
     }
 

@@ -56,6 +56,64 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Tool ledger (ADR-079)
+
+`{data_dir}/principals/<name>/local/ledger/ledger-YYYY-MM-DD.jsonl`
+(`LocalLayout::ledger_dir`): one hash-chained, append-only file per UTC day
+(dir 0700, files 0600, every line fsync'd). Only the dispatcher writes it;
+`Write`/`Edit` refuse the directory at every trust level. Not packed into
+`.peko` snapshots; an imported principal starts a new chain.
+
+Every line carries `seq` (monotonic across days), `prev` (the previous line's
+`hash`; the first line's is 64 zeros), and `hash`. The hash covers the line's
+exact bytes up to `,"hash":"sha256:<hex>"}`, which replaces the record's closing
+brace. A chain opens with a `genesis` record (`principal_id`). A torn final
+line is closed with a newline on reopen and skipped.
+
+Each tool call writes a `start` before it runs and an `end` after:
+
+```jsonc
+{"v":1,"kind":"start","ts":"…","call_id":"call_<uuidv7>","run_id":"…",
+ "tool_call_id":"toolu_…","parent":{"kind":"task","id":"Bash:…","call_id":"call_…"},
+ "principal_id":"…","principal_name":"…","agent_id":"did:…","session_id":"<uuid>",
+ "acting_for":{…},"tool":"Bash","action":null,"source":"builtin",
+ "params":{…},"params_digest":"sha256:…","seq":12,"prev":"sha256:…","hash":"sha256:…"}
+{"v":1,"kind":"end","ts":"…","call_id":"call_…","outcome":"ok","duration_ms":1840,
+ "exit_code":0,"result":{"excerpt":"…","bytes":48211,"truncated":true},"seq":13,…}
+```
+
+- `parent` (optional): `{kind:"task", id, call_id?}` for a background body,
+  `{kind:"workflow", call_id}` for a workflow callback, `{kind:"approval", id,
+  call_id?}` for an approved replay.
+- `source`: `builtin`, `mcp:<server>`, or `unavailable` (unknown tool).
+- `params`: redacted (runtime-held secrets → `[secret:<label>]`, sensitive keys
+  and credential shapes → `[redacted]`); string leaves capped at 2 KiB, the whole
+  at 8 KiB (`{_truncated, bytes, preview}` beyond). `params_digest` is computed
+  over the unredacted params and equals the global `tool.call` digest.
+- `outcome`: `ok`, `error` (also a tool-reported `"success": false`, e.g. a
+  non-zero Bash exit), `cancelled`, `floor_denied`, `policy_denied`,
+  `awaiting_owner`, `proposed`, `detached`. A `detached` end carries `task_id`;
+  a second end with `"late": true` follows when the background body finishes.
+- `result.excerpt`: redacted; process output keeps the last 2 KiB of stdout
+  and of stderr (`[stderr]` separator), other results the first 4 KiB.
+
+The global audit log gains `ledger.checkpoint` (`principal_id`, `seq`, `hash`;
+hourly and at shutdown), `ledger.pruned` (`principal_id`, `seq`, `hash` of the
+last pruned line, `before`), and `ledger.write_failed` (Security). Its
+`tool.call` details add `call_id`, `run_id`, `tool_call_id`, `parent`, and
+`outcome`.
+
+`principal.toml` `[governance] ledger_retention_days` (positive, default 90)
+sets how many days are kept. The retired `[governance] audit` level
+(`all`/`commands`/`none`, never read) is ignored on load and not written back.
+
+Retired with this ADR: per-task files under `{data_dir}/async_tasks/` (a
+write-only, cross-principal record with plaintext params) and
+`CompletionEvent.output_path`, which pointed at them. Existing
+`async_tasks/` directories are no longer written or cleaned; delete them by hand.
+
+---
+
 ## Built-in tool names and availability
 
 Native tools use exact PascalCase names, including Session, ModelList, and
@@ -778,48 +836,12 @@ Extended thinking content produced before or during a response. Only written if 
 
 ---
 
-#### `tool.call`
+#### Tool calls and results
 
-An invocation of a tool requested by the LLM.
-
-```json
-{
-  "id": "evt_005",
-  "type": "tool.call",
-  "session_id": "sess_9nrwbf1v",
-  "ts": "2026-03-16T08:05:01.800Z",
-  "seq": 3,
-  "tool_call_id": "tc_4bwmnq",
-  "tool": "web_search",
-  "args": {
-    "query": "Q4 2025 earnings ACME Corp"
-  },
-  "async": false,
-  "timeout_seconds": 30
-}
-```
-
----
-
-#### `tool.result`
-
-The result returned by a tool invocation.
-
-```json
-{
-  "id": "evt_006",
-  "type": "tool.result",
-  "session_id": "sess_9nrwbf1v",
-  "ts": "2026-03-16T08:05:03.221Z",
-  "seq": 4,
-  "tool_call_id": "tc_4bwmnq",
-  "output": "ACME Corp reported $4.2B revenue in Q4 2025, up 12% YoY...",
-  "error": null,
-  "duration_ms": 1421
-}
-```
-
-When the tool fails, `output` is `null` and `error` is a string describing the failure.
+Tool calls and their results are `message.v2` content blocks
+(`ContentBlock::ToolCall` / `ContentBlock::ToolResult`). The standalone
+`tool.call` / `tool.result` event types were never written and are retired;
+the per-principal tool ledger (ADR-079) is the durable record of every call.
 
 ---
 

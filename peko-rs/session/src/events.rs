@@ -2,7 +2,7 @@
 //!
 //! Defines all event types per `DATA_MODEL.md` §5.3:
 //! - session.created, user.message, assistant.message, thinking
-//! - tool.call, tool.result, spawn.request, spawn.result
+//! - spawn.request, spawn.result (tool calls and results ride `message.v2`)
 //! - a2a.sent, a2a.received, hook.trigger, system, session.ended
 //!
 //! # Migration Note: `MessageV2`
@@ -107,41 +107,6 @@ pub struct ThinkingEvent {
     pub envelope: EventEnvelope,
     /// Thinking content
     pub content: String,
-}
-
-/// tool.call - A tool invocation requested by the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallEvent {
-    #[serde(flatten)]
-    pub envelope: EventEnvelope,
-    /// Tool call ID for matching with result
-    pub tool_call_id: String,
-    /// Tool name
-    pub tool: String,
-    /// Arguments as JSON object
-    pub args: serde_json::Value,
-    /// Whether this is an async call
-    pub async_: bool,
-    /// Timeout in seconds
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_seconds: Option<u32>,
-}
-
-/// tool.result - Result returned by a tool invocation
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResultEvent {
-    #[serde(flatten)]
-    pub envelope: EventEnvelope,
-    /// Tool call ID this result corresponds to
-    pub tool_call_id: String,
-    /// Output text (null if error)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    /// Error message (null if success)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// Duration in milliseconds
-    pub duration_ms: u64,
 }
 
 /// spawn.request - This agent spawned a subagent
@@ -402,10 +367,6 @@ pub enum SessionEvent {
 
     #[serde(rename = "thinking")]
     Thinking(ThinkingEvent),
-    #[serde(rename = "tool.call")]
-    ToolCall(ToolCallEvent),
-    #[serde(rename = "tool.result")]
-    ToolResult(ToolResultEvent),
     #[serde(rename = "spawn.request")]
     SpawnRequest(SpawnRequestEvent),
     #[serde(rename = "spawn.result")]
@@ -430,8 +391,6 @@ impl SessionEvent {
             SessionEvent::SessionCreated(e) => &e.envelope,
             SessionEvent::MessageV2(e) => &e.envelope,
             SessionEvent::Thinking(e) => &e.envelope,
-            SessionEvent::ToolCall(e) => &e.envelope,
-            SessionEvent::ToolResult(e) => &e.envelope,
             SessionEvent::SpawnRequest(e) => &e.envelope,
             SessionEvent::SpawnResult(e) => &e.envelope,
             SessionEvent::A2aSent(e) => &e.envelope,
@@ -449,8 +408,6 @@ impl SessionEvent {
             SessionEvent::SessionCreated(_) => "session.created",
             SessionEvent::MessageV2(_) => "message.v2",
             SessionEvent::Thinking(_) => "thinking",
-            SessionEvent::ToolCall(_) => "tool.call",
-            SessionEvent::ToolResult(_) => "tool.result",
             SessionEvent::SpawnRequest(_) => "spawn.request",
             SessionEvent::SpawnResult(_) => "spawn.result",
             SessionEvent::A2aSent(_) => "a2a.sent",
@@ -521,8 +478,6 @@ impl SessionEvent {
                 peko_message::MessageRole::Tool => "tool",
             },
             SessionEvent::Thinking(_) => "thinking",
-            SessionEvent::ToolCall(_) => "tool.call",
-            SessionEvent::ToolResult(_) => "tool.result",
             SessionEvent::SpawnRequest(_) => "spawn.request",
             SessionEvent::SpawnResult(_) => "spawn.result",
             SessionEvent::A2aSent(_) => "a2a.sent",

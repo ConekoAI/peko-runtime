@@ -1,13 +1,13 @@
 # Built-in Tools Catalog
 
-Peko exposes **21 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **22 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066). ToolCatalog
-owns registration/lookup; ToolDispatcher validates arguments and emits one
-attributed audit event. Every principal can use every registered tool. There is
+owns registration/lookup; ToolDispatcher validates arguments, writes each call
+to its principal's tool ledger (ADR-079), and emits one attributed audit event. Every principal can use every registered tool. There is
 no tool allowlist or capability filter. Principal bindings select workspace and
 service dependencies; ownership, peer permissions, and channel membership
 control access to resources.
@@ -32,14 +32,14 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 21-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 22-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
 | Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
-| Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP | When their session storage, plan, caller identity/channel, or inbox bindings become available |
+| Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
 | Run bindings | Agent, Session | Private catalog overlay for caller execution dependencies |
 
 Each run inherits live runtime/principal registrations through its overlay.
@@ -746,6 +746,30 @@ Sampling is opt-in and uses the principal's actual model/meter. See
 [ADR-075](adr/ADR-075-principal-owned-mcp-runtime.md) and the
 [quick start](../mcp/QUICK_START.md).
 
+## Audit
+
+### ToolLog
+
+Read this principal's tool ledger (ADR-079): every tool call it made, whom the
+run acted for, the session, and how the call ended.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/tool_log.rs)
+
+| action | Fields | Returns |
+|---|---|---|
+| `search` | optional `tool`, `tool_action`, `session` (slug path or own session id) + `subtree` (default false), `actor`, `outcome`, `since` / `until` (RFC 3339 or an age like `30m`, `6h`, `2d`; default since 7d), `limit` (default 50, 1–200), `cursor` | `{ calls, next_cursor }`: compact rows newest first — `call_id`, `ts`, `tool`, `action`, `session` path, `actor`, `trust`, `outcome`, `duration_ms`, `exit_code`, `parent` |
+| `get` | required `call_id` | The call's `start` and `ends` records (redacted params, result excerpt), its session path, its `parent` row, and its `children` rows |
+
+Outcomes: `ok`, `error` (including a tool-reported failure such as a non-zero
+Bash exit), `cancelled`, `floor_denied`, `policy_denied`, `awaiting_owner`,
+`proposed`, `detached` (still running in the background; a late end follows),
+and `in_flight` (no end yet). `tool_action` filters on the logged call's
+declared action. Session paths resolve when read, so a moved session shows its
+current path. Owner runs see the whole ledger; any other run sees only calls
+made in its own compartment (ADR-078 D4), and the rest reads as missing.
+Excerpts are tool output, returned with runtime tags defused. `ToolLog` is
+parallelizable, read-only, and exempt from policy review.
+
 ## Testing
 
 Three tiers cover the built-in tools; put a test in the lowest tier that can
@@ -757,7 +781,8 @@ observe the behavior.
 | Harness | [`ToolHarness`](../../peko-rs/core/src/tools/builtin/test_harness.rs) | `cargo test --lib` | Dispatch semantics (validation, workspace injection, audit), multi-tool flows, caller/principal scoping |
 | Daemon | [`cli_tools.rs`](../../peko-rs/core/tests/cli_tools.rs) | `make test-cli-tools` (mock LLM) | Daemon wiring only: workspace resolution, process spawning, result persistence |
 
-`ToolHarness::new()` registers all 21 tools behind the production dispatcher,
+`ToolHarness::new()` registers all 22 tools behind the production dispatcher,
+with the harness principal's tool ledger bound,
 backed by tempdir storage where it is cheap (workspace files, ChannelStore,
 CronScheduler, ModelCatalog, AsyncExecutor) and fakes where the real backend
 is a daemon (Task, Plan, Agent, Session). ModelCall and Workflow stay unbound

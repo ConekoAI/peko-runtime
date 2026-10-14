@@ -14,12 +14,6 @@ use std::path::PathBuf;
 
 pub use peko_tools_core::paths::{default_agent_workspace, default_data_dir};
 
-/// Default directory for async task records.
-#[must_use]
-pub fn default_async_tasks_dir() -> PathBuf {
-    default_data_dir().join("async_tasks")
-}
-
 /// Cross-boundary view of `crate::common::paths::PathResolver`.
 ///
 /// The framework takes this trait so it doesn't depend on the

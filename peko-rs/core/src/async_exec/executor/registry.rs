@@ -270,8 +270,7 @@ impl AsyncTaskEntry {
 
 /// Cap on the partial-output preview surfaced through the completion
 /// event and `Async action output` — the agent gets a window into what the task
-/// produced, not the whole thing (the full tail stays in the task file
-/// for tools that stream there).
+/// produced, not the whole thing.
 pub const PARTIAL_OUTPUT_PREVIEW_BYTES: usize = 4 * 1024;
 
 /// Registry for tracking async tasks.

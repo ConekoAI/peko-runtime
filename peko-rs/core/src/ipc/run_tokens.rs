@@ -52,6 +52,10 @@ pub struct RunTokenEntry {
     /// The spawning run's stamp (ADR-078). Every callback the workflow
     /// makes acts under it. In-memory only — never a wire field.
     pub acting_for: Option<peko_tools_core::ActingFor>,
+    /// The ledger id of the `Workflow` call that minted the token
+    /// (ADR-079 D4); every callback names it as its parent. In-memory
+    /// only — never a wire field.
+    pub parent_call_id: Option<String>,
     /// Absolute expiry (mint time + run timeout + margin, or the
     /// uncapped-run lease).
     pub expires_at: DateTime<Utc>,
@@ -87,6 +91,7 @@ impl RunTokenRegistry {
         workflow_depth: u32,
         caller_session_id: Option<String>,
         acting_for: Option<peko_tools_core::ActingFor>,
+        parent_call_id: Option<String>,
         ttl: Duration,
     ) -> String {
         let mut bytes = [0u8; 32];
@@ -98,6 +103,7 @@ impl RunTokenRegistry {
             workflow_depth,
             caller_session_id,
             acting_for,
+            parent_call_id,
             expires_at: Utc::now()
                 + chrono::Duration::from_std(ttl).unwrap_or_else(|_| chrono::Duration::hours(1)),
         };
@@ -111,6 +117,20 @@ impl RunTokenRegistry {
             .expect("run-token registry poisoned")
             .insert(token.clone(), entry);
         token
+    }
+
+    /// Every live token, so the ledger redactor can recognize them
+    /// (ADR-079 D3).
+    #[must_use]
+    pub fn live_tokens(&self) -> Vec<String> {
+        let now = Utc::now();
+        self.inner
+            .lock()
+            .expect("run-token registry poisoned")
+            .iter()
+            .filter(|(_, entry)| entry.expires_at > now)
+            .map(|(token, _)| token.clone())
+            .collect()
     }
 
     /// Invalidate `token` now (its run ended).
@@ -169,6 +189,7 @@ mod tests {
             1,
             Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             None,
+            None,
             Duration::from_mins(1),
         );
         assert_eq!(token.len(), 43, "32 bytes → 43 url-safe chars (no pad)");
@@ -191,6 +212,7 @@ mod tests {
             0,
             None,
             None,
+            None,
             Duration::from_mins(1),
         );
         let entry = registry.verify(&token).expect("verifies");
@@ -206,12 +228,14 @@ mod tests {
             0,
             None,
             None,
+            None,
             Duration::from_mins(1),
         );
         let b = registry.mint(
             "p",
             "agent:p:workflow:x",
             0,
+            None,
             None,
             None,
             Duration::from_mins(1),
@@ -226,6 +250,7 @@ mod tests {
             "p",
             "agent:p:workflow:x",
             0,
+            None,
             None,
             None,
             Duration::from_mins(1),
@@ -245,7 +270,15 @@ mod tests {
         let registry = RunTokenRegistry::new();
         // Zero TTL → expired by the time verify runs (expiry must be
         // strictly in the future).
-        let token = registry.mint("p", "agent:p:workflow:x", 0, None, None, Duration::ZERO);
+        let token = registry.mint(
+            "p",
+            "agent:p:workflow:x",
+            0,
+            None,
+            None,
+            None,
+            Duration::ZERO,
+        );
         assert!(registry.verify(&token).is_none(), "expired must not verify");
         assert_eq!(registry.len(), 0, "lazy sweep removed the expired entry");
     }

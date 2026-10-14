@@ -17,10 +17,10 @@ pub const EXEMPT_TOOLS: &[&str] = &[
     "Plan",
     "Task",
     "ModelList",
-    "Sleep",
     "RoleCatalog",
     "Session",
     "ChannelRead",
+    "ToolLog",
 ];
 
 /// Most argument text the reviewer sees per call.
@@ -42,6 +42,10 @@ pub struct GatedCall {
     pub stamp: ActingFor,
     pub tool_name: String,
     pub params: serde_json::Value,
+    /// The ledger id of the gated call (ADR-079), so an approved replay
+    /// names it as its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 impl GatedCall {
@@ -239,6 +243,7 @@ mod tests {
     #[test]
     fn the_prompt_carries_policy_and_arguments_but_no_conversation() {
         let call = GatedCall {
+            call_id: None,
             principal_id: "prin_x".into(),
             principal_name: None,
             session_id: Some("s".into()),

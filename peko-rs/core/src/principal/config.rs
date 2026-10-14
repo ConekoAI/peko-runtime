@@ -254,14 +254,21 @@ pub struct PrincipalIntentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalGovernanceConfig {
-    #[serde(default)]
-    pub audit: AuditLevel,
+    /// Days of tool ledger kept (ADR-079 D7); older days are pruned.
+    /// Zero is invalid. A legacy `audit` level is ignored on load.
+    #[serde(default = "default_ledger_retention_days")]
+    pub ledger_retention_days: std::num::NonZeroU32,
     /// Maximum live agent runs across all entry paths and descendants.
     /// Zero is invalid; legacy max_delegation_depth is ignored on load.
     #[serde(default = "default_max_running_agents")]
     pub max_running_agents: std::num::NonZeroUsize,
     #[serde(default)]
     pub delegations: Vec<DelegationGrant>,
+}
+
+fn default_ledger_retention_days() -> std::num::NonZeroU32 {
+    std::num::NonZeroU32::new(crate::security::ledger::DEFAULT_RETENTION_DAYS)
+        .expect("default ledger retention is positive")
 }
 
 fn default_max_running_agents() -> std::num::NonZeroUsize {
@@ -271,20 +278,11 @@ fn default_max_running_agents() -> std::num::NonZeroUsize {
 impl Default for PrincipalGovernanceConfig {
     fn default() -> Self {
         Self {
-            audit: Default::default(),
+            ledger_retention_days: default_ledger_retention_days(),
             max_running_agents: default_max_running_agents(),
             delegations: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AuditLevel {
-    #[default]
-    All,
-    Commands,
-    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -477,6 +475,22 @@ mod tests {
         assert_eq!(restored.governance.max_running_agents.get(), 7);
         assert!(toml::from_str::<PrincipalConfig>(
             "name = 'limited'\n[governance]\nmax_running_agents = 0"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ledger_retention_defaults_round_trips_and_ignores_the_legacy_audit_level() {
+        let legacy: PrincipalConfig =
+            toml::from_str("name = 'old'\n[governance]\naudit = 'none'").unwrap();
+        assert_eq!(legacy.governance.ledger_retention_days.get(), 90);
+        assert!(!toml::to_string(&legacy).unwrap().contains("audit"));
+        let config: PrincipalConfig =
+            toml::from_str("name = 'kept'\n[governance]\nledger_retention_days = 30").unwrap();
+        let restored: PrincipalConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.governance.ledger_retention_days.get(), 30);
+        assert!(toml::from_str::<PrincipalConfig>(
+            "name = 'kept'\n[governance]\nledger_retention_days = 0"
         )
         .is_err());
     }

@@ -899,13 +899,9 @@ mod tests {
         let shared = ToolingRuntime::standalone();
         let inbox = crate::async_exec::executor::standalone_inbox_registry();
         let principal = PrincipalId::generate();
-        let task_files = tempfile::tempdir().unwrap();
-        let executor = Arc::new(
-            crate::async_exec::executor::AsyncExecutor::new(Arc::clone(&inbox))
-                .with_task_file_writer(crate::async_exec::executor::TaskFileWriter::new(
-                    task_files.path().to_path_buf(),
-                )),
-        );
+        let executor = Arc::new(crate::async_exec::executor::AsyncExecutor::new(Arc::clone(
+            &inbox,
+        )));
         shared
             .async_executors
             .lock()

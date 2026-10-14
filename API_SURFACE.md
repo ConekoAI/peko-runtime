@@ -12,6 +12,52 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Tool ledger (ADR-079)
+
+- `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,
+  `Approval { id, call_id }`); `ToolContext.call_id` + `with_call_id` — the
+  dispatcher's ledger id for the call (`ToolContext.tool_id` keeps the model's
+  id, which MCP servers receive as `tool_call_id`).
+- `peko_engine::ToolCallSpec.parent` + `with_parent`. Set by the async executor
+  for background bodies, by IPC `ExecuteTool` for workflow callbacks, and by
+  the policy gate for approved replays. `ToolDispatchContext` gains
+  `spawned_by` and `parent`; `GatedCall` gains `call_id`;
+  `RunTokenEntry` gains `parent_call_id` and `RunTokenRegistry::mint` takes it;
+  `RunTokenRegistry::live_tokens`.
+- `ToolRuntime::execute_tool_full_with_workspace` takes a trailing
+  `parent: Option<CallParent>`.
+- `peko_observability::chain`: `ChainedJsonl::{open, append, head, dir}`,
+  `verify`, `prune_before`, `read_all`, `files`, `split_line`, `hash_body`,
+  `as_record`, `GENESIS_PREV`, `Problem`, `VerifyReport`.
+- `peko::security::ledger`: `Ledger`, `Outcome`, `Start`, `End`, `Excerpt`,
+  `start_record`, `end_record`, `excerpt`, `dir_for_sessions`, event-type
+  constants; `ledger::redact::{Redactor, SecretSource}`;
+  `ledger::read::{Call, Filter, Sessions, load_calls, reachable, row,
+  audit_inputs, verify, Verification}`.
+- `ToolDispatcher::{bind_ledger (crate), ledger (crate), set_secret_source,
+  checkpoint_ledgers, prune_ledgers}`. `ToolDispatcher::execute` writes a
+  write-ahead `start` and an `end` for every call of a bound principal; a
+  principal whose ledger cannot be written runs only owner calls.
+- `Vault::secret_materials`; `LocalLayout::ledger_dir`;
+  `PrincipalGovernanceConfig::ledger_retention_days` (replaces the unread
+  `audit: AuditLevel`; `AuditLevel` is removed).
+- Builtin `ToolLog` (`tools::builtin::tool_log::{ToolLogTool, TOOL_LOG_TOOL_NAME}`),
+  a principal service; CLI `peko audit ledger <peko>` and `peko audit verify <peko>`.
+- **Removed** (dead or superseded): `async_exec::executor::task_file`
+  (`TaskFileWriter`, `TaskFileRecord`), `AsyncExecutor::{with_task_file_writer,
+  task_file_writer}`, `AsyncTaskReceipt.task_file` and the detach receipt's
+  `task_file` field, `CompletionEvent.output_path` / `CompletionEnvelope.output_path`,
+  `PathResolver::async_tasks_dir`, `framework::paths::default_async_tasks_dir`,
+  `common::services::SessionService` (never called) and
+  `AppState::session_service`, `peko_session::session_info` (`SessionInfo`,
+  `HistoryEvent`, `HistoryQuery`, `HistoryResult`, `BranchResult`,
+  `SessionDetails`, `HistorySummary`, `session_event_to_history`),
+  `SessionEntry::to_info`, `MetadataController::list_session_info_for_peer`,
+  and the never-written `SessionEvent::{ToolCall, ToolResult}` with
+  `ToolCallEvent` / `ToolResultEvent`.
+
+---
+
 ## Acting-for stamps and the trust floor (ADR-078)
 
 - `peko_tools_core::{ActingFor, Trust, Compartment, Origin, neutralize_runtime_tags}`;
@@ -214,7 +260,7 @@ Standalone callers and tests construct isolated runtimes.
 | Contract | Module | Behavior |
 |---|---|---|
 | `ToolCatalog::{register, register_default, overlay, get, tool_definitions}` | `tools::catalog` | Stores executable bindings by `(name, PrincipalId)`; overlays inherit live parent registrations; defaults insert atomically without replacement; principal entries shadow system entries across layers; wire definitions remain sorted and unique |
-| `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, emits one `tool.call` audit event |
+| `ToolDispatcher::execute(ToolCallSpec)` | `tools::dispatcher` | Validates args, builds identity/abort context, injects workspace paths, routes timeout/detach and panic isolation, fires observe-only Pre/Post hooks, writes the call's ledger records (ADR-079), emits one `tool.call` audit event |
 | `ToolingRuntime::{catalog, dispatcher, hooks, services, session_keys}` | `tools::runtime` | Named composition; workspace tools and async services are principal-owned, prompt providers installed once, run limits shared across overlays |
 | `PromptSectionProvider::{section, priority, render}` | `tools::prompt_sections` | Plain per-turn provider for identity, roles, skills, workflows, and session context |
 | `ToolingRuntime::for_run()` | `tools::runtime` | Private catalog overlay with shared hooks/router/audit/admission; ToolFunnel resolves IPC/async callbacks by principal + caller session using weak live-run bindings |

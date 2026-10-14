@@ -49,6 +49,9 @@ pub struct ToolCallSpec {
     /// live-output buffer. The host runs such calls inline (the task's own
     /// timeout and cancellation govern) and hands the buffer to the tool.
     pub background_progress: Option<std::sync::Arc<std::sync::Mutex<String>>>,
+    /// What started this call when it is not an agent turn (ADR-079 D4):
+    /// a background task, a workflow callback, or an approved replay.
+    pub parent: Option<peko_tools_core::CallParent>,
 }
 
 impl ToolCallSpec {
@@ -69,6 +72,7 @@ impl ToolCallSpec {
             principal_name: None,
             abort_signal: None,
             background_progress: None,
+            parent: None,
         }
     }
 
@@ -76,6 +80,13 @@ impl ToolCallSpec {
     #[must_use]
     pub fn with_acting_for(mut self, stamp: peko_tools_core::ActingFor) -> Self {
         self.acting_for = Some(stamp);
+        self
+    }
+
+    /// The same call, started by `parent` (ADR-079 D4).
+    #[must_use]
+    pub fn with_parent(mut self, parent: peko_tools_core::CallParent) -> Self {
+        self.parent = Some(parent);
         self
     }
 }
