@@ -561,6 +561,9 @@ impl TunnelDispatcher {
                     .registration_receipts
                     .insert(registration_id, Err(message));
             }
+            TunnelMessage::PrincipalUnlinked { local_id, hub_id } => {
+                self.unlink_principal(&local_id, &hub_id).await?;
+            }
             TunnelMessage::PrincipalRegistered {
                 registration_id,
                 local_id,
@@ -1027,6 +1030,63 @@ impl TunnelDispatcher {
             .get(&instance_id)
             .map(|s| s.status.clone())
             .unwrap_or(InstanceStatus::Online)
+    }
+
+    /// ADR-081 D7: Hub moved the principal's online link to another
+    /// runtime. This copy keeps its local identity and history but goes
+    /// offline-only: no Hub route, local-only exposure. A notice that does
+    /// not match the principal's current Hub link is ignored.
+    async fn unlink_principal(&self, local_id: &str, hub_id: &str) -> anyhow::Result<()> {
+        let manager = self.host.principal_manager();
+        let Some(principal) = manager
+            .get(peko_subject::PrincipalId(local_id.into()))
+            .await
+        else {
+            return Ok(());
+        };
+        let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+        let me = port.actor_info(&Subject::from(&principal.id)).await;
+        if me.hub_id.as_deref() != Some(hub_id) {
+            warn!(
+                local_id,
+                hub_id, "Ignoring an unlink notice that does not match this principal's Hub link"
+            );
+            return Ok(());
+        }
+        let config = principal.config.read().await;
+        let name = config.name.clone();
+        port.register_actor(
+            &Subject::from(&principal.id),
+            None,
+            config.did.as_ref().map(|did| did.0.as_str()),
+            config.actor_key.as_deref(),
+            Some(&name),
+            "local_only",
+        )
+        .await?;
+        drop(config);
+        manager
+            .update_config(&name, |c| {
+                c.hub_id = None;
+                c.exposure = peko_auth::Exposure::LocalOnly;
+            })
+            .await?;
+        self.state
+            .write()
+            .await
+            .instance_state
+            .remove(&self.instance_id(&name));
+        let _ = self
+            .host
+            .observability()
+            .audit_security(
+                "principal.online_link_moved",
+                Some(local_id),
+                serde_json::json!({ "hub_id": hub_id }),
+            )
+            .await;
+        warn!(principal = %name, hub_id, "Principal is now online on another runtime; this copy is offline-only");
+        Ok(())
     }
 
     pub async fn register_principal(
@@ -1505,6 +1565,18 @@ impl TunnelDispatcher {
                 .await
             {
                 Ok(true) => {}
+                // ADR-081 D7: a member whose online link moved here keeps
+                // its membership once the directory confirms the link.
+                Ok(false)
+                    if self
+                        .host
+                        .tunnel_channel_port()
+                        .follow_link(
+                            &channel_id_typed,
+                            &source_runtime_id,
+                            &payload.source_principal_did,
+                        )
+                        .await => {}
                 Ok(false) => {
                     warn!(
                         "inbound TunnelChannelEvent: dropping envelope from did:key author who is not a remote member of the mirror (request_id={request_id}, channel_id={channel_id}, author={})",
@@ -2956,6 +3028,57 @@ mod tests {
             )
             .await
             .is_err());
+    }
+
+    /// ADR-081 D7: when Hub moves the online link elsewhere, this copy goes
+    /// offline-only; a notice naming another Hub link is ignored, and no
+    /// directory claim can give the copy its Hub route back.
+    #[tokio::test]
+    async fn an_unlinked_copy_goes_offline_only() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        seed_registered(&dispatcher, "mover").await;
+        let principal = dispatcher
+            .host
+            .principal_manager()
+            .get_by_name("mover")
+            .await
+            .unwrap();
+        let port = dispatcher.host.tunnel_channel_port();
+        let me = Subject::from(&principal.id);
+        let hub = port.actor_info(&me).await.hub_id.unwrap();
+
+        dispatcher
+            .unlink_principal(&principal.id.0, "some-other-hub-id")
+            .await
+            .unwrap();
+        assert_eq!(
+            port.actor_info(&me).await.hub_id.as_deref(),
+            Some(hub.as_str())
+        );
+
+        dispatcher
+            .unlink_principal(&principal.id.0, &hub)
+            .await
+            .unwrap();
+        assert!(port.actor_info(&me).await.hub_id.is_none());
+        let config = principal.config.read().await.clone();
+        assert!(config.hub_id.is_none());
+        assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
+
+        // A directory answer for the moved link cannot re-attach it here.
+        assert!(port
+            .register_actor(
+                &Subject::Principal(format!("hub:{hub}").into()),
+                Some(&hub),
+                config.did.as_ref().map(|d| d.0.as_str()),
+                config.actor_key.as_deref(),
+                None,
+                "public",
+            )
+            .await
+            .is_err());
+        assert!(port.actor_info(&me).await.hub_id.is_none());
     }
 
     #[tokio::test]

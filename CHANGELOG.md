@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### One online copy (ADR-081 phase 4, 0.1.0, 2026-10-15)
+
+- When Hub moves a principal's online link to another runtime it sends
+  `principal_unlinked`; this runtime's copy keeps its identity and history but
+  goes offline-only (no Hub route, local-only exposure), audited as
+  `principal.online_link_moved`. A notice naming a different Hub link is
+  ignored.
+- A directory answer can no longer attach a Hub route to a principal hosted
+  here: only that principal's own registration receipt does. This closes the
+  path by which a copy registered elsewhere could make this runtime announce
+  it too.
+- Channel membership follows a moved principal: outbound fan-out re-resolves
+  each registered remote member's link through the directory (cached for five
+  minutes) and delivers to the runtime it is linked to now; inbound envelopes
+  from a new runtime are accepted only when the directory confirms the link,
+  and the membership row follows.
+
 ### Contacts and owner travel with the principal (ADR-081 phase 3, 0.1.0, 2026-10-15)
 
 - Learned contacts are the principal's own: they live in its Local tier

@@ -286,6 +286,15 @@ pub enum TunnelMessage {
         #[serde(rename = "signingDid")]
         signing_did: String,
     },
+    /// ADR-081 D7: the principal's online link moved to another runtime;
+    /// this runtime's copy is now offline-only.
+    #[serde(rename = "principal_unlinked")]
+    PrincipalUnlinked {
+        #[serde(rename = "localId")]
+        local_id: String,
+        #[serde(rename = "hubId")]
+        hub_id: String,
+    },
     #[serde(rename = "instance_deregister")]
     InstanceDeregister { payload: InstanceDeregisterPayload },
     #[serde(rename = "instance_announce")]

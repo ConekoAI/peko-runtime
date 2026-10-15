@@ -1651,6 +1651,33 @@ impl ChannelStore {
             .any(|rm| rm.runtime_id == runtime_id && rm.principal_id == principal_id))
     }
 
+    /// Point a remote principal's membership rows in `channel` at
+    /// `runtime_id` (ADR-081 D7): the principal's online link moved there.
+    /// Returns whether any row changed.
+    pub async fn relocate_remote_member(
+        &self,
+        channel: &ChannelId,
+        principal_id: &str,
+        runtime_id: &str,
+    ) -> Result<bool> {
+        let tier = self.resolve_tier(channel).await?;
+        let chan_dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&chan_dir).await?;
+        let mut members = MembersJson::load(&chan_dir).await?;
+        let mut changed = false;
+        for row in &mut members.remote_members {
+            if row.principal_id == principal_id && row.runtime_id != runtime_id {
+                row.runtime_id = runtime_id.to_string();
+                changed = true;
+            }
+        }
+        members.remote_members.dedup();
+        if changed {
+            members.save(&chan_dir).await?;
+        }
+        Ok(changed)
+    }
+
     /// Add a [`RemoteMember`] row to this channel's `members.json`,
     /// idempotent on the `(runtime_id, principal_id)` pair. Used by
     /// the cross-runtime `invite` path (`TunnelChannelPort`) to
@@ -2141,6 +2168,18 @@ impl ChannelPort for ChannelStore {
             }) {
                 return Err(ChannelError::Adapter(
                     "Actor signing identity cannot change".into(),
+                ));
+            }
+            // ADR-081 D7: only a hosted principal's own registration receipt
+            // gives it a Hub route. A directory claim (a Hub-only reference)
+            // naming a hosted actor that has no such route — or another one
+            // — is a copy registered elsewhere, not this actor's link.
+            if info.local_id.is_none()
+                && record.info.local_id.is_some()
+                && record.info.hub_id != info.hub_id
+            {
+                return Err(ChannelError::Adapter(
+                    "A directory claim cannot attach a Hub route to a hosted actor".into(),
                 ));
             }
             // Directory refreshes of a hosted actor must not remove its local

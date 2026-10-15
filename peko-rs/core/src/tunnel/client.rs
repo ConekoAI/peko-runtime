@@ -650,6 +650,7 @@ impl TunnelClient {
             | TunnelMessage::StreamIteration { .. }
             | TunnelMessage::PrincipalRegistrationRejected { .. }
             | TunnelMessage::PrincipalRegistered { .. }
+            | TunnelMessage::PrincipalUnlinked { .. }
             | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }

@@ -35,7 +35,7 @@
 //!   `source_runtime_id`. The `request_id` is a fresh UUIDv4 per
 //!   fan-out so the hub can scope replay protection.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -89,6 +89,10 @@ pub struct TunnelChannelPort {
     /// live `TunnelHandle`).
     ctx: Arc<RwLock<Option<Arc<CrossRuntimeChannelCtx>>>>,
 
+    /// Recently confirmed online links of remote principals (ADR-081 D7):
+    /// signing DID → (runtime, when confirmed).
+    links: Arc<std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>>,
+
     /// Envelopes not yet confirmed by their recipient runtime
     /// ([`crate::tunnel::channel_outbox`]).
     outbox: Arc<ChannelOutbox>,
@@ -122,6 +126,7 @@ impl TunnelChannelPort {
         Self {
             local,
             ctx: Arc::new(RwLock::new(None)),
+            links: Arc::new(std::sync::Mutex::new(HashMap::new())),
             outbox: Arc::new(ChannelOutbox::new(delivery_dir.join("outbox"))),
             received: Arc::new(ReceivedLog::new(delivery_dir.join("received.jsonl"))),
             resender_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -133,6 +138,61 @@ impl TunnelChannelPort {
     /// tunnel-reconnect path so a fresh `runtime_id` (after a
     /// credential rotation) propagates without rebuilding every
     /// `TunnelChannelPort`.
+    /// The runtime a registered remote principal (by signing DID) is
+    /// linked to now, per the directory (ADR-081 D7). The directory answer
+    /// must name the same signing identity and immutable key the registry
+    /// holds. Cached for a few minutes unless `fresh`.
+    async fn linked_runtime(
+        &self,
+        ctx: &CrossRuntimeChannelCtx,
+        did: &str,
+        fresh: bool,
+    ) -> Option<String> {
+        const LINK_TTL: std::time::Duration = std::time::Duration::from_mins(5);
+        if !did.starts_with("did:key:") {
+            return None;
+        }
+        if !fresh {
+            let links = self.links.lock().expect("link cache");
+            if let Some((runtime, at)) = links.get(did) {
+                if at.elapsed() < LINK_TTL {
+                    return Some(runtime.clone());
+                }
+            }
+        }
+        let actor = self
+            .local
+            .actor_info(&Subject::Principal(did.to_string().into()))
+            .await;
+        let hub = actor.hub_id.clone().filter(|_| actor.local_id.is_none())?;
+        let resolved = ctx.directory.resolve_by_hub_id(&hub).await.ok()?;
+        if resolved.agent_did != did || resolved.identity_key != actor.identity_key {
+            return None;
+        }
+        self.links.lock().expect("link cache").insert(
+            did.to_string(),
+            (resolved.runtime_id.clone(), std::time::Instant::now()),
+        );
+        Some(resolved.runtime_id)
+    }
+
+    /// Accept a registered principal speaking from `source_runtime` in
+    /// `channel` when the directory confirms its online link moved there
+    /// (ADR-081 D7); the membership row follows. Returns whether the
+    /// principal is now a member from that runtime.
+    pub async fn follow_link(&self, channel: &ChannelId, source_runtime: &str, did: &str) -> bool {
+        let Some(ctx) = self.ctx.read().await.clone() else {
+            return false;
+        };
+        if self.linked_runtime(&ctx, did, true).await.as_deref() != Some(source_runtime) {
+            return false;
+        }
+        self.local
+            .relocate_remote_member(channel, did, source_runtime)
+            .await
+            .unwrap_or(false)
+    }
+
     pub async fn set_ctx(&self, ctx: Arc<CrossRuntimeChannelCtx>) {
         {
             let mut guard = self.ctx.write().await;
@@ -438,12 +498,25 @@ impl TunnelChannelPort {
             None => return Ok(()),
         };
 
-        // Read remote members from the local mirror.
-        let remote_members = self
+        // Read remote members from the local mirror, following each
+        // registered principal's online link (ADR-081 D7) so delivery
+        // reaches the runtime it moved to.
+        let mut remote_members = self
             .local
             .list_remote_members(channel)
             .await
             .map_err(|e| format!("list_remote_members failed: {e}"))?;
+        for member in &mut remote_members {
+            if let Some(linked) = self.linked_runtime(&ctx, &member.principal_id, false).await {
+                if linked != member.runtime_id {
+                    let _ = self
+                        .local
+                        .relocate_remote_member(channel, &member.principal_id, &linked)
+                        .await;
+                    member.runtime_id = linked;
+                }
+            }
+        }
         if remote_members.is_empty() {
             // No remote subscribers — nothing to do. The local store
             // is authoritative for the channel.
@@ -1787,6 +1860,71 @@ mod tests {
             )),
         });
         (ctx, rx)
+    }
+
+    /// ADR-081 D7: a registered remote principal whose online link moved
+    /// keeps its channel membership — outbound delivery and inbound
+    /// acceptance follow the link the directory confirms, and nothing else.
+    #[tokio::test]
+    async fn membership_follows_a_moved_online_link() {
+        use ed25519_dalek::SigningKey;
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+        let (ctx, mut rx) = build_test_ctx(&port, "did:key:zRuntimeLocal").await;
+        port.set_ctx(ctx).await;
+        let remote_did = crate::tunnel::verifying_key_to_did_key(
+            &SigningKey::from_bytes(&[10; 32]).verifying_key(),
+        );
+        let alice = PrincipalId("prin_alice".into());
+        let channel = port
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        // The member was recorded on its old host.
+        store
+            .add_remote_member(&channel, "did:key:zRuntimeOld", &remote_did)
+            .await
+            .unwrap();
+
+        // Inbound from a runtime the directory does not confirm: refused.
+        assert!(
+            !port
+                .follow_link(&channel, "did:key:zRuntimeOther", &remote_did)
+                .await
+        );
+        // Inbound from the linked runtime: accepted, and the row follows.
+        assert!(
+            port.follow_link(&channel, "did:key:zRuntimeB", &remote_did)
+                .await
+        );
+        assert!(store
+            .is_remote_member(&channel, "did:key:zRuntimeB", &remote_did)
+            .await
+            .unwrap());
+
+        // Outbound goes to the linked runtime.
+        store
+            .relocate_remote_member(&channel, &remote_did, "did:key:zRuntimeOld")
+            .await
+            .unwrap();
+        port.post(&channel, &Subject::from(&alice), PostMsg::root("hello"))
+            .await
+            .unwrap();
+        let mut recipients = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            if let crate::tunnel::TunnelMessage::TunnelChannelEvent {
+                recipient_runtime_id,
+                ..
+            } = message
+            {
+                recipients.push(recipient_runtime_id);
+            }
+        }
+        assert_eq!(recipients, vec!["did:key:zRuntimeB".to_string()]);
     }
 
     /// `post` with a remote member: the local store gets the event
