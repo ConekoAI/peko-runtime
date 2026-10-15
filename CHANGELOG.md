@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Reliable idle schedules (0.1.0, 2026-10-15)
+
+- `Idle` cron jobs now measure quiet time from people talking to the
+  principal: an ingress turn (CLI, Hub webchat, tunnel, IPC, group
+  `@mention`) starting or ending, or a message queued for a busy session.
+  Before, only `peko send` and cron's own `Send` runs counted, so idle jobs
+  fired mid-conversation on other surfaces, and the default 10-minute
+  keepalive kept every principal permanently "active".
+- Activity is wall-clock time keyed by runtime `PrincipalId`, persisted in
+  `<runtime_dir>/idle_activity.json`. A daemon restart no longer makes every
+  principal look idle (idle jobs used to fire right after boot); a principal
+  with no record counts as active since daemon start.
+- An idle job fires once per quiet stretch (its `last_run` must predate the
+  last activity) instead of on every idle check until something reset the
+  window; a failed run no longer retries every tick.
+- Removed `AppState::record_principal_activity`, `set_idle_detector`, and the
+  IPC host's `record_principal_activity` hook.
+- Tests: identity key storage in core goes through
+  `identity_compat::identity_key_storage`, which in test builds always seals
+  keys with the master passphrase; the vault's keychain access refuses in
+  test builds. A core test run on its own could otherwise raise an OS
+  keychain prompt when it built an agent.
+
 ### Daily memory maintenance (0.1.0, 2026-10-15)
 
 - ADR-080: the boot pass seeds one daily `memory` job (every 24 hours, trunk

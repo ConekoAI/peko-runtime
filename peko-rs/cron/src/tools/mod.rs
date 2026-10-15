@@ -113,7 +113,8 @@ pub enum ScheduleKind {
     Every { every_ms: u64 },
     /// Cron expression with optional timezone.
     Cron { expr: String, tz: Option<String> },
-    /// Trigger when a Principal has been idle for N minutes.
+    /// Trigger once per quiet stretch: when nobody has talked to the
+    /// Principal for N minutes (see [`crate::idle`]).
     Idle { minutes: u64 },
 }
 

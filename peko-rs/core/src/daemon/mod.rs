@@ -15,7 +15,6 @@ pub(crate) mod state;
 
 use crate::daemon::cron_engine::CronEngine;
 use anyhow::Result;
-use peko_cron::IdleDetector;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -178,10 +177,6 @@ impl Daemon {
             status.running = true;
         }
 
-        // Shared idle detector: used by the cron engine for idle-triggered
-        // jobs and by the IPC server to record user activity.
-        let idle_detector = Arc::new(IdleDetector::new());
-
         // Create shared AppState for daemon services
         let mut app_state = crate::daemon::state::AppState::new(
             &self.config.data_dir,
@@ -196,8 +191,6 @@ impl Daemon {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
-
-        app_state.set_idle_detector(idle_detector.clone());
 
         // ADR-046: principal-config drift detection. Hashes every
         // `principal.toml` and compares against the baseline written
@@ -263,7 +256,7 @@ impl Daemon {
         let cron_path_resolver = app_state.path_resolver.clone();
         self.cron_engine = Some(CronEngine::new(
             cron_path_resolver,
-            idle_detector,
+            app_state.idle_detector(),
             Arc::new(peko_observability::Observability::with_audit_dir(
                 "daemon",
                 app_state.path_resolver.audit_dir(),

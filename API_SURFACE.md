@@ -47,6 +47,17 @@ This document defines the public API surface for Peko, including the new Unified
 | `PlanPort::current_focus`, `PlanStorage::current_focus` | `peko_plan` | ❌ Removed | No callers |
 | `ContextInjectionKind::{Memory, File, Todo, Plan}` | `principal::router` | ❌ Removed | Never constructed (`Plan` was the trunk-only plan injection, replaced by the `plans` section); `Session` remains |
 
+## Idle schedules
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `IdleDetector::persistent` / `record_activity_at` / `last_activity` / `idle_job_due` | `peko_cron::idle` | ✅ New | Wall-clock activity keyed by `PrincipalId`, persisted as JSON; a job is due once per quiet stretch |
+| `IdleDetector::record_activity` / `is_idle` | `peko_cron::idle` | ⚠️ Changed | Keyed by runtime `PrincipalId` (was name); `is_idle` takes `now`; no record means active since the detector started (was idle) |
+| `PrincipalManager::with_idle_detector` | `principal::manager` | ✅ New | Ingress turns (and queued ingress messages, and owner trunk ingress) record activity |
+| `AppState::idle_detector` | `daemon::state` | ✅ New | The persisted detector the cron engine reads; replaces `set_idle_detector` |
+| `AppState::record_principal_activity`, `AppState::set_idle_detector`, IPC `PrincipalHost::record_principal_activity` | `daemon::state`, `ipc::handlers::principal` | ❌ Removed | Superseded by recording at the ingress turn driver |
+| `identity_compat::identity_key_storage` / `default_identity_key_storage` | `identity_compat` | ✅ New | Identity key storage; test builds always use the master-passphrase path (never the OS keychain) |
+
 ## Tool ledger (ADR-079)
 
 - `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,

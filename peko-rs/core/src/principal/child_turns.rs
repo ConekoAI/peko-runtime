@@ -184,6 +184,10 @@ pub(crate) struct PeerChildTurns {
     /// ADR-078: who each actor is to this principal. `None` only for
     /// test bundles built from parts.
     trust: Option<Arc<dyn crate::security::TrustSource>>,
+    /// Activity record for `Idle` schedules: human-started turns mark
+    /// the principal active when they start and end. `None` outside
+    /// the daemon.
+    idle_detector: Option<Arc<peko_cron::IdleDetector>>,
 }
 
 impl PeerChildTurns {
@@ -313,6 +317,7 @@ impl PeerChildTurns {
             channel_port: None,
             dm_subscriber_hook: None,
             dm_lock: None,
+            idle_detector: None,
             trust: Some(trust),
         })
     }
@@ -343,6 +348,7 @@ impl PeerChildTurns {
             channel_port: None,
             dm_subscriber_hook: None,
             dm_lock: None,
+            idle_detector: None,
             trust: Some(trust),
         }
     }
@@ -435,6 +441,27 @@ impl PeerChildTurns {
     pub(crate) fn with_dm_lock(mut self, lock: Option<Arc<tokio::sync::Mutex<()>>>) -> Self {
         self.dm_lock = lock;
         self
+    }
+
+    /// Record human-started turns as principal activity
+    /// (`peko_cron::idle`).
+    pub(crate) fn with_idle_detector(
+        mut self,
+        detector: Option<Arc<peko_cron::IdleDetector>>,
+    ) -> Self {
+        self.idle_detector = detector;
+        self
+    }
+
+    /// Mark the principal active when a turn was started by a person
+    /// (ADR-078 `Origin::Ingress`); cron turns and completion wakes are
+    /// not activity.
+    async fn note_activity(&self, acting_for: &peko_tools_core::ActingFor) {
+        if let (Some(detector), peko_tools_core::Origin::Ingress { .. }) =
+            (&self.idle_detector, &acting_for.origin)
+        {
+            detector.record_activity(&self.principal_id.0).await;
+        }
     }
 
     /// The shared executor (the channel driver reads its steering
@@ -602,7 +629,36 @@ impl PeerChildTurns {
     /// driver, the cron job's creator, or the session's own natural
     /// stamp for a completion wake. The executor re-caps it against the
     /// session before the run starts.
+    ///
+    /// A turn a person started counts as principal activity at its start
+    /// and its end (`peko_cron::idle`), so an `Idle` schedule never fires
+    /// mid-conversation.
     pub(crate) async fn drive_turn_streaming(
+        &self,
+        session_id: &str,
+        message: &str,
+        on_event: AgenticEventSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        override_model: Option<String>,
+        acting_for: peko_tools_core::ActingFor,
+    ) -> Result<StreamingResumeOutcome> {
+        self.note_activity(&acting_for).await;
+        let stamp = acting_for.clone();
+        let outcome = self
+            .drive_turn(
+                session_id,
+                message,
+                on_event,
+                cancel,
+                override_model,
+                acting_for,
+            )
+            .await;
+        self.note_activity(&stamp).await;
+        outcome
+    }
+
+    async fn drive_turn(
         &self,
         session_id: &str,
         message: &str,
@@ -1206,7 +1262,40 @@ mod tests {
             dm_subscriber_hook: hook,
             dm_lock,
             trust: None,
+            idle_detector: None,
         }
+    }
+
+    /// Only turns a person started mark the principal active: cron
+    /// turns and completion wakes leave the idle window alone.
+    #[tokio::test]
+    async fn only_ingress_turns_count_as_activity() {
+        let (_dir, session_manager, _store) = dm_fixture().await;
+        let detector = Arc::new(peko_cron::IdleDetector::new());
+        let turns = bare_turns(session_manager, None, None, None)
+            .with_idle_detector(Some(Arc::clone(&detector)));
+        let start = detector.last_activity("prin_self").await;
+        let stamp = |origin| peko_tools_core::ActingFor {
+            origin,
+            ..peko_tools_core::ActingFor::runtime()
+        };
+
+        for origin in [
+            peko_tools_core::Origin::Cron {
+                job_id: "keepalive".into(),
+            },
+            peko_tools_core::Origin::Wake,
+            peko_tools_core::Origin::Runtime,
+        ] {
+            turns.note_activity(&stamp(origin)).await;
+        }
+        assert_eq!(detector.last_activity("prin_self").await, start);
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        turns
+            .note_activity(&stamp(peko_tools_core::Origin::Ingress { channel: None }))
+            .await;
+        assert!(detector.last_activity("prin_self").await > start);
     }
 
     async fn dm_fixture() -> (

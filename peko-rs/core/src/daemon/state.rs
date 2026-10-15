@@ -161,9 +161,10 @@ pub(crate) struct AppState {
     /// handler) share the same view.
     pub invite_revocation_set: Arc<crate::tunnel::InviteRevocationSet>,
 
-    /// Shared idle detector used by the cron engine and IPC server to
-    /// track Principal activity for idle-triggered jobs.
-    idle_detector: Option<Arc<IdleDetector>>,
+    /// Principal activity for `Idle` schedules, persisted in the runtime
+    /// directory. Ingress turns record into it (through the principal
+    /// manager); the cron engine reads it.
+    idle_detector: Arc<IdleDetector>,
 
     /// Cron engine used by the `CronRun` IPC handler to dispatch
     /// manual triggers (`peko cron run <id>`). Cloned into the
@@ -452,6 +453,10 @@ impl AppState {
         // The `Arc<ChannelStore>` constructor needs a concrete
         // `PathBuf`, not a borrow.
         let channel_runtime_dir = path_resolver.runtime_dir();
+        // Principal activity for `Idle` schedules survives restarts.
+        let idle_detector = Arc::new(IdleDetector::persistent(
+            path_resolver.runtime_dir().join("idle_activity.json"),
+        ));
         // PR-3d: capture the Shared-tier channel parent. Per-principal
         // SharedLayout::channels_dir lives under each principal's
         // shared root; we use the principals root as the parent
@@ -698,7 +703,9 @@ impl AppState {
             .with_identity_vault(Arc::clone(&vault))
             // Sprint 3 Phase 10: peer ingress auto-provisions the
             // peer's DM channel through the daemon-global port.
-            .with_channel_port(channel_port.clone());
+            .with_channel_port(channel_port.clone())
+            // Human-started turns record activity for `Idle` schedules.
+            .with_idle_detector(Arc::clone(&idle_detector));
 
             let mut complete_inventory = true;
             if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
@@ -911,7 +918,7 @@ impl AppState {
             runtime_identity,
             runtime_signing_key,
             invite_revocation_set,
-            idle_detector: None,
+            idle_detector,
             cron_engine: None,
             runtime_metadata,
             auth_config,
@@ -982,9 +989,9 @@ impl AppState {
         inner.ready = ready;
     }
 
-    /// Attach the shared idle detector used by the cron engine.
-    pub fn set_idle_detector(&mut self, detector: Arc<IdleDetector>) {
-        self.idle_detector = Some(detector);
+    /// The principal-activity record `Idle` schedules read.
+    pub fn idle_detector(&self) -> Arc<IdleDetector> {
+        Arc::clone(&self.idle_detector)
     }
 
     /// Attach the daemon-owned cron engine used by the `CronRun` IPC
@@ -994,14 +1001,6 @@ impl AppState {
     /// here so the IPC handler can dispatch manual triggers).
     pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
         self.cron_engine = Some(engine);
-    }
-
-    /// Record activity for a Principal so idle-triggered cron jobs do not
-    /// fire while the Principal is actively being used.
-    pub async fn record_principal_activity(&self, principal_name: &str) {
-        if let Some(detector) = self.idle_detector.as_ref() {
-            detector.record_activity(principal_name).await;
-        }
     }
 
     /// Re-read the model catalog and the credential vault from
@@ -2983,9 +2982,8 @@ impl crate::ipc::handlers::credential::BindingHost for AppState {
 /// F7 twelfth narrow handle: the port the `principal` IPC domain
 /// handler uses. Trait lives in `ipc::handlers::principal`. Most
 /// methods are sync (cheap references / `Arc` clones / `PathBuf`
-/// clones); `tunnel_dispatcher` and `record_principal_activity` are
-/// async because they drive live tunnel / activity-write paths. The
-/// trait needs `async_trait` for those two.
+/// clones); `tunnel_dispatcher` is async because it drives the live
+/// tunnel path, so the trait needs `async_trait`.
 ///
 /// The `principal` domain is the largest of the F6 migrations (17
 /// arms + a sizable set of `build_*` / `import_*` / `push_*` /
@@ -3026,10 +3024,6 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
 
     fn cache_dir(&self) -> std::path::PathBuf {
         self.cache_dir.clone()
-    }
-
-    async fn record_principal_activity(&self, principal_name: &str) {
-        AppState::record_principal_activity(self, principal_name).await;
     }
 
     async fn tunnel_dispatcher(&self) -> Option<crate::tunnel::TunnelDispatcher> {

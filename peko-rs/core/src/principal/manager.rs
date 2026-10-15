@@ -156,6 +156,9 @@ pub struct PrincipalManager {
     /// channel. `None` (tests / offline CLI) disables provisioning —
     /// session behavior unchanged.
     channel_port: Option<Arc<dyn peko_channel::ChannelPort>>,
+    /// Activity record for `Idle` schedules (`peko_cron::idle`): people
+    /// talking to a principal mark it active. `None` outside the daemon.
+    idle_detector: Option<Arc<peko_cron::IdleDetector>>,
     /// Phase 10: kickoff hook fired when a peer's DM channel is
     /// freshly created (the daemon installs a closure forwarding to
     /// `ChannelBindingSupervisor::ensure_subscriber` AFTER the
@@ -208,6 +211,7 @@ impl PrincipalManager {
             peer_registry: None,
             peer_child_turns: tokio::sync::RwLock::new(HashMap::new()),
             channel_port: Some(channel_port),
+            idle_detector: None,
             dm_subscriber_hook: std::sync::RwLock::new(None),
             identity_vault: None,
         }
@@ -317,6 +321,13 @@ impl PrincipalManager {
     #[must_use]
     pub fn with_channel_port(mut self, channel_port: Arc<dyn peko_channel::ChannelPort>) -> Self {
         self.channel_port = Some(channel_port);
+        self
+    }
+
+    /// Record people talking to principals as activity for `Idle`
+    /// schedules (the daemon's persisted detector).
+    pub fn with_idle_detector(mut self, detector: Arc<peko_cron::IdleDetector>) -> Self {
+        self.idle_detector = Some(detector);
         self
     }
 
@@ -1073,7 +1084,8 @@ impl PrincipalManager {
         let turns = turns
             .with_channel_port(self.channel_port.clone())
             .with_dm_subscriber_hook(dm_hook)
-            .with_dm_lock(Some(self.session_creation_lock(principal.id.clone()).await));
+            .with_dm_lock(Some(self.session_creation_lock(principal.id.clone()).await))
+            .with_idle_detector(self.idle_detector.clone());
         let turns = Arc::new(turns);
         cache.insert(principal.id.clone(), Arc::clone(&turns));
         Ok(turns)
@@ -1155,6 +1167,11 @@ impl PrincipalManager {
                         inbox
                             .push(SteeringMessage::new(message.to_string()).into())
                             .await;
+                        // A queued message is someone talking to the
+                        // principal, though no new turn starts yet.
+                        if let Some(detector) = &self.idle_detector {
+                            detector.record_activity(&principal.id.0).await;
+                        }
                         Ok(IngressOutcome::Queued { child_id })
                     }
                 }
@@ -1541,10 +1558,25 @@ impl PrincipalManager {
             .await?;
         ctx.acting_for = Some(acting_for);
 
+        // The owner talking to the trunk directly is activity for `Idle`
+        // schedules; a cron turn is not.
+        let idle_detector = self.idle_detector.as_ref().filter(|_| {
+            matches!(
+                ctx.acting_for.as_ref().map(|a| &a.origin),
+                Some(peko_tools_core::Origin::Ingress { .. })
+            )
+        });
+        if let Some(detector) = idle_detector {
+            detector.record_activity(&principal.id.0).await;
+        }
         let session_id = super::routers::root::trunk_session_id();
         match self.inbox_registry.try_acquire_run(&session_id).await {
             Some(_permit) => {
-                let decision = principal.router.route(ctx).await?;
+                let decision = principal.router.route(ctx).await;
+                if let Some(detector) = idle_detector {
+                    detector.record_activity(&principal.id.0).await;
+                }
+                let decision = decision?;
                 match decision {
                     RouteDecision::Respond { response } => Ok(PrincipalResponse::text(response)),
                 }
