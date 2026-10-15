@@ -932,7 +932,7 @@ mod tests {
     use super::*;
     use crate::principal::config::{
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalRoutingConfig,
     };
     use peko_channel::ChannelPort;
 
@@ -985,7 +985,6 @@ mod tests {
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            memory: PrincipalMemoryConfig::default(),
             routing,
             exposure: peko_auth::Exposure::Private,
             status: None,

@@ -573,7 +573,7 @@ mod tests {
     use crate::common::paths::PathResolver;
     use crate::principal::config::{
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalRoutingConfig,
     };
     use peko_auth::Subject;
 
@@ -602,7 +602,6 @@ mod tests {
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             exposure: peko_auth::Exposure::Private,
             status: None,

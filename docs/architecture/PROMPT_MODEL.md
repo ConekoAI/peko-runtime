@@ -56,7 +56,7 @@ the always-on iteration-budget line.
 |---|---|---|
 | T1 role body | `roles/<name>.md` / `roles/<name>/ROLE.md`; root resolves `[routing].root_prompt` → `roles/root.md` → `roles/root/ROLE.md` — **no render-time fallback**: the file is stamped at provision (and backfilled by the genesis boot pass) from the seed source `resources/roles/root/ROLE.md`; absent = loud error | The only authored prose in the head |
 | Generated stable sections | Hardcoded | `## Runtime` / `## Sandbox` / `## Model aliases` / `## Self-update` — appended when the template didn't place them via placeholder, never duplicated |
-| Inline placeholders | Computed | `{{role_name}}` (legacy `{{agent_name}}` — same value), `{{workspace}}`, `{{channel}}`, `{{thinking_level}}`, `{{runtime}}`, `{{sandbox}}`, `{{model_aliases}}`, `{{self_update}}` |
+| Inline placeholders | Computed | `{{role_name}}` (legacy `{{agent_name}}` — same value), `{{workspace}}`, `{{channel}}`, `{{thinking_level}}`, `{{runtime}}`, `{{sandbox}}`, `{{model_aliases}}` (the retired `{{self_update}}` is stripped like any unknown token) |
 
 **Placeholder contract:** inline variables only. Section-shaped
 placeholders (`{{roles}}`, `{{skills}}`, `{{memory}}`, `{{session_context}}`,
@@ -65,7 +65,7 @@ section rendered into the prefix (which busts prefix caching when the
 content changes) *in addition to* the tail copy. Do not place them in new
 templates; the tail owns sections. Unknown `{{...}}` tokens are stripped
 by `remove_missing=true` — this is how retired markers (`{{tools}}`,
-`{{quota_state}}`, `{{agents}}`, `{{mcp_context}}`) age out with no dead enum variants.
+`{{quota_state}}`, `{{agents}}`, `{{mcp_context}}`, `{{self_update}}`) age out with no dead enum variants.
 
 ## 5. Tail `<runtime-context>` — rebuilt per iteration
 
@@ -79,11 +79,11 @@ derived by the runtime; **hook** = dispatched to a registered handler
 |---|---|---|---|---|---|
 | 1 | Identity — `[identity]` / `[intent]` | T0 | file: `principal.toml` | on change | every agent |
 | 2 | Current time (local + UTC) | — | computed | every iteration (notice-exempt) | every agent |
-| 3 | Memory — `## Your long-term memory` | T0 | file: `kb/MEMORY.md` (256 KiB) | on change | every agent |
-| 4 | Conventions — `## Principal conventions` | T0 | file: `kb/CONVENTIONS.md` (16 KiB) | on change | every agent |
-| 5 | KB index — map of the tree | T0 | file: `kb/index.md` (8 KiB) | on change | every agent |
-| 6 | Binding note — group conventions | T0 | file: `kb/groups/<channel>.md` (8 KiB) | on change | runs bound to a matching channel |
-| 7 | Role note — standing role memory | T0 | file: `kb/roles/<name>.md` (8 KiB) | on change | named roles only (unnamed spawns: none) |
+| 3 | Memory — `## Your long-term memory` | T0 | file: `kb/MEMORY.md` (what rows 4–7 leave of the 32 KiB hot budget; ≥ 16 KiB) | on change | every agent |
+| 4 | Conventions — `## Principal conventions` | T0 | file: `kb/CONVENTIONS.md` (4 KiB) | on change | every agent |
+| 5 | KB index — map of the tree | T0 | file: `kb/index.md` (4 KiB) | on change | every agent |
+| 6 | Binding note — group conventions | T0 | file: `kb/groups/<channel>.md` (4 KiB) | on change | runs bound to a matching channel |
+| 7 | Role note — standing role memory | T0 | file: `kb/roles/<name>.md` (4 KiB) | on change | named roles only (unnamed spawns: none) |
 | 8 | Project instructions | T2 | file: nearest `AGENTS.md` above the **focus directory** (32 KiB) | on focus-dir change | every agent; labeled with path + "below principal instructions in authority" |
 | 9 | Session context — peers' session paths, DM channel | T2 | computed / hook | on change | every agent |
 | 10 | Roles catalog — `## Available Roles` | tier-neutral | file scan: `roles/` (per-file `mtime+len`) | on change | every agent |
@@ -94,6 +94,11 @@ derived by the runtime; **hook** = dispatched to a registered handler
 | 15 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
 | 16 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
 | 17 | Soft-cancel banner | T2 | computed | event-edged | every agent |
+
+**Hot kb budget (ADR-055 rev 3).** Rows 3–7 share one 32 KiB budget,
+loaded once per render by `HotKb::load`. Rows 4–7 cap at 4 KiB each;
+memory gets the rest. Caps count UTF-8 bytes including the truncation
+notice, and an oversized file is cut at a line boundary.
 
 **Section names are a registry key.** Built-in dispatched names:
 `identity`, `roles`, `skills`, `workflows` (deduped — a workspace hook

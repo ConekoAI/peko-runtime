@@ -80,7 +80,6 @@ async fn create_test_principal(
         identity: Default::default(),
         intent: Default::default(),
         governance: Default::default(),
-        memory: Default::default(),
         routing: Default::default(),
         exposure: Exposure::Public,
         status: None,
