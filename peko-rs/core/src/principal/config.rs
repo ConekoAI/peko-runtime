@@ -47,6 +47,10 @@ pub enum BootState {
 }
 
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
+///
+/// Unknown tables are ignored on load and never written back — notably
+/// the retired `[memory]` table (tier / consolidation / ttl_policy /
+/// include_artifacts), which the runtime never read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrincipalConfig {
     pub name: String,
@@ -82,9 +86,6 @@ pub struct PrincipalConfig {
 
     #[serde(default)]
     pub governance: PrincipalGovernanceConfig,
-
-    #[serde(default)]
-    pub memory: PrincipalMemoryConfig,
 
     #[serde(default)]
     pub routing: PrincipalRoutingConfig,
@@ -259,11 +260,10 @@ pub struct PrincipalGovernanceConfig {
     #[serde(default = "default_ledger_retention_days")]
     pub ledger_retention_days: std::num::NonZeroU32,
     /// Maximum live agent runs across all entry paths and descendants.
-    /// Zero is invalid; legacy max_delegation_depth is ignored on load.
+    /// Zero is invalid; legacy `max_delegation_depth` and
+    /// `[[governance.delegations]]` are ignored on load.
     #[serde(default = "default_max_running_agents")]
     pub max_running_agents: std::num::NonZeroUsize,
-    #[serde(default)]
-    pub delegations: Vec<DelegationGrant>,
 }
 
 fn default_ledger_retention_days() -> std::num::NonZeroU32 {
@@ -280,59 +280,8 @@ impl Default for PrincipalGovernanceConfig {
         Self {
             ledger_retention_days: default_ledger_retention_days(),
             max_running_agents: default_max_running_agents(),
-            delegations: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DelegationGrant {
-    pub to: peko_auth::Subject,
-    pub permissions: Vec<Permission>,
-    pub expires_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PrincipalMemoryConfig {
-    #[serde(default)]
-    pub tier: MemoryTier,
-    #[serde(default)]
-    pub consolidation: ConsolidationConfig,
-    #[serde(default)]
-    pub ttl_policy: TtlPolicy,
-    #[serde(default)]
-    pub include_artifacts: Vec<ArtifactKind>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryTier {
-    #[default]
-    Single,
-    MultiTier,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ConsolidationConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub interval: Option<String>,
-    pub trigger: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TtlPolicy {
-    pub session: Option<String>,
-    pub ephemeral: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactKind {
-    Sessions,
-    Todos,
-    Files,
-    Vectors,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -467,6 +416,18 @@ mod tests {
     }
 
     #[test]
+    fn legacy_memory_table_and_delegations_are_ignored() {
+        let text = "name = 'legacy'\n\
+                    [memory]\ntier = 'multi_tier'\ninclude_artifacts = ['vectors']\n\
+                    [memory.consolidation]\nenabled = true\n\
+                    [[governance.delegations]]\nto = 'user:bob'\npermissions = ['chat']\n";
+        let config: PrincipalConfig = toml::from_str(text).unwrap();
+        let written = toml::to_string(&config).unwrap();
+        assert!(!written.contains("memory"), "{written}");
+        assert!(!written.contains("delegations"), "{written}");
+    }
+
+    #[test]
     fn agent_run_limit_round_trips_and_rejects_zero() {
         let config: PrincipalConfig =
             toml::from_str("name = 'limited'\n[governance]\nmax_running_agents = 7").unwrap();
@@ -569,7 +530,6 @@ mod tests {
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
-            memory: Default::default(),
             routing: Default::default(),
             exposure: Default::default(),
             status: None,
@@ -603,7 +563,6 @@ mod tests {
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
-            memory: Default::default(),
             routing: Default::default(),
             exposure: Default::default(),
             status: None,
@@ -634,7 +593,6 @@ mod tests {
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
-            memory: Default::default(),
             routing: Default::default(),
             exposure: Default::default(),
             status: None,
@@ -708,7 +666,6 @@ mod tests {
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
-            memory: Default::default(),
             routing: Default::default(),
             exposure: Default::default(),
             status: None,
@@ -765,7 +722,6 @@ mod tests {
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
-            memory: Default::default(),
             routing: Default::default(),
             exposure: Default::default(),
             status: None,

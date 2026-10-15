@@ -1256,7 +1256,7 @@ impl RequestHandler for PrincipalHandler {
                 use crate::common::identifiers::validate_agent_name;
                 use crate::principal::config::{
                     Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-                    PrincipalIntentConfig, PrincipalMemoryConfig, PrincipalRoutingConfig,
+                    PrincipalIntentConfig, PrincipalRoutingConfig,
                 };
 
                 // 1. Validate the name first so we never touch the
@@ -1353,7 +1353,6 @@ impl RequestHandler for PrincipalHandler {
                     },
                     intent: PrincipalIntentConfig::default(),
                     governance: PrincipalGovernanceConfig::default(),
-                    memory: PrincipalMemoryConfig::default(),
                     routing: PrincipalRoutingConfig::default(),
                     exposure: Exposure::Private,
                     status: None,
@@ -3733,7 +3732,7 @@ mod tests {
         use super::*;
         use crate::principal::config::{
             PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-            PrincipalMemoryConfig, PrincipalRoutingConfig,
+            PrincipalRoutingConfig,
         };
         use crate::principal::peer_children::ensure_peer_child;
         use crate::principal::peer_dm::ensure_peer_dm_channel;
@@ -3809,7 +3808,6 @@ mod tests {
                 identity: PrincipalIdentityConfig::default(),
                 intent: PrincipalIntentConfig::default(),
                 governance: PrincipalGovernanceConfig::default(),
-                memory: PrincipalMemoryConfig::default(),
                 routing: PrincipalRoutingConfig::default(),
                 exposure: peko_auth::Exposure::Private,
                 status: None,

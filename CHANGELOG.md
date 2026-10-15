@@ -16,6 +16,25 @@ All notable changes to Peko.
 - `read_marks.json` updates now hold a file lock; concurrent sessions on one
   channel could drop each other's marks.
 
+### Shared hot kb budget (0.1.0, 2026-10-14)
+
+- ADR-055 rev 3: the hot kb set — `kb/MEMORY.md`, `kb/CONVENTIONS.md`,
+  `kb/index.md`, and the group and role notes — renders under one 32 KiB
+  budget instead of per-file caps that allowed up to 296 KiB per agent.
+  The four small files cap at 4 KiB each and `MEMORY.md` gets the rest
+  (at least 16 KiB). Caps now count bytes rather than chars and include
+  the truncation notice; oversized files are cut at a line boundary with a
+  notice to curate them. Blank hot files render absent.
+- Removed the "Self-Update" section from every frozen system prompt. It
+  described OpenClaw's `config.apply` / `update.run` actions, which Peko
+  never had. `{{self_update}}` in old templates is stripped.
+- Removed dead code: `SystemPromptBuilder` / `PromptMode`,
+  `discover_shared_context`, the per-file kb loaders,
+  `TurnPromptContext.principal_memory` / `has_gateway`, and the unread
+  `principal.toml` `[memory]` table and `[[governance.delegations]]`
+  (`PrincipalMemoryConfig` and friends, `DelegationGrant`). Legacy tables
+  are ignored on load and not written back.
+
 ### Per-principal tool ledger (0.1.0, 2026-10-14)
 
 - ADR-079: every tool call a principal makes — agent turns, subagents, MCP,

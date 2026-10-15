@@ -2139,7 +2139,7 @@ mod tests {
 
     use crate::principal::config::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalRoutingConfig,
     };
     use crate::tunnel::protocol::InstanceExposure;
     use peko_auth::{Permission, PermissionGrant, Subject};
@@ -2278,7 +2278,6 @@ mod tests {
             },
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             exposure,
             status: None,

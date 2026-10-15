@@ -24,6 +24,19 @@ This document defines the public API surface for Peko, including the new Unified
 | `ChannelDigestSessionContextHandler` | `principal::channel_digest` | ⚠️ Changed | Other principals' posts go to the session's waiting list and head the digest ("waiting on you") on every run until a `ChannelRead` returns them or the principal posts after them on that channel |
 | `ChannelReadTool::execute_with_context` | `tools::builtin::channel::channel_read` | ⚠️ Changed | Clears the returned posts from the reading session's waiting list (best-effort) |
 
+## Hot kb budget (ADR-055 rev 3)
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `HotKb` / `HotKb::load(workspace, channel, role_name)` / `HotKb::total_bytes` | `peko_engine::prompt::memory` (re-exported from `peko_engine`) | ✅ New | Loads `kb/MEMORY.md`, `kb/CONVENTIONS.md`, `kb/index.md`, `kb/groups/<channel>.md`, and `kb/roles/<role>.md` under one shared budget; blank or missing files are `None` |
+| `HOT_KB_BUDGET_BYTES` (32 KiB) / `HOT_KB_SECTION_MAX_BYTES` (4 KiB) / `HOT_KB_MEMORY_FLOOR_BYTES` (16 KiB) | `peko_engine::prompt::memory` | ✅ New | The shared budget, the per-file cap of the four small members, and memory's guaranteed share |
+| `PROJECT_INSTRUCTIONS_MAX_BYTES` | `peko_engine::prompt::memory` | ⚠️ Changed | `usize` (was `u64`); the cap now counts UTF-8 bytes including the notice |
+| `load_principal_memory`, `load_principal_conventions`, `load_kb_index`, `load_binding_note`, `load_role_note`, `PRINCIPAL_MEMORY_MAX_BYTES`, `PRINCIPAL_CONVENTIONS_MAX_BYTES`, `KB_INDEX_MAX_BYTES`, `KB_NOTE_MAX_BYTES` | `peko_engine::prompt::memory` | ❌ Removed | Replaced by `HotKb::load` |
+| `discover_shared_context`, `SHARED_CONTEXT_MAX_BYTES` | `peko_engine::prompt::memory` | ❌ Removed | No callers; `discover_project_instructions` is the `AGENTS.md` path |
+| `SystemPromptBuilder`, `PromptMode` (`prompt::builder`) | `peko_engine` | ❌ Removed | No production users; `PromptRenderer` is the only prompt path |
+| `TurnPromptContext.principal_memory`, `TurnPromptContext.has_gateway`, `Placeholder::SelfUpdate` | `peko_engine::prompt` | ❌ Removed | Memory loads from the workspace with the rest of the hot set. The Self-Update section advertised OpenClaw actions (`config.apply`, `update.run`) Peko never had; `{{self_update}}` in old templates is stripped |
+| `PrincipalMemoryConfig`, `MemoryTier`, `ConsolidationConfig`, `TtlPolicy`, `ArtifactKind`, `PrincipalConfig.memory`, `DelegationGrant`, `PrincipalGovernanceConfig.delegations` | `principal::config` | ❌ Removed | Parsed but never read. Legacy `[memory]` and `[[governance.delegations]]` tables are ignored on load and not written back |
+
 ## Tool ledger (ADR-079)
 
 - `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,

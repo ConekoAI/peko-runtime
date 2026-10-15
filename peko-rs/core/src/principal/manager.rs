@@ -1761,7 +1761,7 @@ mod tests {
     };
     use crate::principal::{
         PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-        PrincipalMemoryConfig, PrincipalRoutingConfig,
+        PrincipalRoutingConfig,
     };
 
     use peko_providers::{LlmResolver, MockAdapter};
@@ -1956,7 +1956,6 @@ mod tests {
             },
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
-            memory: PrincipalMemoryConfig::default(),
             routing: PrincipalRoutingConfig::default(),
             exposure: peko_auth::Exposure::Private,
             status: None,

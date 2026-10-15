@@ -289,7 +289,6 @@ mod tests {
                 identity: Default::default(),
                 intent: Default::default(),
                 governance: Default::default(),
-                memory: Default::default(),
                 routing: Default::default(),
                 exposure: Exposure::Private,
                 status: None,
