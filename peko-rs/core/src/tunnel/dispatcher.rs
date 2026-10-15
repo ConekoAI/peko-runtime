@@ -369,6 +369,7 @@ impl TunnelDispatcher {
                 agent_did: None,
                 principal_did: Some(did.0.clone()),
                 principal_pop: self.principal_pop(&did.0).await,
+                owner: self.hub_owner(&principal).await,
                 bundle_ref: None,
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
@@ -403,6 +404,17 @@ impl TunnelDispatcher {
     /// Announce a single Principal instance through the tunnel.
     ///
     /// Used when a new Principal is created after the tunnel is already connected.
+    /// The principal's owner as a Hub account, when it has one (ADR-081
+    /// D4). Hub's wire form is the bare account UUID.
+    async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<Subject> {
+        let owner = principal.config.read().await.owner.clone();
+        let info = self.host.tunnel_channel_port().actor_info(&owner).await;
+        match (info.kind.as_str(), info.hub_id) {
+            ("user", Some(account)) => Some(Subject::User(account)),
+            _ => None,
+        }
+    }
+
     pub async fn announce_single_instance(&self, principal_name: &str) -> anyhow::Result<()> {
         self.announce_registration(principal_name, None).await
     }
@@ -460,6 +472,7 @@ impl TunnelDispatcher {
             agent_did: None,
             principal_did: Some(did.0.clone()),
             principal_pop: self.principal_pop(&did.0).await,
+            owner: self.hub_owner(&principal).await,
             bundle_ref: None,
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
@@ -1058,6 +1071,13 @@ impl TunnelDispatcher {
                 self.state.read().await.ready,
                 "Hub registration requires a connected, authenticated tunnel"
             );
+            // ADR-081 D4: only a principal with a Hub owner goes online.
+            anyhow::ensure!(
+                self.hub_owner(&principal).await.is_some(),
+                "An online principal needs a Hub owner: register this runtime \
+                 (peko runtime register) so its local user has a Hub account, \
+                 or transfer the principal to a Hub user"
+            );
             let old = principal.config.read().await.exposure;
             let id = uuid::Uuid::new_v4().to_string();
             self.state
@@ -1238,6 +1258,7 @@ impl TunnelDispatcher {
                         agent_did: None,
                         principal_did: Some(did.0),
                         principal_pop,
+                        owner: self.hub_owner(&principal).await,
                         bundle_ref: None,
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,

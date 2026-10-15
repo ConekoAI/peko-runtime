@@ -3,7 +3,6 @@
 use crate::commands::GlobalPaths;
 use anyhow::Result;
 use clap::Subcommand;
-use peko_core::common::services::CredentialsService;
 
 /// Auth subcommands
 #[derive(Subcommand)]
@@ -44,12 +43,17 @@ pub enum ApiKeyCommands {
 pub fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
         AuthCommands::Status => {
-            match peko_core::tunnel::HubLogin::load(&paths.config_dir)? {
-                Some(login) => println!(
-                    "Logged in to {} as user:hub:{}",
-                    login.hub_url, login.user_id
+            // ADR-081 D3: the terminal is always the local user; a registered
+            // runtime gives it a Hub alias.
+            let local = tokio::runtime::Runtime::new()?.block_on(
+                peko_core::tunnel::registration::local_user(paths.resolver()),
+            );
+            match local.hub_address() {
+                Some(hub) => println!("Local user: {} = {hub}", local.address),
+                None => println!(
+                    "Local user: {} (runtime not registered with PekoHub)",
+                    local.address
                 ),
-                None => println!("Local user: user:local:local (no Hub login)"),
             }
             Ok(())
         }
@@ -116,133 +120,5 @@ fn handle_api_key_command(cmd: ApiKeyCommands, paths: &GlobalPaths) -> Result<()
                 anyhow::bail!("API key {key_id} not found");
             }
         }
-    }
-}
-
-fn hub_origin(host: &str) -> Result<String> {
-    let url = reqwest::Url::parse(&if host.contains("://") {
-        host.to_string()
-    } else {
-        format!("https://{host}")
-    })?;
-    anyhow::ensure!(
-        matches!(url.scheme(), "http" | "https")
-            && url.username().is_empty()
-            && url.password().is_none(),
-        "Use a PekoHub HTTP(S) origin"
-    );
-    Ok(url.origin().ascii_serialization())
-}
-
-/// Authenticate the human account; login does not register principals or move runtime ownership.
-pub async fn handle_login(paths: &GlobalPaths, host: &str, api_key: Option<String>) -> Result<()> {
-    let origin = hub_origin(host)?;
-    let Some(key) = api_key else {
-        println!("Create a PekoHub API key at {origin}/profile, then run peko login --hub {origin} --api-key <key>");
-        return Ok(());
-    };
-    let response = reqwest::Client::new()
-        .get(format!("{origin}/v1/auth/me"))
-        .bearer_auth(&key)
-        .send()
-        .await?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "PekoHub login rejected: HTTP {}",
-        response.status()
-    );
-    let account: serde_json::Value = response.json().await?;
-    let user_id = account
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("PekoHub returned no account ID"))?;
-    uuid::Uuid::parse_str(user_id)?;
-    CredentialsService::new(paths.clone())?.set_registry_token(
-        key,
-        origin.clone(),
-        account
-            .get("namespace")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned),
-    )?;
-    peko_core::tunnel::HubLogin {
-        user_id: user_id.into(),
-        hub_url: origin.clone(),
-    }
-    .save(&paths.config_dir)?;
-    println!("Logged in to {origin} as user:hub:{user_id}");
-    Ok(())
-}
-
-pub fn handle_logout(paths: &GlobalPaths, host: Option<&str>) -> Result<()> {
-    let current = peko_core::tunnel::HubLogin::load(&paths.config_dir)?;
-    let origin = match host {
-        Some(host) => hub_origin(host)?,
-        None => current
-            .as_ref()
-            .map(|l| l.hub_url.clone())
-            .unwrap_or_else(|| "https://pekohub.org".into()),
-    };
-    CredentialsService::new(paths.clone())?.clear_registry_token(&origin)?;
-    if current
-        .as_ref()
-        .is_some_and(|login| login.hub_url == origin)
-    {
-        peko_core::tunnel::HubLogin::logout(&paths.config_dir)?;
-    }
-    println!("Logged out from {origin}");
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    async fn account_server(status: &str, body: &str) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let response=format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buffer = [0; 4096];
-            let received = socket.read(&mut buffer).await.unwrap();
-            assert!(received > 0);
-            socket.write_all(response.as_bytes()).await.unwrap();
-        });
-        origin
-    }
-    #[tokio::test]
-    async fn login_validates_the_account_before_switching_local_identity() {
-        crate::test_support::init_credentials();
-        let dir = tempfile::tempdir().unwrap();
-        let paths = GlobalPaths::new(
-            dir.path().join("config"),
-            dir.path().join("data"),
-            dir.path().join("cache"),
-            "local".into(),
-        );
-        let first = uuid::Uuid::new_v4().to_string();
-        let second = uuid::Uuid::new_v4().to_string();
-        peko_core::tunnel::HubLogin {
-            user_id: first.clone(),
-            hub_url: "https://original".into(),
-        }
-        .save(&paths.config_dir)
-        .unwrap();
-        let rejected = account_server("401 Unauthorized", "{}").await;
-        assert!(
-            handle_login(&paths, &rejected, Some("test-only-key".into()))
-                .await
-                .is_err()
-        );
-        let accepted = account_server(
-            "200 OK",
-            &serde_json::json!({"id":second,"namespace":"second"}).to_string(),
-        )
-        .await;
-        handle_login(&paths, &accepted, Some("test-only-key".into()))
-            .await
-            .unwrap();
-        handle_logout(&paths, None).unwrap();
     }
 }

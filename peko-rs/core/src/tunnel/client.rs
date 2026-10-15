@@ -22,7 +22,6 @@ use tracing::{debug, error, info, trace, warn};
 use super::backoff::ExponentialBackoff;
 use super::credential::{PekoHubCredential, TunnelTlsConfig};
 use super::protocol::TunnelMessage;
-use crate::common::vault::Vault;
 
 /// Errors that can occur in the tunnel client
 #[derive(Debug, thiserror::Error)]
@@ -165,7 +164,9 @@ pub enum TunnelStatusUpdate {
 pub struct TunnelClient {
     hub_url: String,
     credential: PekoHubCredential,
-    vault: Option<Arc<Vault>>,
+    /// The runtime identity key (ADR-081 D2): signs the hello and the
+    /// challenge acknowledgement for `credential.runtime_id`.
+    signing_key: Arc<SigningKey>,
     backoff: ExponentialBackoff,
     state: Arc<RwLock<TunnelState>>,
     /// Maximum number of consecutive reconnect attempts before giving up
@@ -207,32 +208,33 @@ pub struct TunnelClient {
 
 impl TunnelClient {
     /// Create a new tunnel client with the default reconnect cap.
+    /// `signing_key` must be the key behind `credential.runtime_id`.
     #[must_use]
-    pub fn new(credential: PekoHubCredential) -> Self {
-        Self::new_with_options(credential, DEFAULT_MAX_RECONNECT_ATTEMPTS)
+    pub fn new(credential: PekoHubCredential, signing_key: Arc<SigningKey>) -> Self {
+        Self::new_with_options(credential, signing_key, DEFAULT_MAX_RECONNECT_ATTEMPTS)
     }
 
     /// Create a new tunnel client with a custom reconnect-attempt cap.
     #[must_use]
-    pub fn new_with(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
-        Self::new_with_options(credential, max_reconnect_attempts)
+    pub fn new_with(
+        credential: PekoHubCredential,
+        signing_key: Arc<SigningKey>,
+        max_reconnect_attempts: u32,
+    ) -> Self {
+        Self::new_with_options(credential, signing_key, max_reconnect_attempts)
     }
 
-    /// Attach an explicit vault for resolving the tunnel private key.
-    ///
-    /// When unset, the client loads the vault from the default config directory.
-    pub fn with_vault(mut self, vault: Arc<Vault>) -> Self {
-        self.vault = Some(vault);
-        self
-    }
-
-    fn new_with_options(credential: PekoHubCredential, max_reconnect_attempts: u32) -> Self {
+    fn new_with_options(
+        credential: PekoHubCredential,
+        signing_key: Arc<SigningKey>,
+        max_reconnect_attempts: u32,
+    ) -> Self {
         let hub_url = credential.url.clone();
         let (tx, rx) = mpsc::channel(TUNNEL_OUTBOUND_BUFFER_SIZE);
         Self {
             hub_url,
             credential,
-            vault: None,
+            signing_key,
             backoff: ExponentialBackoff::default_tunnel(),
             state: Arc::new(RwLock::new(TunnelState {
                 heartbeat_seq: 0,
@@ -699,25 +701,7 @@ impl TunnelClient {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = BASE64.encode(nonce_bytes);
 
-        let private_key_b64 = self
-            .resolve_private_key()
-            .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
-
-        // Decode private key
-        let private_key_bytes = BASE64
-            .decode(&private_key_b64)
-            .map_err(|e| TunnelError::AuthFailed(format!("Invalid private key: {e}")))?;
-        if private_key_bytes.len() != 32 {
-            return Err(TunnelError::AuthFailed(
-                "Private key must be 32 bytes".to_string(),
-            ));
-        }
-        let mut sk_array = [0u8; 32];
-        sk_array.copy_from_slice(&private_key_bytes);
-        let signing_key = SigningKey::from_bytes(&sk_array);
-
-        // Sign nonce
-        let signature = signing_key.sign(nonce.as_bytes());
+        let signature = self.signing_key.sign(nonce.as_bytes());
         let signature_b64 = BASE64.encode(signature.to_bytes());
 
         Ok(TunnelMessage::RuntimeHello {
@@ -732,37 +716,13 @@ impl TunnelClient {
     /// matching how the server verifies it (text-mode
     /// `verifyDidKeySignature(did, nonce, signature)`).
     fn sign_challenge(&self, nonce: &str) -> Result<String, TunnelError> {
-        let private_key_b64 = self
-            .resolve_private_key()
-            .map_err(|e| TunnelError::AuthFailed(format!("Failed to resolve private key: {e}")))?;
-
-        let private_key_bytes = BASE64
-            .decode(&private_key_b64)
-            .map_err(|e| TunnelError::AuthFailed(format!("Invalid private key: {e}")))?;
-        if private_key_bytes.len() != 32 {
-            return Err(TunnelError::AuthFailed(
-                "Private key must be 32 bytes".to_string(),
-            ));
-        }
-        let mut sk_array = [0u8; 32];
-        sk_array.copy_from_slice(&private_key_bytes);
-        let signing_key = SigningKey::from_bytes(&sk_array);
-
-        let signature = signing_key.sign(nonce.as_bytes());
+        let signature = self.signing_key.sign(nonce.as_bytes());
         Ok(BASE64.encode(signature.to_bytes()))
     }
 
     /// Check if the tunnel is currently connected and authenticated
     pub async fn is_ready(&self) -> bool {
         self.state.read().await.ready
-    }
-
-    /// Resolve the tunnel private key, using the explicit vault if attached.
-    fn resolve_private_key(&self) -> Result<String, anyhow::Error> {
-        match &self.vault {
-            Some(vault) => self.credential.resolve_private_key(vault),
-            None => self.credential.resolve_private_key_default(),
-        }
     }
 
     /// Build a rustls connector from the optional `[tls]` config.
@@ -790,24 +750,6 @@ impl TunnelClient {
     }
 }
 
-/// Spawn a tunnel client in the background and return a handle
-pub async fn spawn_tunnel<F, Fut>(credential: PekoHubCredential, request_handler: F) -> TunnelHandle
-where
-    F: Fn(TunnelMessage, TunnelHandle) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    let mut client = TunnelClient::new(credential);
-    client.on_request(request_handler);
-
-    let handle = TunnelHandle {
-        tx: client.tx.clone(),
-    };
-
-    tokio::spawn(client.run());
-
-    handle
-}
-
 /// Decode a single WebSocket message into a `TunnelMessage`.
 ///
 /// The tunnel carries messages as either `Binary` (JSON bytes) or
@@ -832,6 +774,10 @@ fn decode_tunnel_message(msg: Message) -> Result<TunnelMessage, TunnelError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_key() -> Arc<SigningKey> {
+        Arc::new(SigningKey::from_bytes(&[7u8; 32]))
+    }
 
     #[tokio::test]
     async fn test_tunnel_handle_send() {
@@ -860,10 +806,9 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
-        let client = TunnelClient::new(cred);
+        let client = TunnelClient::new(cred, test_key());
         assert!(!client.is_ready().await);
         assert_eq!(
             client.max_reconnect_attempts(),
@@ -876,10 +821,9 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
-        let client = TunnelClient::new(cred);
+        let client = TunnelClient::new(cred, test_key());
 
         // Simulate the server's advertised heartbeat interval.
         {
@@ -923,10 +867,9 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
-        let client = TunnelClient::new(cred);
+        let client = TunnelClient::new(cred, test_key());
 
         {
             let mut s = client.state.write().await;
@@ -960,10 +903,9 @@ mod tests {
         let cred = PekoHubCredential {
             url: "ws://127.0.0.1:1/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
-        let mut client = TunnelClient::new_with(cred, 2);
+        let mut client = TunnelClient::new_with(cred, test_key(), 2);
 
         let captured: std::sync::Arc<tokio::sync::Mutex<Vec<TunnelStatusUpdate>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -1008,10 +950,9 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://example.com/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
-        let client = TunnelClient::new_with(cred, 7);
+        let client = TunnelClient::new_with(cred, test_key(), 7);
         assert_eq!(client.max_reconnect_attempts(), 7);
     }
 

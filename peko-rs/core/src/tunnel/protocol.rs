@@ -115,6 +115,11 @@ pub struct InstanceAnnouncePayload {
     /// hub policy, not runtime).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub principal_pop: Option<String>,
+    /// The principal's owner as a Hub account (ADR-081 D4): an online
+    /// principal always has a Hub owner, and Hub records it as the
+    /// instance owner and the authority for moving it between runtimes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<peko_auth::Subject>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -631,6 +636,7 @@ mod tests {
                 bundle_ref: Some("ref".to_string()),
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -687,6 +693,7 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -729,6 +736,7 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
@@ -771,6 +779,7 @@ mod tests {
                 bundle_ref: None,
                 principal_did: Some("did:key:z6MkTestPrincipal".to_string()),
                 principal_pop: Some("header.payload.sig".to_string()),
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
@@ -805,6 +814,7 @@ mod tests {
                 bundle_ref: None,
                 principal_did: Some("did:peko:public:legacy:abc".to_string()),
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
@@ -838,6 +848,7 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,

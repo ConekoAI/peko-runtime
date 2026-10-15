@@ -571,6 +571,76 @@ impl ChannelStore {
         Ok(())
     }
 
+    /// The runtime's one local user (ADR-081 D3), created on first use with
+    /// the fixed key `local@<runtime DID>` so its conversations keep their
+    /// IDs for the life of the runtime. An existing record is kept as is.
+    pub async fn ensure_local_user(&self, runtime_did: &str) -> Result<ActorInfo> {
+        let local = Subject::User("local".into());
+        let known = self.actor_info(&local).await;
+        if known.identity_key != known.address {
+            return Ok(known);
+        }
+        self.register_actor(
+            &local,
+            None,
+            None,
+            Some(&format!("local@{runtime_did}")),
+            Some("local"),
+            "local_only",
+        )
+        .await
+    }
+
+    /// Link the local user to the Hub account the runtime is registered
+    /// under (ADR-081 D3). The account becomes an alias of the local user;
+    /// its key is unchanged. A runtime is linked to one account at a time.
+    pub async fn link_local_user(&self, runtime_did: &str, account: &str) -> Result<ActorInfo> {
+        let local = self.ensure_local_user(runtime_did).await?;
+        if let Some(existing) = &local.hub_id {
+            if existing != account {
+                return Err(ChannelError::Adapter(format!(
+                    "This runtime is registered under Hub account {existing}; \
+                     unregister it before registering under another account"
+                )));
+            }
+        }
+        self.register_actor(
+            &Subject::User("local".into()),
+            Some(account),
+            None,
+            None,
+            Some("local"),
+            "registered",
+        )
+        .await
+    }
+
+    /// Drop the local user's Hub alias (ADR-081 D3). The account stops
+    /// resolving to the local user at once — it is not kept as a historical
+    /// alias, so a remote caller using it is no longer the local user.
+    pub async fn unlink_local_user(&self) -> Result<()> {
+        let path = self.cfg.runtime_dir.join("actors.json");
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut records = load_actors(&path)?;
+        let Some(record) = records
+            .iter_mut()
+            .find(|r| r.info.kind == "user" && r.info.local_id.as_deref() == Some("local"))
+        else {
+            return Ok(());
+        };
+        if record.info.hub_id.take().is_none() {
+            return Ok(());
+        }
+        record.info.registration = "local_only".into();
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
+        fs::rename(temp, path).await?;
+        *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        Ok(())
+    }
+
     fn canonical_address(&self, address: &str) -> String {
         let actors = self.actors.lock().expect("actor directory mutex");
         actors

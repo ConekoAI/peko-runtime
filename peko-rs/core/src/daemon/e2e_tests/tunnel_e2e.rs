@@ -375,9 +375,6 @@ async fn test_e2e_tunnel_chat_with_llm() {
         &secrecy::SecretString::new(vault_passphrase.clone().into()),
     )
     .expect("create vault for tunnel credential");
-    vault
-        .set_tunnel_private_key(&did, &private_key_b64)
-        .expect("store tunnel private key in vault");
     let key_id = format!("{did}#keys-1");
     vault
         .set_identity_private_key(&key_id, "ed25519-raw-base64", &private_key_b64)
@@ -446,13 +443,11 @@ async fn test_e2e_tunnel_chat_with_llm() {
         .await
         .unwrap();
 
-    // ADR-057: the credential carries the hub owner id, so the local
-    // terminal attributes as `user:<hub user>` and the runtime builds
-    // its bridge-token validator against this hub's JWKS.
+    // ADR-081 D2: the registration records only the hub URL; the runtime
+    // is known by its identity DID.
     let cred = PekoHubCredential {
         url: backend.ws_url.clone(),
         runtime_id: did.clone(),
-        owner_id: Some(user_id.clone()),
         tls: None,
     };
     cred.save_to_file(&cred_path)

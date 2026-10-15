@@ -16,7 +16,7 @@ pub struct ExtensionServices {
     /// Cross-runtime a2a dispatch context (issue #29). Set by the
     /// daemon-state after the tunnel client is built and the
     /// `HubAgentDirectoryClient` is ready. `None` on runtimes that
-    /// haven't run `peko tunnel setup` (no PekoHub credential) or
+    /// haven't run `peko runtime register` (no PekoHub credential) or
     /// are running offline.
     ///
     /// Stored as `Arc<dyn Any + Send + Sync>` so the framework does

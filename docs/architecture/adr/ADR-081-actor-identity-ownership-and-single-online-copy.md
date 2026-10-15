@@ -60,8 +60,7 @@ pub struct ActorKey(String);                   // immutable identity
 | Actor | `ActorKey` | Routes |
 |---|---|---|
 | Principal | `actor_key`, minted at creation | `Local` on each runtime that hosts or hosted it; `Hub` once registered |
-| Local user, unregistered | `local@<runtime DID>` | `Local { runtime, "local" }` |
-| Local user, registered | the account's Hub UUID (fixed from registration on) | `Local { runtime, "local" }` + `Hub` |
+| Local user | `local@<runtime DID>`, fixed for the life of the runtime | `Local { runtime, "local" }`; `Hub` once the runtime is registered |
 | Hub user / visitor | Hub UUID | `Hub` |
 
 - **Persisted form.** Every stored reference — owner, grants, contacts, cron creators, stamps, `POLICY.md` sections, channel rows — is a structured `ActorRef` carrying its runtime.
@@ -79,9 +78,8 @@ pub struct ActorKey(String);                   // immutable identity
 ### D3: One local user per runtime, registered with the runtime
 
 - **The terminal is always the local user.** Every runtime has exactly one local user.
-- **`peko register` registers the runtime and the local user together** with one Hub account, which becomes the local user's Hub route and its key from then on (D1).
-- **One-time re-key.** Registration re-keys the local user's existing DMs once: channel IDs are recomputed and their principal session bindings move with them.
-- **Changing accounts.** Unregistering and registering under another account creates a new local user. The previous one remains a Hub-only contact.
+- **`peko runtime register` registers the runtime and the local user together** with one Hub account, which becomes the local user's Hub route. The local user's key never changes, so registering re-keys nothing; the owner's conversation follows a principal across runtimes by the import rule in D6 step 5 instead.
+- **Changing accounts.** `peko runtime unregister` drops the Hub alias at once (it is not kept as a historical alias, so the old account stops being the local user); registering under another account adds the new alias. Registered principals must be unregistered first.
 - **Retired.** `peko login`/`logout` as an identity switch, `runtime/hub-login.json`, the "logged-in account" actor, and `pekohub.toml`'s separate `owner_id`. Other humans reach the runtime remotely as Hub users.
 
 ### D4: One owner
@@ -170,7 +168,7 @@ Pre-launch: no migration code. Principals and runtimes are re-created; stored au
 ## 4. Phases
 
 1. **Types and one rule.** `ActorRef` and `ActorDirectory::key_of`. Every authorization site goes through D1 and D8. Owner rules per D4; cron re-derives trust. *Fixes F2, F3, F11, F12.*
-2. **Runtime and local user.** One runtime key; mandatory registration proof; `peko register` for runtime + local user; deterministic local-user key and the one-time re-key. *Fixes F7, F8. Needs Hub §5.1–5.2.*
+2. **Runtime and local user.** One runtime key; mandatory registration proof; `peko runtime register`/`unregister` for runtime + local user; a fixed local-user key. *Fixes F7, F8. Needs Hub §5.1–5.2.*
 3. **Principal-owned state and snapshots.** D5 and D6, seed stripping, `peko transfer`. *Fixes F4, F5, F6.*
 4. **Online link and moves.** D7, link-checked traffic, directory never attaching hosted routes. *Fixes F9, F10. Needs Hub §5.3–5.5.*
 5. **Delete legacy.** Everything in §3, with docs (`API_SURFACE.md`, `DATA_MODEL.md`, `builtin-tools.md`).
@@ -195,7 +193,6 @@ Pre-launch: no migration code. Principals and runtimes are re-created; stored au
 - **The operator loses implicit owner trust** over principals they host for someone else. Powerful requests go through the owner or a `trusted` grant.
 - **Shared machines share one local user.** Other people use Hub access.
 - **No offline cross-runtime path.** Cross-runtime traffic goes through Hub.
-- Registering the local user re-keys its existing DMs once.
 - **Cloned runtime directories** can still impersonate a runtime after the original disconnects. Possession of the key is the identity; revocation is the remedy.
 
 ---

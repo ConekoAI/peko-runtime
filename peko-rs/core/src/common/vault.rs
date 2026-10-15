@@ -1335,42 +1335,6 @@ impl Vault {
     }
 
     // ------------------------------------------------------------------
-    // Tunnel private key (typed adapters)
-    // ------------------------------------------------------------------
-
-    /// Store a PekoHub tunnel private key.
-    pub fn set_tunnel_private_key(&self, runtime_id: &str, key: &str) -> Result<()> {
-        let mut c = Credential::now(
-            "tunnel",
-            runtime_id,
-            CredentialKind::PrivateKey,
-            SecretString::new(key.to_string().into()),
-        );
-        if let Some(id) = self.credential_id_for_slot("tunnel", runtime_id) {
-            c.id = id;
-        }
-        c.system_owned = true;
-        self.set_credential_internal(&c)
-    }
-
-    /// Get a PekoHub tunnel private key by runtime id.
-    pub fn get_tunnel_private_key(&self, runtime_id: &str) -> Option<SecretString> {
-        self.get_material_for("tunnel", runtime_id).ok().flatten()
-    }
-
-    /// Remove a PekoHub tunnel private key.
-    pub fn delete_tunnel_private_key(&self, runtime_id: &str) -> Result<bool> {
-        let ids = self.credential_ids_for_slot("tunnel", runtime_id);
-        let mut any = false;
-        for id in ids {
-            if self.delete_credential_internal(&id)? {
-                any = true;
-            }
-        }
-        Ok(any)
-    }
-
-    // ------------------------------------------------------------------
     // OAuth tokens (typed adapters)
     // ------------------------------------------------------------------
 
@@ -1478,7 +1442,7 @@ impl Vault {
     /// Insert or overwrite a credential by `id`. `updated_at` is
     /// bumped to "now" on overwrite; `created_at` is preserved.
     /// Rejects runtime-owned credentials; use the typed system
-    /// adapters (`set_identity_private_key`, `set_tunnel_private_key`)
+    /// adapters (`set_identity_private_key`)
     /// for those.
     pub fn set_credential(&self, c: &Credential) -> Result<()> {
         if c.is_system_owned() {
@@ -2535,18 +2499,6 @@ mod tests {
             .get_identity_private_key("did:key:z6MkTest#keys-1")
             .unwrap();
         assert_eq!(key.expose_secret(), "dGVzdA==");
-    }
-
-    #[test]
-    fn test_tunnel_key_storage() {
-        let dir = TempDir::new().unwrap();
-        let vault = Vault::for_test(dir.path(), "test-passphrase");
-
-        vault
-            .set_tunnel_private_key("did:key:z6MkTunnel", "dHVubmVsLWtleQ==")
-            .unwrap();
-        let key = vault.get_tunnel_private_key("did:key:z6MkTunnel").unwrap();
-        assert_eq!(key.expose_secret(), "dHVubmVsLWtleQ==");
     }
 
     #[test]

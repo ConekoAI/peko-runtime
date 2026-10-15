@@ -150,9 +150,6 @@ fn write_pekohub_credential(
         &SecretString::new(cli.vault_passphrase().into()),
     )
     .expect("load test vault for tunnel credential");
-    vault
-        .set_tunnel_private_key(did, &private_key_b64)
-        .expect("store tunnel private key in vault");
     // The runtime's host identity must match the identity authenticated by its
     // tunnel: principal registration proofs bind both signing identities.
     let key_id = format!("{did}#keys-1");
@@ -175,7 +172,6 @@ fn write_pekohub_credential(
     let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
-        owner_id: None,
         tls: None,
     };
     let path = cli.peko_dir().join("runtime").join("pekohub.toml");

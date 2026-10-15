@@ -181,23 +181,6 @@ pub enum Commands {
     #[command(subcommand)]
     Quota(quota::QuotaCommands),
 
-    /// Log in to PekoHub
-    Login {
-        /// PekoHub origin (default: https://pekohub.org)
-        #[arg(long)]
-        hub: Option<String>,
-        /// API key for authentication
-        #[arg(long)]
-        api_key: Option<String>,
-    },
-
-    /// Log out from PekoHub
-    Logout {
-        /// PekoHub origin (default: the current login)
-        #[arg(long)]
-        hub: Option<String>,
-    },
-
     /// Update Peko to the latest version
     Update {
         /// Only check for updates, don't install

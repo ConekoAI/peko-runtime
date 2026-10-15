@@ -188,7 +188,7 @@ pub(crate) struct AppState {
     /// JWT validator (ADR-034) for PekoHub bridge tokens (ADR-057).
     ///
     /// Interior-mutable because the credential it derives from may not
-    /// exist when the daemon boots: `peko tunnel setup` can run later,
+    /// exist when the daemon boots: `peko runtime register` can run later,
     /// and the tunnel start path refreshes this from the credential it
     /// just loaded. Without the refresh, a daemon that booted before
     /// login would reject every bridge request as an invalid JWT until
@@ -743,6 +743,16 @@ impl AppState {
             } else {
                 tracing::warn!("Skipping actor locality reconciliation: hosted principal inventory is incomplete");
             }
+            // ADR-081 D3: the runtime's one local user, with its fixed key.
+            if let Err(e) = tunnel_channel_port
+                .as_ref()
+                .expect("channel port initialized")
+                .local()
+                .ensure_local_user(&runtime_identity.runtime_did)
+                .await
+            {
+                tracing::warn!("Could not record the local user's identity: {e}");
+            }
             manager
         };
 
@@ -824,7 +834,11 @@ impl AppState {
         // the JWKS endpoint lives on that origin. No credential = no
         // tunnel = no bridge traffic, so no validator.
         let jwt_validator = std::sync::Arc::new(std::sync::RwLock::new(
-            Self::bridge_validator_from_credential_file(&config_dir, &auth_config),
+            Self::bridge_validator_from_credential_file(
+                &config_dir,
+                &runtime_identity.runtime_did,
+                &auth_config,
+            ),
         ));
         let rate_limiter = if auth_config.has_any_remote_auth_method() {
             Some(peko_auth::rate_limit::RateLimiter::new(
@@ -1124,12 +1138,10 @@ impl AppState {
     /// runtime validates tokens minted by the hub it is actually
     /// connected to.
     ///
-    /// The expected audience is the credential's **tunnel** DID, not the
-    /// workspace runtime identity: `peko tunnel setup` mints a separate
-    /// tunnel keypair, so the hub knows this runtime by the tunnel DID
-    /// (`conn.runtimeId`, and therefore `instance.runtimeId` — the value
-    /// it puts in `aud`). The tunnel DID is transport identity; the
-    /// token's `sub` still carries the actor.
+    /// The expected audience is the runtime identity DID — the one
+    /// identity Hub knows this runtime by (ADR-081 D2), and therefore
+    /// `instance.runtimeId`, the value it puts in `aud`. The token's `sub`
+    /// carries the actor.
     fn bridge_validator_for(
         cred: &crate::tunnel::PekoHubCredential,
     ) -> Option<peko_auth::jwt::JwtValidator> {
@@ -1143,14 +1155,8 @@ impl AppState {
     }
 
     /// The `(issuer, audience)` a bridge token must carry for this
-    /// credential: the hub origin, and the credential's **tunnel** DID.
-    ///
-    /// The audience is the tunnel DID because that is what PekoHub knows
-    /// this runtime as — `peko tunnel setup` mints a dedicated tunnel
-    /// keypair, the hub records `conn.runtimeId` from the handshake, and
-    /// every proxied request's `instance.runtimeId` (hence the token's
-    /// `aud`) is that value. Using the workspace runtime identity here
-    /// wrongly rejects every bridge request with `Invalid JWT audience`.
+    /// registration: the hub origin, and the runtime identity DID — the
+    /// one identity Hub knows this runtime by (ADR-081 D2).
     fn bridge_token_target(cred: &crate::tunnel::PekoHubCredential) -> Option<(String, String)> {
         let issuer = crate::tunnel::hub_origin(&cred.url)?;
         if cred.runtime_id.is_empty() {
@@ -1160,16 +1166,19 @@ impl AppState {
     }
 
     /// Boot-time attempt: read the credential file (usually present on
-    /// a runtime that has already run `peko tunnel setup`).
+    /// a runtime that has already run `peko runtime register`).
     fn bridge_validator_from_credential_file(
         config_dir: &std::path::Path,
+        runtime_did: &str,
         auth_config: &peko_auth::config::AuthConfig,
     ) -> Option<peko_auth::jwt::JwtValidator> {
         if !auth_config.enable_pekohub_jwt() {
             return None;
         }
         let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(config_dir);
-        let cred = crate::tunnel::PekoHubCredential::from_file(&cred_path).ok()?;
+        let cred = crate::tunnel::load_pekohub_credential(Some(&cred_path), runtime_did)
+            .ok()
+            .flatten()?;
         Self::bridge_validator_for(&cred)
     }
 
@@ -1214,25 +1223,17 @@ impl AppState {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
         use tracing::{info, warn};
 
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            self.config_dir.clone(),
-            self.data_dir.clone(),
-            self.cache_dir.clone(),
-        );
-        let vault = crate::common::vault::Vault::load(path_resolver.vault())
-            .map_err(|e| anyhow::anyhow!("Failed to load credential vault for tunnel: {e}"))?;
-        let vault = std::sync::Arc::new(vault);
-
         let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&self.config_dir);
-        let cred = match load_pekohub_credential(Some(&cred_path))? {
-            Some(c) => c,
-            None => return Ok(false),
-        };
+        let cred =
+            match load_pekohub_credential(Some(&cred_path), &self.runtime_identity.runtime_did)? {
+                Some(c) => c,
+                None => return Ok(false),
+            };
 
         // ADR-057: (re)build the bridge-token validator now that the
         // credential is in hand. The boot-time attempt in
         // `with_data_dir` misses the common ordering where the daemon
-        // starts before `peko tunnel setup` writes this file — without
+        // starts before `peko runtime register` writes this file — without
         // this refresh such a daemon rejects every bridge request as an
         // invalid JWT until it restarts.
         if let Ok(mut guard) = self.jwt_validator.write() {
@@ -1258,7 +1259,7 @@ impl AppState {
         // a warning and skip the registration — the local a2a path
         // still works, and the operator can debug the directory
         // config without losing tunnel connectivity.
-        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred, &vault).await {
+        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred).await {
             warn!(
                 "Could not install cross-runtime a2a ctx (peko-runtime#29); \
                  cross-runtime a2a will be unavailable until this is fixed. \
@@ -1269,7 +1270,7 @@ impl AppState {
         // channel ctx (same signing key + directory as the a2a
         // install). Local-only channels still work without this;
         // this just unlocks outbound fan-out to remote members.
-        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred, &vault).await {
+        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred).await {
             warn!(
                 "Could not install cross-runtime channel ctx (peko-channel PR-B); \
                  cross-runtime channel fan-out will be unavailable until this is fixed. \
@@ -1283,7 +1284,11 @@ impl AppState {
 
         let dispatcher_for_handler = dispatcher;
 
-        let mut client = TunnelClient::new_with(cred, max_reconnect_attempts).with_vault(vault);
+        let mut client = TunnelClient::new_with(
+            cred,
+            Arc::clone(&self.runtime_signing_key),
+            max_reconnect_attempts,
+        );
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -1423,7 +1428,6 @@ impl AppState {
     async fn install_cross_runtime_a2a_ctx(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
 
@@ -1435,7 +1439,7 @@ impl AppState {
         // nothing (the channel envelopes it triggers are signed
         // inside `TunnelChannelPort`).
         let (directory, _signing_key, caller_runtime_id) =
-            self.build_cross_runtime_ctx_parts(cred, vault)?;
+            self.build_cross_runtime_ctx_parts(cred)?;
 
         let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory,
@@ -1490,16 +1494,11 @@ impl AppState {
     fn build_cross_runtime_ctx_parts(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<(
         Arc<dyn crate::tunnel::AgentDirectory>,
         Arc<ed25519_dalek::SigningKey>,
         String,
     )> {
-        use base64::engine::general_purpose::STANDARD as BASE64;
-        use base64::Engine as _;
-        use ed25519_dalek::SigningKey;
-
         // Directory: hub HTTP client + local-first wrap so
         // same-runtime principals resolve without the hub.
         let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
@@ -1516,21 +1515,8 @@ impl AppState {
                 Arc::new(hub_directory),
             ));
 
-        // Signing key: 32 raw bytes decoded from the credential's
-        // base64-encoded private key in the vault.
-        let privkey_b64 = cred.resolve_private_key(vault)?;
-        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
-            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
-        })?;
-        if privkey_bytes.len() != 32 {
-            anyhow::bail!(
-                "PekoHubCredential private key is {} bytes; expected 32",
-                privkey_bytes.len()
-            );
-        }
-        let mut key_arr = [0u8; 32];
-        key_arr.copy_from_slice(&privkey_bytes);
-        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
+        // ADR-081 D2: the runtime identity key signs everything.
+        let signing_key = Arc::clone(&self.runtime_signing_key);
 
         Ok((directory, signing_key, cred.runtime_id.clone()))
     }
@@ -1550,12 +1536,11 @@ impl AppState {
     async fn install_cross_runtime_channel_ctx(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 
         let (directory, signing_key, caller_runtime_id) =
-            self.build_cross_runtime_ctx_parts(cred, vault)?;
+            self.build_cross_runtime_ctx_parts(cred)?;
 
         // ADR-058 D2: outbound envelopes carry an author signature
         // from the authoring principal's own vault-backed key when
@@ -1680,7 +1665,7 @@ pub(crate) enum TunnelHealth {
         last_error: Option<String>,
     },
     /// The reconnect-attempt cap was hit; the tunnel client has stopped
-    /// retrying. Operator must restart with `peko tunnel start` to retry.
+    /// retrying. Operator must restart the daemon to retry.
     Degraded { attempts: u32, last_error: String },
 }
 
@@ -3067,11 +3052,10 @@ mod tests {
     /// bridge request with `Invalid JWT audience` (caught by the docker
     /// e2e, not by unit tests).
     #[test]
-    fn bridge_token_target_uses_the_tunnel_did_and_hub_origin() {
+    fn bridge_token_target_uses_the_runtime_did_and_hub_origin() {
         let cred = crate::tunnel::PekoHubCredential {
             url: "wss://pekohub.example/v1/tunnel".to_string(),
             runtime_id: "did:key:zTunnelIdentity".to_string(),
-            owner_id: Some("hub-user-1".to_string()),
             tls: None,
         };
         let (issuer, audience) =

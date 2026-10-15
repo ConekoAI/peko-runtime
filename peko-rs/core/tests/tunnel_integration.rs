@@ -241,6 +241,7 @@ async fn register_test_principal(
             bundle_ref: None,
             principal_did: Some(signing_did.clone()),
             principal_pop: Some(proof),
+            owner: None,
             runtime_display_name: Some("Transport Test Runtime".into()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,

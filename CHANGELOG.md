@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### One runtime identity; the runtime registers with its local user (ADR-081 phase 2, 0.1.0, 2026-10-15)
+
+- The runtime has one identity: the vault-held `did:key` in
+  `runtime/identity.toml` signs the tunnel handshake, registration, invite
+  tokens, and cross-runtime envelopes. The separate tunnel key (`peko tunnel
+  setup`, vault `tunnel:<did>`) is gone, and `pekohub.toml` stores only the
+  Hub URL and TLS settings. An older `pekohub.toml` is refused with the way
+  out.
+- `peko runtime register --hub <origin> --api-key <key>` registers the
+  runtime and its local user together: registration always proves possession
+  of the runtime key (no unproven fallback), and the Hub account becomes the
+  local user's alias in the actor registry. The local user keeps one fixed key
+  (`local@<runtime DID>`), so registering re-keys nothing.
+  `peko runtime unregister` drops the alias at once and removes the
+  registration; registered principals must be unregistered first.
+- Retired: `peko tunnel setup`, the standalone `peko tunnel start`,
+  `peko login` / `peko logout`, and `runtime/hub-login.json`. `peko auth
+  status` shows the local user and its Hub alias.
+- A principal can register only when its owner has a Hub account, and
+  announces carry that owner to Hub.
+
 ### One identity rule and one owner (ADR-081 phase 1, 0.1.0, 2026-10-15)
 
 - Every authorization decision compares actors through one function, the
