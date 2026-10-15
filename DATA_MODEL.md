@@ -207,7 +207,16 @@ completion write and removes any remaining bootstrap job before handing cadence
 to the principal. Organized principals' authored schedules are not re-seeded.
 Before completion, an enabled, non-self-deleting recurring Send counts as a heartbeat only when
 targeted at the trunk (`origin_session` absent or the trunk id); both `Every`
-and `Cron` schedules count. Peer-session reminders do not count.
+and `Cron` schedules count. Peer-session reminders do not count, nor does the
+daily `memory` job.
+
+**Daily memory maintenance (ADR-080).** Every principal's schedule gets one
+recurring `memory` job (every 24 hours, trunk `Send`, runtime stamp) the first
+time the boot pass sees it, whatever its boot state. The ids the runtime has
+seeded live beside the schedule in `local/cron/seeded_jobs.json`
+(`{"jobs": ["memory"]}`); a recorded id is never seeded again, so a principal
+that deletes or replaces the job keeps it that way. A job the principal already
+named `memory` is kept and only recorded.
 
 ## Principal agent run limit (ADR-067)
 

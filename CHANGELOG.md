@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Daily memory maintenance (0.1.0, 2026-10-15)
+
+- ADR-080: the boot pass seeds one daily `memory` job (every 24 hours, trunk
+  `Send`) into every principal's schedule, once. Its brief has the trunk
+  review the sessions, compaction pages and channels since the last pass,
+  append to the journal, curate `kb/MEMORY.md` (merge, update in place,
+  drop what no longer holds, cite sources, stay within the hot budget), and
+  update people/group/role notes and the index. Before this, memory was
+  written only when an agent remembered to mid-task.
+- Seeding is recorded in `local/cron/seeded_jobs.json`; a job the principal
+  deletes or replaces is never re-created. The daily job does not count as
+  the keepalive heartbeat.
+
 ### Plans are owner-only (0.1.0, 2026-10-15)
 
 - ADR-078: the `Plan` tool is refused to every run not acting for the owner
