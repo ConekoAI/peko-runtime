@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Stale docs and dead session helpers (0.1.0, 2026-10-15)
+
+- Docs brought in line with the current runtime: PEKO.md (per-run reach
+  under ADR-078 instead of the subtree rule, the actual `Agent` / `Session`
+  actions, cron `Send` routing, standing children), AGENT_SESSION_PARADIGM.md
+  (superseded §2.2/§2.3 marked, current-state table corrected, the trunk id
+  is still `trunk_session_id()`), PRINCIPAL_WORKSPACE.md (layout: `POLICY.md`,
+  `workflows/`, `kb/journal/`, `kb/inbox/`; sessions live in the Local tier),
+  DATA_MODEL.md (retired `archived` / `standing` / `privileged` session flags,
+  `session list` reach, `ChannelSend` posts and returns), and ADR-055 D3/D8
+  notes for the `kb/roles/` rename and shared budget.
+- Removed dead code: `peko_session::subagent_key` and the subtree-era
+  ownership helpers (`in_subtree`, `err_out_of_tree`, `err_resume_self`,
+  `err_resume_cross_family`, `err_context_out_of_tree`).
+- `SharedLayout::mcps_dir` (`<principal>/mcps`, created but never read) is now
+  `mcp_dir` (`<principal>/mcp`), the directory the MCP service scans.
+
 ### Reliable idle schedules (0.1.0, 2026-10-15)
 
 - `Idle` cron jobs now measure quiet time from people talking to the

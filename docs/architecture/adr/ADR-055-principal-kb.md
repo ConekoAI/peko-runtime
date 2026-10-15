@@ -141,6 +141,10 @@ accurate.
 
 ### D3 — P0 seeds the scaffold as convention docs, create-once
 
+> **Rev 2 (§7):** `kb/agents/` is now `kb/roles/`, and the seeded hot set
+> gained `CONVENTIONS.md`; read `agents` below as `roles`. Rev 3 (§8)
+> replaced the per-file byte caps with one shared 32 KiB budget.
+
 `PrincipalManager::create` (via the CLI provision path) seeds the
 scaffold: `kb/`, `kb/people/`, `kb/groups/`, `kb/agents/`, and six
 files — `kb/README.md`, `kb/MEMORY.md`, `kb/index.md`,
@@ -211,6 +215,10 @@ conventions, README-carried, no machinery:
   by pointer files from `kb/`.
 
 ### D8 (rev 1) — Targeted scope injections: binding notes and agent notes
+
+> **Rev 2 (§7):** `kb/agents/` is now `kb/roles/`, and the seeded hot set
+> gained `CONVENTIONS.md`; read `agents` below as `roles`. Rev 3 (§8)
+> replaced the per-file byte caps with one shared 32 KiB budget.
 
 The hot set gains two context-scoped members, keyed by *where the agent
 sits*, not by catalog scan:

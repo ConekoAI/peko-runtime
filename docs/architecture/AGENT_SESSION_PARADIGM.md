@@ -106,8 +106,9 @@ tree" rather than a literal string. Design choices:
 is now the ONLY root session and is cron-only — unreachable from outside:
 
 - **All external ingress lands in per-peer standing children** of the
-  trunk: `peko send` (CLI/IPC) → `/local-user` (privileged, whole-store
-  reach), other users → `/user-x`, A2A principals →
+  trunk: `peko send` (CLI/IPC) → `/local-user` (then `privileged`, with
+  whole-store reach; the flag is gone and reach is now per-run, ADR-078),
+  other users → `/user-x`, A2A principals →
   `/principal-{did-fragment}` (`principal/peer_children.rs`:
   spawn-on-contact via `ensure_peer_child`; turns driven by
   `principal/child_turns.rs` with the principal's persona, live event
@@ -136,6 +137,13 @@ remains dormant scaffolding.
 
 ### 2.2 Standing named children
 
+> **Removed 2026-09-12.** The runtime no longer provisions declared
+> children; `[children]` in `principal.toml` is parsed only so old files
+> load, and named at load time as ignored. Sessions are spawned on demand
+> with the `Agent` tool; ingress peers get standing conversation children
+> automatically, and the only other auto-created nodes are `/tmp` and
+> `/trash` (`principal::default_nodes`). The original design follows.
+
 **(implemented — Phase 2 of the paradigm sprint, 2026-08-15)** A
 principal declares standing first-level children in `principal.toml`:
 
@@ -162,7 +170,16 @@ correctly.
 
 ### 2.3 Scoping: an agent operates only within its own subtree
 
-**(implemented)** An agent may use the `Agent`/`Session` tools only inside
+> **Superseded.** The 2026-09-08 change made `Agent` attach/resume/new
+> store-wide, the 2026-09-12 filesystem model retired the subtree rule and
+> the `privileged` flag entirely, and ADR-078 then made reach a property of
+> the run: an owner run reaches the whole store, any other run only its own
+> compartment (one conversation channel's sessions). What survives from
+> this section is the self-safety guards in `session/ownership.rs` (no
+> mutating your own session or ancestors, no deleting or moving the trunk,
+> no touching a live run). The original design follows for history.
+
+**(implemented, 2026-08-15)** An agent may use the `Agent`/`Session` tools only inside
 its own scope (`peko-rs/core/src/session/ownership.rs`):
 
 - A caller in a base session manages the whole store (root ⇒ the entire
@@ -214,9 +231,14 @@ to two forms via `peko_session::path::resolve_reference`):**
 
 | Form | Example | Resolver branch |
 |------|---------|-----------------|
-| Absolute slug path | `/a/b/c` | `resolve_path` (caller-anchored) |
+| Absolute slug path | `sess:/a/b/c` (legacy bare `/a/b/c`) | `resolve_path` (caller-anchored) |
 | Caller's own session id (UUID) | engine self-reference | Self-reference shortcut |
 | Anything else | non-`/`, non-self | **REFUSED** with structured error |
+
+(Later, `resolve_reference` also accepts a raw session UUID from
+engine-internal callers such as the channel-binding driver. The model
+never reaches that form: the `Session` and `Agent` tools validate `path`
+arguments as slug paths before resolving.)
 
 The refusal branch exists so the model gets an actionable error
 pointing at the `path` field in `session list` output rather than a
@@ -235,11 +257,11 @@ Set points: session tool `rename` (`slug`), Agent tool `new`
 happens at the tool-runtime boundary for every `session_key`-shaped
 param, *before* the unchanged ownership guards — paths are a
 computed view; ids stay the canonical key everywhere.
-`session list` defaults to the **caller's subtree** (not the whole
-principal's tree); `scope: "principal"` widens for privileged trunk
-callers (non-privileged callers who ask get ownership-clamped to
-their subtree with a structured warning); `path: "/other/sub"`
-scopes further to any subtree the caller has ownership access to.
+`session list` shows everything the run may reach — the whole store for
+an owner run, its own compartment for any other run (ADR-078) — and
+`path: "sess:/other/sub"` narrows to a subtree within that. (The original
+subtree default and `scope: "principal"` widening went with the subtree
+rule; see §2.3.)
 `session list` shows `slug` + computed `path` (`compute_path`
 skips slugless ancestors, display-only). Display paths carry the
 `sess:` scheme prefix (`sess:/a/b/c`) so a session address can never
@@ -390,12 +412,13 @@ and child supervision.
 **(implemented)** `CronJobAction` (`peko-rs/cron/src/tools/mod.rs`) has
 three variants:
 
-- `Send` — fires a full agent turn. Default: isolated in
-  `root:cron:{owner}` with the reply delivered as a note to the
-  conversational root session. With `target: "trunk"` (Phase 3): the turn
-  lands in the trunk — the paradigm's heartbeat. **Sprint 6**: the
-  trunk id is the resolved `find_trunk_session(metas)` UUID, not a
-  magic string.
+- `Send` — fires a full agent turn in the trunk (the paradigm's
+  heartbeat), or in the session the job was created from when one is
+  recorded (`origin_session`, e.g. a reminder set in a conversation).
+  The pre-Phase-7 default (`root:cron:{owner}` plus a note) is retired.
+  The trunk's id is the deterministic `trunk_session_id()` (the UUID v5
+  of `root:self`); `find_trunk_session(metas)` finds it as the only
+  parentless session.
 - `Notify` — pure delivery, no agent turn, zero tokens.
 - `SpawnTool` — an async tool run; with `wake_on_completion` it posts a
   steering message into the trunk inbox (Phase 3b — one PEKO,
@@ -430,7 +453,7 @@ audit measured the current tool surface against that need:
 | Compact a child without it running | ⚠️ deferred only | `compact` sets a flag consumed at the target's *next run*; no offline/headless compaction exists |
 | Archive a finished subtree | ✅ | with run-permit + subagent-run guards (`session_runtime_impl.rs:376-504`) |
 | Wake on child completion | ✅ | subagent announcements to parent inbox; cron `wake_on_completion` |
-| Memory organization surface | ❌ | `PrincipalMemory` (`principal/memory.rs`) is only a session-artifact index for routing; preferences/notes are the LLM's job via plain workspace files — no agent-facing memory tool |
+| Memory organization surface | ⚠️ partial | `kb/` with a budgeted hot set in every prompt (ADR-055) and a daily `memory` maintenance job (ADR-080); no agent-facing memory tool. `PrincipalMemory` (`principal/memory.rs`) is only a session-artifact index for routing |
 
 ## 6. Current state vs. the paradigm — summary
 
@@ -439,21 +462,21 @@ audit measured the current tool surface against that need:
 | Agent tool = LLM side (`new`/`resume`/`compact`) | ✅ implemented | `core/src/tools/builtin/messaging/agent.rs` |
 | Session tool = storage side (10 actions) | ✅ implemented | `core/src/tools/builtin/session/tool.rs` |
 | JSONL auto-paging, stable ids | ✅ implemented | `core/src/session/`, `peko-rs/session/` |
-| Subtree-scoped Agent/session tools | ✅ implemented | `core/src/session/ownership.rs` |
+| Per-run reach for Agent/session tools (owner: whole store; others: own compartment) | ✅ implemented (ADR-078; replaced the subtree rule) | `core/src/security/` (`visible_metas`, `may_reach`) + self-safety guards in `core/src/session/ownership.rs` |
 | Spawned sessions retained + re-resumable (`cleanup: keep`) | ✅ implemented | `agents/subagent_executor.rs:657-799` |
 | Passive DM → per-peer child session (`/user-x`, `/principal-{did}`) | ✅ implemented (Phase 7, sprint 2) | `principal/manager.rs::receive` + `peer_children.rs` + `child_turns.rs`; `root:{peer}` retired |
 | Channel read/send tools | ✅ implemented | `core/src/tools/builtin/channel/` |
 | Channel push broadcast (`subscribe_events`) | ✅ implemented (desktop UI only consumer) | `channel/src/store.rs:296-320` |
 | Channel log ≠ session log | ✅ implemented | `peko-rs/channel/` (DM channels double as the consumer-visible record since Phase 13) |
 | Cron turn/notify/spawn-tool + idle/event schedules | ✅ implemented | `peko-rs/cron/`, `daemon/cron_engine/` |
-| Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3; sprint 6 re-anchored) | `find_trunk_session(metas)` (the session with `parent_session_id = None`) + `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1); legacy `trunk_session_id()` magic string retired |
-| Standing named children (`/memory`, `/about-user`, …) | ✅ implemented (Phase 2) | `principal.toml` `[children]` + `principal/children.rs` ensure-declared; Agent `new`-with-name attach (§2.2) |
+| Principal trunk `/` (self session, cron-kept, supervising) | ✅ implemented (Phase 3; sprint 6 re-anchored) | trunk id = `trunk_session_id()` (UUID v5 of `root:self`), found by `find_trunk_session(metas)` as the only parentless session; `ChannelKind::Trunk` + `receive_trunk`; cron `Send target:"trunk"` (§2.1) |
+| Standing named children (`/memory`, `/about-user`, …) | ♻️ removed 2026-09-12 | `[children]` is ignored on load; sessions are spawned on demand; standing nodes are the per-peer conversation children plus `/tmp` and `/trash` (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
 | Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ✅ implemented (Phase 4) | `daemon/channel_binding.rs` `PassiveBindingResponder`; `meta.json` `passive_binding`; `--bind` on channel create (§3.2) |
 | Passive/active as channel tier property | ✅ implemented (Phase 4) | per-channel `passive_binding` (not `Tier` — binding IS the DM marker); unbound channels stay active-only |
 | Spawn-on-contact (external peer → auto-created child) | ✅ implemented (Phase 5+7) | `principal/peer_children.rs::ensure_peer_child`; standing + slug + real peer stamped, parented at trunk |
-| Owner child privileged (whole-store reach) | ✅ implemented (Phase 5) | `privileged` metadata flag; `CallerContext.privileged`; only `/local-user` |
+| Owner child privileged (whole-store reach) | ♻️ replaced | the `privileged` flag was removed 2026-09-12; ADR-078 gives whole-store reach to owner runs, whichever session they run in |
 | Trunk unreachable from outside (cron-only) | ✅ implemented (Phase 7) | peer channels re-route to children; `RootRouter` is trunk-only; `root:{peer}`/`root:cron:*` deleted |
 | Per-session/subtree budget attribution | ❌ gap | quota is per-principal; no quota-reading tool |
 | Offline (headless) compaction | ❌ gap | `compact` is flag-only, fires at target's next run |
@@ -487,16 +510,16 @@ Items 1–3 were **fixed in Phase 0 of the paradigm sprint**
 4. ~~**Cron actions disagree about the root session.**~~ **Resolved
    (Phases 3 + 3b; sprint 6 re-anchored):** `Send` has an explicit
    `target` (`"trunk"` → `find_trunk_session(metas)` UUID; default →
-   `root:cron:{owner}` + note), and `SpawnTool`'s `wake_on_completion`
-   now steers the trunk inbox — one PEKO, one root (PEKO.md §K).
-   Trunk-targeted `Every` sends enforce a 60s floor
-   (`TRUNK_MIN_INTERVAL_MS`). The legacy `root:self` magic string is
-   retired.
-5. **Dead code to reclaim or delete:** the `:subagent:{uuid}` key helpers
-   (`peko-rs/session/src/subagent_key.rs` — tests + re-export only) and
-   `err_resume_cross_family` (`session/ownership.rs:216` — zero call
-   sites). Child ids are plain UUIDs; keep the messenger's defensive
-   `:subagent:` trail-stripping for legacy keys.
+   `root:cron:{owner}` + note, since retired), and `SpawnTool`'s
+   `wake_on_completion` now steers the trunk inbox — one PEKO, one root
+   (PEKO.md §K). Trunk-targeted `Every` sends enforce a 60s floor
+   (`TRUNK_MIN_INTERVAL_MS`). The trunk's id is still derived from
+   `root:self` (`trunk_session_id()`, a UUID v5), but no code parses it.
+5. ~~**Dead code to reclaim or delete.**~~ **Resolved (2026-10-15):**
+   the `:subagent:{uuid}` key helpers (`peko-rs/session/src/subagent_key.rs`)
+   and the subtree-era refusals (`err_resume_cross_family`,
+   `err_resume_self`, `err_out_of_tree`, `err_context_out_of_tree`,
+   `in_subtree`) are deleted. Child ids are plain UUIDs.
 
 ## 8. Build order (execution status)
 
@@ -509,7 +532,8 @@ Sprint 1 (2026-08-15) landed steps 0–4 on branch
 1. ✅ **Session `move` (reparent) + slug/path view** — Phase 1a (reparent
    with cycle guard) + Phase 1b (slug, `/user-a/task-b` → id resolver).
 2. ✅ **Standing children registry** — `[children]` declaration,
-   ensure-declared, spawn-or-attach-by-name, prune exemption.
+   ensure-declared, spawn-or-attach-by-name, prune exemption (declared
+   children removed 2026-09-12; see §2.2).
 3. ✅ **Principal trunk `/`** — `root:self` (inherits the prefix guards),
    cron `Send target:"trunk"`, chat-log projection skipped for trunk
    turns (self-thread convention deferred).
@@ -525,7 +549,7 @@ off the root, children are the front door:
 5. ✅ **Peer-child provisioning + privilege** — `peer_child_slug`,
    `ensure_peer_child` (spawn-on-contact, trunk-anchored, real peer
    stamped), `privileged` flag (owner's `/local-user` manages the whole
-   store).
+   store; removed 2026-09-12, see §2.3).
 6. ✅ **Streaming child-turn driver** — `SubagentExecutor::
    resume_streaming` + `principal/child_turns.rs` (one builder shared
    with the channel driver; persona inheritance from the principal's
@@ -565,6 +589,7 @@ The three-layer model:
 chain. Peer identity has lived at the channel layer since sprint 3
 phase 12b; sprint 6 finishes the separation by removing the legacy
 peer-encoding in the session id (`peer_from_session_key`,
-`parse_session_key_v2`, `parse_session_key` v1, `base_key_from_overlay`,
-`trunk_session_id` magic string) so the storage layer doesn't need to
-know what a peer is.
+`parse_session_key_v2`, `parse_session_key` v1, `base_key_from_overlay`)
+so the storage layer doesn't need to know what a peer is. (The trunk id is
+still the deterministic `trunk_session_id()`, a UUID v5 of `root:self`;
+nothing parses it.)

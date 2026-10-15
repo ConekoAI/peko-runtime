@@ -119,12 +119,6 @@ pub fn caller_context(current: &str, metas: &[SessionMetadata]) -> CallerContext
     }
 }
 
-/// All ancestors of `id`, nearest first (same walk as
-/// [`caller_context`]).
-fn ancestors_of(id: &str, metas: &[SessionMetadata]) -> Vec<String> {
-    caller_context(id, metas).ancestors
-}
-
 /// Diagnostic depth of `target`: the number of `trigger == "spawn"`
 /// sessions in its persisted parent chain, including the target. Missing
 /// targets and user roots have depth zero. Depth does not gate admission
@@ -153,25 +147,11 @@ pub fn subagent_depth_of(target: &str, metas: &[SessionMetadata]) -> u32 {
     depth
 }
 
-/// True when `target` is the caller's current session or sits in the
-/// subtree below it (target's ancestor chain contains the caller's
-/// current session id).
-#[must_use]
-pub fn in_subtree(caller: &CallerContext, target: &str, metas: &[SessionMetadata]) -> bool {
-    let target_canonical = peko_session::SessionId::from(target).to_string();
-    if target_canonical == caller.current_session_id {
-        return true;
-    }
-    ancestors_of(&target_canonical, metas)
-        .iter()
-        .any(|a| a == &caller.current_session_id)
-}
-
 /// All sessions whose ancestor chain contains `target` (the target's
 /// descendants, in no particular order).
 ///
 /// Implemented as a single BFS over a parent-to-children adjacency
-/// map built once, instead of `metas.len()` calls to `ancestors_of`
+/// map built once, instead of one ancestor walk per session
 /// (each an O(depth) walk). Total cost: O(N + E) per call, where
 /// E <= N.
 #[must_use]
@@ -255,14 +235,6 @@ pub fn err_move_cycle(target: &str, new_parent: &str) -> anyhow::Error {
     )
 }
 
-/// A subtree (spawned) caller acting outside its subtree.
-pub fn err_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "session '{target}' is outside your session subtree (you are running in '{caller}') — \
-         spawned agents can only manage sessions they spawned"
-    )
-}
-
 /// `delete` / `archive` / `move` on the principal's live `root:*` session.
 pub fn err_live_base_managed(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -291,20 +263,6 @@ pub fn err_run_active(target: &str) -> anyhow::Error {
 pub fn is_run_active_error(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|e| e.to_string().contains("has an active run in flight"))
-}
-
-/// `resume` targeting the caller's own current session.
-pub fn err_resume_self(target: &str) -> anyhow::Error {
-    anyhow::anyhow!("session '{target}' is already your current session")
-}
-
-/// `resume` across conversation families (different peer-child
-/// subtree of the trunk).
-pub fn err_resume_cross_family(target: &str, cur: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "cannot resume '{target}': it belongs to a different conversation family than your \
-         current session '{cur}'"
-    )
 }
 
 /// Non-recursive `delete` on a session that has descendants.
@@ -340,15 +298,6 @@ pub fn err_compact_ancestor(target: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "cannot compact session '{target}': it is the session you are running in or an \
          ancestor — the engine compacts it automatically when needed"
-    )
-}
-
-/// `Agent` spawn with an explicit `parent_session_key` outside the
-/// caller's subtree (context seeding from foreign sessions).
-pub fn err_context_out_of_tree(target: &str, caller: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "cannot seed context from session '{target}': it is outside your session subtree \
-         (you are running in '{caller}')"
     )
 }
 
@@ -395,7 +344,7 @@ mod tests {
         assert!(is_run_active_error(&wrapped));
 
         // Negative: other ownership refusals and unrelated errors.
-        assert!(!is_run_active_error(&err_resume_self("session-1")));
+        assert!(!is_run_active_error(&err_compact_ancestor("session-1")));
         assert!(!is_run_active_error(&anyhow::anyhow!("provider exploded")));
     }
 
@@ -451,20 +400,6 @@ mod tests {
         let b_id = SessionId::from("b").to_string();
         let ctx = caller_context(&a_id, &metas);
         assert_eq!(ctx.ancestors, vec![b_id, a_id]);
-    }
-
-    #[test]
-    fn in_subtree_covers_self_and_descendants_only() {
-        let metas = tree();
-        let spawn1 = SessionId::from("spawn1").to_string();
-        let child1 = SessionId::from("child1").to_string();
-        let spawn2 = SessionId::from("spawn2").to_string();
-        let root = SessionId::from("root:user:alice").to_string();
-        let caller = caller_context(&spawn1, &metas);
-        assert!(in_subtree(&caller, &spawn1, &metas));
-        assert!(in_subtree(&caller, &child1, &metas));
-        assert!(!in_subtree(&caller, &spawn2, &metas));
-        assert!(!in_subtree(&caller, &root, &metas));
     }
 
     #[test]
@@ -560,12 +495,9 @@ mod tests {
             err_delete_ancestor("s"),
             err_move_ancestor("s"),
             err_move_cycle("s", "d"),
-            err_out_of_tree("s", "c"),
             err_live_base_managed("s"),
             err_run_active("s"),
             err_compact_ancestor("s"),
-            err_resume_self("s"),
-            err_resume_cross_family("s", "c"),
             err_descendants_exist("s", &["d1".to_string()]),
             err_dangling("c"),
         ] {

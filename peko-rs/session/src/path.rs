@@ -362,17 +362,19 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Op
 
 // ─── LLM-facing reference resolution ───────────────────────────────
 
-/// Single LLM-facing entry point for session references. Two accepted
-/// forms:
+/// Single entry point for session references. Three accepted forms:
 ///
 /// | Form | Example | Resolver |
 /// |---|---|---|
 /// | Absolute slug path (`sess:`-prefixed or legacy bare) | `sess:/a/b/c` | [`resolve_path`] (caller-anchored) |
 /// | Caller's own session id | UUID | SELF (engine-internal call shape) |
+/// | Any session id | UUID | taken as-is (engine-internal callers, e.g. the channel-binding driver) |
 ///
-/// Everything else — non-`/`, non-self — is REFUSED with a structured
-/// error so the model learns to use the `path` field from
-/// `session list` output. Sprint 5 collapsed the LLM-facing surface to
+/// Everything else (caller-relative slugs, non-UUID ids) is REFUSED with
+/// a structured error pointing the model at the `path` field from
+/// `session list` output. The LLM-facing tools never reach the raw-id
+/// form: `Session` and `Agent` validate `path` arguments as slug paths
+/// at the tool boundary (`validate_path`) before resolving. Sprint 5 collapsed the LLM-facing surface to
 /// slug paths; sprint 6 collapses the heuristic
 /// (`looks_like_session_id`) now that the engine-internal id format is
 /// opaque UUIDs. The legacy `root:<dim>:<name>` shape never appears in
@@ -380,7 +382,8 @@ pub fn derive_branch_slug(metas: &[SessionMetadata], source_id: SessionId) -> Op
 /// produced by any tool the model sees. The earlier
 /// caller-relative-slug branch (`agent-c` style) was removed in
 /// sprint 6; only `/`-prefixed paths (with or without the `sess:`
-/// scheme prefix) and the caller's own id pass.
+/// scheme prefix) and the caller's own id pass from the model; raw ids
+/// pass only from engine-internal callers.
 ///
 /// **Engine-internal self-reference:** the engine passes its own
 /// `current_session_id` verbatim (UUIDs in production). Bypassing the
