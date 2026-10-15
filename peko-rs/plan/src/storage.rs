@@ -248,20 +248,8 @@ impl PlanStorage {
             .collect())
     }
 
-    /// The most-recently-updated open plan with at least one
-    /// `InProgress` node. `None` when the principal has no active
-    /// in-flight work.
-    pub async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
-        let all = self.list_for_principal(principal_id).await?;
-        Ok(all
-            .into_iter()
-            .filter(|r| r.closed.is_none())
-            .filter(|r| !r.current_focus_nodes().is_empty())
-            .max_by_key(|r| r.updated_at))
-    }
-
-    /// All open plans with at least one unresolved node. This is the
-    /// set the runtime re-injects into a fresh session's context.
+    /// All open plans with at least one unresolved node — the set the
+    /// runtime renders into owner runs' `plans` section.
     pub async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         let all = self.list_for_principal(principal_id).await?;
         Ok(all
@@ -607,35 +595,6 @@ mod tests {
         let resumable = storage.load_resumable(&p).await.unwrap();
         assert_eq!(resumable.len(), 1);
         assert_eq!(resumable[0].plan_id, a.plan_id);
-    }
-
-    #[tokio::test]
-    async fn current_focus_returns_most_recent_in_progress_plan() {
-        let dir = TempDir::new().unwrap();
-        let storage = storage_in(&dir);
-        let p = principal();
-
-        let mut a = storage
-            .create(p.clone(), "A".into(), vec![node("a")])
-            .await
-            .unwrap();
-        a = storage
-            .update(&a.plan_id, &p, |r| {
-                let mut r = r.clone();
-                r.nodes[0].status = PlanNodeStatus::InProgress;
-                Ok(r)
-            })
-            .await
-            .unwrap();
-
-        let _b = storage
-            .create(p.clone(), "B".into(), vec![node("b")])
-            .await
-            .unwrap();
-
-        let focus = storage.current_focus(&p).await.unwrap();
-        assert!(focus.is_some());
-        assert_eq!(focus.unwrap().plan_id, a.plan_id);
     }
 
     #[tokio::test]

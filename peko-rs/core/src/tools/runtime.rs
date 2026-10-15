@@ -38,16 +38,11 @@ use crate::tools::dispatcher::ToolDispatcher;
 use crate::tools::prompt_sections::{PromptSectionInput, PromptSectionProvider};
 use crate::tools::session_keys::SessionKeys;
 
-/// The built-in prompt-section names, in render order. Workspace-hook
-/// `PromptSection` binds with one of these names augment the built-in
-/// section instead of producing a second dispatch (ADR-052 D6).
-const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
-    "identity",
-    "roles",
-    "skills",
-    "workflows",
-    "session_context",
-];
+// The built-in prompt-section names, shared with the renderer.
+// Workspace-hook `PromptSection` binds with one of these names augment
+// the built-in section instead of producing a second dispatch
+// (ADR-052 D6).
+use peko_engine::BUILTIN_PROMPT_SECTIONS;
 
 /// The daemon's shared tooling runtime — see the module doc.
 pub struct ToolingRuntime {
@@ -1013,6 +1008,40 @@ mod tests {
                 .unwrap()
                 .2
         );
+    }
+
+    /// Every built-in section name the renderer knows is dispatched to
+    /// its providers — in particular `plans`, whose provider would
+    /// otherwise render into a section nobody asks for.
+    #[tokio::test]
+    async fn builtin_sections_reach_their_providers() {
+        struct Fixed(&'static str);
+        #[async_trait::async_trait]
+        impl PromptSectionProvider for Fixed {
+            fn section(&self) -> &'static str {
+                self.0
+            }
+            async fn render(&self, _input: &PromptSectionInput) -> Option<String> {
+                Some(format!("{} text", self.0))
+            }
+        }
+
+        let tooling = ToolingRuntime::standalone();
+        for name in BUILTIN_PROMPT_SECTIONS {
+            tooling.register_prompt_section(Arc::new(Fixed(name)));
+        }
+        let sections = tooling
+            .render_prompt_sections(&peko_engine::tooling::PromptSectionRequest {
+                catalog_binding: None,
+                principal_id: "prin_sections".into(),
+                workspace: std::env::temp_dir().display().to_string(),
+                session_id: String::new(),
+                acting_for: None,
+            })
+            .await;
+        for name in BUILTIN_PROMPT_SECTIONS {
+            assert_eq!(sections.get(name), Some(format!("{name} text").as_str()));
+        }
     }
 
     /// ADR-075 MCP context reaches the model only through the catalog

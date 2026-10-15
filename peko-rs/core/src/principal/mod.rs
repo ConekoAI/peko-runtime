@@ -36,6 +36,7 @@ pub mod messenger;
 pub mod peer;
 pub mod peer_children;
 pub(crate) mod peer_dm;
+pub(crate) mod plan_prompt;
 pub mod policy_gate;
 pub mod router;
 pub mod routers;

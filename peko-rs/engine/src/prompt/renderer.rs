@@ -246,6 +246,7 @@ impl PromptRenderer {
         let skills = rendered.get("skills").unwrap_or("").to_string();
         let workflows = rendered.get("workflows").unwrap_or("").to_string();
         let session_ctx = rendered.get("session_context").unwrap_or("").to_string();
+        let plans = rendered.get("plans").unwrap_or("").to_string();
 
         // ADR-055 D2: the hot kb set loads once per render under its
         // shared byte budget.
@@ -311,6 +312,13 @@ impl PromptRenderer {
             SectionSlot::SessionContext,
             format_session_context_section(ctx, &session_ctx),
         ) {
+            sections.push(section);
+        }
+        // The principal's open plans (owner runs only — the provider
+        // renders nothing otherwise). On change, so a step marked done
+        // mid-run re-injects the updated plan.
+        if let Some(section) = state.take_changed(SectionSlot::Plans, format_plans_section(&plans))
+        {
             sections.push(section);
         }
         if let Some(section) = state.take_changed(SectionSlot::Roles, format_roles_section(&agents))
@@ -383,6 +391,7 @@ enum SectionSlot {
     RoleNote,
     ProjectContext,
     SessionContext,
+    Plans,
     Roles,
     Skills,
     Workflows,
@@ -392,13 +401,16 @@ enum SectionSlot {
 /// built-ins. `registered_prompt_sections` names matching one of these
 /// are deduped away — a workspace hook binding e.g. "roles" augments
 /// the built-in catalog via registry aggregation and must not cause a
-/// second dispatch under the custom-section path.
-const BUILTIN_PROMPT_SECTIONS: [&str; 5] = [
+/// second dispatch under the custom-section path. The tooling runtime
+/// dispatches exactly these names to its providers, plus any custom
+/// workspace-hook names.
+pub const BUILTIN_PROMPT_SECTIONS: [&str; 6] = [
     "identity",
     "roles",
     "skills",
     "workflows",
     "session_context",
+    "plans",
 ];
 
 impl SectionSlot {
@@ -415,6 +427,7 @@ impl SectionSlot {
             SectionSlot::RoleNote => "role note",
             SectionSlot::ProjectContext => "project instructions",
             SectionSlot::SessionContext => "session context",
+            SectionSlot::Plans => "open plans",
             SectionSlot::Roles => "roles",
             SectionSlot::Skills => "skills",
             SectionSlot::Workflows => "workflows",
@@ -457,6 +470,7 @@ pub struct RuntimeContextState {
     role_note: Option<String>,
     project_context: Option<String>,
     session_context: Option<String>,
+    plans: Option<String>,
     roles: Option<String>,
     skills: Option<String>,
     workflows: Option<String>,
@@ -496,6 +510,7 @@ impl RuntimeContextState {
             SectionSlot::RoleNote => &mut self.role_note,
             SectionSlot::ProjectContext => &mut self.project_context,
             SectionSlot::SessionContext => &mut self.session_context,
+            SectionSlot::Plans => &mut self.plans,
             SectionSlot::Roles => &mut self.roles,
             SectionSlot::Skills => &mut self.skills,
             SectionSlot::Workflows => &mut self.workflows,
@@ -749,6 +764,23 @@ When delegating, choose the most appropriate role from the list below. Each role
 
 /// ADR-061 D1/D7: workspace workflows catalog. Rides the tail
 /// `<runtime-context>` message like the agents/skills catalogs.
+/// The principal's open plans, rendered by the core-side plans
+/// provider (most recently active first). Empty text → no section.
+fn format_plans_section(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    format!(
+        r"## Open plans
+The principal's unfinished plans, most recently active first. Continue in-progress steps before starting new work, and keep plans current with the `Plan` tool: mark steps as you start, finish, or block on them, and close a plan that no longer applies.
+
+<open_plans>
+{text}
+</open_plans>"
+    )
+}
+
 fn format_workflows_section(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -1049,29 +1081,14 @@ mod tests {
                 .expect("registered_sections mutex poisoned")
                 .clone();
             let mut sections: Vec<(String, String)> = Vec::new();
-            for name in [
-                "identity",
-                "roles",
-                "skills",
-                "workflows",
-                "session_context",
-            ] {
+            for name in BUILTIN_PROMPT_SECTIONS {
                 if let Some(text) = texts.get(name) {
                     sections.push((name.to_string(), text.clone()));
                 }
             }
             let mut customs: Vec<String> = registered
                 .into_iter()
-                .filter(|name| {
-                    ![
-                        "identity",
-                        "roles",
-                        "skills",
-                        "workflows",
-                        "session_context",
-                    ]
-                    .contains(&name.as_str())
-                })
+                .filter(|name| !BUILTIN_PROMPT_SECTIONS.contains(&name.as_str()))
                 .collect();
             customs.sort();
             customs.dedup();
@@ -1990,6 +2007,62 @@ mod tests {
             "got: {body}"
         );
         assert!(!body.contains("## session_context\n"), "got: {body}");
+    }
+
+    /// Open plans ride the built-in `plans` slot: a guidance header,
+    /// never a custom `## plans` section, re-injected with the update
+    /// notice when a plan changes and retracted when none are left.
+    #[tokio::test]
+    async fn runtime_context_plans_section_tracks_changes() {
+        let core = Arc::new(EmptyToolingRuntime::default());
+        let set_plans = |text: Option<&str>| {
+            let mut texts = core.section_texts.lock().expect("poisoned");
+            match text {
+                Some(t) => texts.insert("plans".to_string(), t.to_string()),
+                None => texts.remove("plans"),
+            };
+        };
+        let renderer = PromptRenderer::new(core.clone());
+        let mut state = RuntimeContextState::default();
+        let ctx = empty_ctx();
+
+        set_plans(Some("Plan: ship (p1)\n  In progress:\n    - [n1] build"));
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .unwrap();
+        assert!(body.contains("## Open plans"), "got: {body}");
+        assert!(
+            body.contains("<open_plans>\nPlan: ship (p1)"),
+            "got: {body}"
+        );
+        assert!(!body.contains("## plans\n"), "got: {body}");
+
+        assert!(renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .is_none_or(|b| !b.contains("Plan: ship")));
+
+        set_plans(Some("Plan: ship (p1)\n  Ready next:\n    - [n2] deploy"));
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .unwrap();
+        assert!(body.contains("[n2] deploy"), "got: {body}");
+        assert!(
+            body.contains("previous \"open plans\" section"),
+            "got: {body}"
+        );
+
+        set_plans(None);
+        let body = renderer
+            .render_runtime_context(&ctx, &mut state)
+            .await
+            .unwrap();
+        assert!(
+            body.contains("The \"open plans\" section no longer applies"),
+            "got: {body}"
+        );
     }
 
     /// Two custom sections render in sorted (byte-stable) order

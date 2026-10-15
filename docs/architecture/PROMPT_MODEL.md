@@ -86,14 +86,15 @@ derived by the runtime; **hook** = dispatched to a registered handler
 | 7 | Role note — standing role memory | T0 | file: `kb/roles/<name>.md` (4 KiB) | on change | named roles only (unnamed spawns: none) |
 | 8 | Project instructions | T2 | file: nearest `AGENTS.md` above the **focus directory** (32 KiB) | on focus-dir change | every agent; labeled with path + "below principal instructions in authority" |
 | 9 | Session context — peers' session paths, DM channel | T2 | computed / hook | on change | every agent |
-| 10 | Roles catalog — `## Available Roles` | tier-neutral | file scan: `roles/` (per-file `mtime+len`) | on change | every agent |
-| 11 | Skills catalog | tier-neutral | file scan: `skills/` | on change | every agent |
-| 12 | Workflows catalog | tier-neutral | file scan: `workflows/` | on change | every agent |
-| 13 | MCP context — `## mcp_context` (server status + instructions) | tier-neutral | computed: the principal MCP service's context, carried by the request's catalog binding (ADR-075) | on change | every agent whose catalog binding is the principal's own |
-| 14 | Custom sections | — | hook: `PromptSection` binds in `hooks/<id>/hook.toml` | on change | every agent of the principal |
-| 15 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
-| 16 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
-| 17 | Soft-cancel banner | T2 | computed | event-edged | every agent |
+| 10 | Open plans — `## Open plans` | T0 | computed: the principal's plan store — unfinished plans, most recently active first, at most 5 | on change | owner runs only (ADR-078) |
+| 11 | Roles catalog — `## Available Roles` | tier-neutral | file scan: `roles/` (per-file `mtime+len`) | on change | every agent |
+| 12 | Skills catalog | tier-neutral | file scan: `skills/` | on change | every agent |
+| 13 | Workflows catalog | tier-neutral | file scan: `workflows/` | on change | every agent |
+| 14 | MCP context — `## mcp_context` (server status + instructions) | tier-neutral | computed: the principal MCP service's context, carried by the request's catalog binding (ADR-075) | on change | every agent whose catalog binding is the principal's own |
+| 15 | Custom sections | — | hook: `PromptSection` binds in `hooks/<id>/hook.toml` | on change | every agent of the principal |
+| 16 | Iteration budget | T2 | computed | every iteration (heartbeat) | every agent |
+| 17 | Quota-tripped banner | T2 | computed | rising edge only | every agent |
+| 18 | Soft-cancel banner | T2 | computed | event-edged | every agent |
 
 **Hot kb budget (ADR-055 rev 3).** Rows 3–7 share one 32 KiB budget,
 loaded once per render by `HotKb::load`. Rows 4–7 cap at 4 KiB each;
@@ -101,7 +102,7 @@ memory gets the rest. Caps count UTF-8 bytes including the truncation
 notice, and an oversized file is cut at a line boundary.
 
 **Section names are a registry key.** Built-in dispatched names:
-`identity`, `roles`, `skills`, `workflows` (deduped — a workspace hook
+`identity`, `roles`, `skills`, `workflows`, `session_context`, `plans` (deduped — a workspace hook
 binding one of these augments the built-in catalog instead of double-
 rendering). Everything else registered renders as a custom section.
 

@@ -458,6 +458,8 @@ At least one of status or owner is required, in addition to taskId.
 
 Required `action`: `create`, `list`, `get`, `add_step`, `mark_step`, `record_evidence`, `close`. Each action accepts only its documented fields.
 
+Open plans also reach every owner run without a call: the `## Open plans` tail section lists up to five unfinished plans (most recently active first) with their in-progress, ready, and blocked or failed steps, and re-injects when a plan changes.
+
 #### create
 
 Create a principal-owned durable plan with dependency nodes.

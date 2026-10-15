@@ -30,26 +30,16 @@ pub struct ContextInjection {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextInjectionKind {
-    Memory,
+    /// The peer's most recent session, recalled on trunk turns. Open
+    /// plans ride the `plans` tail section instead
+    /// (`principal::plan_prompt`).
     Session,
-    File,
-    Todo,
-    /// Active plan (from `peko_plan::PlanPort::current_focus`).
-    /// Phase 12+ PR #3 — surfaces the principal's in-flight plan
-    /// nodes so every fresh session's system prompt carries
-    /// what the agent is in the middle of, without requiring
-    /// an explicit `Plan action get` call first.
-    Plan,
 }
 
 impl fmt::Display for ContextInjectionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Memory => write!(f, "memory"),
             Self::Session => write!(f, "session"),
-            Self::File => write!(f, "file"),
-            Self::Todo => write!(f, "todo"),
-            Self::Plan => write!(f, "plan"),
         }
     }
 }
@@ -288,10 +278,6 @@ mod tests {
 
     #[test]
     fn test_context_injection_kind_display() {
-        assert_eq!(ContextInjectionKind::Memory.to_string(), "memory");
         assert_eq!(ContextInjectionKind::Session.to_string(), "session");
-        assert_eq!(ContextInjectionKind::File.to_string(), "file");
-        assert_eq!(ContextInjectionKind::Todo.to_string(), "todo");
-        assert_eq!(ContextInjectionKind::Plan.to_string(), "plan");
     }
 }
