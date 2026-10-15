@@ -12,6 +12,18 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Channel waiting lists (ADR-072 D4a)
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `AttentionItem` / `ChannelAttention` / `MAX_WAITING_PER_CHANNEL` | `peko_channel::attention` (re-exported from `peko_channel`) | ✅ New | Per-session waiting lists persisted at `<channel_dir>/attention.json`; `set` replaces a session's list, drops it when empty, keeps the newest 50 |
+| `ChannelPort::attention` / `set_attention` | `peko_channel::port` | ✅ New (defaulted) | Read and replace a session's waiting list; defaults return none / no-op |
+| `ChannelStore::attention` / `set_attention` | `peko_channel::store` | ✅ New | Store-backed impls; `set_attention` holds a `FileLock` across load → save |
+| `ChannelStore::advance_read_mark` | `peko_channel::store` | ⚠️ Changed | Now holds a `FileLock` across load → save so concurrent sessions never drop each other's marks |
+| `TunnelChannelPort::attention` / `set_attention` | `core::tunnel::tunnel_channel_port` | ✅ New | Delegate to the local store |
+| `ChannelDigestSessionContextHandler` | `principal::channel_digest` | ⚠️ Changed | Other principals' posts go to the session's waiting list and head the digest ("waiting on you") on every run until a `ChannelRead` returns them or the principal posts after them on that channel |
+| `ChannelReadTool::execute_with_context` | `tools::builtin::channel::channel_read` | ⚠️ Changed | Clears the returned posts from the reading session's waiting list (best-effort) |
+
 ## Tool ledger (ADR-079)
 
 - `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,

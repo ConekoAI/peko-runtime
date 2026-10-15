@@ -1381,6 +1381,24 @@ impl ChannelPort for TunnelChannelPort {
             .await
     }
 
+    /// Waiting lists are local state beside the read marks.
+    async fn attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Vec<peko_channel::AttentionItem>> {
+        self.local.attention(channel, session_key).await
+    }
+
+    async fn set_attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        items: Vec<peko_channel::AttentionItem>,
+    ) -> Result<()> {
+        self.local.set_attention(channel, session_key, items).await
+    }
+
     async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
         self.local.pin_to_shared(channel).await
     }

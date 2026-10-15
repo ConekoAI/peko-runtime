@@ -1892,6 +1892,7 @@ channels.
   events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
   read_marks.json # per-session digest read positions (HashMap<session-id, TaskId>)
+  attention.json  # per-session waiting lists (HashMap<session-id, [AttentionItem]>)
 ```
 
 **Event-line provenance envelope (ADR-058 D7).** New `events.jsonl`
@@ -1931,6 +1932,14 @@ at a channel adopts the newest line as its mark, unless the channel was
 opened after the session was created: then it is unread from its first
 post. Both files
 share the atomic tmp+fsync+rename save convention.
+
+`attention.json` (ADR-072 D4a) holds, per session, the posts by other
+principals the digest has shown but the session has not answered — each an
+`AttentionItem {id, author, at, preview}` (line id, author wire form,
+RFC 3339 time, truncated body), oldest first, at most 50 per session.
+An item leaves when the session's `ChannelRead` returns that line or a post
+by the principal lands after it. `read_marks.json` and `attention.json` are
+written under a `FileLock` (`<file>.lock`) held across load → save.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
 under `<shared_dir>/channels/<channel_id>/`.
