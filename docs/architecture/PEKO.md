@@ -82,7 +82,8 @@ rather than a passive request handler.
 - Every node carries a stable `session_id` for life. No id rotation, no
   chapter concept.
 - State is JSONL on disk; pages auto-rotate when one exceeds
-  `rotate_bytes` (e.g. `<id>.0.jsonl`, `<id>.1.jsonl`, …).
+  `rotate_bytes` (`<id>.jsonl` plus rolled pages `<id>.N.jsonl`), and
+  reads stitch them transparently.
 - **Standing nodes are prune-exempt**: the idle-prune filter skips
   `root:*` and `standing`-flagged sessions (the `archived` flag was
   retired 2026-09-26).
@@ -90,18 +91,24 @@ rather than a passive request handler.
 ### E — Entity (one node, two views)
 
 - An agent *is* its session. Same entity, two faces.
-- **Generative face**: the `Agent` tool — `new`, `resume`, `compact`.
+- **Generative face**: the `Agent` tool — `new`, `resume`, `compact`,
+  `branch`.
 - **Persistent face**: the `Session` tool — `status`, `list`, `history`,
-  `search`, `rename`, `delete`, `branch`, `archive`, `unarchive`, `move`.
+  `find`, `copy`, `move`, `remove`, and the compaction-page reads
+  `list_pages`, `read_page`, `search_pages`.
 - Both tools operate on the same underlying node. The duality *is* the
   paradigm.
 
 ### K — Keepalive
 
 - The root session receives periodic cron turns that keep it alive and
-  continuously active. Cron `Send` defaults to the trunk; `SpawnTool`'s
+  continuously active. A cron `Send` lands in the trunk unless the job
+  was created from another session, which it then returns to (a
+  reminder set in a conversation fires there); `SpawnTool`'s
   `wake_on_completion` steers the trunk inbox. Trunk-targeted `Every`
-  sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`).
+  sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`). The runtime seeds
+  a default keepalive at genesis and a daily `memory` job once
+  (ADR-054, ADR-080).
 - External ingress never reaches the root: CLI/A2A/Hub DMs land in
   per-peer children, bound channels in their bound child (see §O).
 - Without keepalive, the root idles, standing children become orphaned,
@@ -119,12 +126,13 @@ rather than a passive request handler.
   (the tree root shape `root:<dim>:<name>` and the runtime-extension
   prefixes `spawn:<uuid>:` / `channel:<id>:`), so slugs cannot collide
   with raw ids by construction.
-- Reach is by **slug path only** on the LLM-facing surface, in one of
-  two forms:
-    - `/a/b/c` — absolute path anchored at the caller's topmost ancestor.
-    - The caller's own session id (UUID) — engine self-reference; every
-      other shape is **REFUSED** with a structured error pointing the
-      caller at the `path` field in `session list`.
+- Reach is by **slug path only** on the LLM-facing surface:
+  `sess:/a/b/c` (legacy bare `/a/b/c` also parses), anchored at the
+  caller's topmost ancestor. The `Session` and `Agent` tools refuse any
+  other shape at the tool boundary with a structured error pointing at
+  the `path` field in `session list`. Below the tools,
+  `resolve_reference` also takes the caller's own id and, for
+  engine-internal callers, a raw session UUID.
   Path resolution anchors at the caller's topmost ancestor and walks
   by slug; unknown segments produce structured errors listing
   available children. Engine-internal call sites (`resume_preflight`,
@@ -135,17 +143,22 @@ rather than a passive request handler.
   layer is intentionally id-shape-agnostic: engine-internal ids are
   opaque UUIDs (sprint 6 commit 1) and peer identity lives at the
   channel layer, not in the session id.
-- `session list` enumerates the principal's **whole store** for every
-  caller (filters: `path` subtree scope, `peer`, `agent_name`,
-  `active_minutes`) — reads are not subtree-gated. The subtree rule
-  survives only in the ownership guards for destructive ops
-  (delete/move/rename), per `session/ownership.rs`.
-- **Subtree scoping (destructive ops only)**: for delete/move/rename, a
-  spawned node manages only its own subtree — never siblings, never
-  ancestors, never the protected `root:*` family.
-- **Standing children** are declared in `principal.toml` `[children]`,
-  ensured at root setup, and attach by name on `Agent new` rather than
-  minting a fresh UUID.
+- **Reach is a property of the run, not the tree** (ADR-078). An owner
+  run lists, reads, resumes and manages the principal's whole store; any
+  other run sees only its own compartment (one conversation channel's
+  sessions), and everything else reads as missing. `session list`
+  filters (`path` subtree scope, `peer`, `agent_name`, `active_minutes`)
+  narrow within that reach. The tree grants nothing by itself
+  (2026-09-12 filesystem model).
+- **Self-safety guards** (`session/ownership.rs`) still apply to every
+  run: a caller cannot mutate the session it runs in, delete or move its
+  own ancestors, delete or move the engine-managed trunk, or touch a
+  session with a live run.
+- **Standing children** are the per-peer conversation children below
+  and the default `/tmp` and `/trash` nodes (`principal::default_nodes`).
+  Declared `[children]` in `principal.toml` were removed on 2026-09-12;
+  the table is ignored on load. `Agent new` with an existing slug
+  resumes that session rather than minting a fresh one.
 - **External-facing children** are auto-spawned on contact
   (`principal/peer_children.rs`): each DM peer gets a per-peer standing
   child (`/local-user`, `/user-x`, `/principal-{did-fragment}`) parented
@@ -175,7 +188,8 @@ rather than a passive request handler.
 ### In scope
 
 - The principal's root session (continuous, cron-keepalived).
-- Standing children declared in `principal.toml`.
+- Standing children: per-peer conversation children and the default
+  `/tmp` and `/trash` nodes.
 - Spawned children and their subtrees.
 - The principal's memory organization (per-`principal.toml`).
 - Cron jobs targeting the principal.
@@ -239,8 +253,8 @@ violation** and should be rejected in review.
 
 ### Violates K (Keepalive)
 
-- Cron `Send` or `SpawnTool` wake targeting any session other than the
-  principal's root.
+- A keepalive (the principal's supervision tick) targeting any session
+  other than the trunk.
 - No cron firing into the root at all — turns the PEKO into a passive
   request handler.
 - External ingress (CLI send, A2A, Hub, bound channels) landing in the
@@ -255,10 +269,10 @@ violation** and should be rejected in review.
 
 ### Violates O (Orchestration)
 
-- A spawned agent accessing, modifying, or deleting a sibling's
-  subtree.
-- A spawned agent accessing, modifying, or deleting an ancestor.
-- Any mutation of the `root:*` family (delete, archive, reparent under
+- A run acting for anyone but the owner reaching a session outside its
+  own compartment (ADR-078).
+- Any run deleting or moving its own session or one of its ancestors.
+- Any mutation of the `root:*` family (delete, or reparent under
   a non-root).
 - A `move` whose destination is the target itself or one of its
   descendants (cycle).

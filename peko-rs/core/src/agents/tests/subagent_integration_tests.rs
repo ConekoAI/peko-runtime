@@ -1932,7 +1932,7 @@ async fn validate_context_parent_resolves_path() {
     // in_subtree) was unreachable in production because the producer
     // always passes the caller's own key. The function still resolves
     // slug paths to canonical session ids and refuses caller-relative
-    // slugs / raw ids via `resolve_reference`.
+    // slugs via `resolve_reference`.
     let resolved = executor
         .validate_context_parent(path!("spawn-a"), &sid("spawn-a"))
         .await

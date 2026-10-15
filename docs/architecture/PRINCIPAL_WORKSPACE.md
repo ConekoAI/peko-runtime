@@ -31,6 +31,7 @@ For the trust-and-audit posture that makes this safe, see
 ~/.peko/principals/<name>/
 ├── principal.toml
 ├── roles/<name>.md
+├── POLICY.md                        # owner's rules for non-owner runs (ADR-078)
 ├── kb/                              # persistent knowledge base (ADR-055)
 │   ├── MEMORY.md                    # hot long-term memory (rendered every turn)
 │   ├── index.md                     # hot map of the tree (rendered every turn)
@@ -40,21 +41,29 @@ For the trust-and-audit posture that makes this safe, see
 │   │                                #   run's channel binding is injected (D8)
 │   ├── roles/<name>.md              # cold — per-role notes; a named role's
 │   │                                #   note rides with that role (D8)
-│   └── …                            # cold: refs/, journal/, imports/, datasets…
-├── memory/sessions/<session_id>.jsonl
+│   ├── journal/YYYY-MM-DD.md        # cold — append-only daily journal
+│   ├── inbox/                       # proposals from non-owner runs (ADR-078)
+│   └── …                            # cold: refs/, imports/, datasets…
 ├── skills/<skill-id>/SKILL.md       # skills
-├── mcp/<server-id>/server.json      # MCP servers
+├── workflows/                       # agent-authored workflow scripts (ADR-061)
+├── mcp/<server-id>/server.json      # MCP servers (ADR-075)
 ├── hooks/<hook-id>/hook.toml        # hooks
-├── plugins/<plugin-id>/             # plugins (any shape, opaque to runtime)
-└── peers.json
+└── plugins/<plugin-id>/             # plugins (any shape, opaque to runtime)
 ```
+
+The workspace is the Shared tier (packaged with the peko). Runtime state
+lives in the Local tier, `<data_dir>/principals/<name>/local/`: sessions
+(`sessions/`, with their `sessions.json` / `peers.json` index), cron
+(`cron/schedule.toml`, `cron/seeded_jobs.json`), plans, the tool ledger,
+caches and locks. It is never packaged.
 
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
 | `principal.toml`           | Owner, permissions, exposure, quota, root prompt                    |
 | `roles/<name>.md`         | Role prompts (per-peko) — T1 role bodies (ADR-064)                   |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` + `CONVENTIONS.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `roles/<name>.md` for the named role |
-| `memory/sessions/*.jsonl`  | Session history                                                           |
+| `POLICY.md`                | The owner's plain-language rules for non-owner runs (ADR-078 D7)          |
+| `workflows/`               | Workflow scripts run by the `Workflow` tool (ADR-061)                     |
 | `skills/<id>/SKILL.md`     | Skill definitions (frontmatter + body)                                    |
 | `mcp/<id>/server.json`     | MCP server configuration                                                  |
 | `hooks/<id>/hook.toml`     | Hook bindings (`binds: [PreToolUse, PostToolUse, Stop, AfterAgent, PromptSection, SessionContextBuild]` — ADR-052 D6: a `PromptSection` bind's command stdout becomes a named `<runtime-context>` tail section) |

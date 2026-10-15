@@ -58,6 +58,14 @@ This document defines the public API surface for Peko, including the new Unified
 | `AppState::record_principal_activity`, `AppState::set_idle_detector`, IPC `PrincipalHost::record_principal_activity` | `daemon::state`, `ipc::handlers::principal` | ❌ Removed | Superseded by recording at the ingress turn driver |
 | `identity_compat::identity_key_storage` / `default_identity_key_storage` | `identity_compat` | ✅ New | Identity key storage; test builds always use the master-passphrase path (never the OS keychain) |
 
+## Dead session helpers removed (2026-10-15)
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `subagent_key` (`generate_subagent_key`, `parse_subagent_key`, `is_subagent_key`, `extract_agent_name`, `extract_subagent_uuid`, `get_parent_key`, `get_key_depth`, `format_display_key`) | `peko_session` | ❌ Removed | No callers; child ids are plain UUIDs |
+| `in_subtree`, `err_out_of_tree`, `err_resume_self`, `err_resume_cross_family`, `err_context_out_of_tree` | `session::ownership` | ❌ Removed | No callers since the subtree rule was retired (ADR-078 compartments) |
+| `SharedLayout::mcps_dir` → `mcp_dir` | `common::paths` | ⚠️ Changed | Now `<principal>/mcp`, the directory the MCP service scans (was an unused `mcps/`) |
+
 ## Tool ledger (ADR-079)
 
 - `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,

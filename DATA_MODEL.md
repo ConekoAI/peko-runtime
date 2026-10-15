@@ -1330,9 +1330,9 @@ both = `false`):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `archived` | bool | Hidden from `session list` unless `include_archived: true`; refuses resume/compact until unarchived |
-| `standing` | bool | Exempt from maintenance pruning (2026-08-15): a standing session's transcript is durable regardless of idle age. The trunk (`find_trunk_session(metas)`) and `archived` sessions are prune-exempt by rule; `standing` is the flag for standing children |
-| `privileged` | bool | Whole-store ownership-guard reach for the session's caller (sprint 2 Phase 5, 2026-08-17) despite having a parent — tree membership is unchanged. Set only for the principal owner's peer child (`/local-user`); see "Peer-child provisioning" in §5.10 |
+| ~~`archived`~~ | — | Retired 2026-09-26; ignored when present in old files |
+| ~~`standing`~~ | — | Retired; ignored when present in old files |
+| ~~`privileged`~~ | — | Retired 2026-09-12 with the subtree rule; reach is now a property of the run (ADR-078: owner runs reach the whole store, others only their own compartment); ignored when present in old files |
 | `slug` | string \| null | Per-parent-unique path segment for `/a/b` addressing (2026-08-15, Phase 1b). `#[serde(default, skip_serializing_if = "Option::is_none")]` on the entry. See "Session path addressing" below |
 | `compaction_count` | u32 | Successful compactions recorded for this session (compaction audit fix #4, 2026-09-04). The per-session sequence the JSONL boundary event's `compaction_number` derives from; the per-run `BackgroundCompactor` hydrates from it at run start so `max_compactions_per_session` is a per-session limit, not per-run |
 | `last_compaction_at` | u64 \| null | Last compaction attempt (success or failure) as epoch milliseconds; drives the cross-run cooldown / escalating failure backoff |
@@ -1452,12 +1452,11 @@ segment.
   return `sess:/`, which round-trips through read tools and list/find scopes.
   Mutation path validation remains unchanged; storage ids and transcripts
   are unchanged (2026-10-07).
-- `session list` defaults to the **caller's subtree** (no longer
-  the whole principal's tree). Privileged trunk callers opt into a
-  wider view with `scope: "principal"`; non-privileged callers who
-  ask for the wider scope get ownership-clamped to their subtree
-  with a structured warning. The `path` parameter scopes further to
-  any subtree the caller has ownership access to.
+- `session list` shows every session the run may reach — the whole
+  store for an owner run, its own compartment for any other run
+  (ADR-078) — and the `path` parameter narrows to a subtree within that.
+  (The earlier subtree default and `scope: "principal"` widening were
+  retired with the subtree rule.)
 - `session list` entries carry `slug` and a computed absolute `path`:
   ancestors without a slug are skipped as
   intermediate segments; the trunk is `sess:/`, and other slugless targets fall back to their raw
@@ -1665,20 +1664,17 @@ Created children carry:
 | Field | Value |
 |-------|-------|
 | `trigger` | `"spawn"` |
-| `standing` | `true` (prune-exempt) |
-| `privileged` | `true` iff the peer IS the principal's configured owner (the `/local-user` case); `false` for everyone else |
 | `slug` | the derived (possibly suffixed) slug |
 | `parent_session_id` | the trunk UUID (resolved via `find_trunk_session(metas)`); may DANGLE until the first self-turn creates the trunk — the ownership walks tolerate this by design |
 | `title` | the peer's display string (e.g. `user:alice`) |
 | `peer_type` / `peer_id` | the REAL peer (not the `standing_*` placeholder declared children use) |
 
-**Ownership semantics.** A `privileged` caller gets whole-store reach
-in the ownership guards (`caller.is_base || caller.privileged` at the
-guard sites) while keeping its parent pointer: path addressing, the
-ancestor / self-mutation / trunk (UUID resolved via
-`find_trunk_session(metas)`) guards, and `descendants_of` supervision
-are unaffected. Non-privileged peer children stay subtree-scoped. The
-ingress re-route that sends peer traffic to these children landed in
+**Ownership semantics.** Reach comes from the run's acting-for stamp,
+not from the child (ADR-078): a run acting for the owner reaches the whole
+store, a run acting for anyone else only its own conversation's
+compartment. (The `privileged` flag the owner's child used to carry was
+retired 2026-09-12.) The self-safety guards — ancestor, self-mutation,
+trunk — apply to every run. The ingress re-route that sends peer traffic to these children landed in
 Phase 7 (§5.9): `PrincipalManager::receive` / `receive_streaming`, the
 IPC
 `principal_send` handler, and the channel passive-binding driver all
@@ -1969,9 +1965,9 @@ whose wire form selects the dispatch branch of `ChannelSend`:
 
 | Wire form             | Kind       | Dispatch                                   |
 |-----------------------|------------|--------------------------------------------|
-| `chan_<8 base36>`     | `Bare`     | Plain fire-and-forget post                 |
-| `principal:<did>`     | `Principal`| RPC: ensure_peer_child + await reply       |
-| `user:<id>`           | `User`     | Peer messenger note (originating-user gate)|
+| `chan_<8 base36>` / `dm_<64 hex>` | `Bare` | Conversation post |
+| `principal:<ref>`     | `Principal`| Resolve the actor (ADR-073 `principal:local:<id>` / `principal:hub:<UUID>`), provision the pair DM, post, and return (ADR-072 D3: never waits for an answer) |
+| `user:<id>` / `visitor:<id>` | `User` | Note to a known human peer (originating-user gate) |
 | `group:<slug>`        | `Group`    | Plain fire-and-forget post                 |
 
 `ChannelId::parse` accepts any of the four forms; `ChannelId::kind()`

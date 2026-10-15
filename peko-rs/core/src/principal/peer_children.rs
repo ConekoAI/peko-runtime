@@ -28,7 +28,7 @@ fn principal_slug_fragment(did: &str) -> String {
 /// The stable per-parent slug for a peer's standing child of the
 /// trunk.
 ///
-/// - `user:local` → `local-user` (the CLI owner's privileged child);
+/// - `user:local` → `local-user` (the CLI owner's child);
 /// - `user:{id}` → `user-{sanitized}` where sanitization keeps
 ///   lowercase ascii alphanumerics, maps everything else to `-`,
 ///   collapses repeats, and trims leading/trailing `-`;

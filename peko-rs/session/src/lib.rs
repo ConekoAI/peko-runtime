@@ -50,7 +50,7 @@ pub use types::{ChannelType, OverlayType, SpawnCleanupPolicy};
 
 // Phase 7.4 lifted the rest of `src/session/` (events.rs, jsonl.rs,
 // message.rs, message_conversion.rs, metadata.rs,
-// metadata_controller.rs, key.rs, subagent_key.rs, index.rs,
+// metadata_controller.rs, key.rs, index.rs,
 // sync.rs, overlay.rs, spawn.rs,
 // todos.rs, todo_runtime_impl.rs, session_runtime_impl.rs,
 // context.rs, test_config.rs, types.rs, unified.rs, manager.rs,
@@ -81,7 +81,6 @@ pub mod path;
 pub mod session_core;
 pub mod session_core_impl;
 pub mod spawn;
-pub mod subagent_key;
 pub mod sync;
 pub mod test_config;
 pub mod todos;
@@ -116,10 +115,6 @@ pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOve
 pub use pages::{render_page_catalog, SearchHit, SessionPage};
 pub use session_core::{SessionCore, SessionView};
 pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
-pub use subagent_key::{
-    extract_agent_name, extract_subagent_uuid, format_display_key, generate_subagent_key,
-    get_key_depth, get_parent_key, is_subagent_key, parse_subagent_key,
-};
 pub use sync::SyncSessionStorage;
 pub use test_config::rotate_bytes;
 pub use todos::{Todo, TodoStatus, TodoStorage};

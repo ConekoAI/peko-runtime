@@ -207,7 +207,7 @@ All of these were verified in code on `master` @ `b5896a13` unless marked otherw
 | G9 | Low | **No forget or redaction primitive** for sessions, pages or channel logs. | grep: no hits |
 | G10 | Low | **No veto hook and no compaction hook.** There is no Sentinel-style veto point, and no pre-compaction point for flushing memory before context is dropped. | AGENTS.md §6.4 (six points, soft-fail, no vetoes) |
 | G11 | Low | **Peer messages are slow to land.** The latency ceiling is the keepalive cadence (10 min by default), and every check costs a full turn. This is a design tension rather than a bug; see P2/P3. | ADR-072 D1/D4; `genesis.rs:63` |
-| G12 | Doc | **Stale docs:** <br>• PEKO.md §O still says `ChannelSend` does "await reply" (PEKO.md:169; contradicts ADR-072 D3). <br>• PEKO.md:154 and AGENTS.md:302 still describe the `privileged` owner child and the subtree rule. <br>• *(Corrected: AGENTS.md:117's plan resume-on-start claim is accurate; the stale doc was the `peko-plan` crate's.)* <br>• The ADR-055 D8 body still says `kb/agents/`. | as listed |
+| G12 | ~~Doc~~ | **Addressed 2026-10-15.** PEKO.md, AGENT_SESSION_PARADIGM.md, PRINCIPAL_WORKSPACE.md, DATA_MODEL.md and ADR-055 now match the runtime (per-run reach, post-and-return `ChannelSend`, retired session flags and declared children, workspace layout). `AGENTS.md` is untracked (gitignored), so its fixes are local only. | as listed |
 
 ---
 

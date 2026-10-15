@@ -121,12 +121,14 @@ pub struct SharedLayout {
     pub root: PathBuf,
     /// `…/principal.toml`
     pub config_file: PathBuf,
-    /// `…/identity.json` (public DID). Private keys stay in keychain.
+    /// `…/identity.json` (public DID). The private-key seed lives in the
+    /// vault's `principal-identity` namespace (ADR-058 D1).
     pub identity_file: PathBuf,
-    /// `…/agents/` — agent definitions.
+    /// `…/roles/` — role files (ADR-064).
     pub roles_dir: PathBuf,
-    /// `…/mcps/` — principal-owned MCP server configs.
-    pub mcps_dir: PathBuf,
+    /// `…/mcp/` — principal-owned MCP server definitions
+    /// (`mcp/<id>/server.json`, scanned by the MCP service, ADR-075).
+    pub mcp_dir: PathBuf,
     /// `…/channels/` — `pin_to_shared`'d channel dirs (PR-3d).
     /// Replicated from `<runtime_dir>/channels/<chan_id>/` so other
     /// principals sharing the same shared root can discover them
@@ -445,7 +447,7 @@ impl PathResolver {
                 config_file: shared_root.join("principal.toml"),
                 identity_file: shared_root.join("identity.json"),
                 roles_dir: shared_root.join("roles"),
-                mcps_dir: shared_root.join("mcps"),
+                mcp_dir: shared_root.join("mcp"),
                 channels_dir: shared_root.join("channels"),
             },
         }
@@ -801,7 +803,7 @@ impl PathResolver {
         // Shared tier.
         std::fs::create_dir_all(&layout.shared.root)?;
         std::fs::create_dir_all(&layout.shared.roles_dir)?;
-        std::fs::create_dir_all(&layout.shared.mcps_dir)?;
+        std::fs::create_dir_all(&layout.shared.mcp_dir)?;
         // Local tier.
         std::fs::create_dir_all(&layout.local.root)?;
         std::fs::create_dir_all(&layout.local.sessions_dir)?;
@@ -988,7 +990,7 @@ mod tests {
         assert!(shared
             .identity_file
             .ends_with("principals/alice/identity.json"));
-        assert!(shared.mcps_dir.ends_with("principals/alice/mcps"));
+        assert!(shared.mcp_dir.ends_with("principals/alice/mcp"));
     }
 
     #[test]
