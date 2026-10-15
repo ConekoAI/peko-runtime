@@ -222,7 +222,11 @@ impl Tool for ChannelReadTool {
          never end a watch, nor do posts that start turns by themselves (a \
          user's message on a DM, a user's @mention of you in a group) — those \
          reach you as conversation turns. Pass the returned `next_cursor` as \
-         `since` to keep watching without missing posts."
+         `since` to keep watching without missing posts.\n\n\
+         Reading also answers for the posts it returns: other principals' \
+         posts listed under \"waiting on you\" in your session context leave \
+         that list once a read returns them (or once you post on their \
+         channel)."
             .to_string()
     }
 
@@ -485,6 +489,8 @@ impl Tool for ChannelReadTool {
         // store's monotonic guard keeps a backward page (`before`)
         // from rewinding the mark.
         let max_seen = events.last().map(|(id, _)| id.clone());
+        let returned: std::collections::HashSet<String> =
+            events.iter().map(|(id, _)| id.clone()).collect();
 
         // Serialize each event with its line-number id merged in, so
         // the caller can thread replies (`parent`) and page cursors.
@@ -511,6 +517,25 @@ impl Tool for ChannelReadTool {
                 .await
             {
                 tracing::debug!("ChannelRead: advance_read_mark failed: {e}");
+            }
+            // Posts this read returned are no longer waiting on the
+            // session (`peko_channel::attention`).
+            match self.port.attention(&channel_id, &session_key).await {
+                Ok(waiting) if waiting.iter().any(|w| returned.contains(&w.id)) => {
+                    let left = waiting
+                        .into_iter()
+                        .filter(|w| !returned.contains(&w.id))
+                        .collect();
+                    if let Err(e) = self
+                        .port
+                        .set_attention(&channel_id, &session_key, left)
+                        .await
+                    {
+                        tracing::debug!("ChannelRead: set_attention failed: {e}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("ChannelRead: attention failed: {e}"),
             }
         }
 
@@ -812,6 +837,50 @@ mod tests {
             fx.store.read_mark(&fx.channel, "sess-xyz").await.unwrap(),
             Some(newest),
             "a backward page (ending at {first}) must not rewind the mark"
+        );
+    }
+
+    /// A read clears the waiting posts it returned, and only those, for
+    /// the reading session only.
+    #[tokio::test]
+    async fn a_read_clears_the_waiting_posts_it_returned() {
+        let fx = Fixture::new().await;
+        let alice = Subject::from(&fx.alice);
+        let older = fx.post(&alice, "older").await;
+        let newer = fx.post(&alice, "newer").await;
+        let item = |id: &str| peko_channel::AttentionItem {
+            id: id.to_string(),
+            author: "prin_other".into(),
+            at: "t".into(),
+            preview: "p".into(),
+        };
+        for session in ["sess-a", "sess-b"] {
+            fx.store
+                .set_attention(&fx.channel, session, vec![item(&older), item(&newer)])
+                .await
+                .unwrap();
+        }
+
+        fx.tool
+            .execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "limit": 1 }),
+                &fx.ctx(Some("sess-a")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.store.attention(&fx.channel, "sess-a").await.unwrap(),
+            vec![item(&older)],
+            "only the returned post is cleared"
+        );
+        assert_eq!(
+            fx.store
+                .attention(&fx.channel, "sess-b")
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "another session's list is untouched"
         );
     }
 

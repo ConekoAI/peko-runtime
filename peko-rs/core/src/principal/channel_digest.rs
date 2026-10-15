@@ -22,19 +22,31 @@
 //! re-injects only when the rendered text changes, so each batch of
 //! posts is shown once and unchanged iterations pay nothing.
 //!
+//! ## Seen is not handled: the waiting list
+//!
+//! Another principal's post wakes no one, so the digest is the only
+//! place a session learns of it — and a post the model glanced past on
+//! one keepalive turn must not be gone for good. Such posts go to the
+//! session's waiting list ([`peko_channel::attention`]) instead of the
+//! one-shot preview and head the digest ("waiting on you") on every run
+//! until the session reads them with `ChannelRead` or the principal
+//! posts on the channel after them. Users' posts stay one-shot: the
+//! ones that want a reply start turns themselves.
+//!
 //! ## Deliberate render-time side effect
 //!
 //! The handler advances the read mark as it renders (to the max line
-//! id it observed, *even when every event was filtered*). The mark
-//! means "observed up to", not "shown to the model" — a filtered event
-//! must not resurface on the next iteration just because the digest
-//! chose not to print it. This is the one place the prompt path writes
-//! to disk, which is why it is called out here and at the call site.
+//! id it observed, *even when every event was filtered*) and updates
+//! the waiting list. The mark means "observed up to", not "shown to the
+//! model" — a filtered event must not resurface on the next iteration
+//! just because the digest chose not to print it. This is the one place
+//! the prompt path writes to disk, which is why it is called out here
+//! and at the call site.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use peko_channel::{ChannelPort, Checkpoint};
+use peko_channel::{AttentionItem, ChannelPort, Checkpoint};
 use peko_protocol::channel::ChannelEvent;
 
 /// Priority of the digest handler in the `SessionContextBuild`
@@ -190,6 +202,7 @@ async fn render_channel_digest(
         }
     };
 
+    let mut waiting: Vec<String> = Vec::new();
     let mut bound: Vec<String> = Vec::new();
     let mut elsewhere: Vec<String> = Vec::new();
     for channel in channels {
@@ -213,14 +226,16 @@ async fn render_channel_digest(
             continue;
         }
 
-        let events = match unread_events(port, &channel, &session_key, own_meta.created_at).await {
-            Some(evs) => evs,
-            None => continue,
-        };
-        let Some((max_id, _)) = events.last() else {
-            continue; // nothing new — leave the mark where it is
-        };
-        let max_id = max_id.clone();
+        let events = unread_events(port, &channel, &session_key, own_meta.created_at)
+            .await
+            .unwrap_or_default();
+        let stored = port
+            .attention(&channel, &session_key)
+            .await
+            .unwrap_or_default();
+        if events.is_empty() && stored.is_empty() {
+            continue;
+        }
 
         let roster = port.participants(&channel).await.unwrap_or_default();
         let short_name = if peko_channel::short_name_unambiguous(&roster, me.name, me.address) {
@@ -234,22 +249,36 @@ async fn render_channel_digest(
             address: me.address,
             name: short_name,
         };
-        let worthy: Vec<&(peko_channel::port::TaskId, ChannelEvent)> = events
-            .iter()
-            .filter(|e| digest_worthy(&e.1, &own_path, &channel_me, scope, kind))
-            .collect();
+        let (fresh, waiting_now) =
+            sort_new_posts(&events, stored.clone(), &own_path, &channel_me, scope, kind);
 
         // Advance BEFORE rendering: the mark is "observed up to", so
-        // filtered events are consumed too (see module doc). Skipped
-        // only if the advance itself fails.
-        if let Err(e) = port.advance_read_mark(&channel, &session_key, max_id).await {
-            tracing::debug!("channel digest: advance_read_mark({channel}) failed: {e}");
+        // filtered events are consumed too (see module doc). Posts that
+        // need an answer survive in the waiting list, not the mark.
+        if let Some((max_id, _)) = events.last() {
+            if let Err(e) = port
+                .advance_read_mark(&channel, &session_key, max_id.clone())
+                .await
+            {
+                tracing::debug!("channel digest: advance_read_mark({channel}) failed: {e}");
+            }
+        }
+        if waiting_now != stored {
+            if let Err(e) = port
+                .set_attention(&channel, &session_key, waiting_now.clone())
+                .await
+            {
+                tracing::debug!("channel digest: set_attention({channel}) failed: {e}");
+            }
         }
 
-        if worthy.is_empty() {
+        if !waiting_now.is_empty() {
+            waiting.push(render_waiting_block(channel.as_str(), &waiting_now));
+        }
+        if fresh.is_empty() {
             continue;
         }
-        let block = render_channel_block(channel.as_str(), &worthy);
+        let block = render_channel_block(channel.as_str(), &fresh);
         match scope {
             Scope::Bound => bound.push(block),
             Scope::Elsewhere => elsewhere.push(block),
@@ -257,6 +286,13 @@ async fn render_channel_digest(
     }
 
     let mut sections = Vec::new();
+    if !waiting.is_empty() {
+        sections.push(format!(
+            "waiting on you — other principals' posts you have not answered. They stay \
+             listed until you ChannelRead the channel or post there:\n{}",
+            waiting.join("\n")
+        ));
+    }
     if !bound.is_empty() {
         sections.push(format!(
             "channel activity since you last read:\n{}",
@@ -381,6 +417,89 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
     }
 }
 
+/// Sort a channel's new events (oldest→newest) against the session's
+/// stored waiting list. Returns the digest-worthy posts to show once
+/// and the updated waiting list.
+///
+/// A worthy post by another principal joins the waiting list instead of
+/// the one-shot preview: it never woke anyone (ADR-072 D1), so it must
+/// not vanish once seen. A post by this principal answers everything
+/// waiting before it.
+fn sort_new_posts<'a>(
+    events: &'a [(peko_channel::port::TaskId, ChannelEvent)],
+    mut waiting: Vec<AttentionItem>,
+    own_path: &str,
+    me: &Me<'_>,
+    scope: Scope,
+    kind: Kind,
+) -> (
+    Vec<&'a (peko_channel::port::TaskId, ChannelEvent)>,
+    Vec<AttentionItem>,
+) {
+    let mut fresh = Vec::new();
+    for event in events {
+        let (id, ev) = event;
+        let ChannelEvent::Posted {
+            author, text, at, ..
+        } = ev
+        else {
+            continue;
+        };
+        if author == me.id || author == me.address {
+            waiting.retain(|w| !strictly_after(id, &w.id));
+        }
+        if !digest_worthy(ev, own_path, me, scope, kind) {
+            continue;
+        }
+        if needs_answer(author, me) {
+            if !waiting.iter().any(|w| w.id == *id) {
+                waiting.push(AttentionItem {
+                    id: id.clone(),
+                    author: author.clone(),
+                    at: at.clone(),
+                    preview: truncate_preview(text),
+                });
+            }
+        } else {
+            fresh.push(event);
+        }
+    }
+    let excess = waiting
+        .len()
+        .saturating_sub(peko_channel::attention::MAX_WAITING_PER_CHANNEL);
+    waiting.drain(..excess);
+    (fresh, waiting)
+}
+
+/// Does a worthy post by `author` wait for an answer? Only other
+/// principals' posts do: users' posts that want a reply start turns
+/// themselves (a DM root post, a group `@<name>` mention).
+fn needs_answer(author: &str, me: &Me<'_>) -> bool {
+    let by_user = author.starts_with("user:") || author.starts_with("visitor:");
+    !by_user && author != me.id && author != me.address
+}
+
+/// Render one channel's waiting list: a header line and up to
+/// [`DIGEST_MAX_PREVIEWS_PER_CHANNEL`] previews, newest last.
+fn render_waiting_block(channel: &str, waiting: &[AttentionItem]) -> String {
+    let mut out = format!("- #{channel}: {} waiting\n", waiting.len());
+    let hidden = waiting
+        .len()
+        .saturating_sub(DIGEST_MAX_PREVIEWS_PER_CHANNEL);
+    if hidden > 0 {
+        out.push_str(&format!("  - … {hidden} older\n"));
+    }
+    for item in &waiting[hidden..] {
+        out.push_str(&format!(
+            "  - [{}] \"{}\" ({})\n",
+            item.author,
+            peko_tools_core::neutralize_runtime_tags(&item.preview),
+            item.at
+        ));
+    }
+    out
+}
+
 /// Is `id` strictly after the read `mark`?
 ///
 /// Line-number ids are numeric strings on the store-backed path; a
@@ -461,7 +580,7 @@ mod tests {
 
     const ME: Me<'static> = Me {
         hub: None,
-        address: "prin_self",
+        address: "principal:local:prin_self",
         id: "prin_self",
         name: "self",
     };
@@ -787,9 +906,17 @@ mod tests {
         let text = render_channel_digest(&port, &metas, child_id(), &ME, true)
             .await
             .expect("unmentioned and other-principal posts must digest");
-        assert!(text.contains("2 new message(s)"), "{text}");
-        assert!(text.contains("lunch?"), "{text}");
-        assert!(text.contains("deploy done"), "{text}");
+        let (waiting, fresh) = text
+            .split_once("channel activity since you last read:")
+            .unwrap();
+        assert!(
+            waiting.contains("1 waiting") && waiting.contains("deploy done"),
+            "{text}"
+        );
+        assert!(
+            fresh.contains("1 new message(s)") && fresh.contains("lunch?"),
+            "{text}"
+        );
         assert!(!text.contains("ping"), "{text}");
     }
 
@@ -843,8 +970,8 @@ mod tests {
             let text = render_channel_digest(&port, &metas, session, &ME, true)
                 .await
                 .expect("the reply must show");
-            assert!(text.starts_with("unread on your other channels"), "{text}");
-            assert!(text.contains("looks good"), "{text}");
+            assert!(text.starts_with("waiting on you"), "{text}");
+            assert!(text.contains("[prin_other] \"looks good\""), "{text}");
         }
         assert!(
             render_channel_digest(&port, &metas, spawned_id(), &ME, true)
@@ -880,5 +1007,121 @@ mod tests {
             .await
             .expect("the opening message must show");
         assert!(text.contains("hello, I'm new"), "{text}");
+    }
+
+    /// The trunk glances past another principal's post on one keepalive
+    /// turn: the post must head the digest again on the next run, and
+    /// leaves only once the principal answers on that channel.
+    #[tokio::test]
+    async fn another_principals_post_waits_until_the_principal_posts_there() {
+        let (_dir, port) = store();
+        let dm = port
+            .create(
+                &PrincipalId(ME.id.to_string()),
+                CreateOpts::runtime("dm-other").with_passive_binding("/principal-other"),
+            )
+            .await
+            .unwrap();
+        let metas = tree(None);
+        assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .is_none());
+
+        port.post_attributed(&dm, &me_subject(), "prin_other", PostMsg::root("ship it?"))
+            .await
+            .unwrap();
+        let first = render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .expect("the post must show");
+        assert!(first.contains("ship it?"), "{first}");
+
+        // Next run: nothing new arrived, but the post is still waiting.
+        let again = render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .expect("an unanswered post must keep showing");
+        assert_eq!(again, first);
+
+        // A user's post on the same DM does not answer it.
+        port.post_attributed(&dm, &me_subject(), "user:carol", PostMsg::root("hm"))
+            .await
+            .unwrap();
+        assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .unwrap()
+            .contains("ship it?"));
+
+        // The principal answers (from any of its sessions): cleared.
+        port.post_attributed(
+            &dm,
+            &me_subject(),
+            ME.address,
+            PostMsg::root("yes").with_via("/principal-other"),
+        )
+        .await
+        .unwrap();
+        assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .is_none());
+        assert!(port
+            .attention(&dm, &trunk_id().as_str())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Each session keeps its own waiting list on a shared channel.
+    #[tokio::test]
+    async fn waiting_lists_are_per_session() {
+        let (_dir, port) = store();
+        let dm = port
+            .create(
+                &PrincipalId(ME.id.to_string()),
+                CreateOpts::runtime("dm-other").with_passive_binding("/principal-other"),
+            )
+            .await
+            .unwrap();
+        let metas = tree(None);
+        for session in [trunk_id(), child_id()] {
+            assert!(render_channel_digest(&port, &metas, session, &ME, true)
+                .await
+                .is_none());
+        }
+        port.post_attributed(&dm, &me_subject(), "prin_other", PostMsg::root("ping"))
+            .await
+            .unwrap();
+        for session in [trunk_id(), child_id()] {
+            assert!(render_channel_digest(&port, &metas, session, &ME, true)
+                .await
+                .is_some());
+        }
+        port.set_attention(&dm, &trunk_id().as_str(), Vec::new())
+            .await
+            .unwrap();
+        assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .is_none());
+        assert!(render_channel_digest(&port, &metas, child_id(), &ME, true)
+            .await
+            .unwrap()
+            .contains("ping"));
+    }
+
+    #[test]
+    fn waiting_block_shows_the_newest_previews() {
+        let items: Vec<AttentionItem> = (0..7)
+            .map(|i| AttentionItem {
+                id: i.to_string(),
+                author: "prin_other".into(),
+                at: "t".into(),
+                preview: format!("post {i}"),
+            })
+            .collect();
+        let block = render_waiting_block("chan_x", &items);
+        assert!(
+            block.starts_with("- #chan_x: 7 waiting\n  - … 2 older\n"),
+            "{block}"
+        );
+        assert!(!block.contains("post 1\""), "{block}");
+        assert!(block.contains("post 6"), "{block}");
     }
 }

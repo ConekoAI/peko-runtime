@@ -237,6 +237,15 @@ fn parse_event_line(content: &[u8]) -> std::result::Result<(EventOrigin, Channel
 /// single-line writes, so a holder past this is wedged, not slow.
 const CHANNEL_LOCK_TIMEOUT_MS: u64 = 10_000;
 
+/// Lock a per-session state file (`read_marks.json`, `attention.json`)
+/// for a read-modify-write cycle. FileLock derives `<path>.lock`, so it
+/// never contends with the `events.jsonl` append lock.
+async fn lock_beside(path: &Path) -> Result<FileLock> {
+    FileLock::acquire(path, CHANNEL_LOCK_TIMEOUT_MS)
+        .await
+        .map_err(|e| ChannelError::Adapter(format!("lock {}: {e}", path.display())))
+}
+
 /// Default byte cap on the current page of a channel's event log.
 /// Past this, `append_event` rotates the page aside to
 /// `events.<n>.jsonl` (mirroring `peko-session`'s `<id>.<n>.jsonl`
@@ -863,6 +872,9 @@ impl ChannelStore {
         mark: TaskId,
     ) -> Result<()> {
         let chan_dir = self.channel_dir_for_marks(channel).await?;
+        // Sessions share the file: hold the lock across load → save so
+        // one session's advance never drops another's mark.
+        let _guard = lock_beside(&crate::read_marks::ChannelReadMarks::path_in(&chan_dir)).await?;
         let mut marks = crate::read_marks::ChannelReadMarks::load(&chan_dir).await?;
         if let (Some(existing), Ok(new_n)) = (marks.get(session_key), mark.parse::<u64>()) {
             if existing
@@ -875,6 +887,35 @@ impl ChannelStore {
         }
         marks.set(session_key.to_string(), mark);
         marks.save(&chan_dir).await
+    }
+
+    /// Posts waiting on `session_key` on `channel`. See [`crate::attention`].
+    pub async fn attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Vec<crate::AttentionItem>> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let attention = crate::attention::ChannelAttention::load(&chan_dir).await?;
+        Ok(attention.get(session_key).to_vec())
+    }
+
+    /// Replace `session_key`'s waiting list on `channel` under the
+    /// file's lock (other sessions' lists are kept).
+    pub async fn set_attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        items: Vec<crate::AttentionItem>,
+    ) -> Result<()> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let _guard = lock_beside(&crate::attention::ChannelAttention::path_in(&chan_dir)).await?;
+        let mut attention = crate::attention::ChannelAttention::load(&chan_dir).await?;
+        if attention.get(session_key) == items.as_slice() {
+            return Ok(());
+        }
+        attention.set(session_key, items);
+        attention.save(&chan_dir).await
     }
 
     // -----------------------------------------------------------------
@@ -2511,6 +2552,23 @@ impl ChannelPort for ChannelStore {
         ChannelStore::advance_read_mark(self, channel, session_key, mark).await
     }
 
+    async fn attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Vec<crate::AttentionItem>> {
+        ChannelStore::attention(self, channel, session_key).await
+    }
+
+    async fn set_attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        items: Vec<crate::AttentionItem>,
+    ) -> Result<()> {
+        ChannelStore::set_attention(self, channel, session_key, items).await
+    }
+
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
@@ -3117,6 +3175,49 @@ mod tests {
             9,
             "creator + 8 concurrently invited users must all be present"
         );
+    }
+
+    /// Sessions share `read_marks.json` and `attention.json`: concurrent
+    /// updates from different sessions all land (the FileLock
+    /// serializes each load→replace→save).
+    #[tokio::test]
+    async fn concurrent_sessions_do_not_lose_marks_or_waiting_lists() {
+        let store = ChannelStore::new(tmp_cfg("concurrent-marks"));
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let store = store.clone();
+            let channel = channel.clone();
+            handles.push(tokio::spawn(async move {
+                let session = format!("sess-{i}");
+                store
+                    .advance_read_mark(&channel, &session, i.to_string())
+                    .await?;
+                let item = crate::AttentionItem {
+                    id: i.to_string(),
+                    author: "prin_bob".into(),
+                    at: "t".into(),
+                    preview: "p".into(),
+                };
+                store.set_attention(&channel, &session, vec![item]).await
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().expect("update must succeed");
+        }
+        for i in 0..8 {
+            let session = format!("sess-{i}");
+            assert_eq!(
+                store.read_mark(&channel, &session).await.unwrap(),
+                Some(i.to_string())
+            );
+            assert_eq!(store.attention(&channel, &session).await.unwrap().len(), 1);
+        }
     }
 
     // -- paging / rotation --------------------------------------------

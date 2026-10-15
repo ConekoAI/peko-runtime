@@ -20,6 +20,18 @@ All notable changes to Peko.
   (no callers), the router's plan injection, and the never-built
   `ContextInjectionKind::{Memory, File, Todo, Plan}` variants.
 
+### Channel posts wait until answered (0.1.0, 2026-10-15)
+
+- ADR-072 D4a: another principal's post no longer disappears from the
+  session context once shown. The digest files it in the session's waiting
+  list (`attention.json` beside `read_marks.json`) and opens every run's
+  summary with it ("waiting on you") until the session's `ChannelRead`
+  returns it or the principal posts on that channel after it. Previously a
+  post the model glanced past on one keepalive turn was never shown again,
+  since posts by principals wake no one. Users' posts stay one-shot.
+- `read_marks.json` updates now hold a file lock; concurrent sessions on one
+  channel could drop each other's marks.
+
 ### Shared hot kb budget (0.1.0, 2026-10-14)
 
 - ADR-055 rev 3: the hot kb set — `kb/MEMORY.md`, `kb/CONVENTIONS.md`,
