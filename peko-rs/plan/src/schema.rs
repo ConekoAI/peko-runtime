@@ -18,7 +18,7 @@
 //! It deliberately does NOT own: edge representation (encoded inline as
 //! [`PlanNode::depends_on`]), per-node attempt history (use
 //! `PlanNodeStatus::Failed` as the single source of truth in v1), or the
-//! runtime-derived `current_focus` (computed by
+//! runtime-derived in-progress set (computed by
 //! [`PlanRecord::current_focus_nodes`]).
 //!
 //! All enums that may gain variants in future schema versions are marked

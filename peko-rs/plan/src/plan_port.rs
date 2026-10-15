@@ -41,7 +41,6 @@ use peko_subject::PrincipalId;
 /// - [`get`](Self::get) — fetch by id; `Ok(None)` for absent
 /// - [`get_for_principal`](Self::get_for_principal) — fetch by id, asserting the principal matches
 /// - [`list_for_principal`](Self::list_for_principal) — all plans owned by a principal
-/// - [`current_focus`](Self::current_focus) — most-recently-updated open plan with `InProgress` nodes
 /// - [`load_resumable`](Self::load_resumable) — open plans with unresolved nodes
 ///
 /// **Plan-lifecycle writes**:
@@ -76,14 +75,8 @@ pub trait PlanPort: Send + Sync + 'static {
     /// ascending.
     async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>>;
 
-    /// The most-recently-updated open plan with at least one
-    /// `InProgress` node. `None` when the principal has no active
-    /// in-flight work.
-    async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>>;
-
-    /// All open plans with at least one unresolved node. This is the
-    /// set the runtime re-injects into a fresh session's context
-    /// (future PR #4).
+    /// All open plans with at least one unresolved node — the set the
+    /// runtime renders into owner runs' `plans` section.
     async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>>;
 
     // ----- plan-lifecycle writes -----
@@ -172,10 +165,6 @@ impl PlanPort for PlanStorage {
 
     async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         PlanStorage::list_for_principal(self, principal_id).await
-    }
-
-    async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
-        PlanStorage::current_focus(self, principal_id).await
     }
 
     async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
@@ -391,25 +380,6 @@ mod tests {
         assert_eq!(p2_list.len(), 1);
         assert!(p1_list.iter().all(|r| r.principal_id == p1));
         assert!(p2_list.iter().all(|r| r.principal_id == p2));
-    }
-
-    #[tokio::test]
-    async fn port_current_focus_returns_in_progress_plan() {
-        let (_tmp, port) = port_in_tempdir().await;
-        let p = PrincipalId::generate();
-        let node = sample_pending("only-step");
-        let only = port
-            .create(p.clone(), "focus".into(), vec![node.clone()])
-            .await
-            .expect("create");
-        // Initially no focus (everything Pending).
-        assert!(port.current_focus(&p).await.expect("cf").is_none());
-        // Flip to InProgress and re-fetch — current_focus should see it.
-        port.mark_node_status(&only.plan_id, &p, &node.node_id, PlanNodeStatus::InProgress)
-            .await
-            .expect("mark");
-        let focus = port.current_focus(&p).await.expect("cf").expect("some");
-        assert_eq!(focus.plan_id, only.plan_id);
     }
 
     #[tokio::test]

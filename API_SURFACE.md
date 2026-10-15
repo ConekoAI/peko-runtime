@@ -25,6 +25,16 @@ This document defines the public API surface for Peko, including the new Unified
 | `TurnPromptContext.principal_memory`, `TurnPromptContext.has_gateway`, `Placeholder::SelfUpdate` | `peko_engine::prompt` | ❌ Removed | Memory loads from the workspace with the rest of the hot set. The Self-Update section advertised OpenClaw actions (`config.apply`, `update.run`) Peko never had; `{{self_update}}` in old templates is stripped |
 | `PrincipalMemoryConfig`, `MemoryTier`, `ConsolidationConfig`, `TtlPolicy`, `ArtifactKind`, `PrincipalConfig.memory`, `DelegationGrant`, `PrincipalGovernanceConfig.delegations` | `principal::config` | ❌ Removed | Parsed but never read. Legacy `[memory]` and `[[governance.delegations]]` tables are ignored on load and not written back |
 
+## Open plans section
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `WorkspacePlansPromptHandler` / `PLANS_SECTION_CAP` | `principal::plan_prompt` (crate-internal) | ✅ New | Renders the `plans` section for owner runs: up to 5 open plans (most recently updated first) with in-progress, ready, and blocked/failed steps, plus a count of the rest |
+| `SectionSlot::Plans` / `## Open plans` tail section | `peko_engine::prompt::renderer` | ✅ New | Change-detected built-in slot with update/retraction notices |
+| `BUILTIN_PROMPT_SECTIONS` | `peko_engine` (from `prompt::renderer`) | ⚠️ Changed | Now public and gains `plans`; the tooling runtime dispatches this list instead of keeping its own copy |
+| `PlanPort::current_focus`, `PlanStorage::current_focus` | `peko_plan` | ❌ Removed | No callers |
+| `ContextInjectionKind::{Memory, File, Todo, Plan}` | `principal::router` | ❌ Removed | Never constructed (`Plan` was the trunk-only plan injection, replaced by the `plans` section); `Session` remains |
+
 ## Tool ledger (ADR-079)
 
 - `peko_tools_core::CallParent` (`Task { id, call_id }`, `Workflow { call_id }`,

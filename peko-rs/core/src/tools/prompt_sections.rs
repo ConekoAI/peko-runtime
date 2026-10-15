@@ -1,7 +1,7 @@
 //! Prompt-section providers (ADR-066 D2/D3).
 //!
 //! The built-in per-turn prompt sections (`identity`, `roles`,
-//! `skills`, `workflows`, `session_context`) are plain providers
+//! `skills`, `workflows`, `session_context`, `plans`) are plain providers
 //! registered on the [`crate::tools::runtime::ToolingRuntime`]. Its prompt
 //! rendering aggregates providers and workspace-hook `PromptSection` output.
 //! Workspace hooks run in registration order; provider priority retains the

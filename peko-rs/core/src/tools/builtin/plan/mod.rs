@@ -155,9 +155,6 @@ impl PlanPort for TestPlanPort {
     async fn list_for_principal(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         PlanPort::list_for_principal(&self.storage, principal_id).await
     }
-    async fn current_focus(&self, principal_id: &PrincipalId) -> Result<Option<PlanRecord>> {
-        PlanPort::current_focus(&self.storage, principal_id).await
-    }
     async fn load_resumable(&self, principal_id: &PrincipalId) -> Result<Vec<PlanRecord>> {
         PlanPort::load_resumable(&self.storage, principal_id).await
     }

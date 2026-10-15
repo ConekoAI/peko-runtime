@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Open plans in every owner run (0.1.0, 2026-10-15)
+
+- Open plans now ride a change-detected `## Open plans` tail section in
+  every owner run — the trunk, the owner's own conversations, and their
+  spawned agents — instead of a one-shot "Prior context" message built
+  only on trunk turns. The owner's conversations never saw plans before,
+  and a step marked mid-run never showed until the next trunk turn. Up to
+  five unfinished plans render, most recently active first, with a count
+  of the rest. Runs acting for anyone but the owner get no section
+  (ADR-078).
+- `peko_engine::BUILTIN_PROMPT_SECTIONS` is now the one list of built-in
+  prompt sections; the tooling runtime used its own copy.
+- Removed dead code: `PlanPort::current_focus` / `PlanStorage::current_focus`
+  (no callers), the router's plan injection, and the never-built
+  `ContextInjectionKind::{Memory, File, Todo, Plan}` variants.
+
 ### Shared hot kb budget (0.1.0, 2026-10-14)
 
 - ADR-055 rev 3: the hot kb set — `kb/MEMORY.md`, `kb/CONVENTIONS.md`,
