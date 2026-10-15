@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_session::manager::SessionManager;
 use peko_session::path::MAX_SLUG_LEN;
 use peko_session::{SessionCreateOptions, SessionMetadata};
@@ -41,13 +41,13 @@ fn principal_slug_fragment(did: &str) -> String {
 ///   itself would collide).
 ///
 /// The result is capped at [`MAX_SLUG_LEN`] chars and validated
-/// against `peko_session::path::validate_slug`. `Subject::Public` is
+/// against `peko_session::path::validate_slug`. `ActorRef::Public` is
 /// not a session peer (ADR-039) and is a structured error.
-pub fn peer_child_slug(peer: &Subject) -> Result<String> {
+pub fn peer_child_slug(peer: &ActorRef) -> Result<String> {
     let slug = match peer {
-        Subject::User(id) if id == "local" => "local-user".to_string(),
-        Subject::User(id) => {
-            let sanitized = sanitize_slug_segment(id);
+        ActorRef::User(id) if id == "local" => "local-user".to_string(),
+        ActorRef::User(id) => {
+            let sanitized = sanitize_slug_segment(&id.to_string());
             let slug = if sanitized.is_empty() {
                 "user".to_string()
             } else {
@@ -55,14 +55,14 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
             };
             cap_slug(&slug)
         }
-        Subject::Visitor(id) => {
+        ActorRef::Visitor(id) => {
             // ADR-058 D5: visitors are ordinary non-owner peers with
             // their own `/visitor-<id>` slug space. The typed-claim
-            // gate (`Subject::from_bridge_claim`) already rejects ids
+            // gate (`ActorRef::from_bridge_claim`) already rejects ids
             // whose raw claims contain `:` and the reserved `local`, so a visitor
             // slug can never collide with `/local-user` or smuggle a
             // `principal:` reference.
-            let sanitized = sanitize_slug_segment(id);
+            let sanitized = sanitize_slug_segment(&id.to_string());
             let slug = if sanitized.is_empty() {
                 "visitor".to_string()
             } else {
@@ -70,8 +70,8 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
             };
             cap_slug(&slug)
         }
-        Subject::Principal(did) => format!("principal-{}", principal_slug_fragment(did.as_str())),
-        Subject::Public => {
+        ActorRef::Principal(did) => format!("principal-{}", principal_slug_fragment(&did.as_str())),
+        ActorRef::Public => {
             anyhow::bail!("public access is not a session peer — no peer child can be provisioned")
         }
     };
@@ -83,10 +83,10 @@ pub fn peer_child_slug(peer: &Subject) -> Result<String> {
 pub async fn find_dm_child(
     metas: &[SessionMetadata],
     principal: &peko_subject::PrincipalId,
-    peer: &Subject,
+    peer: &ActorRef,
     port: &Arc<dyn peko_channel::ChannelPort>,
 ) -> Option<String> {
-    let me = port.actor_info(&Subject::from(principal)).await;
+    let me = port.actor_info(&ActorRef::from(principal)).await;
     let other = port.actor_info(peer).await;
     let channel = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
     metas
@@ -95,7 +95,7 @@ pub async fn find_dm_child(
         .map(|m| m.session_id.to_string())
 }
 #[cfg(test)]
-pub fn find_peer_child(metas: &[SessionMetadata], peer: &Subject) -> Option<String> {
+pub fn find_peer_child(metas: &[SessionMetadata], peer: &ActorRef) -> Option<String> {
     metas
         .iter()
         .find(|m| m.channel_id.is_some() && m.title.as_deref() == Some(peer.to_string().as_str()))
@@ -141,7 +141,7 @@ pub async fn ensure_channel_child(
         .with_trigger("spawn")
         .with_title(title);
     let session = manager
-        .create_session(agent_name, &Subject::Public, options)
+        .create_session(agent_name, &ActorRef::Public, options)
         .await?;
     let id = session.session_id().to_string();
     for attempt in 0..MAX_SLUG_ATTEMPTS {
@@ -195,7 +195,7 @@ fn cap_slug(slug: &str) -> String {
 #[cfg(test)]
 pub async fn ensure_peer_child(
     agent_name: &str,
-    peer: &Subject,
+    peer: &ActorRef,
     sessions: &Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
     let channel = peko_channel::dm_channel_id("fixture", &peer.to_string());

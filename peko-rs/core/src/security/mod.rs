@@ -42,7 +42,7 @@ pub fn shared_actor_keys(
 ) -> Box<dyn peko_subject::ActorKeys> {
     struct SharedPortKeys(std::sync::Arc<dyn peko_channel::ChannelPort>);
     impl peko_subject::ActorKeys for SharedPortKeys {
-        fn key_of(&self, subject: &peko_subject::Subject) -> peko_subject::ActorKey {
+        fn key_of(&self, subject: &peko_subject::ActorRef) -> peko_subject::ActorKey {
             self.0.key_of(subject)
         }
     }

@@ -4,7 +4,7 @@
 //! This is the daemon's composition root — all services are initialized here.
 
 use peko_channel::ChannelPort;
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::async_exec::inbox::SessionInbox;
@@ -264,10 +264,10 @@ pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only.
     pub principal_name: String,
     /// Peer subject whose thread this run belongs to — diagnostic
-    /// only (cheap, `Subject` is small). `None` for channel-responder
+    /// only (cheap, `ActorRef` is small). `None` for channel-responder
     /// turns, which may run in a session without a single peer (a
     /// group channel's child).
-    pub peer: Option<peko_auth::Subject>,
+    pub peer: Option<peko_auth::ActorRef>,
     /// Cancellation token for soft-interrupt. Setting this signals
     /// the agentic loop to finish the current step and exit cleanly.
     /// Cloned into both the agentic loop and the IPC handler.
@@ -1751,7 +1751,7 @@ struct VaultPrincipalSigningKeys {
 #[async_trait::async_trait]
 impl crate::tunnel::cross_runtime_channel::PrincipalSigningKeys for VaultPrincipalSigningKeys {
     async fn did_for_principal(&self, principal: &peko_subject::PrincipalId) -> Option<String> {
-        // `Subject::Principal` / `PrincipalId` carry EITHER the
+        // `ActorRef::Principal` / `PrincipalId` carry EITHER the
         // principal's id (`prin_<uuid>` — the `principals` map key)
         // or its DID (`did:key:…` — e.g. DID-keyed DM paths), so
         // resolve by id first and fall back to the DID scan; a miss
@@ -1945,7 +1945,7 @@ impl crate::tunnel::TunnelHost for AppState {
 
         let target_actor = self
             .tunnel_channel_port
-            .actor_info(&Subject::from(&principal.id))
+            .actor_info(&ActorRef::from(&principal.id))
             .await;
         let addressed = invite
             .initial_members
@@ -1982,15 +1982,15 @@ impl crate::tunnel::TunnelHost for AppState {
         let source_actor = self
             .tunnel_channel_port
             .register_actor(
-                &Subject::Principal(format!("hub:{creator_hub}").into()),
+                &ActorRef::Principal(peko_subject::Route::hub(creator_hub)),
                 Some(creator_hub),
                 Some(&source.agent_did),
                 Some(&source.identity_key),
                 None,
                 if source.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public {
-                    "public"
+                    peko_channel::Registration::Public
                 } else {
-                    "private"
+                    peko_channel::Registration::Private
                 },
             )
             .await?;
@@ -2022,18 +2022,22 @@ impl crate::tunnel::TunnelHost for AppState {
                         if resolved.exposure
                             == crate::tunnel::hub_directory::ResolvedExposure::Public
                         {
-                            "public"
+                            peko_channel::Registration::Public
                         } else {
-                            "private"
+                            peko_channel::Registration::Private
                         },
                     )
                     .await?;
-            } else if let Ok(subject) = member.principal_did.parse::<Subject>() {
-                if matches!(subject, Subject::User(_) | Subject::Visitor(_)) {
-                    let hub = subject.subject_id().strip_prefix("hub:").ok_or_else(|| {
-                        anyhow::anyhow!("Remote human membership requires a Hub reference")
-                    })?;
-                    let remote = format!("{}:hub:{hub}", subject.kind()).parse::<Subject>()?;
+            } else if let Ok(subject) = member.principal_did.parse::<ActorRef>() {
+                if matches!(subject, ActorRef::User(_) | ActorRef::Visitor(_)) {
+                    let hub = subject
+                        .route()
+                        .filter(|r| r.is_hub())
+                        .map(|r| r.id())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Remote human membership requires a Hub reference")
+                        })?;
+                    let remote = subject.clone();
                     self.tunnel_channel_port
                         .register_actor(
                             &remote,
@@ -2041,7 +2045,7 @@ impl crate::tunnel::TunnelHost for AppState {
                             None,
                             None,
                             member.name.as_deref(),
-                            "registered",
+                            peko_channel::Registration::Registered,
                         )
                         .await?;
                 }
@@ -2050,7 +2054,7 @@ impl crate::tunnel::TunnelHost for AppState {
         if invite.channel_id.starts_with("dm_") {
             let me = self
                 .tunnel_channel_port
-                .actor_info(&Subject::from(&principal.id))
+                .actor_info(&ActorRef::from(&principal.id))
                 .await;
             let expected =
                 peko_channel::dm_channel_id(&me.identity_key, &source_actor.identity_key);
@@ -2062,7 +2066,7 @@ impl crate::tunnel::TunnelHost for AppState {
         // Registration gates every remote channel, including group invitations.
         let registered = self
             .tunnel_channel_port
-            .actor_info(&Subject::from(&principal.id))
+            .actor_info(&ActorRef::from(&principal.id))
             .await
             .hub_id
             .is_some();

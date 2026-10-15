@@ -21,7 +21,7 @@
 //! stub.
 
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_session::events::MessageSource;
 use std::sync::Arc;
 
@@ -59,7 +59,7 @@ pub trait PeerMessenger: Send + Sync {
     async fn deliver_note(
         &self,
         principal_id: &str,
-        target: &Subject,
+        target: &ActorRef,
         note: &str,
         source: MessageSource,
         caller_label: Option<&str>,
@@ -83,7 +83,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
     async fn deliver_note(
         &self,
         principal_id: &str,
-        target: &Subject,
+        target: &ActorRef,
         note: &str,
         source: MessageSource,
         caller_label: Option<&str>,
@@ -172,7 +172,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
                         if let Err(e) = port
                             .post(
                                 &channel,
-                                &Subject::from(&principal.id),
+                                &ActorRef::from(&principal.id),
                                 peko_channel::PostMsg::root(note),
                             )
                             .await
@@ -326,7 +326,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let owner = Subject::User("local".to_string());
+        let owner = ActorRef::User("local".into());
         let principal = manager
             .create(crate::principal::PrincipalConfig {
                 actor_key: None,

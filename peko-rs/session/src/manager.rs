@@ -52,8 +52,8 @@ use crate::types::{ChannelType, SpawnCleanupPolicy};
 use crate::unified::Session;
 use anyhow::Result;
 use async_trait::async_trait;
+use peko_subject::ActorRef;
 use peko_subject::PathResolverLike;
-use peko_subject::Subject;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -199,7 +199,7 @@ impl SessionHandle {
     }
 
     /// Get the peer
-    pub async fn peer(&self) -> Subject {
+    pub async fn peer(&self) -> ActorRef {
         let base = self.base.read().await;
         base.peer.clone()
     }
@@ -516,7 +516,7 @@ pub struct ResolvedSession {
 /// All session resolution goes through this manager.
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `Session`
-    base_sessions: HashMap<(String, Subject), Arc<RwLock<Session>>>,
+    base_sessions: HashMap<(String, ActorRef), Arc<RwLock<Session>>>,
     /// Channel overlays: `overlay_key` -> `ChannelOverlay`
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
@@ -555,9 +555,9 @@ pub struct SessionManager {
     /// via [`SessionManager::peer`].
     ///
     /// Used by `principal_send` (and any other agent-originated call path)
-    /// to attribute the receiving agent's session to a `Subject::Principal`
-    /// rather than the legacy `Subject::User(user)` masquerade.
-    peer_principal: Option<Subject>,
+    /// to attribute the receiving agent's session to a `ActorRef::Principal`
+    /// rather than the legacy `ActorRef::User(user)` masquerade.
+    peer_principal: Option<ActorRef>,
 }
 
 impl SessionManager {
@@ -680,14 +680,14 @@ impl SessionManager {
     /// `principal:{caller}`, not `user:{caller}`).
     ///
     /// Callers are responsible for passing a principal that is a
-    /// valid session peer (`Subject::is_session_peer`). A
+    /// valid session peer (`ActorRef::is_session_peer`). A
     /// `Team` or `Public` principal is still accepted and stored, but
     /// [`SessionManager::peer`] warns and refuses in that case
     /// (review #2). Prefer
     /// [`SessionManager::with_peer_principal_opt`] for the
     /// filtering-at-call-site behavior.
     #[must_use]
-    pub fn with_peer_principal(mut self, principal: Subject) -> Self {
+    pub fn with_peer_principal(mut self, principal: ActorRef) -> Self {
         self.peer_principal = Some(principal);
         self
     }
@@ -701,7 +701,7 @@ impl SessionManager {
     /// IPC wire, tunnel header) where you can't statically know it's
     /// a valid session peer.
     #[must_use]
-    pub fn with_peer_principal_opt(mut self, principal: Option<Subject>) -> Self {
+    pub fn with_peer_principal_opt(mut self, principal: Option<ActorRef>) -> Self {
         self.peer_principal = principal.filter(|p| p.is_session_peer());
         self
     }
@@ -715,24 +715,24 @@ impl SessionManager {
     /// Resolve the session peer to use for new sessions (issue #24).
     ///
     /// Returns the explicit `peer_principal` if set (e.g. a
-    /// `Subject::Principal` for a principal_send call); otherwise falls back
-    /// to the legacy `Subject::User(user)` form.
+    /// `ActorRef::Principal` for a principal_send call); otherwise falls back
+    /// to the legacy `ActorRef::User(user)` form.
     ///
     /// **Issue #24 review #2:** if `peer_principal` is set to a
-    /// non-session-peer subject (`Subject::Public`), this method REFUSES
+    /// non-session-peer subject (`ActorRef::Public`), this method REFUSES
     /// and logs a warning rather than silently falling back to
-    /// `Subject::User(user)`. `with_peer_principal_opt` is the validated
+    /// `ActorRef::User(user)`. `with_peer_principal_opt` is the validated
     /// setter that filters out non-peer principals at the call site;
     /// this is the authoritative guard so the two entry points can't
     /// diverge.
     #[must_use]
-    pub fn peer(&self) -> Subject {
+    pub fn peer(&self) -> ActorRef {
         match &self.peer_principal {
             Some(p) if p.is_session_peer() => p.clone(),
             Some(p) => {
                 // Per ADR-039: Public is not a valid session peer.
                 // We refuse rather than fall back to the legacy
-                // `Subject::User(user)` form because the legacy
+                // `ActorRef::User(user)` form because the legacy
                 // form silently re-introduces the masquerade the
                 // post-#24 caller is trying to avoid (review #2).
                 // The validated setter `with_peer_principal_opt`
@@ -740,7 +740,7 @@ impl SessionManager {
                 // catches the raw `with_peer_principal` case.
                 tracing::warn!(
                     "SessionManager::peer: principal {:?} is not a valid session peer; \
-                     refusing to masquerade as Subject::User({:?}). Use \
+                     refusing to masquerade as ActorRef::User({:?}). Use \
                      `with_peer_principal_opt` to filter non-peer principals at \
                      the call site (issue #24 review #2).",
                     p,
@@ -750,9 +750,9 @@ impl SessionManager {
                 // session key still derives to a valid (if
                 // low-fidelity) bucket rather than panicking. The
                 // warn above tells the operator what's wrong.
-                Subject::User(String::new())
+                ActorRef::User("".into())
             }
-            None => Subject::User(self.user.clone()),
+            None => ActorRef::User(self.user.clone().into()),
         }
     }
 
@@ -995,7 +995,7 @@ impl SessionManager {
     /// peer and channel, enabling cross-channel context sharing.
     pub async fn route(
         &mut self,
-        _peer: &Subject,
+        _peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
         agent: Option<&str>,
@@ -1012,7 +1012,7 @@ impl SessionManager {
     pub async fn spawn_session(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
         task: &str,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
@@ -1057,7 +1057,7 @@ impl SessionManager {
     pub async fn create_session(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
         options: SessionCreateOptions,
     ) -> Result<SessionHandle> {
         let sessions_dir = self
@@ -1117,7 +1117,7 @@ impl SessionManager {
         // entry would clobber the `with_peer` stamp (sprint 2 peer-child
         // provisioning depends on the stamp surviving those writes).
         metadata.peer_type = Some(peer.kind().to_string());
-        metadata.peer_id = Some(peer.subject_id().to_string());
+        metadata.peer_id = Some(peer.subject_id());
 
         // 3 + 4. Store metadata AND update the peer-routing index AND save
         // the index, all under a single `metadata_controller` write lock.
@@ -1156,7 +1156,7 @@ impl SessionManager {
                 agent.to_string(),
                 format!("{}.jsonl", safe_filename_component(&session_id.to_string())),
                 peer.kind().to_string(),
-                peer.subject_id().to_string(),
+                peer.subject_id(),
             );
             entry.parent_session_id = entry_parent;
             entry.trigger = entry_trigger;
@@ -1219,20 +1219,20 @@ impl SessionManager {
             {
                 // Restore peer from entry
                 match (entry.peer_type.as_deref(), entry.peer_id) {
-                    (Some("agent"), Some(id)) => Subject::Principal(id.into()),
-                    (Some("user"), Some(id)) => Subject::User(id),
+                    (Some("agent"), Some(id)) => ActorRef::Principal(id.into()),
+                    (Some("user"), Some(id)) => ActorRef::User(id.into()),
                     // Legacy data (pre-#17): entry has no peer info recorded.
                     // Empty sender_id is the right fallback — it's
                     // distinguishable from a real, resolved caller and
                     // doesn't mis-attribute the session to the literal
                     // `"default"` placeholder.
-                    _ => Subject::User(String::new()),
+                    _ => ActorRef::User("".into()),
                 }
             } else {
-                Subject::User(String::new())
+                ActorRef::User("".into())
             }
         } else {
-            Subject::User(String::new())
+            ActorRef::User("".into())
         };
 
         // 3. Load Session from JSONL with peer info
@@ -1612,7 +1612,7 @@ impl SessionManager {
     }
 
     /// Get active session ID for a peer
-    pub async fn get_active_session_id(&mut self, peer: &Subject) -> Result<Option<String>> {
+    pub async fn get_active_session_id(&mut self, peer: &ActorRef) -> Result<Option<String>> {
         let agent = self
             .agent_name
             .as_ref()
@@ -1640,7 +1640,7 @@ impl SessionManager {
     pub async fn get_or_create_base(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
     ) -> Result<Arc<RwLock<Session>>> {
         self.get_or_create_base_with_trigger(agent, peer, crate::events::SessionTrigger::User)
             .await
@@ -1653,7 +1653,7 @@ impl SessionManager {
     pub async fn get_or_create_base_with_trigger(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
         trigger: crate::events::SessionTrigger,
     ) -> Result<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
@@ -1682,7 +1682,7 @@ impl SessionManager {
                         agent.to_string(),
                         transcript_file,
                         peer.kind().to_string(),
-                        peer.subject_id().to_string(),
+                        peer.subject_id(),
                     );
                     controller.create_for_peer(entry, &peer_key).await?;
                     controller.save_index().await?;
@@ -1733,7 +1733,7 @@ impl SessionManager {
 
     /// Get an existing base session if it exists
     #[must_use]
-    pub fn get_existing_base(&self, agent: &str, peer: &Subject) -> Option<Arc<RwLock<Session>>> {
+    pub fn get_existing_base(&self, agent: &str, peer: &ActorRef) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
     }
@@ -1745,7 +1745,7 @@ impl SessionManager {
     pub async fn create_channel_overlay(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1762,7 +1762,7 @@ impl SessionManager {
     pub async fn create_channel_overlay_on_base(
         &mut self,
         base: Arc<RwLock<Session>>,
-        peer: &Subject,
+        peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1774,7 +1774,7 @@ impl SessionManager {
     async fn create_channel_overlay_on_base_as_handle(
         &mut self,
         base: Arc<RwLock<Session>>,
-        peer: &Subject,
+        peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -1893,14 +1893,14 @@ impl SessionManager {
     pub async fn create_spawn_overlay(
         &mut self,
         agent: &str,
-        _peer: &Subject,
+        _peer: &ActorRef,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Subject::Principal(spawn_id.into());
+        let spawn_peer = ActorRef::Principal(spawn_id.into());
         let child_base = self
             .get_or_create_base_with_trigger(
                 agent,
@@ -1952,7 +1952,7 @@ impl SessionManager {
     pub async fn create_spawn_overlay_with_config(
         &mut self,
         agent: &str,
-        _peer: &Subject,
+        _peer: &ActorRef,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -1962,7 +1962,7 @@ impl SessionManager {
     ) -> Result<SessionHandle> {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
-        let spawn_peer = Subject::Principal(spawn_id.into());
+        let spawn_peer = ActorRef::Principal(spawn_id.into());
         let child_base = self
             .get_or_create_base_with_trigger(
                 agent,
@@ -2036,8 +2036,8 @@ impl SessionManager {
             let peer_id = parts.get(peer_idx + 2)?;
 
             let peer = match *peer_type {
-                "agent" => Subject::Principal(peer_id.to_string().into()),
-                _ => Subject::User(peer_id.to_string()),
+                "agent" => ActorRef::Principal(peer_id.to_string().into()),
+                _ => ActorRef::User((*peer_id).into()),
             };
 
             return self.get_existing_base(agent, &peer);
@@ -2059,7 +2059,7 @@ impl SessionManager {
     pub async fn get_session_for_channel(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionHandle> {
@@ -2084,7 +2084,7 @@ impl SessionManager {
     pub fn remove_base_session(
         &mut self,
         agent: &str,
-        peer: &Subject,
+        peer: &ActorRef,
     ) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.remove(&key)
@@ -2167,15 +2167,15 @@ impl SessionManager {
         if let Some(parsed) = crate::key::parse_session_key_v2(&base_key) {
             // The wildcard arm aligns with the v1 defaults at
             // `manager.rs:1046, 1049, 1052` (which default to
-            // `Subject::User("default")` for unknown peer types). This
+            // `ActorRef::User("default")` for unknown peer types). This
             // is the documented ADR-039 behavior change; see the
             // regression test
             // `test_wildcard_peer_type_resolves_to_user_peer` in
             // `tests/principal_back_compat.rs`.
             let peer = match parsed.peer_type.as_str() {
-                "agent" => Subject::Principal(parsed.peer_id.into()),
-                "user" => Subject::User(parsed.peer_id),
-                _ => Subject::User(parsed.peer_id),
+                "agent" => ActorRef::Principal(parsed.peer_id.into()),
+                "user" => ActorRef::User(parsed.peer_id.into()),
+                _ => ActorRef::User(parsed.peer_id.into()),
             };
 
             // Remove the base session
@@ -2414,7 +2414,7 @@ impl SessionManagerRotationSink {
     /// with the pre-paging constructor — chapter rotation re-registered
     /// peers and invalidated per-(agent, peer) caches; stable-id paging
     /// needs neither.
-    pub fn new(manager: Arc<RwLock<SessionManager>>, agent: String, peer: Subject) -> Self {
+    pub fn new(manager: Arc<RwLock<SessionManager>>, agent: String, peer: ActorRef) -> Self {
         let _ = (agent, peer);
         Self { manager }
     }
@@ -2697,7 +2697,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let base1 = manager
             .get_or_create_base("test_agent", &peer)
@@ -2719,7 +2719,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
@@ -2741,7 +2741,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create CLI session
         let cli = manager
@@ -2779,7 +2779,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_spawn_overlay("test_agent", &peer, "Research task", false, "parent_key")
@@ -2799,7 +2799,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create parent session
         let parent = manager
@@ -2824,7 +2824,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create parent session and add a message
         let parent = manager
@@ -2867,7 +2867,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_spawn_overlay_with_config(
@@ -2899,7 +2899,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
@@ -2918,7 +2918,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Cli, "guild123")
@@ -2947,21 +2947,21 @@ mod tests {
     /// (review #1 — the audit-trail footgun the issue is built on).
     ///
     /// The chain under test:
-    ///   `with_peer_principal(Subject::Principal("helper"))`
-    ///     → `SessionManager::peer()` resolves to `Subject::Principal("helper")`
-    ///     → `SessionEntry::with_peer(.., peer.kind().to_string(), peer.subject_id().to_string())`
+    ///   `with_peer_principal(ActorRef::Principal("helper"))`
+    ///     → `SessionManager::peer()` resolves to `ActorRef::Principal("helper")`
+    ///     → `SessionEntry::with_peer(.., peer.kind().to_string(), peer.subject_id())`
     ///     → `SessionEntry.peer_type == Some("agent")`
     #[test]
     fn test_a2a_principal_produces_agent_session_entry_issue_24_review_1() {
         let manager =
-            SessionManager::new().with_peer_principal(Subject::Principal("helper".into()));
+            SessionManager::new().with_peer_principal(ActorRef::Principal("helper".into()));
 
         // The session peer resolves to the agent principal.
         let peer = manager.peer();
         assert_eq!(
             peer,
-            Subject::Principal("helper".into()),
-            "peer() must return Subject::Principal for a2a (issue #24)"
+            ActorRef::Principal("helper".into()),
+            "peer() must return ActorRef::Principal for a2a (issue #24)"
         );
 
         // The session index entry is constructed with peer_type /
@@ -2972,7 +2972,7 @@ mod tests {
             "analyzer".to_string(),
             "sess-1.jsonl".to_string(),
             peer.kind().to_string(),
-            peer.subject_id().to_string(),
+            peer.subject_id(),
         );
         assert_eq!(
             entry.peer_type.as_deref(),
@@ -2988,7 +2988,7 @@ mod tests {
         );
     }
 
-    /// `peer()` falls back to `Subject::User(user)` when no
+    /// `peer()` falls back to `ActorRef::User(user)` when no
     /// `peer_principal` is set — the legacy path for human-originated
     /// calls (CLI, IPC). This is the positive control for review #1:
     /// only a2a-originated calls change attribution; everything else
@@ -2997,38 +2997,38 @@ mod tests {
     fn test_legacy_user_principal_unchanged_issue_24_review_1() {
         let manager = SessionManager::new().with_user("alice");
         let peer = manager.peer();
-        assert_eq!(peer, Subject::User("alice".into()));
+        assert_eq!(peer, ActorRef::User("alice".into()));
 
         let entry = SessionEntry::with_peer(
             "sess-1".to_string(),
             "target".to_string(),
             "sess-1.jsonl".to_string(),
             peer.kind().to_string(),
-            peer.subject_id().to_string(),
+            peer.subject_id(),
         );
         assert_eq!(entry.peer_type.as_deref(), Some("user"));
         assert_eq!(entry.peer_id.as_deref(), Some("alice"));
     }
 
     /// `peer()` refuses to silently masquerade a non-peer subject
-    /// (review #2). A `Subject::Public` set via the raw setter is
-    /// warned and surfaced as `Subject::User("")` rather than coerced
+    /// (review #2). A `ActorRef::Public` set via the raw setter is
+    /// warned and surfaced as `ActorRef::User("")` rather than coerced
     /// into the legacy form, which would silently re-introduce the
     /// post-#24 masquerade.
     #[test]
     fn test_peer_refuses_non_session_peer_principal_issue_24_review_2() {
         let manager = SessionManager::new()
             .with_user("alice")
-            .with_peer_principal(Subject::Public);
+            .with_peer_principal(ActorRef::Public);
 
         let peer = manager.peer();
         // Must NOT be the public subject masquerading as a user
-        // (the legacy fall-back); must NOT be Subject::Public (not a
+        // (the legacy fall-back); must NOT be ActorRef::Public (not a
         // valid session peer). Must be the empty-user sentinel so
         // the session key still derives to a valid bucket.
         assert_eq!(
             peer,
-            Subject::User(String::new()),
+            ActorRef::User("".into()),
             "non-peer principal must surface as empty-user sentinel, not the legacy form (review #2)"
         );
 
@@ -3037,10 +3037,10 @@ mod tests {
         // guarding here.
         let manager2 = SessionManager::new()
             .with_user("alice")
-            .with_peer_principal_opt(Some(Subject::Public));
+            .with_peer_principal_opt(Some(ActorRef::Public));
         assert_eq!(
             manager2.peer(),
-            Subject::User("alice".into()),
+            ActorRef::User("alice".into()),
             "with_peer_principal_opt must filter non-peer principals at the call site"
         );
     }
@@ -3051,7 +3051,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create session
         let handle = manager
@@ -3083,7 +3083,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create session
         let handle = manager
@@ -3112,7 +3112,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create first session
         let handle1 = manager
@@ -3153,7 +3153,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create session via SessionManager (the ONLY way)
         let handle = manager
@@ -3184,7 +3184,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create session
         let handle = manager
@@ -3216,7 +3216,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create session
         let handle = manager
@@ -3257,7 +3257,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // get_or_create_base should require initialized SessionManager
         // (no legacy fallback to Session::open)
@@ -3281,7 +3281,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let parent_id = {
             let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
@@ -3330,7 +3330,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let parent_id = {
             let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
@@ -3381,7 +3381,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp.path())
             .with_agent_name("test_agent");
@@ -3454,7 +3454,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let handle = manager
             .create_session("test_agent", &peer, SessionCreateOptions::new())
@@ -3520,7 +3520,7 @@ mod tests {
 
         let temp = TempDir::new().unwrap();
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         // Create a base session via the public path so the metadata
         // controller + peers.json are wired up.
@@ -3582,7 +3582,7 @@ mod tests {
         let manager = Arc::new(RwLock::new(
             SessionManager::new().with_sessions_dir_internal(temp.path()),
         ));
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let live_id = SessionId::from("root:user:alice").to_string();
 
         let handle = {

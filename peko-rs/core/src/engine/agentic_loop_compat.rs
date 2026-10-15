@@ -1,7 +1,7 @@
 //! Root-side test harness for `peko_engine::AgenticLoop`.
 //!
 //! The test suite lives here (Phase 9b.N.5b.9) because the fixtures
-//! (`Agent`, `ToolingRuntime`, `Subject`, `SessionManager`, etc.) are
+//! (`Agent`, `ToolingRuntime`, `ActorRef`, `SessionManager`, etc.) are
 //! root-only types that `peko-engine` cannot depend on without violating
 //! `check_workspace_deps.py` forbidden-edge rules. Root provides the test
 //! harness, `peko-engine` owns the production type — production callers
@@ -18,7 +18,7 @@ mod tests {
     use crate::agents::agent_config::AgentConfig;
     use crate::agents::Agent;
     use crate::tools::runtime::ToolingRuntime;
-    use peko_auth::Subject;
+    use peko_auth::ActorRef;
     use peko_engine::AgenticEvent;
     use peko_engine::StackedMeteredProvider;
     use peko_engine::{AgentView, AgenticLoop, LifecyclePhase, SessionView};
@@ -224,7 +224,7 @@ mod tests {
         let mut manager = SessionManager::new()
             .with_sessions_dir_internal(temp_dir.join("data").join("sessions"))
             .with_agent_name(role_name);
-        let peer = Subject::User("default".to_string());
+        let peer = ActorRef::User("default".into());
         let handle = manager
             .create_session(
                 role_name,
@@ -309,7 +309,7 @@ mod tests {
 
         // Phase 9b.N.5b.9d: `AgenticLoop::run()` was removed (it owned
         // a `SessionManager` + `PathResolver` orchestration path that
-        // pulled `peko_auth::Subject` + `peko_session::manager::*`
+        // pulled `peko_auth::ActorRef` + `peko_session::manager::*`
         // into the loop — root-only types). Tests that didn't have a
         // pre-built session now build one via `test_session(...)` and
         // route through `run_with_resume` directly. Mirrors the

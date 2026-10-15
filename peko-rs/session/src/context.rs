@@ -4,7 +4,7 @@
 //! All session operations go through `SessionHandle` obtained from `SessionManager`.
 
 use crate::types::ChannelType;
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 /// Lightweight context for session-aware agent execution — pure DTO, no operations.
 ///
@@ -21,7 +21,7 @@ pub struct SessionContext {
     /// Full session key (including overlay if present)
     pub full_session_key: String,
     /// The peer this session belongs to
-    pub peer: Subject,
+    pub peer: ActorRef,
     /// Channel type (if applicable)
     pub channel_type: Option<ChannelType>,
     /// Whether this session is for a subagent/spawn
@@ -37,7 +37,7 @@ impl SessionContext {
         agent_name: impl Into<String>,
         session_key: impl Into<String>,
         full_session_key: impl Into<String>,
-        peer: Subject,
+        peer: ActorRef,
         channel_type: Option<ChannelType>,
         is_subagent: bool,
         is_isolated: bool,
@@ -66,7 +66,7 @@ mod tests {
             "test_agent",
             "agent:test_agent:peer:user:alice",
             "agent:test_agent:peer:user:alice",
-            Subject::User("alice".to_string()),
+            ActorRef::User("alice".into()),
             Some(ChannelType::Cli),
             false,
             false,

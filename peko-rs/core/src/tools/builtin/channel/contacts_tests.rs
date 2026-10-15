@@ -14,14 +14,14 @@ fn context(principal: &PrincipalId) -> ToolContext {
     ctx
 }
 
-async fn register(port: &dyn ChannelPort, actor: &Subject, name: &str) -> ActorInfo {
+async fn register(port: &dyn ChannelPort, actor: &ActorRef, name: &str) -> ActorInfo {
     port.register_actor(
         actor,
         Some(&format!("hub-{name}")),
         None,
         Some(&format!("key-{name}")),
         Some(name),
-        "private",
+        peko_channel::Registration::Private,
     )
     .await
     .unwrap()
@@ -36,11 +36,11 @@ async fn list_and_alias_resolution_are_scoped_to_current_channels() {
     }));
     let a = PrincipalId("prin_a".into());
     let b = PrincipalId("prin_b".into());
-    let me = register(&*port, &Subject::from(&a), "Alice").await;
-    register(&*port, &Subject::from(&b), "Bob").await;
-    let human = register(&*port, &Subject::User("human".into()), "Human").await;
-    let visitor = register(&*port, &Subject::Visitor("visitor".into()), "Visitor").await;
-    let unrelated = register(&*port, &Subject::User("unrelated".into()), "Unrelated").await;
+    let me = register(&*port, &ActorRef::from(&a), "Alice").await;
+    register(&*port, &ActorRef::from(&b), "Bob").await;
+    let human = register(&*port, &ActorRef::User("human".into()), "Human").await;
+    let visitor = register(&*port, &ActorRef::Visitor("visitor".into()), "Visitor").await;
+    let unrelated = register(&*port, &ActorRef::User("unrelated".into()), "Unrelated").await;
     let dm = port
         .ensure_dm(&a, &human.subject(), "/human")
         .await
@@ -126,11 +126,11 @@ async fn non_owner_runs_see_only_their_own_conversation() {
     }));
     let a = PrincipalId("prin_a".into());
     let b = PrincipalId("prin_b".into());
-    let me = register(&*port, &Subject::from(&a), "Alice").await;
-    let learned = register(&*port, &Subject::from(&b), "Bob").await;
-    let guest = register(&*port, &Subject::User("guest".into()), "Guest").await;
-    let friend = register(&*port, &Subject::User("friend".into()), "Friend").await;
-    let visitor = register(&*port, &Subject::Visitor("visitor".into()), "Visitor").await;
+    let me = register(&*port, &ActorRef::from(&a), "Alice").await;
+    let learned = register(&*port, &ActorRef::from(&b), "Bob").await;
+    let guest = register(&*port, &ActorRef::User("guest".into()), "Guest").await;
+    let friend = register(&*port, &ActorRef::User("friend".into()), "Friend").await;
+    let visitor = register(&*port, &ActorRef::Visitor("visitor".into()), "Visitor").await;
     let guest_dm = port
         .ensure_dm(&a, &guest.subject(), "/guest")
         .await
@@ -406,7 +406,7 @@ impl Fixture {
                 runtime_id: "remote-runtime".into(),
                 instance_id: "remote-instance".into(),
                 agent_did: "did:key:remote".into(),
-                owner_principal: peko_auth::Subject::Public,
+                owner_principal: peko_auth::ActorRef::Public,
                 exposure: ResolvedExposure::Public,
             }),
             calls: Mutex::new(Vec::new()),
@@ -548,12 +548,12 @@ async fn registered_callers_authenticate_directory_lookups() {
     let config = fx.caller.config.read().await;
     fx.port
         .register_actor(
-            &Subject::from(&fx.caller.id),
+            &ActorRef::from(&fx.caller.id),
             Some("caller-hub"),
             Some(&fx.caller.did().await.0),
             config.actor_key.as_deref(),
             Some("caller"),
-            "private",
+            peko_channel::Registration::Private,
         )
         .await
         .unwrap();

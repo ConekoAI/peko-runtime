@@ -11,7 +11,7 @@ use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::async_exec::executor::AsyncTaskStatus;
 use crate::async_exec::executor::{AsyncTaskRegistry, SharedAsyncTaskRegistry};
 use crate::common::paths::PathResolver;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_session::manager::SessionManager;
 use peko_session::types::SpawnCleanupPolicy;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -127,7 +127,7 @@ async fn test_e2e_spawn_and_complete() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
     // Create a parent session context
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -187,7 +187,7 @@ async fn zero_timeout_runs_uncapped_and_waits_for_the_end() {
         let mut manager = session_manager.write().await;
         manager
             .route(
-                &Subject::User("alice".to_string()),
+                &ActorRef::User("alice".into()),
                 peko_session::types::ChannelType::Cli,
                 "default",
                 None,
@@ -246,7 +246,7 @@ async fn zero_timeout_runs_uncapped_and_waits_for_the_end() {
 async fn subagent_inherits_parent_cancel() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     let (parent_key, _resolved) = {
         let mut manager = session_manager.write().await;
         let resolved = manager
@@ -385,7 +385,7 @@ async fn delegation_beyond_old_depth_limit_is_admitted() {
 async fn test_isolated_vs_shared_session() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -466,7 +466,7 @@ async fn test_isolated_vs_shared_session() {
 async fn test_result_format_in_registry() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -513,7 +513,7 @@ async fn test_result_format_in_registry() {
 async fn test_list_runs_functionality() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -594,7 +594,7 @@ async fn test_list_runs_functionality() {
 async fn test_cleanup_policy_tracking() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -646,7 +646,7 @@ async fn test_cleanup_policy_tracking() {
 async fn test_parent_child_relationship() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -700,8 +700,8 @@ async fn test_runs_by_parent_filtering() {
     // `route(&peer2, ...)` produces the *same* parent key. To get two
     // distinct parents we derive the base session key directly from the
     // peer, which is exactly what `create_session` and the registry do.
-    let peer1 = Subject::User("alice".to_string());
-    let peer2 = Subject::User("bob".to_string());
+    let peer1 = ActorRef::User("alice".into());
+    let peer2 = ActorRef::User("bob".into());
     let parent_key1 = peko_session::key::derive_base_session_key(&agent_name, &peer1);
     let parent_key2 = peko_session::key::derive_base_session_key(&agent_name, &peer2);
     assert_ne!(
@@ -760,7 +760,7 @@ async fn test_runs_by_parent_filtering() {
 async fn test_concurrent_runs_counting() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -840,7 +840,7 @@ async fn test_concurrent_runs_counting() {
 async fn test_executor_get_status() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -891,7 +891,7 @@ async fn test_executor_get_status() {
 async fn test_executor_get_run() {
     let (session_manager, registry, agent_name) = create_test_components().await;
 
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     // Scope the session-manager write lock so it's released before
     // `spawn_and_execute`, which internally re-acquires the same write
     // lock via `manager.spawn_session()` — holding the guard here would
@@ -1159,7 +1159,7 @@ async fn create_linked_session(
     parent_id: Option<&str>,
     trigger: &str,
 ) {
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     let mut options = peko_session::SessionCreateOptions::new().with_session_id(id);
     if let Some(parent) = parent_id {
         options = options.with_parent(parent);
@@ -2822,7 +2822,7 @@ async fn new_with_absolute_path_attaches_or_mints_top_level() {
 /// `ToolContext::session_id` carries), not the overlay-style key.
 async fn seed_source_session(
     session_manager: &Arc<RwLock<SessionManager>>,
-    peer: &Subject,
+    peer: &ActorRef,
 ) -> (String, String) {
     let mut manager = session_manager.write().await;
     let resolved = manager
@@ -2848,7 +2848,7 @@ async fn seed_source_session(
 #[tokio::test]
 async fn test_e2e_branch_copies_source_context() {
     let (session_manager, registry, agent_name) = create_test_components().await;
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     let (source_id, source_key) = seed_source_session(&session_manager, &peer).await;
 
     let executor = Arc::new(SubagentExecutor::with_registry(
@@ -2949,7 +2949,7 @@ async fn test_e2e_branch_copies_source_context() {
 #[tokio::test]
 async fn test_branch_overwrite_reseeds_in_place() {
     let (session_manager, registry, agent_name) = create_test_components().await;
-    let peer = Subject::User("alice".to_string());
+    let peer = ActorRef::User("alice".into());
     let (_source_id, source_key) = seed_source_session(&session_manager, &peer).await;
 
     let executor = Arc::new(SubagentExecutor::with_registry(
@@ -3219,7 +3219,7 @@ async fn a_guests_spawn_stays_in_its_conversation_and_cannot_reach_out() {
         let handle = manager
             .create_session(
                 &agent_name,
-                &Subject::User(channel.into()),
+                &ActorRef::User(channel.into()),
                 peko_session::SessionCreateOptions::new(),
             )
             .await

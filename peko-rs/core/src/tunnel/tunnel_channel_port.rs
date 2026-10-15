@@ -40,11 +40,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use peko_channel::{
-    subject_wire_form, ChannelId, ChannelMembership, ChannelPort, Checkpoint, CreateOpts, PostMsg,
-    Result,
+    ChannelId, ChannelMembership, ChannelPort, Checkpoint, CreateOpts, PostMsg, Result,
 };
 use peko_protocol::channel::ChannelEvent;
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use tokio::sync::RwLock;
 use tracing::warn;
 use uuid::Uuid;
@@ -162,7 +161,7 @@ impl TunnelChannelPort {
         }
         let actor = self
             .local
-            .actor_info(&Subject::Principal(did.to_string().into()))
+            .actor_info(&ActorRef::Principal(did.to_string().into()))
             .await;
         let hub = actor.hub_id.clone().filter(|_| actor.local_id.is_none())?;
         let resolved = ctx.directory.resolve_by_hub_id(&hub).await.ok()?;
@@ -338,8 +337,8 @@ impl TunnelChannelPort {
                 event,
                 source,
             } => {
-                let source = Subject::from_str(source)
-                    .unwrap_or_else(|_| Subject::Principal(source.clone().into()));
+                let source = ActorRef::from_str(source)
+                    .unwrap_or_else(|_| ActorRef::Principal(source.clone().into()));
                 self.event_envelope(
                     ctx,
                     &entry.request_id,
@@ -508,15 +507,12 @@ impl TunnelChannelPort {
     /// `MemberJoined`/`MemberLeft`). The signature pre-image always
     /// carries the runtime-level identity (`source_runtime_id`); the
     /// subject id is recorded for audit correlation on the receiving
-    /// runtime. ADR-049 Phase 1: principal senders keep the legacy
-    /// bare-id form here (via [`subject_wire_form`]) so the signed
-    /// pre-image is byte-identical to the pre-ADR-049 shape; user
-    /// senders (Phase 2+) take the canonical `user:<id>` form.
+    /// runtime.
     async fn fanout_event(
         &self,
         channel: &ChannelId,
         ev: &ChannelEvent,
-        source: &Subject,
+        source: &ActorRef,
     ) -> std::result::Result<(), String> {
         let ctx = match self.ctx.read().await.clone() {
             Some(c) => c,
@@ -592,7 +588,7 @@ impl TunnelChannelPort {
         recipient_runtime_id: &str,
         channel: &ChannelId,
         ev: &ChannelEvent,
-        source: &Subject,
+        source: &ActorRef,
     ) -> std::result::Result<crate::tunnel::TunnelMessage, String> {
         // Serialize the event ONCE so the bytes signed are the bytes
         // the receiver will re-serialize and verify (serde_json
@@ -606,8 +602,8 @@ impl TunnelChannelPort {
         };
         if let Some(author) = actor_field {
             let subject = author
-                .parse::<Subject>()
-                .unwrap_or_else(|_| Subject::Principal(author.clone().into()));
+                .parse::<ActorRef>()
+                .unwrap_or_else(|_| ActorRef::Principal(author.clone().into()));
             {
                 let actor = self.local.actor_info(&subject).await;
                 if let Some(hub) = actor.hub_address() {
@@ -633,7 +629,7 @@ impl TunnelChannelPort {
         // the legacy wire id would produce exactly the runtime-vouched
         // envelope the receiver's D2 author gate exists to refuse.
         let author: Option<(String, Arc<ed25519_dalek::SigningKey>)> = match source {
-            Subject::Principal(did) => {
+            ActorRef::Principal(did) => {
                 let pid = PrincipalId::from_did(did);
                 match ctx.principal_keys.did_for_principal(&pid).await {
                     Some(did) => match ctx.principal_keys.signing_key_for_did(&did).await {
@@ -654,7 +650,7 @@ impl TunnelChannelPort {
         };
         let source_wire_id = match &author {
             Some((did, _)) => did.clone(),
-            None if matches!(source, Subject::User(_) | Subject::Visitor(_)) => self
+            None if matches!(source, ActorRef::User(_) | ActorRef::Visitor(_)) => self
                 .local
                 .actor_info(source)
                 .await
@@ -921,11 +917,11 @@ impl TunnelChannelPort {
         // row that a did:key-authored event can never match.
         let invitee_profile = self
             .local
-            .actor_info(&Subject::Principal(invitee_bare.clone().into()))
+            .actor_info(&ActorRef::Principal(invitee_bare.clone().into()))
             .await;
         let mut remote_addresses = Vec::new();
         for member in &remote {
-            let subject = Subject::Principal(member.principal_id.clone().into());
+            let subject = ActorRef::Principal(member.principal_id.clone().into());
             remote_addresses.push(self.local.actor_info(&subject).await.address);
         }
         let mut local_rows: Vec<peko_protocol::channel::InitialMember> = Vec::new();
@@ -943,10 +939,10 @@ impl TunnelChannelPort {
                 .hub_address()
                 .unwrap_or_else(|| profile.address.clone());
             let mut wire = resolved
-                .parse::<Subject>()
-                .map(|s| subject_wire_form(&s))
-                .unwrap_or_else(|_| subject_wire_form(p));
-            if let Subject::Principal(did) = p {
+                .parse::<ActorRef>()
+                .map(|s| s.canonical_address())
+                .unwrap_or_else(|_| p.canonical_address());
+            if let ActorRef::Principal(did) = p {
                 let pid = PrincipalId::from_did(did);
                 if let Some(vault_did) = ctx.principal_keys.did_for_principal(&pid).await {
                     wire = vault_did;
@@ -967,8 +963,8 @@ impl TunnelChannelPort {
         {
             let subject = member
                 .principal_id
-                .parse::<Subject>()
-                .unwrap_or_else(|_| Subject::Principal(member.principal_id.clone().into()));
+                .parse::<ActorRef>()
+                .unwrap_or_else(|_| ActorRef::Principal(member.principal_id.clone().into()));
             let profile = self.local.actor_info(&subject).await;
             initial_members.push(peko_protocol::channel::InitialMember {
                 principal_did: member.principal_id.clone(),
@@ -980,7 +976,7 @@ impl TunnelChannelPort {
         }
         let profile = self
             .local
-            .actor_info(&Subject::Principal(invitee_bare.clone().into()))
+            .actor_info(&ActorRef::Principal(invitee_bare.clone().into()))
             .await;
         initial_members.push(peko_protocol::channel::InitialMember {
             principal_did: invitee_bare.clone(),
@@ -1016,7 +1012,7 @@ impl TunnelChannelPort {
                 channel.as_str()
             ));
         }
-        let creator_profile = self.local.actor_info(&Subject::from(inviter)).await;
+        let creator_profile = self.local.actor_info(&ActorRef::from(inviter)).await;
         let creator_address = creator_profile
             .hub_address()
             .ok_or_else(|| "Register the inviter before using Hub transport".to_string())?;
@@ -1133,12 +1129,12 @@ impl ChannelPort for TunnelChannelPort {
 
     async fn register_actor(
         &self,
-        subject: &Subject,
+        subject: &ActorRef,
         hub_id: Option<&str>,
         signing_did: Option<&str>,
         identity_key: Option<&str>,
         name: Option<&str>,
-        registration: &str,
+        registration: peko_channel::Registration,
     ) -> Result<peko_channel::ActorInfo> {
         self.local
             .register_actor(
@@ -1161,10 +1157,10 @@ impl ChannelPort for TunnelChannelPort {
     async fn register_principal(&self, id: &PrincipalId, did: &str, name: &str) -> Result<()> {
         self.local.register_principal(id, did, name).await
     }
-    async fn actor_info(&self, subject: &Subject) -> peko_channel::ActorInfo {
+    async fn actor_info(&self, subject: &ActorRef) -> peko_channel::ActorInfo {
         self.local.actor_info(subject).await
     }
-    fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+    fn key_of(&self, subject: &ActorRef) -> peko_subject::ActorKey {
         self.local.key_of(subject)
     }
     async fn participants(&self, channel: &ChannelId) -> Result<Vec<peko_channel::ActorInfo>> {
@@ -1180,7 +1176,7 @@ impl ChannelPort for TunnelChannelPort {
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,
-        peer: &Subject,
+        peer: &ActorRef,
         binding: &str,
     ) -> Result<ChannelId> {
         self.local.ensure_dm(principal, peer, binding).await
@@ -1193,7 +1189,7 @@ impl ChannelPort for TunnelChannelPort {
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &Subject,
+        invitee: &ActorRef,
     ) -> Result<()> {
         let Some(ctx) = self.ctx.read().await.clone() else {
             return self.local.invite(channel, inviter, invitee).await;
@@ -1207,8 +1203,8 @@ impl ChannelPort for TunnelChannelPort {
         } else {
             false
         };
-        if (known.hub_id.is_none() && !invitee.subject_id().starts_with("hub:"))
-            || !matches!(invitee, Subject::Principal(_))
+        if (known.hub_id.is_none() && !invitee.is_hub_route())
+            || !matches!(invitee, ActorRef::Principal(_))
             || hosted
         {
             self.local
@@ -1223,7 +1219,12 @@ impl ChannelPort for TunnelChannelPort {
         let hub_id = known
             .hub_id
             .clone()
-            .or_else(|| invitee.subject_id().strip_prefix("hub:").map(str::to_owned))
+            .or_else(|| {
+                invitee
+                    .route()
+                    .filter(|r| r.is_hub())
+                    .map(|r| r.id().to_owned())
+            })
             .ok_or_else(|| {
                 peko_channel::ChannelError::Adapter(
                     "Unknown principal; use Contacts.resolve with its Hub ID".into(),
@@ -1260,9 +1261,9 @@ impl ChannelPort for TunnelChannelPort {
                     "Directory local identity does not match the hosted principal".into(),
                 ));
             }
-            Subject::from(&id)
+            ActorRef::from(&id)
         } else {
-            Subject::Principal(format!("hub:{hub_id}").into())
+            ActorRef::Principal(peko_subject::Route::hub(hub_id.clone()))
         };
         let actor = self
             .local
@@ -1273,9 +1274,9 @@ impl ChannelPort for TunnelChannelPort {
                 Some(&resolution.identity_key),
                 None,
                 if resolution.exposure == super::hub_directory::ResolvedExposure::Public {
-                    "public"
+                    peko_channel::Registration::Public
                 } else {
-                    "private"
+                    peko_channel::Registration::Private
                 },
             )
             .await?;
@@ -1299,7 +1300,7 @@ impl ChannelPort for TunnelChannelPort {
         Ok(())
     }
 
-    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId> {
+    async fn post(&self, channel: &ChannelId, sender: &ActorRef, msg: PostMsg) -> Result<TaskId> {
         // 1. Local write — same path the bare `ChannelStore` would
         // take. We use `post_with_event` so we get the
         // `ChannelEvent` back for outbound fan-out (no
@@ -1329,7 +1330,7 @@ impl ChannelPort for TunnelChannelPort {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -1391,7 +1392,7 @@ impl ChannelPort for TunnelChannelPort {
     }
 
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
-        let subject = Subject::from(principal);
+        let subject = ActorRef::from(principal);
         if !self.local.list_members(channel).await?.contains(&subject) {
             return Ok(());
         }
@@ -1406,7 +1407,7 @@ impl ChannelPort for TunnelChannelPort {
             .map_err(peko_channel::ChannelError::Adapter)
     }
 
-    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>> {
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<ActorRef>> {
         // Preserve user/visitor kinds in mixed remote group snapshots. Bare
         // legacy IDs are principal IDs; prefixed actor addresses are typed.
         let mut subjects = self.local.list_members(channel).await?;
@@ -1417,8 +1418,8 @@ impl ChannelPort for TunnelChannelPort {
                 .into_iter()
                 .map(|r| {
                     r.principal_id
-                        .parse::<Subject>()
-                        .unwrap_or_else(|_| Subject::Principal(r.principal_id.into()))
+                        .parse::<ActorRef>()
+                        .unwrap_or_else(|_| ActorRef::Principal(r.principal_id.into()))
                 }),
         );
         let mut out = Vec::new();
@@ -1540,9 +1541,9 @@ mod tests {
         }
         let members = port.list_members(&channel).await.unwrap();
         assert_eq!(members.len(), 4);
-        assert!(members.contains(&Subject::Principal("did:key:remote".into())));
-        assert!(members.contains(&Subject::User("alice".into())));
-        assert!(members.contains(&Subject::Visitor("guest".into())));
+        assert!(members.contains(&ActorRef::Principal("did:key:remote".into())));
+        assert!(members.contains(&ActorRef::User("alice".into())));
+        assert!(members.contains(&ActorRef::Visitor("guest".into())));
     }
 
     /// `append_remote_event` delegates to the local store and lands
@@ -1623,7 +1624,7 @@ mod tests {
         port.invite(
             &channel,
             &creator,
-            &Subject::from(&PrincipalId("prin_carol".into())),
+            &ActorRef::from(&PrincipalId("prin_carol".into())),
         )
         .await
         .unwrap();
@@ -1631,7 +1632,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 PostMsg::root("hello world"),
             )
             .await
@@ -1639,7 +1640,7 @@ mod tests {
         assert_eq!(line, "2", "Created=0, MemberJoined=1, Posted=2");
 
         let members = port.list_members(&channel).await.unwrap();
-        let member_strs: Vec<&str> = members.iter().map(|p| p.subject_id()).collect();
+        let member_strs: Vec<String> = members.iter().map(|p| p.subject_id()).collect();
         assert_eq!(member_strs, vec!["prin_alice", "prin_carol"]);
     }
 
@@ -1758,7 +1759,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hello"),
         )
         .await
@@ -1838,17 +1839,17 @@ mod tests {
                 runtime_id: "did:key:zRuntimeB".into(),
                 instance_id: "remote-instance".into(),
                 agent_did: remote_did.clone(),
-                owner_principal: Subject::Public,
+                owner_principal: ActorRef::Public,
                 exposure: crate::tunnel::hub_directory::ResolvedExposure::Public,
             },
         );
         port.register_actor(
-            &Subject::Principal("hub:remote-hub".into()),
+            &ActorRef::Principal("hub:remote-hub".into()),
             Some("remote-hub"),
             Some(&remote_did),
             Some("remote-key"),
             Some("Remote"),
-            "public",
+            peko_channel::Registration::Public,
         )
         .await
         .unwrap();
@@ -1865,14 +1866,14 @@ mod tests {
         ];
         for (id, key) in &keys {
             port.register_actor(
-                &Subject::from(id),
+                &ActorRef::from(id),
                 Some(&format!("hub-{}", id.0)),
                 Some(&crate::tunnel::verifying_key_to_did_key(
                     &key.verifying_key(),
                 )),
                 None,
                 Some(&id.0),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -1938,7 +1939,7 @@ mod tests {
             .replace_peer_route(&channel, &remote_did, "did:key:zRuntimeOld")
             .await
             .unwrap();
-        port.post(&channel, &Subject::from(&alice), PostMsg::root("hello"))
+        port.post(&channel, &ActorRef::from(&alice), PostMsg::root("hello"))
             .await
             .unwrap();
         let mut recipients = Vec::new();
@@ -1988,7 +1989,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &Subject::from(&PrincipalId("prin_alice".into())),
+                &ActorRef::from(&PrincipalId("prin_alice".into())),
                 PostMsg::root("hello from A"),
             )
             .await
@@ -2128,7 +2129,7 @@ mod tests {
 
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hello"),
         )
         .await
@@ -2179,7 +2180,7 @@ mod tests {
 
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("hi all"),
         )
         .await
@@ -2237,7 +2238,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("solo"),
         )
         .await
@@ -2292,7 +2293,7 @@ mod tests {
         let line = port
             .post(
                 &channel,
-                &Subject::from(&PrincipalId("prin_alice".into())),
+                &ActorRef::from(&PrincipalId("prin_alice".into())),
                 PostMsg::root("patience"),
             )
             .await
@@ -2340,7 +2341,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("while offline").with_msg_id("msg_offline"),
         )
         .await
@@ -2416,7 +2417,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_alice".into())),
+            &ActorRef::from(&PrincipalId("prin_alice".into())),
             PostMsg::root("before the restart"),
         )
         .await
@@ -2493,7 +2494,7 @@ mod tests {
         .await
         .unwrap();
         let _ = rx.recv().await.unwrap();
-        port.invite(&channel, &alice, &Subject::from(&bob))
+        port.invite(&channel, &alice, &ActorRef::from(&bob))
             .await
             .unwrap();
         match rx.recv().await.unwrap() {
@@ -2539,7 +2540,7 @@ mod tests {
         let channel = if dm {
             port.ensure_dm(
                 &inviter,
-                &Subject::Principal("hub:remote-hub".into()),
+                &ActorRef::Principal("hub:remote-hub".into()),
                 "/remote",
             )
             .await
@@ -2659,7 +2660,7 @@ mod tests {
         // The receiver posts a reply on its mirror...
         port.post(
             &channel,
-            &Subject::from(&PrincipalId("prin_bob_local".into())),
+            &ActorRef::from(&PrincipalId("prin_bob_local".into())),
             PostMsg::root("hello back"),
         )
         .await

@@ -800,7 +800,7 @@ mod tests {
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalRoutingConfig,
     };
-    use peko_auth::Subject;
+    use peko_auth::ActorRef;
 
     use tempfile::TempDir;
 
@@ -810,7 +810,7 @@ mod tests {
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
@@ -1151,7 +1151,7 @@ mod tests {
             .write()
             .await
             .route(
-                &Subject::User("owner".into()),
+                &ActorRef::User("owner".into()),
                 peko_session::types::ChannelType::Cli,
                 "default",
                 None,

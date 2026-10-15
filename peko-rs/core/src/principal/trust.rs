@@ -4,7 +4,7 @@
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use peko_auth::{ActorKeys, Subject};
+use peko_auth::{ActorKeys, ActorRef};
 use peko_tools_core::Trust;
 
 use crate::principal::Principal;
@@ -27,7 +27,7 @@ impl PrincipalTrust {
 
 #[async_trait]
 impl TrustSource for PrincipalTrust {
-    async fn trust_of(&self, actor: &Subject, keys: &(dyn ActorKeys + Sync)) -> Trust {
+    async fn trust_of(&self, actor: &ActorRef, keys: &(dyn ActorKeys + Sync)) -> Trust {
         let Some(principal) = self.principal.upgrade() else {
             return Trust::Untrusted;
         };
@@ -35,14 +35,14 @@ impl TrustSource for PrincipalTrust {
         trust_for(&config.owner, &config.permissions, keys, actor)
     }
 
-    async fn owner(&self) -> Subject {
+    async fn owner(&self) -> ActorRef {
         let owner = match self.principal.upgrade() {
             Some(principal) => principal.config.read().await.owner.clone(),
-            None => Subject::User(String::new()),
+            None => ActorRef::User("".into()),
         };
         // An ownerless legacy config belongs to the local operator.
         if owner.subject_id().is_empty() {
-            Subject::User("local".into())
+            ActorRef::User("local".into())
         } else {
             owner
         }
@@ -110,7 +110,7 @@ pub(crate) async fn cron_job_stamp(
         // jobs that already exist. A group counterpart is no actor; the
         // conversation's ceiling caps it below.
         let mut driver = crate::security::Driver::from(&creator);
-        if let Ok(actor) = creator.actor.parse::<Subject>() {
+        if let Ok(actor) = creator.actor.parse::<ActorRef>() {
             driver.trust = driver.trust.min(stamps.trust_of(&actor).await);
         }
         driver

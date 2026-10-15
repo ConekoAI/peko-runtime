@@ -22,7 +22,7 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 /// queueing work without bound.
 const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
@@ -76,10 +76,10 @@ impl std::error::Error for BridgeCallerError {}
 /// on every proxied request. When a JWT is present and a `JwtValidator` is
 /// configured, this function validates the JWT (signature, audience,
 /// issuer, expiry) and maps the validated `(kind, sub)` claims into a
-/// typed [`Subject`] via [`Subject::from_bridge_claim`]:
+/// typed [`ActorRef`] via [`ActorRef::from_bridge_claim`]:
 ///
-/// - `kind: "user"` → `Subject::User(sub)` (a hub account id);
-/// - `kind: "visitor"` → `Subject::Visitor(sub)` (a hub-minted
+/// - `kind: "user"` → `ActorRef::User(sub)` (a hub account id);
+/// - `kind: "visitor"` → `ActorRef::Visitor(sub)` (a hub-minted
 ///   anonymous id — never a user, principal, or the reserved `local`).
 ///
 /// ADR-058 D5 made the `kind` claim mandatory (fail-closed): a
@@ -96,7 +96,7 @@ impl std::error::Error for BridgeCallerError {}
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
-) -> Result<Subject, BridgeCallerError> {
+) -> Result<ActorRef, BridgeCallerError> {
     // ADR-057 + ADR-058 D5: the caller identity is ALWAYS a signed
     // EdDSA bridge token minted by PekoHub (typed `kind` claim + `sub`,
     // aud = this runtime's DID). A runtime with a tunnel configured
@@ -120,7 +120,7 @@ pub(crate) async fn resolve_bridge_caller(
                 );
                 return Err(BridgeCallerError::InvalidKind);
             };
-            Subject::from_bridge_claim(kind, &validated.sub).map_err(|e| {
+            ActorRef::from_bridge_claim(kind, &validated.sub).map_err(|e| {
                 warn!(
                     "validated bridge JWT failed the typed-claim gate ({}); rejecting request",
                     e
@@ -223,7 +223,7 @@ async fn manager_hub_id(
     principal: &crate::principal::Principal,
 ) -> Option<String> {
     host.tunnel_channel_port()
-        .actor_info(&Subject::from(&principal.id))
+        .actor_info(&ActorRef::from(&principal.id))
         .await
         .hub_id
 }
@@ -371,7 +371,7 @@ impl TunnelDispatcher {
                 identity_key: self
                     .host
                     .tunnel_channel_port()
-                    .actor_info(&Subject::from(&principal.id))
+                    .actor_info(&ActorRef::from(&principal.id))
                     .await
                     .identity_key,
                 id: instance_id.clone(),
@@ -417,11 +417,11 @@ impl TunnelDispatcher {
     /// Used when a new Principal is created after the tunnel is already connected.
     /// The principal's owner as a Hub account, when it has one (ADR-081
     /// D4). Hub's wire form is the bare account UUID.
-    async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<Subject> {
+    async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<ActorRef> {
         let owner = principal.config.read().await.owner.clone();
         let info = self.host.tunnel_channel_port().actor_info(&owner).await;
         match (info.kind.as_str(), info.hub_id) {
-            ("user", Some(account)) => Some(Subject::User(account)),
+            ("user", Some(account)) => Some(ActorRef::User(account.into())),
             _ => None,
         }
     }
@@ -474,7 +474,7 @@ impl TunnelDispatcher {
             identity_key: self
                 .host
                 .tunnel_channel_port()
-                .actor_info(&Subject::from(&principal.id))
+                .actor_info(&ActorRef::from(&principal.id))
                 .await
                 .identity_key,
             id: instance_id.clone(),
@@ -593,7 +593,7 @@ impl TunnelDispatcher {
                     "registration receipt signing identity mismatch"
                 );
                 let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
-                let existing = port.actor_info(&Subject::from(&principal.id)).await;
+                let existing = port.actor_info(&ActorRef::from(&principal.id)).await;
                 // Keep receipt validation and durable identity commit in one nonce lifecycle.
                 let mut state = self.state.write().await;
                 let pending = state.pending_registrations.get(&principal.id.0);
@@ -606,15 +606,15 @@ impl TunnelDispatcher {
                 );
                 let config = principal.config.read().await;
                 port.register_actor(
-                    &Subject::from(&principal.id),
+                    &ActorRef::from(&principal.id),
                     Some(&hub_id),
                     config.did.as_ref().map(|d| d.0.as_str()),
                     config.actor_key.as_deref(),
                     Some(&config.name),
                     if config.exposure == peko_auth::Exposure::Public {
-                        "public"
+                        peko_channel::Registration::Public
                     } else {
-                        "private"
+                        peko_channel::Registration::Private
                     },
                 )
                 .await?;
@@ -751,7 +751,7 @@ impl TunnelDispatcher {
 
         // ADR-057 transport audit: resolve the caller FIRST, then run
         // the exposure ACL against the *resolved* identity. ADR-058 D5:
-        // the resolved identity is a typed `Subject` mapped from the
+        // the resolved identity is a typed `ActorRef` mapped from the
         // bridge token's `(kind, sub)` claims — `user:<hub account>`
         // or `visitor:<hub-minted id>`, never a principal subject and
         // never the reserved `local` id.
@@ -778,7 +778,7 @@ impl TunnelDispatcher {
         // field (column name kept for the Drizzle migration tracking
         // issue). The principal name is the runtime's view of the
         // same identifier — pass it through; downstream audit
-        // consumers can re-key on the `caller` Subject kind.
+        // consumers can re-key on the `caller` ActorRef kind.
         self.host
             .observability()
             .audit_with_caller(
@@ -1048,7 +1048,7 @@ impl TunnelDispatcher {
             return Ok(());
         };
         let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
-        let me = port.actor_info(&Subject::from(&principal.id)).await;
+        let me = port.actor_info(&ActorRef::from(&principal.id)).await;
         if me.hub_id.as_deref() != Some(hub_id) {
             warn!(
                 local_id,
@@ -1059,12 +1059,12 @@ impl TunnelDispatcher {
         let config = principal.config.read().await;
         let name = config.name.clone();
         port.register_actor(
-            &Subject::from(&principal.id),
+            &ActorRef::from(&principal.id),
             None,
             config.did.as_ref().map(|did| did.0.as_str()),
             config.actor_key.as_deref(),
             Some(&name),
-            "local_only",
+            peko_channel::Registration::LocalOnly,
         )
         .await?;
         drop(config);
@@ -1113,12 +1113,12 @@ impl TunnelDispatcher {
             let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
             let config = principal.config.read().await;
             port.register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 None,
                 config.did.as_ref().map(|did| did.0.as_str()),
                 config.actor_key.as_deref(),
                 Some(name),
-                "local_only",
+                peko_channel::Registration::LocalOnly,
             )
             .await?;
             drop(config);
@@ -1309,7 +1309,7 @@ impl TunnelDispatcher {
                         identity_key: self
                             .host
                             .tunnel_channel_port()
-                            .actor_info(&Subject::from(&principal.id))
+                            .actor_info(&ActorRef::from(&principal.id))
                             .await
                             .identity_key,
                         id: instance_id,
@@ -1592,13 +1592,11 @@ impl TunnelDispatcher {
                 }
             }
         } else {
-            let human = payload.source_principal_did.parse::<Subject>();
+            let human = payload.source_principal_did.parse::<ActorRef>();
             let Ok(human) = human else {
                 return Ok(());
             };
-            if !matches!(human, Subject::User(_) | Subject::Visitor(_))
-                || !human.subject_id().starts_with("hub:")
-            {
+            if !matches!(human, ActorRef::User(_) | ActorRef::Visitor(_)) || !human.is_hub_route() {
                 warn!(
                     request_id,
                     "Channel author must be a registered principal or a Hub human actor"
@@ -1626,9 +1624,9 @@ impl TunnelDispatcher {
         if let Some(author) = claimed_actor {
             let source_subject = payload
                 .source_principal_did
-                .parse::<Subject>()
+                .parse::<ActorRef>()
                 .unwrap_or_else(|_| {
-                    Subject::Principal(payload.source_principal_did.clone().into())
+                    ActorRef::Principal(payload.source_principal_did.clone().into())
                 });
             let port = self.host.tunnel_channel_port();
             let source_actor = port.actor_info(&source_subject).await;
@@ -1954,7 +1952,7 @@ impl TunnelDispatcher {
         &self,
         agent_name: &str,
         bridge_payload: &serde_json::Value,
-        caller: &peko_auth::Subject,
+        caller: &peko_auth::ActorRef,
     ) -> anyhow::Result<()> {
         let principal = self
             .host
@@ -1965,7 +1963,7 @@ impl TunnelDispatcher {
         let actor = self
             .host
             .tunnel_channel_port()
-            .actor_info(&Subject::from(&principal.id))
+            .actor_info(&ActorRef::from(&principal.id))
             .await;
         anyhow::ensure!(
             actor.hub_id.is_some() && principal.exposure().await != peko_auth::Exposure::LocalOnly,
@@ -2051,7 +2049,7 @@ impl TunnelDispatcher {
             }
             InstanceExposure::Private => {
                 // The caller identity was resolved before this ACL ran
-                // (see `handle_proxied_request`) — a typed `Subject`
+                // (see `handle_proxied_request`) — a typed `ActorRef`
                 // mapped from the validated bridge token's `(kind,
                 // sub)` claims (ADR-058 D5). Membership is a
                 // kind-aware equality check: a visitor subject only
@@ -2101,7 +2099,7 @@ mod tests {
         PrincipalRoutingConfig,
     };
     use crate::tunnel::protocol::InstanceExposure;
-    use peko_auth::{Permission, PermissionGrant, Subject};
+    use peko_auth::{ActorRef, Permission, PermissionGrant};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -2130,7 +2128,7 @@ mod tests {
         let principal = manager
             .create(test_principal_config(
                 name,
-                Subject::User("local".into()),
+                ActorRef::User("local".into()),
                 vec![],
                 peko_auth::Exposure::Public,
             ))
@@ -2142,12 +2140,12 @@ mod tests {
             .host
             .tunnel_channel_port()
             .register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 Some(&hub_id),
                 config.did.as_ref().map(|d| d.0.as_str()),
                 config.actor_key.as_deref(),
                 Some(name),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -2158,17 +2156,17 @@ mod tests {
         (TunnelHandle::new(tx), rx)
     }
 
-    fn chat_grant(subject: Subject) -> PermissionGrant {
+    fn chat_grant(subject: ActorRef) -> PermissionGrant {
         PermissionGrant {
             subject,
             permission: Permission::Chat,
             granted_at: "2026-06-30T00:00:00Z".to_string(),
-            granted_by: Subject::User("user:owner".to_string()),
+            granted_by: ActorRef::User("user:owner".into()),
         }
     }
 
     /// Grant `Chat` on `name` to each subject (the runtime's ACL).
-    async fn grant_chat(dispatcher: &TunnelDispatcher, name: &str, subjects: &[Subject]) {
+    async fn grant_chat(dispatcher: &TunnelDispatcher, name: &str, subjects: &[ActorRef]) {
         let grants: Vec<_> = subjects.iter().cloned().map(chat_grant).collect();
         dispatcher
             .host
@@ -2181,7 +2179,7 @@ mod tests {
     /// Build a minimal `PrincipalConfig` for dispatcher tests.
     fn test_principal_config(
         name: &str,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: peko_auth::Exposure,
     ) -> PrincipalConfig {
@@ -2214,7 +2212,7 @@ mod tests {
     async fn create_test_principal(
         app_state: &AppState,
         name: &str,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: peko_auth::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
@@ -2334,7 +2332,7 @@ mod tests {
 
     /// When PekoHub sends an `Authorization: Bearer <jwt>` and a
     /// `JwtValidator` is configured, the validated `(kind, sub)` claims
-    /// map to a typed caller `Subject` (issue #17 + ADR-058 D5).
+    /// map to a typed caller `ActorRef` (issue #17 + ADR-058 D5).
     #[tokio::test]
     async fn resolve_bridge_caller_uses_validated_jwt_sub() {
         let (validator, signing_key) = ed25519_validator();
@@ -2347,11 +2345,11 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("hub:user-jwt".to_string())
+            ActorRef::User("hub:user-jwt".into())
         );
     }
 
-    /// ADR-058 D5: `kind: "visitor"` maps to a `Subject::Visitor` —
+    /// ADR-058 D5: `kind: "visitor"` maps to a `ActorRef::Visitor` —
     /// a distinct namespace that can never alias a user or principal.
     #[tokio::test]
     async fn resolve_bridge_caller_maps_visitor_kind_to_visitor_subject() {
@@ -2365,7 +2363,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::Visitor("hub:vis_abc123".to_string())
+            ActorRef::Visitor("hub:vis_abc123".into())
         );
     }
 
@@ -2510,7 +2508,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("hub:user-jwt".to_string())
+            ActorRef::User("hub:user-jwt".into())
         );
     }
 
@@ -2524,7 +2522,7 @@ mod tests {
         let principal = create_test_principal(
             &app_state,
             "pop-agent",
-            Subject::User("local".to_string()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -2755,7 +2753,7 @@ mod tests {
             .check_request_allowed(
                 "public-agent",
                 &bridge_payload,
-                &Subject::User("any-user".to_string()),
+                &ActorRef::User("any-user".into()),
             )
             .await;
         assert!(result.is_ok());
@@ -2784,7 +2782,7 @@ mod tests {
             .check_request_allowed(
                 "unexposed-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_err());
@@ -2801,7 +2799,7 @@ mod tests {
         grant_chat(
             &dispatcher,
             "private-agent",
-            &[Subject::User("user-123".into())],
+            &[ActorRef::User("user-123".into())],
         )
         .await;
         let instance_id = dispatcher.instance_id("private-agent");
@@ -2821,7 +2819,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_ok());
@@ -2836,7 +2834,7 @@ mod tests {
         grant_chat(
             &dispatcher,
             "private-agent",
-            &[Subject::User("user-123".into())],
+            &[ActorRef::User("user-123".into())],
         )
         .await;
         let instance_id = dispatcher.instance_id("private-agent");
@@ -2853,7 +2851,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload, &Subject::Public)
+            .check_request_allowed("private-agent", &bridge_payload, &ActorRef::Public)
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2869,7 +2867,7 @@ mod tests {
         grant_chat(
             &dispatcher,
             "private-agent",
-            &[Subject::User("user-123".into())],
+            &[ActorRef::User("user-123".into())],
         )
         .await;
         let instance_id = dispatcher.instance_id("private-agent");
@@ -2889,7 +2887,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("user-999".to_string()),
+                &ActorRef::User("user-999".into()),
             )
             .await;
         assert!(result.is_err());
@@ -2910,8 +2908,8 @@ mod tests {
             &dispatcher,
             "private-agent",
             &[
-                Subject::User("peer-1".into()),
-                Subject::Visitor("vis-2".into()),
+                ActorRef::User("peer-1".into()),
+                ActorRef::Visitor("vis-2".into()),
             ],
         )
         .await;
@@ -2933,7 +2931,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("peer-1".to_string()),
+                &ActorRef::User("peer-1".into()),
             )
             .await
             .is_ok());
@@ -2941,7 +2939,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::Visitor("vis-2".to_string()),
+                &ActorRef::Visitor("vis-2".into()),
             )
             .await
             .is_ok());
@@ -2950,7 +2948,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::Visitor("peer-1".to_string()),
+                &ActorRef::Visitor("peer-1".into()),
             )
             .await
             .is_err());
@@ -2958,7 +2956,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("vis-2".to_string()),
+                &ActorRef::User("vis-2".into()),
             )
             .await
             .is_err());
@@ -2972,7 +2970,7 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         seed_registered(&dispatcher, "private-agent").await;
-        let owner = Subject::User("hub:owner".to_string());
+        let owner = ActorRef::User("hub:owner".into());
         dispatcher
             .host
             .principal_manager()
@@ -2987,8 +2985,8 @@ mod tests {
             .get_by_name("peer-agent")
             .await
             .unwrap();
-        let peer_local = Subject::from(&peer.id);
-        let peer_hub = Subject::Principal(
+        let peer_local = ActorRef::from(&peer.id);
+        let peer_hub = ActorRef::Principal(
             format!(
                 "hub:{}",
                 dispatcher
@@ -3022,7 +3020,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("hub:stranger".into())
+                &ActorRef::User("hub:stranger".into())
             )
             .await
             .is_err());
@@ -3043,7 +3041,7 @@ mod tests {
             .await
             .unwrap();
         let port = dispatcher.host.tunnel_channel_port();
-        let me = Subject::from(&principal.id);
+        let me = ActorRef::from(&principal.id);
         let hub = port.actor_info(&me).await.hub_id.unwrap();
 
         dispatcher
@@ -3066,12 +3064,12 @@ mod tests {
         // A directory answer for the moved link cannot re-attach it here.
         assert!(port
             .register_actor(
-                &Subject::Principal(format!("hub:{hub}").into()),
+                &ActorRef::Principal(peko_subject::Route::hub(hub.clone())),
                 Some(&hub),
                 config.did.as_ref().map(|d| d.0.as_str()),
                 config.actor_key.as_deref(),
                 None,
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .is_err());
@@ -3088,7 +3086,7 @@ mod tests {
             .check_request_allowed(
                 "unknown-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_err());
@@ -3121,7 +3119,7 @@ mod tests {
         // public chat reaching the runtime through the hub.
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("unlisted-agent", &bridge_payload, &Subject::Public)
+            .check_request_allowed("unlisted-agent", &bridge_payload, &ActorRef::Public)
             .await;
         assert!(result.is_ok());
     }
@@ -3165,7 +3163,7 @@ mod tests {
         let principal = create_test_principal(
             &app_state,
             "announce-me",
-            Subject::User("local".into()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3226,7 +3224,7 @@ mod tests {
         create_test_principal(
             &app_state,
             "web-bound",
-            Subject::User("user:test-user".to_string()),
+            ActorRef::User("user:test-user".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3561,14 +3559,14 @@ mod tests {
 
         let author_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         port.register_actor(
-            &Subject::from(&creator),
+            &ActorRef::from(&creator),
             Some("hub-creator"),
             Some(&crate::tunnel::verifying_key_to_did_key(
                 &author_key.verifying_key(),
             )),
             None,
             None,
-            "public",
+            peko_channel::Registration::Public,
         )
         .await
         .unwrap();
@@ -3591,12 +3589,12 @@ mod tests {
         let kp = peko_identity::keys::KeyPair::generate();
         let source = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         port.register_actor(
-            &Subject::User("hub:bob".into()),
+            &ActorRef::User("hub:bob".into()),
             Some("bob"),
             None,
             None,
             None,
-            "registered",
+            peko_channel::Registration::Registered,
         )
         .await
         .unwrap();
@@ -3666,7 +3664,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &peko_subject::Subject::from(&creator),
+            &peko_subject::ActorRef::from(&creator),
             peko_channel::PostMsg::root("ours").with_msg_id("msg_ours"),
         )
         .await
@@ -3793,12 +3791,12 @@ mod tests {
             .host
             .tunnel_channel_port()
             .register_actor(
-                &Subject::Principal("hub:author-hub".into()),
+                &ActorRef::Principal("hub:author-hub".into()),
                 Some("author-hub"),
                 Some(&author_did),
                 Some("author-key"),
                 Some("Author"),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -3975,7 +3973,7 @@ mod tests {
         let principal = create_test_principal(
             &app,
             "invitee",
-            Subject::User("local".into()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3985,12 +3983,12 @@ mod tests {
         let config = principal.config.read().await;
         app.tunnel_channel_port()
             .register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 Some(&target_hub),
                 config.did.as_ref().map(|d| d.0.as_str()),
                 config.actor_key.as_deref(),
                 Some("invitee"),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -4012,7 +4010,7 @@ mod tests {
                 runtime_id: source_runtime.clone(),
                 instance_id: "source-instance".into(),
                 agent_did: source_did.clone(),
-                owner_principal: Subject::Public,
+                owner_principal: ActorRef::Public,
                 exposure: ResolvedExposure::Public,
             },
         );

@@ -470,7 +470,7 @@ There is no adapter trait, extension manager, global store, or enable/disable AP
 **Status:** ACTIVE  
 **ADRs:** ADR-039 (Principal model), ADR-041 (Principal-as-container & session blackboxing), ADR-042 (no external `session` concept in CLI/IPC)
 
-A `Principal` is the top-level container: it owns identity (DID + keys), configuration, workspace tooling, memory, and the agent prompts that run inside it. A `Subject` is an addressable actor (a Principal or a human user) used for routing and authorization. Sessions are an internal concern of the Principal and are not exposed on the CLI/IPC surface (the only read path is `peko log`).
+A `Principal` is the top-level container: it owns identity (DID + keys), configuration, workspace tooling, memory, and the agent prompts that run inside it. An `ActorRef` is an addressable actor (a Principal or a human user) used for routing and authorization. Sessions are an internal concern of the Principal and are not exposed on the CLI/IPC surface (the only read path is `peko log`).
 
 ### Public Types
 
@@ -519,13 +519,25 @@ Root/trunk runners and every Agent action share this admission mechanism.
 Agent capacity refusals retain their JSON fields and return `success: false`
 from the tool funnel, so async dispatch and cron record a failed invocation.
 
-#### `subject::Subject` (ACTIVE)
+#### `subject::ActorRef` (ACTIVE)
 
 ```rust
-pub enum Subject { User(String), Principal(PrincipalDID), Visitor(String), Public }
+pub enum Route { Local { id: String, runtime: Option<String> }, Hub(String) }
+pub enum ActorRef { User(Route), Principal(Route), Visitor(Route), Public }
+pub enum ActorKind { User, Principal, Visitor, Public }
 ```
 
-The actor identity attached to a session (peer, caller). Replaces the pre-ADR-039 agent/team-scoped addressing. ADR-058 D5 added `Visitor` (hub-minted anonymous peers, `/visitor-<id>` children, no owner authority) and replaced `from_bridge_user` with the fallible `Subject::from_bridge_claim(kind, sub)` for typed bridge-token claims.
+The actor reference attached to a session (peer, caller), grants, owners, and
+channel rows (ADR-081 §3, formerly `Subject`). Scope is a type: a local route
+names its issuing runtime when it is not this one, and a Hub route is a UUID.
+The route's text form is unchanged from the string-scoped era (`local`,
+`prin_x`, `local:<id>@<runtime DID>`, `hub:<id>`), so wire and disk forms
+(`{kind, id}`) are stable. `ActorRef::parse_scoped` requires an explicit
+`kind:local:<id>` / `kind:hub:<id>`; `ActorRef::from_bridge_claim(kind, sub)`
+maps typed bridge-token claims (ADR-058 D5). `Public` is the grant wildcard and
+anonymous caller, never an actor. `peko_channel::Registration`
+(`LocalOnly | Private | Public | Registered`) types `ActorInfo.registration`, and
+`peko_channel::member_row` writes canonical addresses into `members.json`.
 
 ---
 
@@ -551,7 +563,7 @@ The `peko log` row DTO survives, moved and renamed:
 pub struct PrincipalLogMessage {
     pub schema_version: u8,
     pub id: String,
-    pub sender: Subject,
+    pub sender: ActorRef,
     pub timestamp: DateTime<Utc>,
     pub text: String,
     pub correlation_id: Option<String>,
@@ -737,7 +749,7 @@ pub struct SessionContext {
     pub agent_name: String,
     pub session_key: String,
     pub full_session_key: String,
-    pub peer: Subject,
+    pub peer: ActorRef,
     pub channel_type: Option<ChannelType>,
     pub is_subagent: bool,
     pub is_isolated: bool,
@@ -1274,7 +1286,7 @@ The following operations must be tested:
   `public`), returning `principal_registration_updated` with `local_id`, `hub_id`,
   and exposure. CLI: `peko register NAME [--public]`, `peko unregister NAME`.
 - ADR-081 identity: `peko_subject::{ActorKey, ActorKeys, CanonicalKeys}` and
-  `Subject::{canonical_address, qualified_for, localized_on, route_runtime}`;
+  `ActorRef::{canonical_address, qualified_for, localized_on, route_runtime}`;
   `ChannelPort::key_of` and `peko_channel::PortKeys` are the registry's single
   identity comparison. `peko_auth::ownership::check_permission(resource, action,
   caller, keys)` and `security::trust_for(owner, grants, keys, actor)` compare keys;

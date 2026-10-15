@@ -67,7 +67,7 @@ pub struct RouterContext {
     pub tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     pub principal_id: super::PrincipalId,
     pub principal_name: String,
-    pub peer: peko_auth::Subject,
+    pub peer: peko_auth::ActorRef,
     /// The raw user message text.
     pub message: String,
     pub channel: ChannelContext,

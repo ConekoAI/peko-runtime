@@ -44,7 +44,7 @@ const BASE_BACKOFF_SECS: i64 = 30;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum OutboxItem {
     /// A channel event; `source` is the authoring subject's wire string
-    /// (`Subject` `Display` form), re-parsed to load the author key.
+    /// (`ActorRef` `Display` form), re-parsed to load the author key.
     Event {
         channel: ChannelId,
         event: ChannelEvent,

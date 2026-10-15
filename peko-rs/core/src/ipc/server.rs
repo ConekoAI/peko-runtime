@@ -87,7 +87,7 @@ pub enum ServerSocket {
     },
 }
 
-/// Subject address returned by `ServerSocket::recv_from` and threaded through
+/// ActorRef address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
 /// datagram sockets return the sender's filesystem path; UDP returns a
 /// `std::net::SocketAddr`. Windows named pipes (ADR-038) are

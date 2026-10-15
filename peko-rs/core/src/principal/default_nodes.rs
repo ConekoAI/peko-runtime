@@ -44,7 +44,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_session::manager::SessionManager;
 use peko_session::{SessionCreateOptions, SessionMetadata};
 use tokio::sync::RwLock;
@@ -87,7 +87,7 @@ pub async fn seed_default_nodes(
         // Peer subject mirrors the `standing_{name}` placeholder the
         // retired declared-children path used: these nodes are
         // principal infrastructure, not bound to any external peer.
-        let peer = Subject::Principal(format!("default_nodes_{slug}").into());
+        let peer = ActorRef::Principal(format!("default_nodes_{slug}").into());
         let options = SessionCreateOptions::new()
             .with_parent(trunk.clone())
             // `with_parent` presets trigger="branch"; the explicit
@@ -187,7 +187,7 @@ mod tests {
         let (_dir, manager) = fixture().await;
         {
             let mut mgr = manager.write().await;
-            let peer = Subject::User("alice".to_string());
+            let peer = ActorRef::User("alice".into());
             let options = SessionCreateOptions::new()
                 .with_parent(trunk_session_id())
                 .with_trigger("spawn");

@@ -17,7 +17,7 @@
 //! Group channels (`group:<slug>` recipients) post as the caller's
 //! user identity (ADR-049 Phase 2, D7): `peko send group:eng "hi"`
 //! writes to the group channel's log as `user:<id>`; store-level
-//! Subject membership is the write authorization. `--wait` and `--model`
+//! ActorRef membership is the write authorization. `--wait` and `--model`
 //! stay refused — a group post fans out to one run per member
 //! principal, so there is no single run to await or steer.
 
@@ -129,14 +129,14 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // uses (ADR-057): current Hub account when logged into pekohub, else
     // `local`. Used only as the thread selector for `--wait` /
     // ctrl-c stop, never sent as an identity claim.
-    let peer = peko_auth::Subject::User(paths.user().to_string());
+    let peer = peko_auth::ActorRef::User(paths.user().into());
     process_response_stream(stream, &client, &args, &peer, sent_at).await
 }
 
 /// `peko send group:<slug>` (ADR-049 Phase 2, D7): post `message` to
 /// the group channel as `user:<user>`. Daemon-first via `ChannelPost`
 /// (the daemon IPC accepts `user:<id>` senders and the store's
-/// Subject membership authorizes the write); falls back to an
+/// ActorRef membership authorizes the write); falls back to an
 /// in-process `ChannelStore` when the daemon is unreachable, mirroring
 /// the `peko channel` dual-path so manual smoke tests work without a
 /// live daemon.
@@ -184,7 +184,7 @@ async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Res
     let resp = router
         .handle_post(
             &ch,
-            &peko_auth::Subject::User(paths.user().to_string()),
+            &peko_auth::ActorRef::User(paths.user().into()),
             message,
             None,
         )
@@ -205,7 +205,7 @@ async fn process_response_stream(
     mut stream: peko_core::ipc::PacketStream,
     client: &DaemonClient,
     args: &SendArgs,
-    peer: &peko_auth::Subject,
+    peer: &peko_auth::ActorRef,
     sent_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
     // Spawn a side-channel task that watches for Ctrl-C and signals
@@ -345,7 +345,7 @@ async fn process_response_stream(
 async fn wait_for_queued_reply(
     client: &DaemonClient,
     args: &SendArgs,
-    peer: &peko_auth::Subject,
+    peer: &peko_auth::ActorRef,
     sent_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
     const WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
@@ -452,7 +452,7 @@ async fn next_or_stop(
     stop_sent: &mut bool,
     client: &DaemonClient,
     args: &SendArgs,
-    peer: &peko_auth::Subject,
+    peer: &peko_auth::ActorRef,
 ) -> Result<Option<ResponsePacket>> {
     // Outer loop so a Ctrl-C that races with a packet still falls back
     // to the next stream.next() call to pick up the daemon's final
@@ -656,7 +656,7 @@ mod tests {
         user_members: &[&str],
     ) -> peko_channel::ChannelStore {
         use peko_channel::CreateOpts;
-        use peko_subject::{PrincipalId, Subject};
+        use peko_subject::{ActorRef, PrincipalId};
 
         let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
             runtime_dir: paths.runtime_dir(),
@@ -670,7 +670,7 @@ mod tests {
             .expect("seed create");
         for user in user_members {
             store
-                .invite(&channel, &creator, &Subject::User((*user).to_string()))
+                .invite(&channel, &creator, &ActorRef::User((*user).into()))
                 .await
                 .expect("seed invite");
         }

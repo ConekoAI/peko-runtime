@@ -54,7 +54,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use peko_fs_persistence::{append_bytes_durable, FileLock};
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
-use peko_subject::{PrincipalDID, PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalDID, PrincipalId};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::sync::broadcast;
@@ -62,7 +62,7 @@ use tokio::sync::broadcast;
 use crate::fs::channel_dir_name;
 use crate::port::{
     dm_channel_id, query_matches, ActorInfo, ChannelError, ChannelPort, ChannelQuery, Checkpoint,
-    CreateOpts, PostMsg, RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
+    CreateOpts, PostMsg, Registration, RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
 };
 
 // ---------------------------------------------------------------------------
@@ -84,10 +84,10 @@ impl ActorRecord {
         self.historical_aliases.extend(self.aliases());
         let hub = self.info.hub_id.as_deref().expect("Hub actor");
         let subject = format!("{}:hub:{hub}", self.info.kind)
-            .parse::<Subject>()
+            .parse::<ActorRef>()
             .expect("registered actor kind");
         let mut info = ActorInfo::from_subject(&subject, self.info.name.as_deref());
-        info.registration = self.info.registration.clone();
+        info.registration = self.info.registration;
         self.info = info;
     }
 
@@ -413,14 +413,12 @@ impl MetaJson {
 /// when absent so legacy files deserialize cleanly without a
 /// migration. New writes always serialize both fields.
 ///
-/// ## On-disk back-compat (ADR-049 Phase 1, Subject-typed members)
+/// ## On-disk back-compat (ADR-049 Phase 1, ActorRef-typed members)
 ///
-/// `members` stays a string list. Entries may be `Subject` wire forms
+/// `members` stays a string list. Entries may be `ActorRef` wire forms
 /// (`user:<id>`, `principal:<did>`, `public`) or legacy bare principal
 /// ids (every pre-ADR-049 channel on disk). Reads parse each entry via
-/// [`member_subject`]; writes serialize via [`subject_wire_form`],
-/// which keeps principals in the legacy bare form so string-comparing
-/// consumers are unaffected.
+/// [`member_subject`]; writes use [`member_row`] (canonical addresses).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MembersJson {
     pub members: Vec<String>,
@@ -462,37 +460,28 @@ impl MembersJson {
 }
 
 // ---------------------------------------------------------------------------
-// Subject <-> member-row conversion (ADR-049 Phase 1)
+// ActorRef <-> member-row conversion (ADR-049 Phase 1)
 // ---------------------------------------------------------------------------
 
-/// Parse a `members.json` entry into a [`Subject`]. Entries in a known
-/// `Subject` wire form (`user:<id>`, `principal:<did>`, `public`)
-/// parse as that Subject; anything else is a legacy bare principal id
+/// Parse a `members.json` entry into a [`ActorRef`]. Entries in a known
+/// `ActorRef` wire form (`user:<id>`, `principal:<did>`, `public`)
+/// parse as that ActorRef; anything else is a legacy bare principal id
 /// (pre-ADR-049 channels stored principal ids unprefixed — including
-/// bare `did:...` forms, whose `did` kind tag is not a `Subject` kind
+/// bare `did:...` forms, whose `did` kind tag is not a `ActorRef` kind
 /// and therefore also falls through to `Principal`).
-fn member_subject(entry: &str) -> Subject {
-    Subject::from_str(entry).unwrap_or_else(|_| Subject::Principal(PrincipalDID(entry.to_string())))
+fn member_subject(entry: &str) -> ActorRef {
+    ActorRef::from_str(entry)
+        .unwrap_or_else(|_| ActorRef::Principal(PrincipalDID(entry.to_string()).into()))
 }
 
-/// Serialize a [`Subject`] for storage in `members.json` (and for the
-/// default `author` on `ChannelEvent::Posted`).
-///
-/// Principals keep the legacy bare-id form — every pre-ADR-049 member
-/// row and `Posted.author` on disk uses it, and consumers that
-/// string-compare member rows or authors against a `PrincipalId`
-/// (e.g. `list_for_principal`, the passive-binding responder's
-/// self-skip rule) depend on it. Users and `public` have no legacy
-/// form, so they take the canonical `Subject` wire form
-/// (`user:<id>` / `public`) — the shape ADR-049 D3 mandates at the
-/// boundary.
+/// The `members.json` row (and default `Posted.author`) for `subject`:
+/// its canonical address (ADR-081 §3). Rows written before ADR-081 — bare
+/// principal IDs and `kind:<id>` forms — still read through
+/// [`member_subject`], and every membership check compares canonical
+/// addresses through the actor registry, so both spellings name one member.
 #[must_use]
-pub fn subject_wire_form(subject: &Subject) -> String {
-    match subject {
-        Subject::Principal(id) if id.as_str().starts_with("hub:") => subject.to_string(),
-        Subject::Principal(did) => did.to_string(),
-        other => other.to_string(),
-    }
+pub fn member_row(subject: &ActorRef) -> String {
+    subject.canonical_address()
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +579,7 @@ impl ChannelStore {
     /// the fixed key `local@<runtime DID>` so its conversations keep their
     /// IDs for the life of the runtime. An existing record is kept as is.
     pub async fn ensure_local_user(&self, runtime_did: &str) -> Result<ActorInfo> {
-        let local = Subject::User("local".into());
+        let local = ActorRef::User("local".into());
         let known = self.actor_info(&local).await;
         if known.identity_key != known.address {
             return Ok(known);
@@ -601,7 +590,7 @@ impl ChannelStore {
             None,
             Some(&format!("local@{runtime_did}")),
             Some("local"),
-            "local_only",
+            Registration::LocalOnly,
         )
         .await
     }
@@ -620,12 +609,12 @@ impl ChannelStore {
             }
         }
         self.register_actor(
-            &Subject::User("local".into()),
+            &ActorRef::User("local".into()),
             Some(account),
             None,
             None,
             Some("local"),
-            "registered",
+            Registration::Registered,
         )
         .await
     }
@@ -648,12 +637,21 @@ impl ChannelStore {
         if record.info.hub_id.take().is_none() {
             return Ok(());
         }
-        record.info.registration = "local_only".into();
+        record.info.registration = Registration::LocalOnly;
         let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
         fs::rename(temp, path).await?;
         *self.actors.lock().expect("actor registry mutex") = actor_index(records);
         Ok(())
+    }
+
+    /// Whether `members` lists `subject` under any of its aliases.
+    fn has_member(&self, members: &MembersJson, subject: &ActorRef) -> bool {
+        let wanted = self.canonical_address(&subject.to_string());
+        members
+            .members
+            .iter()
+            .any(|m| self.canonical_address(&member_subject(m).to_string()) == wanted)
     }
 
     fn canonical_address(&self, address: &str) -> String {
@@ -666,7 +664,7 @@ impl ChannelStore {
                     format!("principal:{address}")
                 } else {
                     address
-                        .parse::<Subject>()
+                        .parse::<ActorRef>()
                         .map(|s| ActorInfo::from_subject(&s, None).address)
                         .unwrap_or_else(|_| address.to_string())
                 }
@@ -1418,14 +1416,14 @@ impl ChannelStore {
     /// Check whether `subject` is a current member. Loads + parses
     /// `members.json` directly (no event-log walk — the JSON file is
     /// the authoritative answer). ADR-049 Phase 1: membership is
-    /// [`Subject`]-typed, so a `user:<id>` sender who is a member
+    /// [`ActorRef`]-typed, so a `user:<id>` sender who is a member
     /// passes; legacy bare principal rows parse as principals (see
     /// [`member_subject`]).
     async fn check_membership(
         &self,
         tier: Tier,
         channel: &ChannelId,
-        subject: &Subject,
+        subject: &ActorRef,
     ) -> Result<bool> {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
@@ -1510,7 +1508,7 @@ impl ChannelStore {
                 Ok(m) => m,
                 Err(_) => continue, // skip corrupt / incomplete dirs
             };
-            let principal_subject = Subject::from(principal);
+            let principal_subject = ActorRef::from(principal);
             if members.members.iter().any(|m| {
                 self.canonical_address(&member_subject(m).to_string())
                     == self.canonical_address(&principal_subject.to_string())
@@ -1618,7 +1616,7 @@ impl ChannelStore {
             .members
             .into_iter()
             .map(|p| MemberProvenance {
-                principal: p,
+                principal: self.canonical_address(&member_subject(&p).to_string()),
                 runtime_id: None,
             })
             .collect();
@@ -1809,8 +1807,9 @@ impl ChannelStore {
             }
             let mut members = MembersJson::load(&chan_dir).await?;
             let mut members_changed = false;
-            if !members.members.contains(&self_principal.0) {
-                members.members.push(self_principal.0.clone());
+            let me = ActorRef::from(self_principal);
+            if !self.has_member(&members, &me) {
+                members.members.push(member_row(&me));
                 members_changed = true;
             }
             for member in initial_members.iter().filter(|m| m.runtime_id.is_some()) {
@@ -1868,7 +1867,7 @@ impl ChannelStore {
         }
 
         let members = MembersJson {
-            members: vec![self_principal.to_string()],
+            members: vec![member_row(&ActorRef::from(self_principal))],
             remote_members,
         };
         members.save(&chan_dir).await?;
@@ -1935,16 +1934,15 @@ impl ChannelStore {
     /// that need the event for outbound fan-out use this directly.
     ///
     /// Membership + parent validation are the same as the trait
-    /// `post`. ADR-049 Phase 1: `sender` is [`Subject`]-typed; the
-    /// default `author` is the sender's [`subject_wire_form`] (legacy
-    /// bare id for principals, canonical `user:<id>` for users).
+    /// `post`. ADR-049 Phase 1: `sender` is [`ActorRef`]-typed; the
+    /// default `author` is the sender's [`member_row`] (canonical address).
     pub async fn post_with_event(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
-        let author = self.canonical_address(&subject_wire_form(sender));
+        let author = self.canonical_address(&member_row(sender));
         self.post_attributed_with_event(channel, sender, &author, msg)
             .await
     }
@@ -1962,7 +1960,7 @@ impl ChannelStore {
     pub async fn post_attributed_with_event(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         author: &str,
         msg: PostMsg,
     ) -> Result<(TaskId, ChannelEvent)> {
@@ -2076,24 +2074,24 @@ impl ChannelPort for ChannelStore {
 
     async fn register_principal(&self, id: &PrincipalId, did: &str, name: &str) -> Result<()> {
         self.register_actor(
-            &Subject::from(id),
+            &ActorRef::from(id),
             None,
             Some(did),
             Some(did),
             Some(name),
-            "local_only",
+            Registration::LocalOnly,
         )
         .await?;
         Ok(())
     }
     async fn register_actor(
         &self,
-        subject: &Subject,
+        subject: &ActorRef,
         hub_id: Option<&str>,
         signing_did: Option<&str>,
         identity_key: Option<&str>,
         name: Option<&str>,
-        registration: &str,
+        registration: Registration,
     ) -> Result<ActorInfo> {
         let path = self.cfg.runtime_dir.join("actors.json");
         fs::create_dir_all(&self.cfg.runtime_dir).await?;
@@ -2198,7 +2196,7 @@ impl ChannelPort for ChannelStore {
         if let Some(did) = signing_did {
             record.signing_did = Some(did.into());
         }
-        record.info.registration = registration.into();
+        record.info.registration = registration;
         let answer = record.info();
         records.push(record);
         let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -2207,7 +2205,7 @@ impl ChannelPort for ChannelStore {
         *self.actors.lock().expect("actor registry mutex") = actor_index(records);
         Ok(answer)
     }
-    fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+    fn key_of(&self, subject: &ActorRef) -> peko_subject::ActorKey {
         // Re-read so writers in other processes are seen; a transiently
         // unreadable registry falls back to the last good index.
         if let Ok(records) = load_actors(&self.cfg.runtime_dir.join("actors.json")) {
@@ -2222,7 +2220,7 @@ impl ChannelPort for ChannelStore {
                 .unwrap_or_else(|| subject.canonical_address()),
         )
     }
-    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
+    async fn actor_info(&self, subject: &ActorRef) -> ActorInfo {
         *self.actors.lock().expect("actor registry mutex") = actor_index(
             load_actors(&self.cfg.runtime_dir.join("actors.json"))
                 .expect("actor registry must be readable"),
@@ -2243,15 +2241,8 @@ impl ChannelPort for ChannelStore {
         Ok(actors)
     }
     async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
-        let subject: Subject = reference
-            .parse()
-            .map_err(|e| ChannelError::Adapter(format!("actor reference: {e}")))?;
-        if !(subject.subject_id().starts_with("local:") || subject.subject_id().starts_with("hub:"))
-        {
-            return Err(ChannelError::Adapter(
-                "Use kind:local:<id> or kind:hub:<id>".into(),
-            ));
-        }
+        ActorRef::parse_scoped(reference)
+            .map_err(|_| ChannelError::Adapter("Use kind:local:<id> or kind:hub:<id>".into()))?;
         *self.actors.lock().expect("actor registry mutex") =
             actor_index(load_actors(&self.cfg.runtime_dir.join("actors.json"))?);
         self.actors
@@ -2284,10 +2275,10 @@ impl ChannelPort for ChannelStore {
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,
-        peer: &Subject,
+        peer: &ActorRef,
         binding: &str,
     ) -> Result<ChannelId> {
-        for actor in [Subject::from(principal), peer.clone()] {
+        for actor in [ActorRef::from(principal), peer.clone()] {
             let info = self.actor_info(&actor).await;
             if info.identity_key == info.address {
                 self.register_actor(
@@ -2297,15 +2288,15 @@ impl ChannelPort for ChannelStore {
                     None,
                     None,
                     if info.hub_id.is_some() {
-                        "registered"
+                        Registration::Registered
                     } else {
-                        "local_only"
+                        Registration::LocalOnly
                     },
                 )
                 .await?;
             }
         }
-        let me = self.actor_info(&Subject::from(principal)).await;
+        let me = self.actor_info(&ActorRef::from(principal)).await;
         let other = self.actor_info(peer).await;
         let channel = dm_channel_id(&me.identity_key, &other.identity_key);
         let _guard = self.dm_lock.lock().await;
@@ -2342,9 +2333,9 @@ impl ChannelPort for ChannelStore {
         meta.participants = expected;
         meta.save(&dir).await?;
         let mut members = MembersJson::load(&dir).await?;
-        for member in [principal.0.clone(), subject_wire_form(&other.subject())] {
-            if !members.members.contains(&member) {
-                members.members.push(member);
+        for member in [ActorRef::from(principal), other.subject()] {
+            if !self.has_member(&members, &member) {
+                members.members.push(member_row(&member));
             }
         }
         members.save(&dir).await?;
@@ -2378,15 +2369,15 @@ impl ChannelPort for ChannelStore {
     }
 
     async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
-        let actor = self.actor_info(&Subject::from(creator)).await;
+        let actor = self.actor_info(&ActorRef::from(creator)).await;
         if actor.identity_key == actor.address {
             self.register_actor(
-                &Subject::from(creator),
+                &ActorRef::from(creator),
                 None,
                 None,
                 None,
                 None,
-                "local_only",
+                Registration::LocalOnly,
             )
             .await?;
         }
@@ -2427,7 +2418,7 @@ impl ChannelPort for ChannelStore {
         meta.save(&chan_dir).await?;
 
         let members = MembersJson {
-            members: vec![creator.to_string()],
+            members: vec![member_row(&ActorRef::from(creator))],
             remote_members: Vec::new(),
         };
         members.save(&chan_dir).await?;
@@ -2448,7 +2439,7 @@ impl ChannelPort for ChannelStore {
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &Subject,
+        invitee: &ActorRef,
     ) -> Result<()> {
         let info = self.actor_info(invitee).await;
         let info = if info.identity_key == info.address {
@@ -2460,9 +2451,9 @@ impl ChannelPort for ChannelStore {
                 None,
                 None,
                 if hub.is_some() {
-                    "registered"
+                    Registration::Registered
                 } else {
-                    "local_only"
+                    Registration::LocalOnly
                 },
             )
             .await?
@@ -2474,7 +2465,7 @@ impl ChannelPort for ChannelStore {
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
-        let inviter_subject = Subject::from(inviter);
+        let inviter_subject = ActorRef::from(inviter);
         if !members.members.iter().any(|m| {
             self.canonical_address(&member_subject(m).to_string())
                 == self.canonical_address(&inviter_subject.to_string())
@@ -2491,11 +2482,11 @@ impl ChannelPort for ChannelStore {
         // ADR-049 Phase 4: the fan-out cap counts principal members
         // only (see the `FAN_OUT_CAP` doc) — a principal invite past
         // the cap is refused; user invites are uncapped.
-        if matches!(invitee, Subject::Principal(_)) {
+        if matches!(invitee, ActorRef::Principal(_)) {
             let principal_count = members
                 .members
                 .iter()
-                .filter(|m| matches!(member_subject(m), Subject::Principal(_)))
+                .filter(|m| matches!(member_subject(m), ActorRef::Principal(_)))
                 .count();
             if principal_count >= FAN_OUT_CAP {
                 return Err(ChannelError::FanOutCap {
@@ -2503,12 +2494,12 @@ impl ChannelPort for ChannelStore {
                 });
             }
         }
-        members.members.push(subject_wire_form(invitee));
+        members.members.push(member_row(invitee));
         members.save(&chan_dir).await?;
 
         let ev = ChannelEvent::MemberJoined {
             channel: channel.clone(),
-            member: subject_wire_form(invitee),
+            member: member_row(invitee),
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev, EventOrigin::Local)
@@ -2516,7 +2507,7 @@ impl ChannelPort for ChannelStore {
         Ok(())
     }
 
-    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId> {
+    async fn post(&self, channel: &ChannelId, sender: &ActorRef, msg: PostMsg) -> Result<TaskId> {
         let (_line, _ev) = self.post_with_event(channel, sender, msg).await?;
         Ok(_line)
     }
@@ -2526,7 +2517,7 @@ impl ChannelPort for ChannelStore {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -2661,7 +2652,7 @@ impl ChannelPort for ChannelStore {
         let _guard = self.lock_members(&chan_dir).await?;
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
-        let principal_subject = Subject::from(principal);
+        let principal_subject = ActorRef::from(principal);
         members.members.retain(|m| {
             self.canonical_address(&member_subject(m).to_string())
                 != self.canonical_address(&principal_subject.to_string())
@@ -2682,7 +2673,7 @@ impl ChannelPort for ChannelStore {
         Ok(())
     }
 
-    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>> {
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<ActorRef>> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let members = MembersJson::load(&chan_dir).await?;
@@ -2814,52 +2805,55 @@ mod tests {
         assert_eq!(parsed, m);
     }
 
-    // -- ADR-049 Phase 1: Subject-typed membership --------------------
+    // -- ADR-049 Phase 1: ActorRef-typed membership --------------------
 
     /// `member_subject` parses every on-disk member-row shape:
-    /// canonical `Subject` wire forms parse as their kind; legacy bare
+    /// canonical `ActorRef` wire forms parse as their kind; legacy bare
     /// principal ids (including bare `did:...` forms, whose `did` tag
-    /// is not a `Subject` kind) fall back to `Subject::Principal`.
+    /// is not a `ActorRef` kind) fall back to `ActorRef::Principal`.
     #[test]
     fn member_subject_parses_wire_forms_and_legacy_bare_ids() {
-        assert_eq!(member_subject("user:alice"), Subject::User("alice".into()));
+        assert_eq!(member_subject("user:alice"), ActorRef::User("alice".into()));
         assert_eq!(
             member_subject("principal:did:peko:principal:abc"),
-            Subject::Principal(PrincipalDID("did:peko:principal:abc".into()))
+            ActorRef::Principal(PrincipalDID("did:peko:principal:abc".into()).into())
         );
-        assert_eq!(member_subject("public"), Subject::Public);
+        assert_eq!(member_subject("public"), ActorRef::Public);
         // Legacy bare principal id — no `kind:` prefix.
         assert_eq!(
             member_subject("prin_alice"),
-            Subject::Principal(PrincipalDID("prin_alice".into()))
+            ActorRef::Principal(PrincipalDID("prin_alice".into()).into())
         );
-        // Legacy bare DID form — `did` is not a Subject kind, so the
+        // Legacy bare DID form — `did` is not a ActorRef kind, so the
         // whole string falls back to a principal id.
         assert_eq!(
             member_subject("did:peko:principal:abc"),
-            Subject::Principal(PrincipalDID("did:peko:principal:abc".into()))
+            ActorRef::Principal(PrincipalDID("did:peko:principal:abc".into()).into())
         );
     }
 
-    /// `subject_wire_form` keeps principals in the legacy bare form
-    /// (string-comparing consumers depend on it) and gives users the
-    /// canonical `user:<id>` form.
+    /// ADR-081 §3: member rows are canonical addresses; older bare rows
+    /// still name the same member.
     #[test]
-    fn subject_wire_form_preserves_legacy_principal_shape() {
+    fn member_rows_are_canonical_addresses() {
         assert_eq!(
-            subject_wire_form(&Subject::Principal(PrincipalDID("prin_alice".into()))),
-            "prin_alice"
+            member_row(&ActorRef::Principal("prin_alice".into())),
+            "principal:local:prin_alice"
         );
         assert_eq!(
-            subject_wire_form(&Subject::User("alice".into())),
-            "user:alice"
+            member_row(&ActorRef::User("hub:alice".into())),
+            "user:hub:alice"
         );
-        assert_eq!(subject_wire_form(&Subject::Public), "public");
+        assert_eq!(member_row(&ActorRef::Public), "public");
+        assert_eq!(
+            member_subject("prin_alice"),
+            member_subject("principal:local:prin_alice")
+        );
     }
 
     /// ADR-049 D2: a principal member can invite a `user:<id>`
     /// invitee. The user lands in `members.json` in canonical wire
-    /// form and reads back through `list_members` as `Subject::User`.
+    /// form and reads back through `list_members` as `ActorRef::User`.
     #[tokio::test]
     async fn invite_accepts_user_subject() {
         let cfg = tmp_cfg("invite-user");
@@ -2870,7 +2864,7 @@ mod tests {
             .await
             .unwrap();
 
-        let user = Subject::User("alice".to_string());
+        let user = ActorRef::User("alice".into());
         store
             .invite(&channel, &creator, &user)
             .await
@@ -2879,7 +2873,7 @@ mod tests {
         let members = store.list_members(&channel).await.unwrap();
         assert_eq!(
             members,
-            vec![Subject::from(&creator), user],
+            vec![ActorRef::from(&creator), user],
             "creator (legacy bare row) + invited user"
         );
 
@@ -2887,14 +2881,14 @@ mod tests {
         let chan_dir = cfg.channel_dir(&channel);
         let on_disk = MembersJson::load(&chan_dir).await.unwrap();
         assert!(
-            on_disk.members.iter().any(|m| m == "user:alice"),
-            "user member must persist as 'user:alice'; got {:?}",
+            on_disk.members.iter().any(|m| m == "user:local:alice"),
+            "user member must persist as its canonical address; got {:?}",
             on_disk.members
         );
 
         // Idempotent re-invite: no duplicate row.
         store
-            .invite(&channel, &creator, &Subject::User("alice".to_string()))
+            .invite(&channel, &creator, &ActorRef::User("alice".into()))
             .await
             .expect("re-invite is idempotent");
         assert_eq!(store.list_members(&channel).await.unwrap().len(), 2);
@@ -2913,14 +2907,14 @@ mod tests {
             .await
             .unwrap();
         store
-            .invite(&channel, &creator, &Subject::User("alice".to_string()))
+            .invite(&channel, &creator, &ActorRef::User("alice".into()))
             .await
             .unwrap();
 
         store
             .post(
                 &channel,
-                &Subject::User("alice".to_string()),
+                &ActorRef::User("alice".into()),
                 PostMsg::root("hello from alice"),
             )
             .await
@@ -2940,7 +2934,7 @@ mod tests {
     }
 
     /// A `user:<id>` sender who is NOT a member is still rejected
-    /// with `NotMember` — Subject-typing the check does not widen it.
+    /// with `NotMember` — ActorRef-typing the check does not widen it.
     #[tokio::test]
     async fn non_member_user_post_rejected() {
         let cfg = tmp_cfg("user-not-member");
@@ -2954,7 +2948,7 @@ mod tests {
         let err = store
             .post(
                 &channel,
-                &Subject::User("mallory".to_string()),
+                &ActorRef::User("mallory".into()),
                 PostMsg::root("must not land"),
             )
             .await;
@@ -2968,7 +2962,7 @@ mod tests {
             .invite(
                 &channel,
                 &pid("prin_stranger"),
-                &Subject::User("alice".to_string()),
+                &ActorRef::User("alice".into()),
             )
             .await;
         assert!(
@@ -2996,7 +2990,7 @@ mod tests {
                 .invite(
                     &channel,
                     &creator,
-                    &Subject::from(&pid(&format!("prin_{i}"))),
+                    &ActorRef::from(&pid(&format!("prin_{i}"))),
                 )
                 .await
                 .expect("principal invite up to the cap");
@@ -3006,7 +3000,11 @@ mod tests {
         // Users join past the cap — they add no per-post fan-out cost.
         for i in 0..4 {
             store
-                .invite(&channel, &creator, &Subject::User(format!("user_{i}")))
+                .invite(
+                    &channel,
+                    &creator,
+                    &ActorRef::User(format!("user_{i}").into()),
+                )
                 .await
                 .expect("user invite past the principal cap must succeed");
         }
@@ -3015,7 +3013,7 @@ mod tests {
         // The 9th principal is still refused, reporting the principal
         // count (8), not the padded member count (12).
         let err = store
-            .invite(&channel, &creator, &Subject::from(&pid("prin_ninth")))
+            .invite(&channel, &creator, &ActorRef::from(&pid("prin_ninth")))
             .await;
         assert!(
             matches!(err, Err(ChannelError::FanOutCap { current: 8 })),
@@ -3042,7 +3040,7 @@ mod tests {
             store
                 .post(
                     &channel,
-                    &Subject::from(&creator),
+                    &ActorRef::from(&creator),
                     PostMsg::root(format!("msg {i}")),
                 )
                 .await
@@ -3080,7 +3078,7 @@ mod tests {
             store
                 .post(
                     &channel,
-                    &Subject::from(&creator),
+                    &ActorRef::from(&creator),
                     PostMsg::root(format!("msg {i}")),
                 )
                 .await
@@ -3125,7 +3123,7 @@ mod tests {
             .await
             .unwrap();
         let first = store
-            .post(&channel, &Subject::from(&creator), PostMsg::root("mine"))
+            .post(&channel, &ActorRef::from(&creator), PostMsg::root("mine"))
             .await
             .unwrap();
         assert_eq!(first, "1", "line 0 is the Created event");
@@ -3153,7 +3151,7 @@ mod tests {
         let second = store
             .post(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 PostMsg::root("mine again"),
             )
             .await
@@ -3248,7 +3246,11 @@ mod tests {
             let creator = creator.clone();
             handles.push(tokio::spawn(async move {
                 store
-                    .invite(&channel, &creator, &Subject::User(format!("user_{i}")))
+                    .invite(
+                        &channel,
+                        &creator,
+                        &ActorRef::User(format!("user_{i}").into()),
+                    )
                     .await
             }));
         }
@@ -3321,7 +3323,7 @@ mod tests {
             .await
             .unwrap();
 
-        let sender = Subject::from(&creator);
+        let sender = ActorRef::from(&creator);
         for i in 0..10 {
             let id = store
                 .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
@@ -3371,7 +3373,7 @@ mod tests {
             .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
-        let sender = Subject::from(&creator);
+        let sender = ActorRef::from(&creator);
         for i in 0..10 {
             store
                 .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
@@ -3429,7 +3431,7 @@ mod tests {
             .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
-        let sender = Subject::from(&creator);
+        let sender = ActorRef::from(&creator);
         for i in 0..3 {
             store
                 .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
@@ -3478,9 +3480,9 @@ mod tests {
             .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
-        let alice = Subject::User("alice".into());
+        let alice = ActorRef::User("alice".into());
         store.invite(&channel, &creator, &alice).await.unwrap();
-        let creator_subject = Subject::from(&creator);
+        let creator_subject = ActorRef::from(&creator);
         // Line 0: Created, line 1: MemberJoined.
         store
             .post(&channel, &alice, PostMsg::root("hello world"))
@@ -3586,7 +3588,7 @@ mod tests {
             .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
-        let sender = Subject::from(&creator);
+        let sender = ActorRef::from(&creator);
         for i in 0..6 {
             store
                 .post(&channel, &sender, PostMsg::root(format!("msg {i}")))
@@ -3626,8 +3628,8 @@ mod tests {
 
     /// Legacy channels on disk carry bare principal ids in
     /// `members.json`. Those rows must keep working unchanged: the
-    /// principal passes the (now Subject-typed) membership check and
-    /// `list_members` surfaces them as `Subject::Principal`.
+    /// principal passes the (now ActorRef-typed) membership check and
+    /// `list_members` surfaces them as `ActorRef::Principal`.
     #[tokio::test]
     async fn legacy_bare_principal_rows_still_authorize() {
         let cfg = tmp_cfg("legacy-members");
@@ -3651,7 +3653,7 @@ mod tests {
         store
             .post(
                 &channel,
-                &Subject::from(&pid("prin_bob")),
+                &ActorRef::from(&pid("prin_bob")),
                 PostMsg::root("legacy member talking"),
             )
             .await
@@ -3661,8 +3663,8 @@ mod tests {
         assert_eq!(
             members,
             vec![
-                Subject::Principal(PrincipalDID("prin_alice".into())),
-                Subject::Principal(PrincipalDID("prin_bob".into())),
+                ActorRef::Principal(PrincipalDID("prin_alice".into()).into()),
+                ActorRef::Principal(PrincipalDID("prin_bob".into()).into()),
             ]
         );
 
@@ -3683,7 +3685,7 @@ mod tests {
         store
             .post(
                 &channel,
-                &Subject::from(&pid("prin_carol")),
+                &ActorRef::from(&pid("prin_carol")),
                 PostMsg::root("prefixed member talking"),
             )
             .await
@@ -3865,7 +3867,7 @@ mod tests {
         assert_eq!(
             attributed[0],
             MemberProvenance {
-                principal: "prin_alice".into(),
+                principal: "principal:local:prin_alice".into(),
                 runtime_id: None,
             }
         );
@@ -3926,7 +3928,7 @@ mod tests {
             .create(&alice, CreateOpts::runtime("ids"))
             .await
             .unwrap();
-        let sender = Subject::from(&alice);
+        let sender = ActorRef::from(&alice);
         let (root_line, root) = store
             .post_with_event(&channel, &sender, PostMsg::root("question"))
             .await
@@ -4038,7 +4040,7 @@ mod tests {
         store
             .post(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 PostMsg::root("local one"),
             )
             .await
@@ -4138,7 +4140,7 @@ mod tests {
         let post_err = store
             .post(
                 &channel,
-                &Subject::from(&pid("prin_bob@runtime-B")),
+                &ActorRef::from(&pid("prin_bob@runtime-B")),
                 PostMsg::root("hello"),
             )
             .await;
@@ -4197,7 +4199,7 @@ mod tests {
     /// `post_attributed` writes the caller-supplied `author` verbatim
     /// onto the event instead of deriving it from `sender`. This is
     /// the Phase 11 peer-DM inbound convention: `sender = principal.id`
-    /// (the member), `author = peer.to_string()` (the Subject wire
+    /// (the member), `author = peer.to_string()` (the ActorRef wire
     /// form) — the log reads as a two-party conversation.
     #[tokio::test]
     async fn post_attributed_writes_author_verbatim() {
@@ -4212,7 +4214,7 @@ mod tests {
         let line = store
             .post_attributed(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 "user:alice",
                 PostMsg::root("hi from alice"),
             )
@@ -4248,7 +4250,7 @@ mod tests {
         let err = store
             .post_attributed(
                 &channel,
-                &Subject::from(&pid("prin_stranger")),
+                &ActorRef::from(&pid("prin_stranger")),
                 "user:alice",
                 PostMsg::root("must not land"),
             )
@@ -4274,7 +4276,7 @@ mod tests {
         let bad = store
             .post_attributed(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 "user:alice",
                 PostMsg::reply("9".to_string(), "bad parent"),
             )
@@ -4288,7 +4290,7 @@ mod tests {
         store
             .post_attributed(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 "user:alice",
                 PostMsg::root("inbound"),
             )
@@ -4306,7 +4308,7 @@ mod tests {
         let reply = store
             .post_attributed(
                 &channel,
-                &Subject::from(&creator),
+                &ActorRef::from(&creator),
                 "user:alice",
                 PostMsg::reply(first_post_line, "follow-up"),
             )
@@ -4314,8 +4316,7 @@ mod tests {
         assert!(reply.is_ok(), "valid parent must land; got: {reply:?}");
     }
 
-    /// Plain `post` delegates with `author = subject_wire_form(sender)`
-    /// (legacy bare id for a principal sender) — the two paths must
+    /// Plain `post` delegates with `author = member_row(sender)` — the two paths must
     /// agree byte-for-byte on the event shape.
     #[tokio::test]
     async fn post_with_event_delegates_with_sender_author() {
@@ -4328,7 +4329,7 @@ mod tests {
             .unwrap();
 
         let (_line, ev) = store
-            .post_with_event(&channel, &Subject::from(&creator), PostMsg::root("plain"))
+            .post_with_event(&channel, &ActorRef::from(&creator), PostMsg::root("plain"))
             .await
             .unwrap();
         match ev {
@@ -4358,7 +4359,11 @@ mod tests {
 
         let mut rx = store.subscribe_events(&channel).await;
         store
-            .post(&channel, &Subject::from(&creator), PostMsg::root("wake up"))
+            .post(
+                &channel,
+                &ActorRef::from(&creator),
+                PostMsg::root("wake up"),
+            )
             .await
             .unwrap();
 
@@ -4496,7 +4501,10 @@ mod tests {
         // members.json: the receiver's local id is the ONLY local
         // row; the creator (and any runtime-stamped row) is remote.
         let members = MembersJson::load(&chan_dir).await.unwrap();
-        assert_eq!(members.members, vec!["prin_self_local".to_string()]);
+        assert_eq!(
+            members.members,
+            vec!["principal:local:prin_self_local".to_string()]
+        );
         assert_eq!(
             members.remote_members,
             vec![fake_remote("did:key:zRuntimeA", "prin_alice")],
@@ -4507,7 +4515,7 @@ mod tests {
         store
             .post(
                 &channel,
-                &Subject::from(&receiver),
+                &ActorRef::from(&receiver),
                 PostMsg::root("receiver talking"),
             )
             .await

@@ -5,7 +5,7 @@
 //! daemon's in-memory audit ring buffer and returns up to `limit`
 //! matching events, newest first. Filters: `event_type_prefix` and
 //! `principal` (matched against the event's `caller` if it's a
-//! `Subject::Principal` whose id matches, OR against
+//! `ActorRef::Principal` whose id matches, OR against
 //! `details.principal_name` for events that carry an explicit
 //! principal context).
 //!
@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use serde_json::Value;
 
 use crate::ipc::handlers::RequestHandler;
@@ -119,9 +119,9 @@ impl RequestHandler for AuditHandler {
 ///
 /// Two matching rules so a single filter string works across event
 /// shapes:
-/// 1. **Caller match** — if `event.caller` is `Some(Subject::Principal(id))`
-///    or `Some(Subject::User(id))`, the id is compared to the filter.
-///    (Subject::Public is unauthenticated; never matches a principal
+/// 1. **Caller match** — if `event.caller` is `Some(ActorRef::Principal(id))`
+///    or `Some(ActorRef::User(id))`, the id is compared to the filter.
+///    (ActorRef::Public is unauthenticated; never matches a principal
 ///    filter — that's a feature, not a bug.)
 /// 2. **Details match** — `event.details["principal_name"]` is compared.
 ///    This catches events that were logged with an explicit
@@ -130,8 +130,8 @@ impl RequestHandler for AuditHandler {
 fn event_matches_principal(event: &AuditEvent, principal: &str) -> bool {
     if let Some(caller) = &event.caller {
         match caller {
-            Subject::Principal(id) if id.as_str() == principal => return true,
-            Subject::User(id) if id == principal => return true,
+            ActorRef::Principal(id) if id.as_str() == principal => return true,
+            ActorRef::User(id) if id == principal => return true,
             _ => {}
         }
     }
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn matches_via_principal_caller() {
         let mut e = evt("cron.execute", json!({}));
-        e.caller = Some(Subject::Principal("alice".into()));
+        e.caller = Some(ActorRef::Principal("alice".into()));
         assert!(event_matches_principal(&e, "alice"));
         assert!(!event_matches_principal(&e, "bob"));
     }
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn matches_via_user_caller() {
         let mut e = evt("tunnel.proxied", json!({}));
-        e.caller = Some(Subject::User("user:alice".into()));
+        e.caller = Some(ActorRef::User("user:alice".into()));
         assert!(event_matches_principal(&e, "user:alice"));
         assert!(!event_matches_principal(&e, "alice"));
     }
@@ -185,11 +185,11 @@ mod tests {
 
     #[test]
     fn public_caller_does_not_match() {
-        // Subject::Public is unauthenticated — a principal filter
+        // ActorRef::Public is unauthenticated — a principal filter
         // must not match it; otherwise `--principal foo` would
         // return system events with no real principal.
         let mut e = evt("cron.execute", json!({}));
-        e.caller = Some(Subject::Public);
+        e.caller = Some(ActorRef::Public);
         assert!(!event_matches_principal(&e, "foo"));
     }
 

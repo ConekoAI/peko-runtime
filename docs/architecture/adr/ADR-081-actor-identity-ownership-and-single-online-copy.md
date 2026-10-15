@@ -47,14 +47,12 @@ The goal: one identity model that every part uses the same way, and that survive
 
 ```rust
 // peko-subject (leaf; replaces Subject)
-pub enum ActorKind { Principal, User, Visitor }
 pub enum Route {
-    Local { runtime: RuntimeDid, id: String }, // meaningful only on `runtime`
-    Hub(Uuid),
+    Local { id: String, runtime: Option<String> }, // `None` = this runtime
+    Hub(String),
 }
-pub struct ActorRef { pub kind: ActorKind, pub route: Route }
-pub enum Grantee { Actor(ActorRef), Public }   // Public is a wildcard, never an actor
-pub struct ActorKey(String);                   // immutable identity
+pub enum ActorRef { User(Route), Principal(Route), Visitor(Route), Public } // Public: wildcard, never an actor
+pub struct ActorKey(pub String);                                            // immutable identity
 ```
 
 | Actor | `ActorKey` | Routes |
@@ -159,9 +157,9 @@ A `.peko` snapshot adds `local/contacts.json`, `local/channels.json`, `POLICY.md
 | `known_by` in `actors.json`, `ChannelPort::known_contacts`/`remember_contact` | D5 contact book | Done |
 | Hub `allowedPrincipals` push and its `ExposureUpdate` echo | D8 (runtime grants) | Done |
 | `ManageExtensions`, `ManageMembers`, `Expose`, `Delete` permissions (never checked) | — | Done |
-| `subject_wire_form` bare principal member rows | Canonical address rows | Remaining: every comparison already canonicalizes and reads accept both forms; the form is also the cross-runtime invite wire, so it changes with the Hub in one step |
-| `Subject` (string scopes inside IDs) | `ActorRef { kind, route }` | Remaining: behavior is centralized in `ActorKeys` and the qualification helpers; replacing the ~1,400 type uses is a mechanical follow-up |
-| `ActorInfo.registration` strings duplicating `Exposure` | One registration enum | Remaining |
+| `subject_wire_form` bare principal member rows | `member_row` (canonical addresses); older rows still read | Done |
+| `Subject` (string scopes inside IDs) | `ActorRef::{User, Principal, Visitor}(Route)` + `Public`; `Route::{Local { id, runtime }, Hub(id)}`; text forms unchanged | Done — `Public` stays a variant (grant wildcard / anonymous caller) rather than a separate `Grantee` type |
+| `ActorInfo.registration` strings | `peko_channel::Registration` (same wire strings) | Done |
 | `ActingFor.actor: String` | Kept: `peko-tools-core` is a leaf crate and cannot depend on `peko-subject`; the string is always a canonical address | Won't do |
 
 Pre-launch: no migration code beyond moving existing `known_by` lists into contact books at daemon start. Principals and runtimes are re-created; stored automation using old addresses must be rewritten.

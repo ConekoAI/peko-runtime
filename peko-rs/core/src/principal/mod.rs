@@ -185,7 +185,7 @@ pub struct PrincipalSummary {
     pub hub_id: Option<String>,
     pub name: String,
     pub did: PrincipalDID,
-    pub owner: peko_auth::Subject,
+    pub owner: peko_auth::ActorRef,
     pub description: Option<String>,
     pub exposure: peko_auth::Exposure,
     pub status: Option<crate::principal::config::Status>,

@@ -250,7 +250,7 @@ pub async fn unregister_runtime(
 pub async fn local_user(resolver: &PathResolver) -> peko_channel::ActorInfo {
     use peko_channel::ChannelPort;
     actor_store(resolver)
-        .actor_info(&peko_subject::Subject::User("local".into()))
+        .actor_info(&peko_subject::ActorRef::User("local".into()))
         .await
 }
 
@@ -285,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn the_local_user_links_one_account_at_a_time() {
         use peko_channel::ChannelPort;
-        use peko_subject::Subject;
+        use peko_subject::ActorRef;
         let dir = tempfile::tempdir().unwrap();
         let store = ChannelStore::new(ChannelConfig {
             runtime_dir: dir.path().into(),
@@ -298,8 +298,8 @@ mod tests {
             .link_local_user("did:key:zRuntime", &account)
             .await
             .unwrap();
-        let hub = Subject::User(format!("hub:{account}"));
-        let local_subject = Subject::User("local".into());
+        let hub = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let local_subject = ActorRef::User("local".into());
         assert_eq!(store.key_of(&hub), store.key_of(&local_subject));
         assert_eq!(
             store.key_of(&local_subject).0,

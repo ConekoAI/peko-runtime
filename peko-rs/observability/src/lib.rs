@@ -7,7 +7,7 @@
 //!
 //! Phase 14 of the post-migration cleanup: this crate replaces the
 //! root `src/observability/` directory. The single external dep is
-//! `peko-auth` (for `Subject` caller attribution per ADR-039, issues
+//! `peko-auth` (for `ActorRef` caller attribution per ADR-039, issues
 //! #17 + #26). No runtime deps on session/agent/daemon — the audit
 //! log, metrics collector, and tracer are pure infrastructure.
 
@@ -21,7 +21,7 @@ pub use metrics::MetricsCollector;
 pub use tracer::{TraceSpan, Tracer};
 
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -97,13 +97,13 @@ impl Observability {
     /// Log an audit event tagged with the resolved caller identity
     /// (issues #17 + #26). Prefer this over `audit` on any event that
     /// flows through a request path so the audit trail is attributable
-    /// to a real subject. The caller is a typed `Subject` (ADR-039)
+    /// to a real subject. The caller is a typed `ActorRef` (ADR-039)
     /// — `User` / `Principal` / `Public` — so per-user, per-key,
     /// and per-agent audit queries can index on the kind tag instead of
     /// string-parsing the legacy `user:{sub}` convention.
     pub async fn audit_with_caller(
         &self,
-        caller: Option<&Subject>,
+        caller: Option<&ActorRef>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
@@ -134,12 +134,12 @@ impl Observability {
     /// on any event that flows through a request path — security
     /// events are the ones operators query by user when investigating
     /// an incident, so the caller attribution matters more here than
-    /// for `Info`-level events. Use `Subject::Public` when the
+    /// for `Info`-level events. Use `ActorRef::Public` when the
     /// event is genuinely unauthenticated (no caller context
     /// available) rather than passing `None`.
     pub async fn audit_security_with_caller(
         &self,
-        caller: Option<&Subject>,
+        caller: Option<&ActorRef>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
@@ -164,7 +164,7 @@ impl Observability {
     pub async fn audit_with_severity(
         &self,
         severity: AuditSeverity,
-        caller: Option<&Subject>,
+        caller: Option<&ActorRef>,
         event_type: &str,
         agent_did: Option<&str>,
         details: serde_json::Value,
@@ -178,7 +178,7 @@ impl Observability {
         &self,
         event_type: &str,
         agent_did: Option<&str>,
-        caller: Option<&Subject>,
+        caller: Option<&ActorRef>,
         details: serde_json::Value,
         severity: AuditSeverity,
     ) -> Result<()> {
@@ -252,13 +252,13 @@ mod tests {
     use super::*;
 
     /// `audit_with_caller` must stamp the resolved caller as a typed
-    /// `Subject` on the emitted event so the audit trail is
+    /// `ActorRef` on the emitted event so the audit trail is
     /// attributable to a real subject (issues #17 + #26).
     #[tokio::test]
     async fn audit_with_caller_records_caller_principal() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
         let obs = Observability::new("tunnel");
-        let caller = Subject::User("user:user-42".to_string());
+        let caller = ActorRef::User("user:user-42".into());
         obs.audit_with_caller(
             Some(&caller),
             "tunnel_proxied_request",
@@ -292,15 +292,15 @@ mod tests {
     }
 
     /// `audit_security_with_caller` must stamp the resolved caller as a
-    /// typed `Subject` on the emitted event AND mark the event as
+    /// typed `ActorRef` on the emitted event AND mark the event as
     /// `AuditSeverity::Security` (issue #26 review: the audit_security
     /// half of the migration was missing — security events are the
     /// ones operators query by user when investigating an incident).
     #[tokio::test]
     async fn audit_security_with_caller_records_caller_and_severity() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
         let obs = Observability::new("tunnel");
-        let caller = Subject::User("user:alice".to_string());
+        let caller = ActorRef::User("user:alice".into());
         obs.audit_security_with_caller(
             Some(&caller),
             "permission_denied",

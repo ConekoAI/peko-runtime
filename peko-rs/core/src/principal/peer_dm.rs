@@ -66,7 +66,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_channel::{ChannelId, ChannelPort, PostMsg};
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
@@ -98,7 +98,7 @@ pub(crate) struct PeerDmProvision {
 pub(crate) async fn peer_child_slug_readback(
     session_manager: &Arc<RwLock<SessionManager>>,
     child_id: &str,
-    peer: &Subject,
+    peer: &ActorRef,
 ) -> Result<String> {
     let metas = session_manager
         .write()
@@ -130,7 +130,7 @@ pub(crate) async fn peer_child_slug_readback(
 pub(crate) async fn ensure_peer_dm_channel(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,
-    peer: &Subject,
+    peer: &ActorRef,
     child_id: &str,
     session_manager: &Arc<RwLock<SessionManager>>,
     lock: &Mutex<()>,
@@ -142,7 +142,7 @@ pub(crate) async fn ensure_peer_dm_channel(
     let _guard = lock.lock().await;
 
     // Pair identity and each local principal's binding are ensured atomically.
-    let me = port.actor_info(&Subject::from(principal)).await;
+    let me = port.actor_info(&ActorRef::from(principal)).await;
     let other = port.actor_info(peer).await;
     let expected = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
     let created = !port
@@ -200,7 +200,7 @@ pub(crate) async fn find_peer_dm_channel(
 /// Phase 11: post a peer's inbound message to the DM channel,
 /// attributed to the peer. `sender` stays the principal (the
 /// channel's creator/member — the human peer is deliberately not a
-/// member); `author` is the peer's Subject wire form
+/// member); `author` is the peer's ActorRef wire form
 /// (`peer.to_string()`: `user:alice`, `user:local`, `principal:did:…`).
 /// The ingress handler that posts it drives the turn itself.
 pub(crate) async fn post_peer_dm_inbound(
@@ -212,7 +212,7 @@ pub(crate) async fn post_peer_dm_inbound(
 ) -> Result<()> {
     port.post_attributed(
         channel,
-        &Subject::from(principal),
+        &ActorRef::from(principal),
         author,
         PostMsg::root(text),
     )
@@ -260,7 +260,7 @@ pub(crate) async fn post_peer_dm_reply(
         .map(|b| format!("{}{}", peko_session::path::SCHEME_PREFIX, b));
     let mut msg = PostMsg::root(text);
     msg.via = via;
-    if let Err(e) = port.post(channel, &Subject::from(principal), msg).await {
+    if let Err(e) = port.post(channel, &ActorRef::from(principal), msg).await {
         warn!(
             channel = %channel,
             "peer DM reply projection failed (reply already delivered): {e}"
@@ -297,8 +297,8 @@ mod tests {
         )
     }
 
-    fn owner() -> Subject {
-        Subject::User("local".to_string())
+    fn owner() -> ActorRef {
+        ActorRef::User("local".into())
     }
 
     fn principal_id() -> PrincipalId {
@@ -308,7 +308,7 @@ mod tests {
     #[tokio::test]
     async fn creates_dm_channel_named_and_bound_to_the_peer_child() {
         let (_dir, manager, store, port, lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let provision =
@@ -325,7 +325,7 @@ mod tests {
         // The principal is a member (creator auto-added) — the
         // responder's reply post + ChannelSend both require it.
         let members = store.list_members(&provision.channel).await.unwrap();
-        assert_eq!(members, vec![Subject::from(&principal_id()), peer.clone()]);
+        assert_eq!(members, vec![ActorRef::from(&principal_id()), peer.clone()]);
     }
 
     #[tokio::test]
@@ -333,8 +333,8 @@ mod tests {
         let (_dir, manager, store, port, lock) = fixture().await;
         // Two peers whose ids sanitize to the same base slug: the
         // second gets a `-2` child, and its DM channel must follow.
-        let peer_a = Subject::User("foo-bar".to_string());
-        let peer_b = Subject::User("foo bar".to_string());
+        let peer_a = ActorRef::User("foo-bar".into());
+        let peer_b = ActorRef::User("foo bar".into());
         let a_id = ensure_peer_child("root", &peer_a, &manager).await.unwrap();
         let b_id = ensure_peer_child("root", &peer_b, &manager).await.unwrap();
 
@@ -362,7 +362,7 @@ mod tests {
     #[tokio::test]
     async fn second_call_is_idempotent() {
         let (_dir, manager, _store, port, lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let first =
@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_ensures_create_exactly_one_channel() {
         let (_dir, manager, _store, port, _lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         let shared_lock = Arc::new(Mutex::new(()));
@@ -462,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn find_peer_dm_channel_hit_and_miss() {
         let (_dir, manager, _store, port, lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
 
         // Miss: nothing provisioned yet.
@@ -497,13 +497,13 @@ mod tests {
         );
     }
 
-    /// `post_peer_dm_inbound` writes the peer's Subject wire form as
+    /// `post_peer_dm_inbound` writes the peer's ActorRef wire form as
     /// the event author while `sender` remains the principal; a
     /// follow-up `post_peer_dm_reply` lands as the principal.
     #[tokio::test]
     async fn post_helpers_land_with_expected_authors() {
         let (_dir, manager, store, port, lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
@@ -551,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn post_peer_dm_reply_skips_empty_text() {
         let (_dir, manager, store, port, lock) = fixture().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
         let provision =
             ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)

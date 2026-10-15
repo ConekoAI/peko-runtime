@@ -575,7 +575,7 @@ mod tests {
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalRoutingConfig,
     };
-    use peko_auth::Subject;
+    use peko_auth::ActorRef;
 
     use peko_message::MessageRole;
     use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelCatalogFile};
@@ -597,7 +597,7 @@ mod tests {
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),

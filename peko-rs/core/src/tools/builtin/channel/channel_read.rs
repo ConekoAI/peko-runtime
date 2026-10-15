@@ -370,11 +370,11 @@ impl Tool for ChannelReadTool {
         // a tool error naming the channel.
         match self.port.list_members(&channel_id).await {
             Ok(members) => {
-                // ADR-049 Phase 1: members are Subject-typed. Compare
-                // against the caller's principal Subject exactly (no
+                // ADR-049 Phase 1: members are ActorRef-typed. Compare
+                // against the caller's principal ActorRef exactly (no
                 // cross-kind match on the bare id string).
                 let caller =
-                    peko_subject::Subject::from(&peko_subject::PrincipalId(principal_str.clone()));
+                    peko_subject::ActorRef::from(&peko_subject::PrincipalId(principal_str.clone()));
                 let is_member = members.contains(&caller);
                 if !is_member {
                     anyhow::bail!(
@@ -397,14 +397,14 @@ impl Tool for ChannelReadTool {
             let filter = WatchFilter {
                 hub: self
                     .port
-                    .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                    .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
                         principal_str.clone(),
                     )))
                     .await
                     .hub_address(),
                 me: self
                     .port
-                    .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                    .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
                         principal_str.clone(),
                     )))
                     .await
@@ -413,7 +413,7 @@ impl Tool for ChannelReadTool {
                     let name = ctx.principal_name.clone().unwrap_or_default();
                     let actor = self
                         .port
-                        .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+                        .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
                             principal_str.clone(),
                         )))
                         .await;
@@ -554,7 +554,7 @@ impl Tool for ChannelReadTool {
 mod tests {
     use super::*;
     use peko_channel::{ChannelConfig, ChannelStore, CreateOpts, PostMsg};
-    use peko_subject::{PrincipalId, Subject};
+    use peko_subject::{ActorRef, PrincipalId};
     use serde_json::json;
 
     /// A real file-backed channel store holding one channel created by
@@ -586,7 +586,7 @@ mod tests {
                 .await
                 .unwrap();
             store
-                .invite(&channel, &alice, &Subject::User("bob".into()))
+                .invite(&channel, &alice, &ActorRef::User("bob".into()))
                 .await
                 .unwrap();
             Self {
@@ -598,7 +598,7 @@ mod tests {
             }
         }
 
-        async fn post(&self, author: &Subject, text: &str) -> String {
+        async fn post(&self, author: &ActorRef, text: &str) -> String {
             self.store
                 .post(&self.channel, author, PostMsg::root(text))
                 .await
@@ -642,7 +642,7 @@ mod tests {
     #[tokio::test]
     async fn tail_read_pages_backward_to_the_start() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
+        let alice = ActorRef::from(&fx.alice);
         let first = fx.post(&alice, "first").await;
         fx.post(&alice, "second").await;
 
@@ -679,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn since_walks_forward_from_the_cursor() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
+        let alice = ActorRef::from(&fx.alice);
         let first = fx.post(&alice, "first").await;
         let second = fx.post(&alice, "second").await;
         fx.post(&alice, "third").await;
@@ -703,7 +703,7 @@ mod tests {
     #[tokio::test]
     async fn limit_is_clamped_to_one_through_a_thousand() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
+        let alice = ActorRef::from(&fx.alice);
         for i in 0..1005 {
             fx.post(&alice, &format!("m{i}")).await;
         }
@@ -773,9 +773,9 @@ mod tests {
     #[tokio::test]
     async fn search_filters_by_text_and_author() {
         let fx = Fixture::new().await;
-        let bob = Subject::User("bob".into());
+        let bob = ActorRef::User("bob".into());
         let bobs = fx.post(&bob, "deploy the release").await;
-        fx.post(&Subject::from(&fx.alice), "release notes drafted")
+        fx.post(&ActorRef::from(&fx.alice), "release notes drafted")
             .await;
         fx.post(&bob, "unrelated").await;
 
@@ -801,7 +801,7 @@ mod tests {
     #[tokio::test]
     async fn reads_advance_the_session_read_mark_monotonically() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
+        let alice = ActorRef::from(&fx.alice);
         let first = fx.post(&alice, "one").await;
         let newest = fx.post(&alice, "two").await;
 
@@ -845,7 +845,7 @@ mod tests {
     #[tokio::test]
     async fn a_read_clears_the_waiting_posts_it_returned() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
+        let alice = ActorRef::from(&fx.alice);
         let older = fx.post(&alice, "older").await;
         let newer = fx.post(&alice, "newer").await;
         let item = |id: &str| peko_channel::AttentionItem {
@@ -910,8 +910,8 @@ mod tests {
     #[tokio::test]
     async fn watch_returns_the_next_post_by_someone_else() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
-        let bob = Subject::User("bob".into());
+        let alice = ActorRef::from(&fx.alice);
+        let bob = ActorRef::User("bob".into());
         fx.post(&alice, "before the watch").await;
 
         let page = while_posting(
@@ -947,8 +947,8 @@ mod tests {
     #[tokio::test]
     async fn watch_reply_to_waits_for_the_answer() {
         let fx = Fixture::new().await;
-        let alice = Subject::from(&fx.alice);
-        let bob = Subject::User("bob".into());
+        let alice = ActorRef::from(&fx.alice);
+        let bob = ActorRef::User("bob".into());
         let question = fx.post(&alice, "what is the status?").await;
 
         let page = while_posting(
@@ -986,11 +986,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let bob = Subject::User("bob".into());
+        let bob = ActorRef::User("bob".into());
         fx.store.invite(&dm, &fx.alice, &bob).await.unwrap();
         let other = PrincipalId::generate();
         fx.store
-            .invite(&dm, &fx.alice, &Subject::from(&other))
+            .invite(&dm, &fx.alice, &ActorRef::from(&other))
             .await
             .unwrap();
 
@@ -1002,7 +1002,7 @@ mod tests {
             async {
                 fx.store.post(&dm, &bob, PostMsg::root("hi")).await.unwrap();
                 fx.store
-                    .post(&dm, &Subject::from(&other), PostMsg::root("from a peer"))
+                    .post(&dm, &ActorRef::from(&other), PostMsg::root("from a peer"))
                     .await
                     .unwrap();
             },

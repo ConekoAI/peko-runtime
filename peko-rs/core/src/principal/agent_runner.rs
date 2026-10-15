@@ -7,7 +7,7 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::Agent;
 use crate::principal::context::PrincipalContext;
 use crate::principal::router::AgentPromptSummary;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_engine::AgenticEvent;
 use peko_message::LlmMessage;
 use peko_session::manager::{SessionManager, SessionManagerRotationSink};
@@ -97,7 +97,7 @@ pub(crate) async fn resolve_provider_hint(ctx: &PrincipalContext) -> Option<Stri
 /// Root and spawned agents share the principal's explicit tooling runtime.
 pub async fn run_root_agent_prompt(
     prompt: &AgentPrompt,
-    peer: Subject,
+    peer: ActorRef,
     user_text: String,
     pre_user_messages: Vec<LlmMessage>,
     session_id: String,
@@ -130,7 +130,7 @@ pub async fn run_root_agent_prompt(
 /// Returns the same `final_answer` string as the non-streaming variant.
 pub async fn run_root_agent_prompt_streaming<F>(
     prompt: &AgentPrompt,
-    peer: Subject,
+    peer: ActorRef,
     user_text: String,
     pre_user_messages: Vec<LlmMessage>,
     session_id: String,
@@ -158,7 +158,7 @@ where
 
 async fn run_root_agent_prompt_with_callback<F>(
     prompt: &AgentPrompt,
-    peer: Subject,
+    peer: ActorRef,
     user_text: String,
     pre_user_messages: Vec<LlmMessage>,
     session_id: String,

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use peko_channel::{ActorInfo, ChannelPort};
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 use serde::{Deserialize, Serialize};
 
 /// The file name inside the principal's Local root.
@@ -39,7 +39,7 @@ pub struct ContactRecord {
     pub signing_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    pub registration: String,
+    pub registration: peko_channel::Registration,
 }
 
 impl ContactRecord {
@@ -56,7 +56,7 @@ impl ContactRecord {
             identity_key: actor.identity_key.clone(),
             signing_did: None,
             name: actor.name.clone(),
-            registration: actor.registration.clone(),
+            registration: actor.registration,
         }
     }
 
@@ -64,7 +64,7 @@ impl ContactRecord {
     /// has one, else its local route — qualified when it belongs to
     /// another runtime, so it can never match a local actor here.
     #[must_use]
-    pub fn subject_on(&self, runtime: &str) -> Option<Subject> {
+    pub fn subject_on(&self, runtime: &str) -> Option<ActorRef> {
         let text = match (&self.hub_id, &self.local) {
             (Some(hub), _) => format!("{}:hub:{hub}", self.kind),
             (None, Some(local)) if local.runtime == runtime => {
@@ -92,7 +92,7 @@ impl ContactRecord {
         routes
             .into_iter()
             .flatten()
-            .any(|route: Subject| port.key_of(&route).0 == self.identity_key)
+            .any(|route: ActorRef| port.key_of(&route).0 == self.identity_key)
     }
 }
 
@@ -211,7 +211,7 @@ mod tests {
             identity_key: key.into(),
             signing_did: None,
             name: None,
-            registration: "local_only".into(),
+            registration: peko_channel::Registration::LocalOnly,
         }
     }
 
@@ -240,7 +240,7 @@ mod tests {
             runtime_dir: dir.path().into(),
             shared_dir: None,
         });
-        let peer = Subject::Principal("prin_peer".into());
+        let peer = ActorRef::Principal("prin_peer".into());
         let actor = store
             .register_actor(
                 &peer,
@@ -248,7 +248,7 @@ mod tests {
                 Some("did:key:zPeer"),
                 Some("peer-key"),
                 Some("peer"),
-                "local_only",
+                peko_channel::Registration::LocalOnly,
             )
             .await
             .unwrap();

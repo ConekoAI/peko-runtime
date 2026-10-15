@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
-use peko_subject::{ActorKey, ActorKeys, PrincipalId, Subject};
+use peko_subject::{ActorKey, ActorKeys, ActorRef, PrincipalId, Route};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,14 +44,14 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(())
     }
 
-    async fn actor_info(&self, subject: &Subject) -> ActorInfo {
+    async fn actor_info(&self, subject: &ActorRef) -> ActorInfo {
         ActorInfo::from_subject(subject, None)
     }
 
     /// The actor's immutable key (ADR-081 D1): every alias of a known actor
     /// maps to one key; an unknown actor's key is its canonical address.
     /// Synchronous so permission checks can use it without plumbing.
-    fn key_of(&self, subject: &Subject) -> ActorKey {
+    fn key_of(&self, subject: &ActorRef) -> ActorKey {
         ActorKey(ActorInfo::from_subject(subject, None).identity_key)
     }
 
@@ -59,16 +59,16 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// transport credentials, never user-facing actor references.
     async fn register_actor(
         &self,
-        subject: &Subject,
+        subject: &ActorRef,
         hub_id: Option<&str>,
         signing_did: Option<&str>,
         identity_key: Option<&str>,
         name: Option<&str>,
-        registration: &str,
+        registration: Registration,
     ) -> Result<ActorInfo> {
         let mut actor = ActorInfo::from_subject(subject, name);
         actor.bind_hub_id(hub_id)?;
-        actor.registration = registration.into();
+        actor.registration = registration;
         actor.identity_key = identity_key
             .or(signing_did)
             .unwrap_or(&actor.address)
@@ -81,7 +81,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     }
 
     async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
-        let subject: Subject = reference
+        let subject: ActorRef = reference
             .parse()
             .map_err(|e| ChannelError::Adapter(format!("actor reference: {e}")))?;
         Ok(self.actor_info(&subject).await)
@@ -108,10 +108,10 @@ pub trait ChannelPort: Send + Sync + 'static {
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,
-        peer: &Subject,
+        peer: &ActorRef,
         binding: &str,
     ) -> Result<ChannelId> {
-        let me = self.actor_info(&Subject::from(principal)).await;
+        let me = self.actor_info(&ActorRef::from(principal)).await;
         let other = self.actor_info(peer).await;
         let id = dm_channel_id(&me.identity_key, &other.identity_key);
         if !self.list_for_principal(principal).await?.contains(&id) {
@@ -136,8 +136,8 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// if the channel already has 8 principal members (PR-1 cap, now
     /// principal-counted per ADR-049 Phase 4; PR-3 may lift).
     ///
-    /// ADR-049 Phase 1: the invitee is [`Subject`]-typed — both
-    /// principals (`Subject::Principal`) and users (`Subject::User`)
+    /// ADR-049 Phase 1: the invitee is [`ActorRef`]-typed — both
+    /// principals (`ActorRef::Principal`) and users (`ActorRef::User`)
     /// can be channel members. The inviter stays principal-typed (only
     /// principals hold agency to invite in this phase). User invitees
     /// are validated by wire form only; no `PrincipalManager`
@@ -146,7 +146,7 @@ pub trait ChannelPort: Send + Sync + 'static {
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &Subject,
+        invitee: &ActorRef,
     ) -> Result<()>;
 
     /// Post a message. The adapter enforces the at-most-one-parent
@@ -154,10 +154,10 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// message being replied to. Returns the new message's [`TaskId`]
     /// (the line number it was assigned in the channel's event log).
     ///
-    /// ADR-049 Phase 1: `sender` is [`Subject`]-typed; membership
+    /// ADR-049 Phase 1: `sender` is [`ActorRef`]-typed; membership
     /// itself is the write authorization, so a member user posts as
     /// themselves — no vouching member principal is required.
-    async fn post(&self, channel: &ChannelId, sender: &Subject, msg: PostMsg) -> Result<TaskId>;
+    async fn post(&self, channel: &ChannelId, sender: &ActorRef, msg: PostMsg) -> Result<TaskId>;
 
     /// Phase 11 (agent-session paradigm sprint): like [`Self::post`]
     /// but writes an explicit `author` string onto the event instead
@@ -168,7 +168,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// Used by the per-peer DM channels: the inbound message is posted
     /// with `sender = principal.id` (the channel's creator/member —
     /// the human peer is deliberately not added to membership) and
-    /// `author = peer.to_string()` (the Subject wire form, e.g.
+    /// `author = peer.to_string()` (the ActorRef wire form, e.g.
     /// `user:alice` or `principal:did:...`), so the channel log reads
     /// as a natural two-party conversation.
     ///
@@ -179,7 +179,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     async fn post_attributed(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         author: &str,
         msg: PostMsg,
     ) -> Result<TaskId> {
@@ -326,11 +326,11 @@ pub trait ChannelPort: Send + Sync + 'static {
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
 
     /// All current members of the channel. ADR-049 Phase 1: members
-    /// are [`Subject`]-typed — the returned list can contain both
+    /// are [`ActorRef`]-typed — the returned list can contain both
     /// principals and users. Legacy on-disk member rows (bare
     /// principal ids, no `kind:` prefix) parse as
-    /// `Subject::Principal`.
-    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<Subject>>;
+    /// `ActorRef::Principal`.
+    async fn list_members(&self, channel: &ChannelId) -> Result<Vec<ActorRef>>;
 
     /// All channels where `principal` is a member. Walks each channel's
     /// member set; cheap in PR-1's small fan-out cap (≤ 8 channels).
@@ -505,6 +505,62 @@ pub trait ChannelPort: Send + Sync + 'static {
     }
 }
 
+/// How an actor is reachable (ADR-073/081): a local-only actor, a hosted
+/// principal registered privately or publicly, or a remote Hub actor whose
+/// visibility this runtime does not track. Serializes as `local_only`,
+/// `private`, `public`, `registered`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Registration {
+    #[default]
+    LocalOnly,
+    Private,
+    Public,
+    Registered,
+}
+
+impl Registration {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local_only",
+            Self::Private => "private",
+            Self::Public => "public",
+            Self::Registered => "registered",
+        }
+    }
+
+    /// Whether the actor has a Hub route.
+    #[must_use]
+    pub fn is_registered(self) -> bool {
+        !matches!(self, Self::LocalOnly)
+    }
+}
+
+impl std::fmt::Display for Registration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for Registration {
+    /// Parse the wire form; anything unknown reads as `local_only`.
+    fn from(text: &str) -> Self {
+        match text {
+            "private" => Self::Private,
+            "public" => Self::Public,
+            "registered" => Self::Registered,
+            _ => Self::LocalOnly,
+        }
+    }
+}
+
+impl PartialEq<&str> for Registration {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 /// Public, addressable identity in contact lists and channel rosters.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActorInfo {
@@ -513,7 +569,7 @@ pub struct ActorInfo {
     pub local_id: Option<String>,
     pub hub_id: Option<String>,
     pub kind: String,
-    pub registration: String,
+    pub registration: Registration,
     #[serde(skip)]
     pub identity_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -523,24 +579,25 @@ pub struct ActorInfo {
 }
 
 impl ActorInfo {
-    pub fn from_subject(subject: &Subject, name: Option<&str>) -> Self {
+    pub fn from_subject(subject: &ActorRef, name: Option<&str>) -> Self {
         let address = subject.canonical_address();
-        let (scope, id) = address
-            .strip_prefix(&format!("{}:", subject.kind()))
-            .and_then(|rest| rest.split_once(':'))
-            .unwrap_or(("local", ""));
+        let route = subject.route();
         Self {
-            local_id: (scope == "local").then(|| id.into()),
-            hub_id: (scope == "hub").then(|| id.into()),
+            // A route qualified with another runtime keeps its qualifier,
+            // so it can never be rebuilt as a local actor here.
+            local_id: route.filter(|r| !r.is_hub()).map(|r| match r.runtime() {
+                Some(runtime) => format!("{}@{runtime}", r.id()),
+                None => r.id().to_owned(),
+            }),
+            hub_id: route.filter(|r| r.is_hub()).map(|r| r.id().to_owned()),
             kind: subject.kind().to_string(),
-            registration: if scope == "local" {
-                "local_only"
+            registration: if route.is_some_and(Route::is_hub) {
+                Registration::Registered
             } else {
-                "registered"
-            }
-            .into(),
+                Registration::LocalOnly
+            },
             identity_key: address.clone(),
-            mention: matches!(subject, Subject::Principal(_)).then(|| format!("@{address}")),
+            mention: matches!(subject, ActorRef::Principal(_)).then(|| format!("@{address}")),
             address,
             name: name.map(str::to_owned),
         }
@@ -576,16 +633,18 @@ impl ActorInfo {
             .as_ref()
             .map(|id| format!("{}:hub:{id}", self.kind))
     }
-    pub fn subject(&self) -> Subject {
-        let id = self.local_id.clone().unwrap_or_else(|| {
-            format!(
-                "hub:{}",
-                self.hub_id.as_deref().expect("actor has an address")
-            )
-        });
-        format!("{}:{id}", self.kind)
-            .parse()
-            .expect("registered actor kind")
+    pub fn subject(&self) -> ActorRef {
+        let route = match (&self.local_id, &self.hub_id) {
+            (Some(id), _) => Route::parse(&format!("local:{id}")),
+            (None, Some(hub)) => Route::hub(hub.clone()),
+            (None, None) => unreachable!("actor has an address"),
+        };
+        match self.kind.as_str() {
+            "user" => ActorRef::User(route),
+            "visitor" => ActorRef::Visitor(route),
+            "principal" => ActorRef::Principal(route),
+            other => unreachable!("registered actor kind {other}"),
+        }
     }
 }
 
@@ -594,7 +653,7 @@ impl ActorInfo {
 pub struct PortKeys<'a>(pub &'a dyn ChannelPort);
 
 impl ActorKeys for PortKeys<'_> {
-    fn key_of(&self, subject: &Subject) -> ActorKey {
+    fn key_of(&self, subject: &ActorRef) -> ActorKey {
         self.0.key_of(subject)
     }
 }
@@ -980,14 +1039,19 @@ impl ChannelPort for NoopChannelPort {
         &self,
         _channel: &ChannelId,
         _inviter: &PrincipalId,
-        _invitee: &Subject,
+        _invitee: &ActorRef,
     ) -> Result<()> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
     }
 
-    async fn post(&self, _channel: &ChannelId, _sender: &Subject, _msg: PostMsg) -> Result<TaskId> {
+    async fn post(
+        &self,
+        _channel: &ChannelId,
+        _sender: &ActorRef,
+        _msg: PostMsg,
+    ) -> Result<TaskId> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))
@@ -1015,7 +1079,7 @@ impl ChannelPort for NoopChannelPort {
         ))
     }
 
-    async fn list_members(&self, _channel: &ChannelId) -> Result<Vec<Subject>> {
+    async fn list_members(&self, _channel: &ChannelId) -> Result<Vec<ActorRef>> {
         Err(ChannelError::Adapter(
             "no channel port configured (NoopChannelPort)".into(),
         ))

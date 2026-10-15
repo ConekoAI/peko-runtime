@@ -2,7 +2,7 @@
 //!
 //! Two-file architecture:
 //! - sessions.json: Session metadata keyed by `session_id` (`HashMap`<String, `SessionEntry`>)
-//! - peers.json: Subject routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
+//! - peers.json: ActorRef routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
 //!
 //! This provides:
 //! - O(1) lookup by `session_id`
@@ -99,9 +99,9 @@ pub struct SessionEntry {
     pub title: Option<String>,
     pub parent_session_id: Option<SessionId>,
     pub trigger: String,
-    /// Subject type ("user" or "agent") - for session identity restoration
+    /// ActorRef type ("user" or "agent") - for session identity restoration
     pub peer_type: Option<String>,
-    /// Subject ID - for session identity restoration
+    /// ActorRef ID - for session identity restoration
     pub peer_id: Option<String>,
     /// Sole conversation binding; actor identities live in channel membership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -348,7 +348,7 @@ impl SessionEntry {
     }
 }
 
-/// Subject routing information
+/// ActorRef routing information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     /// Currently active session for this peer. `None` after the active
@@ -395,7 +395,7 @@ impl PeerInfo {
     }
 }
 
-/// Subject index structure
+/// ActorRef index structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PeerIndex {
     /// `peer_key` → peer info
@@ -612,7 +612,7 @@ impl SessionIndex {
     }
 
     // =================================================================================
-    // Subject Routing Operations (O(1) for critical path)
+    // ActorRef Routing Operations (O(1) for critical path)
     // =================================================================================
 
     /// Get active session for peer (O(1)) - CRITICAL for message routing
@@ -661,7 +661,7 @@ impl SessionIndex {
         let peer_info = peers
             .peers
             .get_mut(peer_key)
-            .ok_or_else(|| anyhow::anyhow!("Subject {peer_key} not found"))?;
+            .ok_or_else(|| anyhow::anyhow!("ActorRef {peer_key} not found"))?;
 
         peer_info.switch_to(session_id)?;
         self.peers_modified = true;

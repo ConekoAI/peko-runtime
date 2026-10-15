@@ -99,13 +99,13 @@ impl Policy {
     /// its section matches by its exact ID.
     #[must_use]
     pub fn for_actor(&self, actor: &str, keys: &dyn peko_subject::ActorKeys) -> String {
-        let subject = actor.parse::<peko_subject::Subject>().ok();
+        let subject = actor.parse::<peko_subject::ActorRef>().ok();
         let mut text = self.defaults.clone();
         for (address, rules) in &self.sections {
             let same = address == actor
                 || subject.as_ref().is_some_and(|subject| {
                     address
-                        .parse::<peko_subject::Subject>()
+                        .parse::<peko_subject::ActorRef>()
                         .is_ok_and(|section| keys.same_actor(&section, subject))
                 });
             if same {
@@ -242,7 +242,7 @@ mod tests {
         assert!(!stranger.contains("acme"));
         struct Bob;
         impl peko_subject::ActorKeys for Bob {
-            fn key_of(&self, subject: &peko_subject::Subject) -> peko_subject::ActorKey {
+            fn key_of(&self, subject: &peko_subject::ActorRef) -> peko_subject::ActorKey {
                 let address = subject.canonical_address();
                 peko_subject::ActorKey(match address.as_str() {
                     "principal:local:prin_b" | "principal:hub:bob" => "bob".into(),

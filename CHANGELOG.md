@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Typed actor references (ADR-081 §3 follow-ups, 0.1.0, 2026-10-15)
+
+- `Subject` is replaced by `ActorRef` (`User | Principal | Visitor (Route) | Public`)
+  with a typed `Route::{Local { id, runtime }, Hub(id)}`: scope is a type, no
+  longer a prefix inside an ID string. `SubjectKind` is `ActorKind`. The text
+  and `{kind, id}` wire forms are unchanged, so grants, session peers, and child
+  slugs on disk keep working. `ActorRef::parse_scoped` is the one parser for
+  explicit `kind:local:<id>` / `kind:hub:<id>` references (registry resolution,
+  Contacts, `peko permit`); Hub routes are built with `Route::hub`, and
+  `ActorInfo` builds from the route instead of re-splitting address text (a
+  foreign-qualified route keeps its qualifier).
+- `members.json` rows are written as canonical addresses (`member_row`,
+  replacing `subject_wire_form`); rows written before still read as the same
+  member, and `peko channel show` provenance is normalized through the registry.
+- `ActorInfo.registration` is `peko_channel::Registration` (`local_only`,
+  `private`, `public`, `registered` on the wire, unchanged).
+
 ### Legacy identity pieces retired (ADR-081 phase 5, 0.1.0, 2026-10-15)
 
 - `principal.toml` no longer stores a `hub_id` copy; the actor registry is the

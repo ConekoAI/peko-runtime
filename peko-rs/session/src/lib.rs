@@ -10,7 +10,7 @@
 // Production callers should prefer the canonical paths
 // (`peko_session::events::SessionEvent`, etc.).
 pub use peko_message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
-pub use peko_subject::Subject;
+pub use peko_subject::ActorRef;
 pub use serde_json::{json, Value};
 pub use std::sync::Arc;
 pub use tokio::sync::RwLock;

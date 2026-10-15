@@ -1,8 +1,9 @@
+use peko_channel::Registration;
 use peko_channel::{
     dm_channel_id, ChannelConfig, ChannelEvent, ChannelId, ChannelPort, ChannelStore, Checkpoint,
     CreateOpts, PostMsg,
 };
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 
 fn store(dir: &std::path::Path) -> ChannelStore {
     ChannelStore::new(ChannelConfig {
@@ -16,14 +17,14 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     let principal = PrincipalId("prin_a".into());
-    let user = Subject::User("hub:account".into());
+    let user = ActorRef::User("hub:account".into());
     port.register_actor(
-        &Subject::from(&principal),
+        &ActorRef::from(&principal),
         None,
         Some("did:key:signer"),
         Some("actor-key"),
         Some("Alice"),
-        "local_only",
+        Registration::LocalOnly,
     )
     .await
     .unwrap();
@@ -33,7 +34,7 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
         None,
         None,
         Some("Human"),
-        "registered",
+        Registration::Registered,
     )
     .await
     .unwrap();
@@ -42,12 +43,12 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
         .await
         .unwrap();
     port.register_actor(
-        &Subject::from(&principal),
+        &ActorRef::from(&principal),
         Some("hub-a"),
         Some("did:key:signer"),
         Some("actor-key"),
         Some("Alice"),
-        "private",
+        Registration::Private,
     )
     .await
     .unwrap();
@@ -76,12 +77,12 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
         local
     );
     port.register_actor(
-        &Subject::from(&principal),
+        &ActorRef::from(&principal),
         None,
         None,
         Some("actor-key"),
         Some("Alice"),
-        "local_only",
+        Registration::LocalOnly,
     )
     .await
     .unwrap();
@@ -96,14 +97,14 @@ async fn registration_preserves_local_identity_conversation_and_authorship() {
 async fn immutable_actor_keys_and_hub_aliases_cannot_be_reassigned() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
-    let a = Subject::Principal("prin_a".into());
+    let a = ActorRef::Principal("prin_a".into());
     port.register_actor(
         &a,
         Some("hub-a"),
         Some("did:key:a"),
         Some("key-a"),
         None,
-        "public",
+        Registration::Public,
     )
     .await
     .unwrap();
@@ -114,18 +115,18 @@ async fn immutable_actor_keys_and_hub_aliases_cannot_be_reassigned() {
             Some("did:key:a"),
             Some("different-key"),
             None,
-            "public"
+            Registration::Public
         )
         .await
         .is_err());
     assert!(port
         .register_actor(
-            &Subject::Principal("prin_b".into()),
+            &ActorRef::Principal("prin_b".into()),
             Some("hub-a"),
             Some("did:key:b"),
             Some("key-b"),
             None,
-            "public"
+            Registration::Public
         )
         .await
         .is_err());
@@ -139,7 +140,7 @@ async fn immutable_actor_keys_and_hub_aliases_cannot_be_reassigned() {
             None,
             None,
             None,
-            "registered",
+            Registration::Registered,
         )
         .await
         .unwrap();
@@ -164,27 +165,27 @@ async fn concurrent_pair_provisioning_keeps_independent_channel_bindings() {
     let aid = PrincipalId("prin_a".into());
     let bid = PrincipalId("prin_b".into());
     a.register_actor(
-        &Subject::from(&aid),
+        &ActorRef::from(&aid),
         None,
         None,
         Some("key-a"),
         Some("Alice"),
-        "local_only",
+        Registration::LocalOnly,
     )
     .await
     .unwrap();
     b.register_actor(
-        &Subject::from(&bid),
+        &ActorRef::from(&bid),
         None,
         None,
         Some("key-b"),
         Some("Bob"),
-        "local_only",
+        Registration::LocalOnly,
     )
     .await
     .unwrap();
-    let actor_a = Subject::from(&aid);
-    let actor_b = Subject::from(&bid);
+    let actor_a = ActorRef::from(&aid);
+    let actor_b = ActorRef::from(&bid);
     let (ab, ba) = tokio::join!(
         a.ensure_dm(&aid, &actor_b, "/bob"),
         b.ensure_dm(&bid, &actor_a, "/alice")
@@ -229,7 +230,7 @@ async fn group_roster_tracks_membership_instead_of_invitation_snapshots() {
         .create(&principal, CreateOpts::runtime("team"))
         .await
         .unwrap();
-    let visitor = Subject::Principal("prin_guest".into());
+    let visitor = ActorRef::Principal("prin_guest".into());
     port.invite(&channel, &principal, &visitor).await.unwrap();
     assert_eq!(port.participants(&channel).await.unwrap().len(), 2);
     port.leave(&channel, &PrincipalId("prin_guest".into()))
@@ -253,14 +254,14 @@ async fn verified_remote_leave_removes_all_aliases_from_current_roster() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     let owner = PrincipalId::generate();
-    let remote = Subject::Principal("hub:remote-hub".into());
+    let remote = ActorRef::Principal("hub:remote-hub".into());
     port.register_actor(
         &remote,
         Some("remote-hub"),
         Some("did:key:remote"),
         Some("remote-key"),
         None,
-        "public",
+        Registration::Public,
     )
     .await
     .unwrap();
@@ -294,12 +295,12 @@ async fn remote_actors_are_hub_only_and_keep_their_namespace_after_restart() {
     let owner = PrincipalId::generate();
     let local = port
         .register_actor(
-            &Subject::from(&owner),
+            &ActorRef::from(&owner),
             None,
             None,
             Some("owner-key"),
             None,
-            "local_only",
+            Registration::LocalOnly,
         )
         .await
         .unwrap();
@@ -311,7 +312,7 @@ async fn remote_actors_are_hub_only_and_keep_their_namespace_after_restart() {
         .unwrap();
     for kind in ["principal", "user", "visitor"] {
         let reference = format!("{kind}:hub:remote");
-        let subject: Subject = reference.parse().unwrap();
+        let subject: ActorRef = reference.parse().unwrap();
         let info = port
             .register_actor(
                 &subject,
@@ -319,7 +320,7 @@ async fn remote_actors_are_hub_only_and_keep_their_namespace_after_restart() {
                 None,
                 None,
                 Some(kind),
-                "registered",
+                Registration::Registered,
             )
             .await
             .unwrap();
@@ -366,14 +367,14 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     let owner = PrincipalId::generate();
-    let remote: Subject = "principal:hub:remote".parse().unwrap();
+    let remote: ActorRef = "principal:hub:remote".parse().unwrap();
     port.register_actor(
         &remote,
         Some("remote"),
         Some("did:key:remote"),
         Some("remote-key"),
         Some("Remote"),
-        "public",
+        Registration::Public,
     )
     .await
     .unwrap();
@@ -384,12 +385,12 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
     let hosted = PrincipalId::generate();
     let info = port
         .register_actor(
-            &Subject::from(&hosted),
+            &ActorRef::from(&hosted),
             Some("remote"),
             Some("did:key:remote"),
             Some("remote-key"),
             Some("Hosted"),
-            "private",
+            Registration::Private,
         )
         .await
         .unwrap();
@@ -403,20 +404,20 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
         dm
     );
     assert_eq!(
-        port.ensure_dm(&hosted, &Subject::from(&owner), "/owner")
+        port.ensure_dm(&hosted, &ActorRef::from(&owner), "/owner")
             .await
             .unwrap(),
         dm
     );
     port.post(
         &dm,
-        &Subject::from(&hosted),
+        &ActorRef::from(&hosted),
         PostMsg::root("after promotion"),
     )
     .await
     .unwrap();
     let restarted = store(temp.path());
-    assert_eq!(restarted.actor_info(&Subject::from(&hosted)).await, info);
+    assert_eq!(restarted.actor_info(&ActorRef::from(&hosted)).await, info);
     assert_eq!(restarted.participants(&dm).await.unwrap().len(), 2);
     let posts = restarted
         .peek(&dm, &Checkpoint::default())
@@ -437,7 +438,7 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
             Some("did:key:remote"),
             Some("remote-key"),
             None,
-            "private",
+            Registration::Private,
         )
         .await
         .unwrap();
@@ -449,19 +450,27 @@ async fn invalid_or_substituted_hub_identities_are_rejected_without_registry_wri
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
     for subject in [
-        Subject::Public,
-        "user:hub:".parse().unwrap(),
-        "principal:local:".parse().unwrap(),
+        ActorRef::Public,
+        // Text parsing refuses empty IDs; the registry must as well.
+        ActorRef::User(peko_subject::Route::hub("")),
+        ActorRef::Principal(peko_subject::Route::local("")),
     ] {
         assert!(port
-            .register_actor(&subject, None, None, None, None, "registered")
+            .register_actor(&subject, None, None, None, None, Registration::Registered)
             .await
             .is_err());
     }
     assert!(!temp.path().join("actors.json").exists());
-    let remote: Subject = "principal:hub:remote".parse().unwrap();
+    let remote: ActorRef = "principal:hub:remote".parse().unwrap();
     assert!(port
-        .register_actor(&remote, Some("substituted"), None, None, None, "public")
+        .register_actor(
+            &remote,
+            Some("substituted"),
+            None,
+            None,
+            None,
+            Registration::Public
+        )
         .await
         .is_err());
     port.register_actor(
@@ -470,12 +479,12 @@ async fn invalid_or_substituted_hub_identities_are_rejected_without_registry_wri
         Some("did:key:remote"),
         Some("key"),
         None,
-        "public",
+        Registration::Public,
     )
     .await
     .unwrap();
     let before = std::fs::read(temp.path().join("actors.json")).unwrap();
-    let other: Subject = "principal:hub:other".parse().unwrap();
+    let other: ActorRef = "principal:hub:other".parse().unwrap();
     assert!(port
         .register_actor(
             &other,
@@ -483,7 +492,7 @@ async fn invalid_or_substituted_hub_identities_are_rejected_without_registry_wri
             Some("did:key:remote"),
             Some("key"),
             None,
-            "public"
+            Registration::Public
         )
         .await
         .is_err());
@@ -499,14 +508,14 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
     let port = store(temp.path());
     let owner = PrincipalId::generate();
     let hosted = PrincipalId::generate();
-    let hosted_subject = Subject::from(&hosted);
+    let hosted_subject = ActorRef::from(&hosted);
     port.register_actor(
         &hosted_subject,
         Some("hub-hosted"),
         Some("did:key:hosted"),
         Some("hosted-key"),
         Some("Hosted"),
-        "private",
+        Registration::Private,
     )
     .await
     .unwrap();
@@ -546,7 +555,7 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
         Some("did:key:hosted"),
         Some("hosted-key"),
         None,
-        "private",
+        Registration::Private,
     )
     .await
     .unwrap();
@@ -563,7 +572,7 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
         Some("did:key:hosted"),
         Some("hosted-key"),
         None,
-        "local_only",
+        Registration::LocalOnly,
     )
     .await
     .unwrap();
@@ -591,12 +600,12 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
         .all(|author| author == &canonical));
     assert!(restarted
         .register_actor(
-            &Subject::from(&PrincipalId::generate()),
+            &ActorRef::from(&PrincipalId::generate()),
             Some("hub-hosted"),
             Some("did:key:other"),
             Some("other-key"),
             None,
-            "public"
+            Registration::Public
         )
         .await
         .is_err());
@@ -610,23 +619,23 @@ async fn reconciling_legacy_proxies_uses_host_inventory_and_preserves_conversati
     // This proxy was previously imported and is now a hosted principal.
     let hosted = PrincipalId("local_hosted".into());
     port.register_actor(
-        &Subject::from(&hosted),
+        &ActorRef::from(&hosted),
         Some("hosted"),
         Some("did:key:hosted"),
         Some("hosted-key"),
         None,
-        "private",
+        Registration::Private,
     )
     .await
     .unwrap();
-    let remote = Subject::Principal("local_remote".into());
+    let remote = ActorRef::Principal("local_remote".into());
     port.register_actor(
         &remote,
         Some("remote"),
         Some("did:key:remote"),
         Some("remote-key"),
         None,
-        "public",
+        Registration::Public,
     )
     .await
     .unwrap();
@@ -641,7 +650,7 @@ async fn reconciling_legacy_proxies_uses_host_inventory_and_preserves_conversati
             None,
             None,
             None,
-            "registered",
+            Registration::Registered,
         )
         .await
         .unwrap();

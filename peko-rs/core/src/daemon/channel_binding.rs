@@ -70,7 +70,7 @@ use peko_channel::{
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 use peko_session::SteeringMessage;
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 
 use crate::daemon::state::StreamingRunHandle;
 use crate::principal::child_turns::PeerChildTurns;
@@ -116,7 +116,7 @@ pub(crate) trait BoundTurnDriver: Send + Sync + 'static {
         &self,
         session_id: &str,
         message: &str,
-        author: Option<&Subject>,
+        author: Option<&ActorRef>,
     ) -> anyhow::Result<String>;
 
     /// The daemon-shared steering inbox registry this driver's turns
@@ -179,7 +179,7 @@ impl ResponderInner {
     /// reply threaded onto the triggering event (`event_id`). Failures
     /// are log-only: a broken wake must never post errors into a channel
     /// other members read.
-    async fn run_turn(&self, event_id: String, text: String, author: Option<Subject>) {
+    async fn run_turn(&self, event_id: String, text: String, author: Option<ActorRef>) {
         let _turn_guard = self.turn_lock.lock().await;
 
         let session_id = match self
@@ -223,7 +223,7 @@ impl ResponderInner {
                 msg.via = self.via.clone();
                 if let Err(e) = self
                     .port
-                    .post(&self.channel, &Subject::from(&self.principal), msg)
+                    .post(&self.channel, &ActorRef::from(&self.principal), msg)
                     .await
                 {
                     warn!(
@@ -328,7 +328,7 @@ impl ResponderInner {
                     msg.via = self.via.clone();
                     if let Err(e) = self
                         .port
-                        .post(&self.channel, &Subject::from(&self.principal), msg)
+                        .post(&self.channel, &ActorRef::from(&self.principal), msg)
                         .await
                     {
                         warn!(
@@ -381,7 +381,7 @@ impl ResponderInner {
                     msg.via = self.via.clone();
                     if let Err(e) = self
                         .port
-                        .post(&self.channel, &Subject::from(&self.principal), msg)
+                        .post(&self.channel, &ActorRef::from(&self.principal), msg)
                         .await
                     {
                         warn!(
@@ -409,7 +409,7 @@ impl ResponderInner {
 /// arrivals.
 fn spawn_turn(inner: Arc<ResponderInner>, ctx: RespondCtx, input: String) {
     let author = match &ctx.event {
-        ChannelEvent::Posted { author, .. } => Subject::from_str(author).ok(),
+        ChannelEvent::Posted { author, .. } => ActorRef::from_str(author).ok(),
         _ => None,
     };
     tokio::spawn(async move { inner.run_turn(ctx.event_id, input, author).await });
@@ -495,8 +495,8 @@ impl GroupWakeResponder {
                 ..
             } if parent.is_none()
                 && matches!(
-                    Subject::from_str(author),
-                    Ok(Subject::User(_) | Subject::Visitor(_))
+                    ActorRef::from_str(author),
+                    Ok(ActorRef::User(_) | ActorRef::Visitor(_))
                 )
                 && peko_channel::mentions(text, name) =>
             {
@@ -513,7 +513,7 @@ impl ChannelResponder for GroupWakeResponder {
         let me = self
             .inner
             .port
-            .actor_info(&Subject::from(&self.inner.principal))
+            .actor_info(&ActorRef::from(&self.inner.principal))
             .await;
         let roster = self.inner.port.participants(&self.inner.channel).await?;
         // Canonical mentions always identify one actor. Short names work only
@@ -638,7 +638,7 @@ impl BoundTurnDriver for PeerTurnDriver {
         &self,
         session_id: &str,
         message: &str,
-        author: Option<&Subject>,
+        author: Option<&ActorRef>,
     ) -> anyhow::Result<String> {
         let cancel = tokio_util::sync::CancellationToken::new();
         // Register a stop handle unless another run already holds the
@@ -1155,7 +1155,7 @@ mod tests {
             &self,
             session_id: &str,
             message: &str,
-            _author: Option<&Subject>,
+            _author: Option<&ActorRef>,
         ) -> anyhow::Result<String> {
             let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(now, Ordering::SeqCst);
@@ -1256,7 +1256,7 @@ mod tests {
         // `parent` (the triggering event's line id) validates against
         // the log — in production the subscriber only ever hands the
         // responder line ids that exist.
-        let other = Subject::User("alice".to_string());
+        let other = ActorRef::User("alice".into());
         store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
             .post(&channel, &other, PostMsg::root("@self hi"))
@@ -1471,7 +1471,7 @@ mod tests {
             &self,
             session_id: &str,
             message: &str,
-            _author: Option<&Subject>,
+            _author: Option<&ActorRef>,
         ) -> anyhow::Result<String> {
             self.calls
                 .lock()
@@ -1513,7 +1513,7 @@ mod tests {
         let (responder, store, channel, principal, _tmp) =
             bound_responder("prin_self", driver, resolver).await;
 
-        let other = Subject::User("alice".to_string());
+        let other = ActorRef::User("alice".into());
         store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
             .post(&channel, &other, PostMsg::root("@self hi"))
@@ -1617,7 +1617,7 @@ mod tests {
             drain_active.store(0, Ordering::SeqCst);
         });
 
-        let other = Subject::User("alice".to_string());
+        let other = ActorRef::User("alice".into());
         store.invite(&channel, &principal, &other).await.unwrap();
         let line = store
             .post(&channel, &other, PostMsg::root("@self hi"))
@@ -1902,7 +1902,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .invite(&channel, &principal, &Subject::User("alice".to_string()))
+            .invite(&channel, &principal, &ActorRef::User("alice".into()))
             .await
             .unwrap();
 
@@ -1924,7 +1924,7 @@ mod tests {
         let line = store
             .post(
                 &channel,
-                &Subject::User("alice".to_string()),
+                &ActorRef::User("alice".into()),
                 PostMsg::root("@self hello group"),
             )
             .await
@@ -1990,7 +1990,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .invite(&channel, &principal, &Subject::User("alice".to_string()))
+            .invite(&channel, &principal, &ActorRef::User("alice".into()))
             .await
             .unwrap();
         let driver = CollisionStubDriver::new("unused", anyhow::anyhow!("provider exploded"));
@@ -2009,7 +2009,7 @@ mod tests {
         let line = store
             .post(
                 &channel,
-                &Subject::User("alice".to_string()),
+                &ActorRef::User("alice".into()),
                 PostMsg::root("@self hello group"),
             )
             .await
@@ -2053,7 +2053,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .invite(&channel, &principal, &Subject::from(&other))
+            .invite(&channel, &principal, &ActorRef::from(&other))
             .await
             .unwrap();
 
@@ -2072,7 +2072,7 @@ mod tests {
         let line = store
             .post(
                 &channel,
-                &Subject::from(&other),
+                &ActorRef::from(&other),
                 PostMsg::root("agent talking"),
             )
             .await
@@ -2126,7 +2126,7 @@ mod tests {
             .with_agent_name("test-agent")
             .with_user("alice");
         let manager = Arc::new(RwLock::new(manager));
-        let peer = peko_auth::Subject::User("alice".to_string());
+        let peer = peko_auth::ActorRef::User("alice".into());
         let anchor = sid("root:user:alice");
         let child_id_str = sid("child-1");
         {
@@ -2258,7 +2258,7 @@ mod tests {
         let (store, tmp) = test_store("restart");
         let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
         let principal = pid("prin_self");
-        let other = Subject::User("alice".to_string());
+        let other = ActorRef::User("alice".into());
         let channel = store
             .create(&principal, CreateOpts::runtime("group"))
             .await

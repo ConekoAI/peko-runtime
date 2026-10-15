@@ -3,7 +3,7 @@ use crate::extensions::framework::core::ExtensionServices;
 use crate::tunnel::CrossRuntimeA2aCtx;
 use async_trait::async_trait;
 use peko_channel::{ActorInfo, ChannelPort};
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use peko_tools_core::{ActingFor, Tool, ToolContext};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -101,7 +101,7 @@ impl ContactsTool {
                 }
             }
         }
-        let me = self.port.actor_info(&Subject::from(id)).await;
+        let me = self.port.actor_info(&ActorRef::from(id)).await;
         actors.insert(me.address.clone(), json!(me));
         let mut channels = Vec::new();
         for channel in self.port.list_for_principal(id).await? {
@@ -174,15 +174,12 @@ impl Tool for ContactsTool {
                     .get("reference")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("Contacts resolve requires reference"))?;
-                let subject: Subject = reference.parse()?;
-                let identifier = subject.subject_id();
-                let (scope, identifier) = identifier
-                    .split_once(':')
+                let subject = ActorRef::parse_scoped(reference)
+                    .map_err(|_| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
+                let route = subject
+                    .route()
                     .ok_or_else(|| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
-                anyhow::ensure!(
-                    matches!(scope, "local" | "hub") && !identifier.is_empty(),
-                    "Use kind:local:<id> or kind:hub:<id>"
-                );
+                let (scope, identifier) = (route.scope(), route.id());
                 let (actors, _) = self.discover(&id, &stamp).await?;
                 if let Some(actor) = actors.values().find(|actor| {
                     actor["reachable"] != json!(false)
@@ -199,7 +196,7 @@ impl Tool for ContactsTool {
                     return Ok(json!({ "actor": actor }));
                 }
                 anyhow::ensure!(
-                    matches!(subject, Subject::Principal(_)),
+                    matches!(subject, ActorRef::Principal(_)),
                     "Actor is not a contact of this principal"
                 );
                 // Learned contacts are the principal's own knowledge, shared by
@@ -228,7 +225,7 @@ impl Tool for ContactsTool {
                     .get(id.clone())
                     .await
                     .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
-                let caller_profile = self.port.actor_info(&Subject::from(&caller.id)).await;
+                let caller_profile = self.port.actor_info(&ActorRef::from(&caller.id)).await;
                 let result = if caller_profile.hub_id.is_some() {
                     context
                         .directory
@@ -272,9 +269,9 @@ impl Tool for ContactsTool {
                         result.name.as_deref(),
                         if result.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public
                         {
-                            "public"
+                            peko_channel::Registration::Public
                         } else {
-                            "private"
+                            peko_channel::Registration::Private
                         },
                     )
                     .await?;

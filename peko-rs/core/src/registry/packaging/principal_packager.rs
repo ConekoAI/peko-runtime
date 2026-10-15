@@ -73,7 +73,7 @@ pub struct PrincipalPackager {
 #[derive(Debug, Clone, Default)]
 pub struct PortableExport {
     pub source_runtime: String,
-    pub hub_routes: HashMap<String, peko_subject::Subject>,
+    pub hub_routes: HashMap<String, peko_subject::ActorRef>,
     /// `local/channels.json`: memberships, rosters, and own bindings.
     pub channels: Option<Vec<u8>>,
 }
@@ -99,7 +99,7 @@ impl PrincipalPackager {
     }
 
     /// Apply the export rule (identity when the snapshot is not portable).
-    fn exported(&self, subject: &peko_subject::Subject) -> peko_subject::Subject {
+    fn exported(&self, subject: &peko_subject::ActorRef) -> peko_subject::ActorRef {
         match &self.portable {
             Some(p) => super::portable::export_rule(&p.source_runtime, &p.hub_routes)(subject),
             None => subject.clone(),
@@ -150,7 +150,7 @@ impl PrincipalPackager {
         seed_config.did = None;
         seed_config.actor_key = None;
         seed_config.boot_state = None;
-        seed_config.owner = peko_auth::Subject::default();
+        seed_config.owner = peko_auth::ActorRef::default();
         seed_config.permissions.clear();
         toml::to_string_pretty(&seed_config)
             .map_err(|e| anyhow::anyhow!("Failed to serialize template config: {e}"))
@@ -497,7 +497,7 @@ mod tests {
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),
-            owner: peko_auth::Subject::User("local".to_string()),
+            owner: peko_auth::ActorRef::User("local".into()),
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
@@ -669,9 +669,9 @@ mod tests {
         let mut config = sample_config("template", &identity.did);
         config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
         config.set_boot_state(BootState::Organized);
-        config.owner = peko_auth::Subject::User("hub:seed-author".into());
+        config.owner = peko_auth::ActorRef::User("hub:seed-author".into());
         config.permissions.push(peko_auth::PermissionGrant {
-            subject: peko_auth::Subject::User("hub:friend".into()),
+            subject: peko_auth::ActorRef::User("hub:friend".into()),
             permission: peko_auth::Permission::Trusted,
             granted_at: String::new(),
             granted_by: config.owner.clone(),

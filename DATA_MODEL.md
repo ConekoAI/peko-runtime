@@ -1759,7 +1759,7 @@ contract.
 Both directory and file names are full BLAKE3 hashes so the layout
 is self-validating (any mismatch between the hashed path and the
 shard's header record is treated as corruption) and so the layout
-is safe under arbitrary `Subject` and DID strings.
+is safe under arbitrary `ActorRef` and DID strings.
 
 **Per-shard header:** the first line of every shard is a
 self-describing record so the file can be validated without
@@ -1788,7 +1788,7 @@ single line:
   "kind":"message",
   "schemaVersion":1,
   "id":"chat_<uuid-simple>",
-  "sender":<Subject>,
+  "sender":<ActorRef>,
   "timestamp":"2026-07-20T12:34:56.789Z",
   "text":"…",
   "correlationId":null|"<id>"
@@ -1801,7 +1801,7 @@ Fields:
 |-------|------|-------|
 | `schemaVersion` | u8 | Currently `1`. Bumping it forces a migration. |
 | `id` | string | `chat_` prefix + UUID simple-hex. Stable per shard. Used for paging dedupe on the desktop. |
-| `sender` | `Subject` | `{kind:user,id:…}`, `{kind:principal,id:<did>}`, or `{kind:public}`. Determines direction. |
+| `sender` | `ActorRef` | `{kind:user,id:…}`, `{kind:principal,id:<did>}`, or `{kind:public}`. Determines direction. |
 | `timestamp` | RFC 3339 | UTC. |
 | `text` | string | Plain text. The runtime never persists markdown, tool output, or thinking blocks here. |
 | `correlationId` | string? | Pairs request/response lines for principal-to-principal exchanges. |
@@ -1828,9 +1828,9 @@ way:
 ### 5½.4 Sender Constraints
 
 `ChatLogStore::append_message` rejects senders that aren't one of
-the two participants of the thread (`Subject::Principal(key.principal)`
+the two participants of the thread (`ActorRef::Principal(key.principal)`
 or `key.peer`) with `ChatLogError::InvalidSender`. The constraint
-is in place so a runtime bug can't sneak an unrelated Subject
+is in place so a runtime bug can't sneak an unrelated ActorRef
 into a peer's thread and break the privacy contract — every
 line in a shard is provably between the two parties the shard
 is named after.
@@ -1902,6 +1902,9 @@ channels.
 <runtime_dir>/channels/<channel_id>/
   meta.json       # channel metadata (schema below)
   members.json    # { members: [String], remote_members: [RemoteMember] }
+                  # members rows are canonical addresses (`principal:local:prin_x`,
+                  # `user:hub:<id>`); rows from before ADR-081 (bare principal IDs,
+                  # `kind:<id>`) still read as the same member.
   events.jsonl    # current page: one EventLine per line, append-only (see below)
   events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)

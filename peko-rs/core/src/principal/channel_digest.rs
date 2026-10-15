@@ -107,7 +107,7 @@ impl crate::tools::prompt_sections::PromptSectionProvider for ChannelDigestSessi
             .unwrap_or_default();
         let port = input.channel_port.clone()?;
         let actor = port
-            .actor_info(&peko_subject::Subject::from(&peko_subject::PrincipalId(
+            .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
                 principal_id.clone(),
             )))
             .await;
@@ -576,7 +576,7 @@ mod tests {
     use peko_channel::{ChannelConfig, ChannelStore, CreateOpts, PostMsg};
     use peko_protocol::channel::ChannelId;
     use peko_session::metadata::SessionMetadata;
-    use peko_subject::{PrincipalId, Subject};
+    use peko_subject::{ActorRef, PrincipalId};
 
     const ME: Me<'static> = Me {
         hub: None,
@@ -619,8 +619,8 @@ mod tests {
         (dir, store)
     }
 
-    fn me_subject() -> Subject {
-        Subject::from(&PrincipalId(ME.id.to_string()))
+    fn me_subject() -> ActorRef {
+        ActorRef::from(&PrincipalId(ME.id.to_string()))
     }
 
     /// A session tree: the trunk, a user standing child `/user-a`, and a

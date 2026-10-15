@@ -732,7 +732,7 @@ mod tests {
             name: String::new(),
             id: None,
             did: None,
-            owner: peko_auth::Subject::User("local".into()),
+            owner: peko_auth::ActorRef::User("local".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),

@@ -20,7 +20,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_subject::PrincipalId;
 use peko_tools_core::{ActingFor, Origin};
 use serde::{Deserialize, Serialize};
@@ -194,10 +194,10 @@ impl PrincipalPolicyGate {
 
     /// The owner, as the subject their conversation is keyed by
     /// (ADR-081 D8: the one owner's own conversation).
-    async fn owner_subjects(principal: &Principal) -> Vec<Subject> {
+    async fn owner_subjects(principal: &Principal) -> Vec<ActorRef> {
         let owner = principal.config.read().await.owner.clone();
         if owner.subject_id().is_empty() {
-            vec![Subject::User("local".into())]
+            vec![ActorRef::User("local".into())]
         } else {
             vec![owner]
         }

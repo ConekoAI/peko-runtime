@@ -25,7 +25,7 @@ use crate::tunnel::hub_directory::{AgentDirectory, AgentResolution, DirectoryErr
 use crate::tunnel::local_directory::LocalFirstAgentDirectory;
 use crate::tunnel::TunnelChannelPort;
 use async_trait::async_trait;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_channel::{ChannelEvent, ChannelPort, Checkpoint};
 use peko_providers::LlmResolver;
 use peko_subject::PrincipalDID;
@@ -59,7 +59,7 @@ async fn create_test_principal(
     manager: &PrincipalManager,
     workspace: &std::path::Path,
     name: &str,
-    owner: Subject,
+    owner: ActorRef,
 ) -> Arc<crate::principal::Principal> {
     let roles_dir = workspace.join(name).join("roles");
     tokio::fs::create_dir_all(&roles_dir).await.unwrap();
@@ -96,7 +96,7 @@ async fn create_test_principal(
 async fn posted_via(
     port: &Arc<dyn ChannelPort>,
     principal: &Arc<crate::principal::Principal>,
-    peer: &Subject,
+    peer: &ActorRef,
 ) -> Vec<(String, Option<String>)> {
     let peer = port.actor_info(peer).await.subject();
     let slug = crate::principal::peer_children::peer_child_slug(&peer).unwrap();
@@ -196,13 +196,13 @@ impl Fixture {
             .with_channel_port(channel_port.clone()),
         );
         let caller =
-            create_test_principal(&manager, &workspace, "offline-caller", Subject::Public).await;
+            create_test_principal(&manager, &workspace, "offline-caller", ActorRef::Public).await;
         let caller_did = caller.config.read().await.did.as_ref().unwrap().0.clone();
         let target = create_test_principal(
             &manager,
             &workspace,
             "offline-target",
-            Subject::Principal(PrincipalDID(caller_did.clone())),
+            ActorRef::Principal(PrincipalDID(caller_did.clone()).into()),
         )
         .await;
         let target_did = target.config.read().await.did.as_ref().unwrap().0.clone();
@@ -253,12 +253,12 @@ impl Fixture {
     ) -> tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage> {
         self.channel_port
             .register_actor(
-                &Subject::from(&self.caller.id),
+                &ActorRef::from(&self.caller.id),
                 Some("caller-hub"),
                 Some(&self.caller_did),
                 self.caller.config.read().await.actor_key.as_deref(),
                 Some("caller"),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -352,7 +352,7 @@ impl Fixture {
 async fn root_ids(
     port: &Arc<dyn ChannelPort>,
     principal: &Arc<crate::principal::Principal>,
-    peer: &Subject,
+    peer: &ActorRef,
 ) -> Vec<(Option<String>, String)> {
     let peer = port.actor_info(peer).await.subject();
     let slug = crate::principal::peer_children::peer_child_slug(&peer).unwrap();
@@ -403,13 +403,13 @@ async fn same_runtime_send_records_and_delivers_and_returns_at_once() {
     let record = root_ids(
         &fx.channel_port,
         &fx.caller,
-        &Subject::Principal(PrincipalDID(fx.target_did.clone())),
+        &ActorRef::Principal(PrincipalDID(fx.target_did.clone()).into()),
     )
     .await;
     let delivered = root_ids(
         &fx.channel_port,
         &fx.target,
-        &Subject::Principal(PrincipalDID(fx.caller_did.clone())),
+        &ActorRef::Principal(PrincipalDID(fx.caller_did.clone()).into()),
     )
     .await;
     assert_eq!(record.len(), 1, "{record:?}");
@@ -426,7 +426,7 @@ async fn three_local_principals_can_send_and_thread_replies_without_a_hub() {
         &fx.manager,
         &fx._temp.path().join("principals"),
         "third",
-        Subject::Public,
+        ActorRef::Public,
     )
     .await;
     let third_tool = build_channel_send_tool(&fx.tooling, &third.did().await.0).unwrap();
@@ -465,7 +465,7 @@ async fn three_local_principals_can_send_and_thread_replies_without_a_hub() {
         root_ids(
             &fx.channel_port,
             &fx.caller,
-            &Subject::Principal(fx.target_did.into())
+            &ActorRef::Principal(fx.target_did.into())
         )
         .await
         .len(),
@@ -481,7 +481,7 @@ async fn private_local_delivery_requires_the_canonical_principal_grant() {
     {
         let mut config = fx.target.config.write().await;
         config.exposure = Exposure::Private;
-        config.owner = Subject::User("other".into());
+        config.owner = ActorRef::User("other".into());
         config.permissions.clear();
     }
     let denied = fx.send_to(&fx.target_did, "denied").await;
@@ -492,10 +492,10 @@ async fn private_local_delivery_requires_the_canonical_principal_grant() {
         .await
         .permissions
         .push(peko_auth::ownership::PermissionGrant {
-            subject: Subject::Principal(fx.caller_did.clone().into()),
+            subject: ActorRef::Principal(fx.caller_did.clone().into()),
             permission: peko_auth::ownership::Permission::Chat,
             granted_at: "2026-10-12T00:00:00Z".into(),
-            granted_by: Subject::User("other".into()),
+            granted_by: ActorRef::User("other".into()),
         });
     assert!(fx.send_to(&fx.target_did, "allowed").await.success);
 }
@@ -541,7 +541,7 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
     )
     .await;
 
-    let target_peer = Subject::from(&fx.target.id);
+    let target_peer = ActorRef::from(&fx.target.id);
     let slug = crate::principal::peer_children::peer_child_slug(&target_peer).unwrap();
     let via = Some(format!("{}/{slug}", peko_session::path::SCHEME_PREFIX));
     let expected = vec![
@@ -553,7 +553,7 @@ async fn root_posts_carry_the_calling_sessions_slug_path() {
         posted_via(&fx.channel_port, &fx.caller, &target_peer).await,
         expected
     );
-    let caller_peer = Subject::from(&fx.caller.id);
+    let caller_peer = ActorRef::from(&fx.caller.id);
     assert_eq!(
         posted_via(&fx.channel_port, &fx.target, &caller_peer).await,
         expected
@@ -594,7 +594,7 @@ fn remote_resolution(
         runtime_id: REMOTE_RUNTIME.into(),
         instance_id: "inst-remote".into(),
         agent_did: agent_did.into(),
-        owner_principal: Subject::Public,
+        owner_principal: ActorRef::Public,
         exposure,
     }
 }

@@ -385,7 +385,7 @@ pub struct NodeEvidence {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
     /// Who produced this evidence. Free-form in v1; v2 may type as
-    /// `peko_subject::Subject`.
+    /// `peko_subject::ActorRef`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<String>,
 }

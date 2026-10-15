@@ -46,7 +46,7 @@ use crate::tools::builtin::session::{
 };
 use anyhow::Context as _;
 use peko_message::LlmMessage;
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 use peko_message::{ContentBlock, MessageRole, TokenUsage};
 use peko_session::jsonl::SessionStorage;
@@ -400,7 +400,7 @@ fn count_current_run_iterations(events: &[peko_session::SessionEvent]) -> usize 
 impl SessionRuntime for SessionManagerRuntime {
     async fn list_sessions(
         &self,
-        peer: Option<&Subject>,
+        peer: Option<&ActorRef>,
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
@@ -439,7 +439,7 @@ impl SessionRuntime for SessionManagerRuntime {
         // `SessionMetadata`. Sessions without recorded peer info are
         // skipped when a peer filter is supplied (so branches don't
         // bleed across principals).
-        let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
+        let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id()));
 
         // Filesystem model: every caller sees the whole store.
         // level callers keep the full view.
@@ -758,7 +758,7 @@ impl SessionRuntime for SessionManagerRuntime {
     async fn search_sessions(
         &self,
         query: &str,
-        peer: Option<&Subject>,
+        peer: Option<&ActorRef>,
         limit: usize,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>> {
@@ -780,7 +780,7 @@ impl SessionRuntime for SessionManagerRuntime {
                         .chain(std::iter::once(root.clone()))
                         .collect()
                 });
-            let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id().to_string()));
+            let peer_filter = peer.map(|p| (p.kind().to_string(), p.subject_id()));
             let ids: Vec<String> = metas
                 .iter()
                 .filter(|m| {
@@ -1323,7 +1323,7 @@ pub(crate) mod test_support {
         }
 
         pub(crate) async fn create(&self, id: &str, parent: Option<&str>) {
-            self.create_as(id, parent, Subject::User("alice".to_string()), "test-agent")
+            self.create_as(id, parent, ActorRef::User("alice".into()), "test-agent")
                 .await;
         }
 
@@ -1332,7 +1332,7 @@ pub(crate) mod test_support {
             &self,
             id: &str,
             parent: Option<&str>,
-            peer: Subject,
+            peer: ActorRef,
             agent: &str,
         ) {
             let mut options = SessionCreateOptions::new().with_session_id(id);

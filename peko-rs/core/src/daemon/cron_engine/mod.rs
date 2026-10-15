@@ -142,7 +142,7 @@ impl CronEngine {
         // falls back to a disk scan). Then hand the resolved name to the
         // engine-internal authority accessor — it bypasses the
         // ownership gate because the engine writes on behalf of the
-        // principal owner (Subject::Public), not on behalf of a peer.
+        // principal owner (ActorRef::Public), not on behalf of a peer.
         // The principal's `[[permissions]]` ACL is the only gate at this
         // layer.
         let principal_name = self
@@ -183,7 +183,7 @@ impl CronEngine {
     ///
     /// **Phase B.** The manager stores `Principal`s keyed by an
     /// internal generated `PrincipalId`, but the wire identity
-    /// (`CronJob::principal_id`, `Subject::Principal`, on-disk
+    /// (`CronJob::principal_id`, `ActorRef::Principal`, on-disk
     /// `principal.toml`'s `did` field) is the DID. The two are not
     /// the same in the freshly-created case, so we try both lookups:
     /// id first (the manager's primary key), then DID (the wire
@@ -1228,7 +1228,7 @@ fn map_async_status(status: AsyncTaskStatus) -> (String, Option<String>, Option<
 /// (cheap), then falls back to a DID scan.
 ///
 /// **Phase B.** The wire identity is the DID (`CronJob::principal_id`,
-/// `Subject::Principal`'s inner `PrincipalDID`), but the manager's
+/// `ActorRef::Principal`'s inner `PrincipalDID`), but the manager's
 /// internal hashmap is keyed by the *generated* `PrincipalId` that
 /// `PrincipalManager::create` minted at construction time. In the
 /// freshly-created case those two strings differ; the DID lookup is
@@ -1269,7 +1269,7 @@ mod tests {
 
     use peko_providers::mock::MockAdapter;
     use peko_providers::resolver::LlmResolver;
-    use peko_subject::Subject;
+    use peko_subject::ActorRef;
     use peko_tools_core::ToolResult;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1689,7 +1689,7 @@ mod tests {
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig {
                 display_name: Some(name.to_string()),
                 description: Some(format!("The {name} Principal")),
@@ -1702,10 +1702,10 @@ mod tests {
             status: None,
             boot_state: None,
             permissions: vec![PermissionGrant {
-                subject: Subject::Public,
+                subject: ActorRef::Public,
                 permission: Permission::Chat,
                 granted_at: chrono::Utc::now().to_rfc3339(),
-                granted_by: Subject::User("test-owner".to_string()),
+                granted_by: ActorRef::User("test-owner".into()),
             }],
             preferred_model_id: Some("mock".to_string()),
             quota: None,
@@ -2241,7 +2241,7 @@ mod tests {
     /// from the principal's sessions dir.
     async fn owner_child_id(
         principal: &Arc<crate::principal::Principal>,
-        peer: &Subject,
+        peer: &ActorRef,
     ) -> Option<String> {
         let mut mgr = peko_session::manager::SessionManager::new()
             .with_sessions_dir_internal(principal.memory.sessions_dir().clone());
@@ -2292,7 +2292,7 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
-        let owner = Subject::User("test-owner".to_string());
+        let owner = ActorRef::User("test-owner".into());
 
         // 1. A conversational (CLI) turn creates the owner's standing
         //    peer child.
@@ -2587,7 +2587,7 @@ mod tests {
         let workspace = tmp.path().join("principals");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
-        let owner = Subject::User("test-owner".to_string());
+        let owner = ActorRef::User("test-owner".into());
 
         // 1. A conversational (CLI) turn creates the owner's standing
         //    peer child — so the note cross-post has somewhere to

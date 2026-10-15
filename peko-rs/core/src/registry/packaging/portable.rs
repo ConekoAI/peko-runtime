@@ -17,19 +17,19 @@
 
 use std::collections::HashMap;
 
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 use crate::principal::config::PrincipalConfig;
 
 /// Rewrite one reference.
-pub type Rewrite<'a> = dyn Fn(&Subject) -> Subject + Send + Sync + 'a;
+pub type Rewrite<'a> = dyn Fn(&ActorRef) -> ActorRef + Send + Sync + 'a;
 
 /// The export rule, given the Hub routes of the actors that have one
 /// (keyed by canonical address).
 pub fn export_rule<'a>(
     source_runtime: &'a str,
-    hub_routes: &'a HashMap<String, Subject>,
-) -> impl Fn(&Subject) -> Subject + 'a {
+    hub_routes: &'a HashMap<String, ActorRef>,
+) -> impl Fn(&ActorRef) -> ActorRef + 'a {
     move |subject| {
         hub_routes
             .get(&subject.canonical_address())
@@ -43,13 +43,13 @@ pub fn export_rule<'a>(
 /// destination's local user.
 pub fn import_rule<'a>(
     destination: &'a str,
-    foreign_owner: Option<&'a Subject>,
-) -> impl Fn(&Subject) -> Subject + 'a {
+    foreign_owner: Option<&'a ActorRef>,
+) -> impl Fn(&ActorRef) -> ActorRef + 'a {
     move |subject| {
         if foreign_owner
             .is_some_and(|owner| owner.canonical_address() == subject.canonical_address())
         {
-            return Subject::User("local".into());
+            return ActorRef::User("local".into());
         }
         subject.localized_on(destination)
     }
@@ -58,7 +58,7 @@ pub fn import_rule<'a>(
 /// The owner a snapshot names when it is a local-only actor of a runtime
 /// other than `destination` (ADR-081 D6 step 2).
 #[must_use]
-pub fn foreign_local_owner(config: &PrincipalConfig, destination: &str) -> Option<Subject> {
+pub fn foreign_local_owner(config: &PrincipalConfig, destination: &str) -> Option<ActorRef> {
     let owner = &config.owner;
     owner
         .route_runtime()
@@ -72,7 +72,7 @@ pub fn rewrite_config(config: &mut PrincipalConfig, rewrite: &Rewrite<'_>) {
         config.owner = rewrite(&config.owner);
     }
     for grant in &mut config.permissions {
-        if grant.subject != Subject::Public {
+        if grant.subject != ActorRef::Public {
             grant.subject = rewrite(&grant.subject);
         }
         if !grant.granted_by.subject_id().is_empty() {
@@ -91,7 +91,7 @@ pub fn rewrite_policy(text: &str, rewrite: &Rewrite<'_>) -> String {
             let (address, rest) = heading
                 .split_once(char::is_whitespace)
                 .map_or((heading.trim_end(), ""), |(a, r)| (a, r));
-            let subject = address.parse::<Subject>().ok()?;
+            let subject = address.parse::<ActorRef>().ok()?;
             let ending = if line.ends_with('\n') && !rest.ends_with('\n') {
                 "\n"
             } else {
@@ -121,7 +121,7 @@ pub fn rewrite_cron(bytes: &[u8], rewrite: &Rewrite<'_>) -> Vec<u8> {
         let Some(actor) = job.get_mut("created_by").and_then(|c| c.get_mut("actor")) else {
             continue;
         };
-        if let Some(subject) = actor.as_str().and_then(|a| a.parse::<Subject>().ok()) {
+        if let Some(subject) = actor.as_str().and_then(|a| a.parse::<ActorRef>().ok()) {
             *actor = serde_json::Value::String(rewrite(&subject).canonical_address());
         }
     }
@@ -135,7 +135,7 @@ pub fn referenced_actors(
     config: &PrincipalConfig,
     policy: Option<&str>,
     cron: Option<&[u8]>,
-) -> Vec<Subject> {
+) -> Vec<ActorRef> {
     let seen = std::sync::Mutex::new(vec![config.owner.clone()]);
     for grant in &config.permissions {
         seen.lock().expect("collector").push(grant.subject.clone());
@@ -143,7 +143,7 @@ pub fn referenced_actors(
             .expect("collector")
             .push(grant.granted_by.clone());
     }
-    let collect = |subject: &Subject| {
+    let collect = |subject: &ActorRef| {
         seen.lock().expect("collector").push(subject.clone());
         subject.clone()
     };
@@ -154,7 +154,7 @@ pub fn referenced_actors(
         let _ = rewrite_cron(cron, &collect);
     }
     let mut out = seen.into_inner().expect("collector");
-    out.retain(|s| *s != Subject::Public && !s.subject_id().is_empty());
+    out.retain(|s| *s != ActorRef::Public && !s.subject_id().is_empty());
     out
 }
 
@@ -171,7 +171,7 @@ mod tests {
             subject: subject.parse().unwrap(),
             permission: Permission::Trusted,
             granted_at: String::new(),
-            granted_by: Subject::User("local".into()),
+            granted_by: ActorRef::User("local".into()),
         }
     }
 
@@ -191,7 +191,7 @@ mod tests {
         let mut hub_routes = HashMap::new();
         hub_routes.insert(
             "user:local:local".to_string(),
-            "user:hub:alice".parse::<Subject>().unwrap(),
+            "user:hub:alice".parse::<ActorRef>().unwrap(),
         );
         // Registered local user: exported by its Hub route.
         let mut registered = config("user:local", &["principal:local:prin_peer"]);
@@ -229,10 +229,10 @@ mod tests {
         );
         let owner = foreign_local_owner(&offline, DST);
         rewrite_config(&mut offline, &import_rule(DST, owner.as_ref()));
-        assert_eq!(offline.owner, Subject::User("local".into()));
+        assert_eq!(offline.owner, ActorRef::User("local".into()));
         assert_eq!(
             offline.permissions[0].granted_by,
-            Subject::User("local".into())
+            ActorRef::User("local".into())
         );
 
         // Back home, everything revives.
@@ -241,7 +241,7 @@ mod tests {
         let owner = foreign_local_owner(&home, SRC);
         assert!(owner.is_none(), "an owner of this runtime is not foreign");
         rewrite_config(&mut home, &import_rule(SRC, None));
-        assert!(keys.same_actor(&home.owner, &Subject::User("local".into())));
+        assert!(keys.same_actor(&home.owner, &ActorRef::User("local".into())));
         assert!(keys.same_actor(
             &home.permissions[0].subject,
             &"principal:local:prin_peer".parse().unwrap()

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peko_auth::{Permission, PermissionGrant, Subject};
+use peko_auth::{ActorRef, Permission, PermissionGrant};
 use peko_channel::{ChannelId, ChannelPort};
 use peko_session::{SessionId, SessionMetadata};
 use peko_subject::{ActorKeys, CanonicalKeys, PrincipalId};
@@ -20,9 +20,9 @@ use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
 pub trait TrustSource: Send + Sync {
     /// The trust the principal's owner consented to for `actor`, with
     /// identity decided by `keys` (ADR-081 D1).
-    async fn trust_of(&self, actor: &Subject, keys: &(dyn ActorKeys + Sync)) -> Trust;
+    async fn trust_of(&self, actor: &ActorRef, keys: &(dyn ActorKeys + Sync)) -> Trust;
     /// The principal's owner.
-    async fn owner(&self) -> Subject;
+    async fn owner(&self) -> ActorRef;
 }
 
 /// Trust for `actor` under an owner and a grant list (ADR-078 §2,
@@ -30,10 +30,10 @@ pub trait TrustSource: Send + Sync {
 /// a grant names it with the owner's consent bit, else `Untrusted`.
 #[must_use]
 pub fn trust_for(
-    owner: &Subject,
+    owner: &ActorRef,
     grants: &[PermissionGrant],
     keys: &dyn ActorKeys,
-    actor: &Subject,
+    actor: &ActorRef,
 ) -> Trust {
     if keys.same_actor(owner, actor) {
         return Trust::Owner;
@@ -156,7 +156,7 @@ impl Stamps {
     }
 
     /// `actor`'s trust, with identity decided by this runtime's registry.
-    pub async fn trust_of(&self, actor: &Subject) -> Trust {
+    pub async fn trust_of(&self, actor: &ActorRef) -> Trust {
         match &self.channels {
             Some(port) => {
                 self.trust
@@ -168,7 +168,7 @@ impl Stamps {
     }
 
     /// The actor address the stamp uses for `subject` (ADR-073/077).
-    pub async fn address(&self, subject: &Subject) -> (String, Option<String>) {
+    pub async fn address(&self, subject: &ActorRef) -> (String, Option<String>) {
         match &self.channels {
             Some(port) => {
                 let info = port.actor_info(subject).await;
@@ -194,7 +194,7 @@ impl Stamps {
 
     /// A human (or principal) driver: `author` is who speaks, `authority`
     /// is the subject permissions are checked against (ADR-057 D2).
-    pub async fn driver(&self, author: &Subject, authority: &Subject) -> Driver {
+    pub async fn driver(&self, author: &ActorRef, authority: &ActorRef) -> Driver {
         let (actor, name) = self.address(author).await;
         Driver {
             actor,
@@ -218,7 +218,7 @@ impl Stamps {
             return Trust::Untrusted;
         };
         let me = port
-            .actor_info(&Subject::from(&self.principal))
+            .actor_info(&ActorRef::from(&self.principal))
             .await
             .identity_key;
         let mut ceiling = None::<Trust>;
@@ -237,7 +237,7 @@ impl Stamps {
     async fn counterpart(&self, channel: &str) -> (String, Option<String>) {
         if let Some(port) = &self.channels {
             let me = port
-                .actor_info(&Subject::from(&self.principal))
+                .actor_info(&ActorRef::from(&self.principal))
                 .await
                 .identity_key;
             if let Ok(participants) = port.participants(&ChannelId(channel.to_string())).await {
@@ -328,37 +328,37 @@ impl Stamps {
 mod tests {
     use super::*;
 
-    fn grant(subject: Subject, permission: Permission) -> PermissionGrant {
+    fn grant(subject: ActorRef, permission: Permission) -> PermissionGrant {
         PermissionGrant {
             subject,
             permission,
             granted_at: String::new(),
-            granted_by: Subject::User("local".into()),
+            granted_by: ActorRef::User("local".into()),
         }
     }
 
     #[test]
     fn only_the_owner_is_owner() {
-        let owner = Subject::User("hub:owner".into());
+        let owner = ActorRef::User("hub:owner".into());
         let keys = CanonicalKeys;
         assert_eq!(trust_for(&owner, &[], &keys, &owner), Trust::Owner);
         // ADR-081 D4: neither the local user nor any other account is an
         // implicit owner.
         assert_eq!(
-            trust_for(&owner, &[], &keys, &Subject::User("local".into())),
+            trust_for(&owner, &[], &keys, &ActorRef::User("local".into())),
             Trust::Untrusted
         );
         assert_eq!(
-            trust_for(&owner, &[], &keys, &Subject::User("hub:me".into())),
+            trust_for(&owner, &[], &keys, &ActorRef::User("hub:me".into())),
             Trust::Untrusted
         );
-        let local_owner = Subject::User("local".into());
+        let local_owner = ActorRef::User("local".into());
         assert_eq!(
             trust_for(
                 &local_owner,
                 &[],
                 &keys,
-                &Subject::User("local:local".into())
+                &ActorRef::User("local:local".into())
             ),
             Trust::Owner
         );
@@ -366,11 +366,11 @@ mod tests {
 
     #[test]
     fn trusted_requires_a_named_grant() {
-        let owner = Subject::User("hub:owner".into());
-        let alice = Subject::User("hub:alice".into());
+        let owner = ActorRef::User("hub:owner".into());
+        let alice = ActorRef::User("hub:alice".into());
         let grants = vec![
             grant(alice.clone(), Permission::Chat),
-            grant(Subject::Public, Permission::Trusted),
+            grant(ActorRef::Public, Permission::Trusted),
         ];
         assert_eq!(
             trust_for(&owner, &grants, &CanonicalKeys, &alice),
@@ -381,7 +381,7 @@ mod tests {
             trust_for(&owner, &grants, &CanonicalKeys, &alice),
             Trust::Trusted
         );
-        let bob = Subject::Principal("prin_bob".into());
+        let bob = ActorRef::Principal("prin_bob".into());
         assert_eq!(
             trust_for(&owner, &grants, &CanonicalKeys, &bob),
             Trust::Untrusted

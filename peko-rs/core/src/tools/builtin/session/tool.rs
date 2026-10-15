@@ -448,7 +448,7 @@ impl Tool for SessionTool {
                 let peer_str = params.get("peer").and_then(|v| v.as_str());
                 let peer = match peer_str {
                     Some(s) => Some(
-                        s.parse::<peko_subject::Subject>()
+                        s.parse::<peko_subject::ActorRef>()
                             .map_err(|e| anyhow::anyhow!("Invalid peer '{s}': {e}"))?,
                     ),
                     None => None,
@@ -496,7 +496,7 @@ impl Tool for SessionTool {
                 let peer_str = params.get("peer").and_then(|v| v.as_str());
                 let peer = match peer_str {
                     Some(s) => Some(
-                        s.parse::<peko_subject::Subject>()
+                        s.parse::<peko_subject::ActorRef>()
                             .map_err(|e| anyhow::anyhow!("Invalid peer '{s}': {e}"))?,
                     ),
                     None => None,
@@ -697,7 +697,7 @@ mod tests {
     //!                                └── `spawn2` (`sess:/c`)
     use super::*;
     use crate::session::session_runtime_impl::test_support::{sid, tree_harness, Harness};
-    use peko_subject::Subject;
+    use peko_subject::ActorRef;
     use serde_json::{json, Value};
 
     async fn tool_over(h: &Harness) -> SessionTool {
@@ -897,16 +897,11 @@ mod tests {
     /// Sessions from two peers and two agents.
     async fn cross_peer_harness() -> Harness {
         let h = Harness::new().await;
-        let alice = || Subject::User("alice".to_string());
+        let alice = || ActorRef::User("alice".into());
         h.create_as("alice-1", None, alice(), "test-agent").await;
         h.create_as("alice-2", None, alice(), "other-agent").await;
-        h.create_as(
-            "bob-1",
-            None,
-            Subject::User("bob".to_string()),
-            "test-agent",
-        )
-        .await;
+        h.create_as("bob-1", None, ActorRef::User("bob".into()), "test-agent")
+            .await;
         h.set_current("alice-1").await;
         h
     }

@@ -42,7 +42,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::ownership::{PermissionGrant, Resource};
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 /// Minimal path-resolver surface needed by auth config / API key
 /// store loaders.
@@ -123,9 +123,9 @@ pub trait PrincipalResourceView: Send + Sync + 'static {
     /// Stable principal name (e.g. `"alpha"`).
     fn name(&self) -> &str;
 
-    /// Subject who owns this principal (used as the `Resource::owner`
+    /// ActorRef who owns this principal (used as the `Resource::owner`
     /// for the `check_permission` owner-pass).
-    fn owner(&self) -> &Subject;
+    fn owner(&self) -> &ActorRef;
 
     /// Explicit permission grants on this principal.
     fn permissions(&self) -> &[PermissionGrant];
@@ -158,7 +158,7 @@ mod tests {
     /// leaf crate does not depend on the root `PrincipalConfig` type.
     struct MockPrincipal {
         name: String,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: Exposure,
     }
@@ -167,7 +167,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        fn owner(&self) -> &Subject {
+        fn owner(&self) -> &ActorRef {
             &self.owner
         }
         fn permissions(&self) -> &[PermissionGrant] {
@@ -229,9 +229,9 @@ mod tests {
 
     #[test]
     fn principal_resource_from_view_populates_resource() {
-        let owner = Subject::User("user:1".into());
+        let owner = ActorRef::User("user:1".into());
         let grant = PermissionGrant {
-            subject: Subject::User("user:2".into()),
+            subject: ActorRef::User("user:2".into()),
             permission: crate::ownership::Permission::Chat,
             granted_at: "2026-07-21T00:00:00Z".to_string(),
             granted_by: owner.clone(),

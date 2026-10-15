@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_core::common::authority::TierPath;
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
@@ -187,7 +187,7 @@ pub enum PrincipalCommands {
         /// Peko name
         name: String,
 
-        /// Subject to revoke permission from
+        /// ActorRef to revoke permission from
         subject: String,
 
         /// Permission to revoke
@@ -639,7 +639,7 @@ async fn provision_principal(
             // ADR-081 D4: a seed carries no authority. The creating local
             // user owns what grows from it, and nobody else is granted
             // anything until that owner says so.
-            config.owner = Subject::User("local".to_string());
+            config.owner = ActorRef::User("local".into());
             config.permissions.clear();
             (config, bundle.persona)
         }
@@ -689,7 +689,7 @@ async fn provision_principal(
     // via the typed `SharedLayout` — the `RuntimeAuthority` accessor
     // requires a `PrincipalId`, but at create time the principal
     // doesn't exist yet, so we use the resolver directly. The CLI
-    // operates from `Subject::User`, which is entitled to write its
+    // operates from `ActorRef::User`, which is entitled to write its
     // own principal's shared state.
     let roles_dir = paths.resolver().principal_layout(name).shared.roles_dir;
     tokio::fs::create_dir_all(&roles_dir).await?;
@@ -947,7 +947,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
             runtime_dir: paths.resolver().runtime_dir(),
             shared_dir: None,
         })
-        .actor_info(&Subject::from(&principal.id))
+        .actor_info(&ActorRef::from(&principal.id))
         .await
         .hub_id
     };
@@ -1346,18 +1346,11 @@ fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
 /// An explicit actor reference (ADR-073/081): `kind:local:<id>`,
 /// `kind:hub:<id>`, or `public`. Bare names are refused — they never
 /// matched an actor.
-fn parse_actor_ref(text: &str) -> Result<Subject> {
+fn parse_actor_ref(text: &str) -> Result<ActorRef> {
     if text == "public" {
-        return Ok(Subject::Public);
+        return Ok(ActorRef::Public);
     }
-    let subject: Subject = text
-        .parse()
-        .map_err(|e| anyhow::anyhow!("{e}; use kind:local:<id>, kind:hub:<id>, or public"))?;
-    anyhow::ensure!(
-        subject.subject_id().starts_with("local:") || subject.subject_id().starts_with("hub:"),
-        "Use kind:local:<id> or kind:hub:<id> (got `{text}`)"
-    );
-    Ok(subject)
+    ActorRef::parse_scoped(text).map_err(|e| anyhow::anyhow!("{e}, or public"))
 }
 
 async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
@@ -1626,7 +1619,7 @@ fn default_principal_config(name: &str) -> PrincipalConfig {
         name: name.to_string(),
         id: None,
         did: None,
-        owner: Subject::User("local".to_string()),
+        owner: ActorRef::User("local".into()),
         // ADR-054: leave `[identity]` empty on the bare-create
         // defaults path — the genesis turn adopts a working
         // self-description (the brief tells it to). No
@@ -2262,7 +2255,7 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         .expect("seeded create returns a manager");
         let principal = manager.get_by_name("sprout").await.unwrap();
         let config = principal.config.read().await;
-        assert_eq!(config.owner, Subject::User("local".into()));
+        assert_eq!(config.owner, ActorRef::User("local".into()));
         assert!(config.permissions.is_empty(), "{:?}", config.permissions);
     }
 

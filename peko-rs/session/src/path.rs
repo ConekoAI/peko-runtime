@@ -56,7 +56,7 @@ use uuid::Uuid;
 pub const MAX_SLUG_LEN: usize = 64;
 
 /// The scheme prefix on every display path (`sess:/a/b/c`). Opaque
-/// `kind:` prefix in the same grammar family as `Subject`'s
+/// `kind:` prefix in the same grammar family as `ActorRef`'s
 /// `user:alice` / `principal:helper` — deliberately NOT an RFC 3986
 /// URI (that would demand `sess://...`); the remainder is a
 /// `/`-rooted slug path, anchored at the caller's tree root.

@@ -3,13 +3,13 @@
 //! Provides per-resource RBAC-lite permission checks that run on the same
 //! code path for local IPC and remote access.
 //!
-//! After ADR-039, the canonical actor is `peko_auth::Subject` (re-exported
-//! from `peko_subject::Subject`). The legacy `SubjectType` enum and
+//! After ADR-039, the canonical actor is `peko_auth::ActorRef` (re-exported
+//! from `peko_subject::ActorRef`). The legacy `SubjectType` enum and
 //! `principal_from_wire` helper were removed in issue #30; the IPC wire
-//! format now carries a single `subject: Subject` on grant/revoke
-//! packets. `PermissionGrant` stores that `Subject` directly.
+//! format now carries a single `subject: ActorRef` on grant/revoke
+//! packets. `PermissionGrant` stores that `ActorRef` directly.
 
-use peko_subject::{ActorKeys, Subject};
+use peko_subject::{ActorKeys, ActorRef};
 use serde::{Deserialize, Serialize};
 
 use crate::host::{Exposure, PrincipalResourceView};
@@ -41,24 +41,24 @@ impl Permission {
 }
 
 // `SubjectType` and `principal_from_wire` were removed in issue #30.
-// The IPC wire format now carries a single `subject: Subject` per
+// The IPC wire format now carries a single `subject: ActorRef` per
 // grant/revoke packet; see `peko_protocol::RequestPacket::resolved_subject`
 // for the (now trivial) resolver.
 
 /// A single permission grant on a resource.
 ///
-/// After ADR-039, the subject is a full `Subject`. The IPC wire carries
-/// the same `Subject` directly.
+/// After ADR-039, the subject is a full `ActorRef`. The IPC wire carries
+/// the same `ActorRef` directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionGrant {
     /// The subject this grant applies to.
-    pub subject: Subject,
+    pub subject: ActorRef,
     /// Granted permission
     pub permission: Permission,
     /// ISO 8601 timestamp
     pub granted_at: String,
     /// Granter's identity.
-    pub granted_by: Subject,
+    pub granted_by: ActorRef,
 }
 
 /// Resource being accessed — currently only a Principal. Agent/Team
@@ -71,7 +71,7 @@ pub enum Resource {
     /// Principal resource with ownership, permission data, and exposure.
     Principal {
         name: String,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: Exposure,
     },
@@ -88,7 +88,7 @@ impl Resource {
 
     /// Get the owner of this resource.
     #[must_use]
-    pub fn owner(&self) -> &Subject {
+    pub fn owner(&self) -> &ActorRef {
         match self {
             Self::Principal { owner, .. } => owner,
         }
@@ -137,7 +137,7 @@ impl std::error::Error for PermissionDenied {}
 pub fn check_permission(
     resource: &Resource,
     action: Permission,
-    caller: &Subject,
+    caller: &ActorRef,
     keys: &dyn ActorKeys,
 ) -> Result<(), PermissionDenied> {
     if keys.same_actor(resource.owner(), caller) {
@@ -147,7 +147,7 @@ pub fn check_permission(
         if !grant.permission.covers(&action) {
             continue;
         }
-        if grant.subject == Subject::Public || keys.same_actor(&grant.subject, caller) {
+        if grant.subject == ActorRef::Public || keys.same_actor(&grant.subject, caller) {
             return Ok(());
         }
     }
@@ -187,7 +187,7 @@ mod tests {
     /// tests don't need the root `PrincipalConfig` type.
     struct MockPrincipal {
         name: String,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: Exposure,
     }
@@ -196,7 +196,7 @@ mod tests {
         fn name(&self) -> &str {
             &self.name
         }
-        fn owner(&self) -> &Subject {
+        fn owner(&self) -> &ActorRef {
             &self.owner
         }
         fn permissions(&self) -> &[PermissionGrant] {
@@ -207,22 +207,22 @@ mod tests {
         }
     }
 
-    fn grant(subject: Subject, permission: Permission) -> PermissionGrant {
+    fn grant(subject: ActorRef, permission: Permission) -> PermissionGrant {
         PermissionGrant {
             subject,
             permission,
             granted_at: "2026-06-07T10:00:00Z".to_string(),
-            granted_by: Subject::User("hub:123".into()),
+            granted_by: ActorRef::User("hub:123".into()),
         }
     }
 
-    fn check(view: &MockPrincipal, action: Permission, caller: &Subject) -> bool {
+    fn check(view: &MockPrincipal, action: Permission, caller: &ActorRef) -> bool {
         check_permission(&principal_resource(view), action, caller, &CanonicalKeys).is_ok()
     }
 
     #[test]
     fn test_principal_resource_permission_checks() {
-        let owner = Subject::User("hub:123".into());
+        let owner = ActorRef::User("hub:123".into());
         let view = MockPrincipal {
             name: "alpha".to_string(),
             owner: owner.clone(),
@@ -234,15 +234,15 @@ mod tests {
         assert!(!check(
             &view,
             Permission::Chat,
-            &Subject::User("local:123".into())
+            &ActorRef::User("local:123".into())
         ));
         assert!(!check(
             &view,
             Permission::Chat,
-            &Subject::User("other".into())
+            &ActorRef::User("other".into())
         ));
 
-        let grantee = Subject::User("hub:456".into());
+        let grantee = ActorRef::User("hub:456".into());
         let view = MockPrincipal {
             permissions: vec![grant(grantee.clone(), Permission::Chat)],
             ..view
@@ -252,16 +252,16 @@ mod tests {
         assert!(!check(
             &view,
             Permission::Chat,
-            &Subject::User("local_456".into())
+            &ActorRef::User("local_456".into())
         ));
         assert!(!check(
             &view,
             Permission::Chat,
-            &Subject::User("local:456".into())
+            &ActorRef::User("local:456".into())
         ));
         for other_kind in [
-            Subject::Principal("hub:456".into()),
-            Subject::Visitor("hub:456".into()),
+            ActorRef::Principal("hub:456".into()),
+            ActorRef::Visitor("hub:456".into()),
         ] {
             assert!(!check(&view, Permission::Chat, &other_kind));
         }
@@ -273,7 +273,7 @@ mod tests {
     fn grants_match_through_actor_keys() {
         struct Registry;
         impl ActorKeys for Registry {
-            fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+            fn key_of(&self, subject: &ActorRef) -> peko_subject::ActorKey {
                 match subject.canonical_address().as_str() {
                     "principal:local:prin_y" | "principal:hub:v" => {
                         peko_subject::ActorKey("key-y".into())
@@ -284,16 +284,16 @@ mod tests {
         }
         let view = MockPrincipal {
             name: "alpha".to_string(),
-            owner: Subject::User("local".into()),
-            permissions: vec![grant(Subject::Principal("hub:v".into()), Permission::Chat)],
+            owner: ActorRef::User("local".into()),
+            permissions: vec![grant(ActorRef::Principal("hub:v".into()), Permission::Chat)],
             exposure: Exposure::Private,
         };
         let resource = principal_resource(&view);
-        let local = Subject::Principal("prin_y".into());
+        let local = ActorRef::Principal("prin_y".into());
         assert!(check_permission(&resource, Permission::Chat, &local, &Registry).is_ok());
         assert!(check_permission(&resource, Permission::Chat, &local, &CanonicalKeys).is_err());
         // `Public` is a wildcard grant, never an owner or an actor.
-        assert!(!Registry.same_actor(&Subject::Public, &Subject::Public));
+        assert!(!Registry.same_actor(&ActorRef::Public, &ActorRef::Public));
     }
 
     // Tests for `Resource::Agent` / `Resource::Team` were removed when

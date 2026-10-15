@@ -107,14 +107,14 @@ fn write_principal_with_perm(
         toml::from_str(&raw).expect("parse principal.toml");
 
     cfg.exposure = peko_auth::Exposure::Private;
-    cfg.owner = peko_auth::Subject::User("local".into());
+    cfg.owner = peko_auth::ActorRef::User("local".into());
 
     if let Some(uid) = permitted_user_id {
         cfg.permissions.push(peko_auth::PermissionGrant {
-            subject: peko_auth::Subject::User(uid.to_string()),
+            subject: peko_auth::ActorRef::User(uid.into()),
             permission: peko_auth::Permission::Chat,
             granted_at: "2026-01-01T00:00:00Z".to_string(),
-            granted_by: peko_auth::Subject::User("system".into()),
+            granted_by: peko_auth::ActorRef::User("system".into()),
         });
     }
 

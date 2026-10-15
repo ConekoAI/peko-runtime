@@ -119,7 +119,7 @@ pub struct InstanceAnnouncePayload {
     /// principal always has a Hub owner, and Hub records it as the
     /// instance owner and the authority for moving it between runtimes.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner: Option<peko_auth::Subject>,
+    pub owner: Option<peko_auth::ActorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

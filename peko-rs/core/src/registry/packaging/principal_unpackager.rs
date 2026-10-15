@@ -8,7 +8,7 @@ use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::{reject_destination_links, safe_join};
 use crate::registry::packaging::principal_manifest::{is_workspace_payload, PrincipalManifest};
 use crate::registry::packaging::validation::ValidationResult;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_identity::{Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
 use std::collections::HashMap;
@@ -36,10 +36,10 @@ pub struct PrincipalImportOptions {
     pub expected_manifest_checksum: Option<String>,
     /// Caller subject for the ownership write gate (ADR-066 D9). The
     /// IPC handler passes `caller.subject().clone()`; defaults to
-    /// `Subject::User("local")` so library callers (tests, the CLI
+    /// `ActorRef::User("local")` so library callers (tests, the CLI
     /// `import` subcommand if it ever bypasses the IPC layer) clear
     /// the Shared tier actor gate.
-    pub caller_subject: Subject,
+    pub caller_subject: ActorRef,
     /// Observability hub for the ADR-066 D9 `Security` audit event a
     /// denied ownership-crossing write emits. `None` skips the event.
     pub observability: Option<Arc<peko_observability::Observability>>,
@@ -54,7 +54,7 @@ impl Default for PrincipalImportOptions {
             import_local_state: true,
             force: false,
             expected_manifest_checksum: None,
-            caller_subject: Subject::User("local".to_string()),
+            caller_subject: ActorRef::User("local".into()),
             observability: None,
         }
     }
@@ -330,12 +330,12 @@ impl PrincipalUnpackager {
                 foreign_owner.as_ref(),
             ))
         } else {
-            Box::new(|subject: &Subject| subject.clone())
+            Box::new(|subject: &ActorRef| subject.clone())
         };
         if portable {
             super::portable::rewrite_config(&mut config, &*rule);
         } else {
-            config.owner = Subject::User("local".to_string());
+            config.owner = ActorRef::User("local".into());
         }
 
         // ADR-056 grounding semantics: what the import *is* follows
@@ -991,7 +991,7 @@ mod tests {
         // Defaults clear the Shared tier gate so library callers
         // (tests, future direct-call sites) don't have to thread
         // `caller_subject` through every constructor.
-        assert!(matches!(opts.caller_subject, Subject::User(ref u) if u == "local"));
+        assert!(matches!(opts.caller_subject, ActorRef::User(ref u) if u == "local"));
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
@@ -1000,7 +1000,7 @@ mod tests {
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),
-            owner: Subject::User("local".to_string()),
+            owner: ActorRef::User("local".into()),
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
@@ -1096,7 +1096,7 @@ mod tests {
             runtime_dir: config_dir.join("runtime"),
             shared_dir: None,
         });
-        let remote: Subject = "principal:hub:portable".parse().unwrap();
+        let remote: ActorRef = "principal:hub:portable".parse().unwrap();
         let known = port
             .register_actor(
                 &remote,
@@ -1104,7 +1104,7 @@ mod tests {
                 Some(&signer),
                 Some("portable-key"),
                 None,
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -1122,12 +1122,12 @@ mod tests {
         assert_eq!(restored.actor_key.as_deref(), Some("portable-key"));
         let promoted = port
             .register_actor(
-                &Subject::from(&local_id),
+                &ActorRef::from(&local_id),
                 Some("portable"),
                 Some(&signer),
                 Some("portable-key"),
                 None,
-                "private",
+                peko_channel::Registration::Private,
             )
             .await
             .unwrap();
@@ -1399,7 +1399,7 @@ mod tests {
             subject: "principal:local:prin_peer".parse().unwrap(),
             permission: peko_auth::Permission::Trusted,
             granted_at: String::new(),
-            granted_by: Subject::User("local".into()),
+            granted_by: ActorRef::User("local".into()),
         });
         let tmp = tempfile::tempdir().unwrap();
         let shared = tmp.path().join("src/shared");
@@ -1430,7 +1430,7 @@ mod tests {
             identity_key: "peer-key".into(),
             signing_did: None,
             name: Some("peer".into()),
-            registration: "local_only".into(),
+            registration: peko_channel::Registration::LocalOnly,
         };
         crate::principal::contacts::ContactBook::in_local_root(&local)
             .remember(contact.clone())
@@ -1443,7 +1443,7 @@ mod tests {
         let session = sessions
             .create_session(
                 "root",
-                &Subject::Public,
+                &ActorRef::Public,
                 peko_session::SessionCreateOptions::new(),
             )
             .await
@@ -1494,7 +1494,7 @@ mod tests {
         let keys = peko_subject::CanonicalKeys;
         assert_eq!(
             restored.owner,
-            Subject::User("local".into()),
+            ActorRef::User("local".into()),
             "local owner reassigned"
         );
         assert!(
@@ -1557,7 +1557,7 @@ mod tests {
             .unwrap();
         let home: PrincipalConfig =
             toml::from_str(&std::fs::read_to_string(&back.config_path).unwrap()).unwrap();
-        assert!(keys.same_actor(&home.owner, &Subject::User("local".into())));
+        assert!(keys.same_actor(&home.owner, &ActorRef::User("local".into())));
         assert!(keys.same_actor(
             &home.permissions[0].subject,
             &"principal:local:prin_peer".parse().unwrap()
@@ -1727,7 +1727,7 @@ principal_id = "prin_old"
         );
 
         let opts = PrincipalImportOptions {
-            caller_subject: peko_auth::Subject::Visitor("visitor-1".to_string()),
+            caller_subject: peko_auth::ActorRef::Visitor("visitor-1".into()),
             observability: Some(observability),
             ..PrincipalImportOptions::default()
         };

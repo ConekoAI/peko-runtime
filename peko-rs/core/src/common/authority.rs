@@ -7,17 +7,17 @@
 //! and CLI commands take `LocalPath` / `SharedPath` / `RuntimePath`
 //! newtypes whose constructors are sealed to this module.
 //!
-//! A `RuntimeAuthority` wraps a `PathResolver` and an `Arc<Subject>`
+//! A `RuntimeAuthority` wraps a `PathResolver` and an `Arc<ActorRef>`
 //! representing the actor who is asking. The constructor rejects actors
 //! that aren't entitled to the tier they ask for — e.g. a peer channel
-//! holding `Subject::User("alice")` cannot obtain a `LocalPath` for
+//! holding `ActorRef::User("alice")` cannot obtain a `LocalPath` for
 //! principal `bob` (matches ADR-033's RBAC contract).
 //!
 //! Construction is intentionally restricted:
-//! - [`RuntimeAuthority::for_runtime`] — `Subject::Public`. Used by the
+//! - [`RuntimeAuthority::for_runtime`] — `ActorRef::Public`. Used by the
 //!   cron engine, the daemon's startup paths, and any housekeeping code
 //!   that isn't acting on behalf of a peer.
-//! - [`RuntimeAuthority::for_caller`] — accepts a `Subject` that has been
+//! - [`RuntimeAuthority::for_caller`] — accepts a `ActorRef` that has been
 //!   verified by the daemon admission layer. The IPC handlers construct
 //!   the authority once per request, immediately after authenticating
 //!   the caller.
@@ -26,8 +26,8 @@
 //! capability strings) is replaced by plain **ownership comparison** —
 //! a principal-typed actor may write only its own principal's tiers; a
 //! crossing attempt fails closed and emits a `Security`-severity audit
-//! event. Operator actors (`Subject::User`) and the runtime itself
-//! (`Subject::Public`, via the `*_runtime` accessors) are trusted.
+//! event. Operator actors (`ActorRef::User`) and the runtime itself
+//! (`ActorRef::Public`, via the `*_runtime` accessors) are trusted.
 //! See the `*_write` family and the engine-internal `*_runtime`
 //! accessors below.
 //!
@@ -36,7 +36,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 
 use crate::common::paths::{PathResolver, RuntimeLayout};
 
@@ -144,7 +144,7 @@ impl TierPath for SharedPath {
 }
 
 /// A path under the runtime-global bucket. Not principal-scoped, so any
-/// authenticated actor (or `Subject::Public`) can obtain one.
+/// authenticated actor (or `ActorRef::Public`) can obtain one.
 #[derive(Debug, Clone)]
 pub struct RuntimePath(PathBuf);
 
@@ -164,7 +164,7 @@ impl TierPath for RuntimePath {
 
 /// Authority granting access to a tier for a specific actor.
 ///
-/// Cheap to clone (`Arc<Subject>` + `PathResolver` are both clone-cheap)
+/// Cheap to clone (`Arc<ActorRef>` + `PathResolver` are both clone-cheap)
 /// — IPC handlers can hand one to each per-request helper without
 /// lifetime gymnastics. The `actor` is captured at construction; there is
 /// no `with_actor` builder, so a given authority cannot be repurposed
@@ -172,7 +172,7 @@ impl TierPath for RuntimePath {
 #[derive(Debug, Clone)]
 pub struct RuntimeAuthority {
     resolver: PathResolver,
-    actor: Arc<Subject>,
+    actor: Arc<ActorRef>,
     /// Audit sink for `Security`-severity events on crossing-write
     /// denials (ADR-066 D9). `None` (tests, bare fixture builders)
     /// skips the event — the denial still fails closed.
@@ -208,14 +208,14 @@ pub enum AuthorityError {
 impl RuntimeAuthority {
     /// Construct an authority for the runtime itself.
     ///
-    /// The actor is `Subject::Public`. Use this for housekeeping code
+    /// The actor is `ActorRef::Public`. Use this for housekeeping code
     /// (cron engine, daemon startup paths, `principal create` /
     /// `principal remove` that pre-date any peer session).
     #[must_use]
     pub fn for_runtime(resolver: PathResolver) -> Self {
         Self {
             resolver,
-            actor: Arc::new(Subject::Public),
+            actor: Arc::new(ActorRef::Public),
             audit: None,
         }
     }
@@ -223,10 +223,10 @@ impl RuntimeAuthority {
     /// Construct an authority for a specific caller.
     ///
     /// The caller is responsible for having already verified the
-    /// `Subject` (auth/JWT layer). The authority does no further
+    /// `ActorRef` (auth/JWT layer). The authority does no further
     /// authentication — it only enforces the actor↔tier gate.
     #[must_use]
-    pub fn for_caller(resolver: PathResolver, actor: Subject) -> Self {
+    pub fn for_caller(resolver: PathResolver, actor: ActorRef) -> Self {
         Self {
             resolver,
             actor: Arc::new(actor),
@@ -257,14 +257,14 @@ impl RuntimeAuthority {
     /// Borrow the actor. Useful for audit logging alongside the path
     /// that was handed out.
     #[must_use]
-    pub fn actor(&self) -> &Subject {
+    pub fn actor(&self) -> &ActorRef {
         &self.actor
     }
 
     // ---------------------------------------------------------------------
     // Local tier — per-principal runtime state (sessions, cron, locks,
-    // memory_index). Only the runtime (`Subject::Public`) and the
-    // principal owner (`Subject::Principal` matching the DID) can read
+    // memory_index). Only the runtime (`ActorRef::Public`) and the
+    // principal owner (`ActorRef::Principal` matching the DID) can read
     // or write Local paths.
     // ---------------------------------------------------------------------
 
@@ -273,7 +273,7 @@ impl RuntimeAuthority {
     ///
     /// Returns `Err(AuthorityError::UnknownPrincipal)` if the principal
     /// isn't on disk; `Err(AuthorityError::TierDenied)` if the actor
-    /// isn't `Subject::Public` or `Subject::Principal`.
+    /// isn't `ActorRef::Public` or `ActorRef::Principal`.
     pub fn local_root(&self, principal: &PrincipalId) -> Result<LocalPath, AuthorityError> {
         self.assert_local_entitled()?;
         let (_name, layout) = self.principal_layout(principal)?;
@@ -337,7 +337,7 @@ impl RuntimeAuthority {
 
     // ---------------------------------------------------------------------
     // Runtime tier — runtime-wide binaries. Not principal-scoped; any
-    // actor (including `Subject::Public`) can read or write.
+    // actor (including `ActorRef::Public`) can read or write.
     // ---------------------------------------------------------------------
 
     /// Hand out the full `RuntimeLayout`. The accessor stays as the
@@ -365,7 +365,7 @@ impl RuntimeAuthority {
     //
     // The reader-side actor gate above decides whether an actor MAY touch
     // a tier at all. The writer-side gate decides whether they may WRITE:
-    // plain ownership comparison — an operator (`Subject::User`) writes
+    // plain ownership comparison — an operator (`ActorRef::User`) writes
     // any principal's tiers; a principal-typed actor writes only its own;
     // visitors never write. A crossing attempt fails closed and emits a
     // `Security` audit event (when the authority carries a sink). No grant
@@ -530,15 +530,15 @@ impl RuntimeAuthority {
         Ok((name.clone(), self.resolver.principal_layout(&name)))
     }
 
-    /// Local-tier gate: only the runtime (`Subject::Public`) or a
+    /// Local-tier gate: only the runtime (`ActorRef::Public`) or a
     /// principal-typed subject may receive a `LocalPath`. Peer-as-User
     /// (CLI without a peer session) cannot obtain a `LocalPath`;
     /// neither can a hub-minted visitor (ADR-058 D5 — visitors are
     /// ordinary non-owner peers with no local authority).
     fn assert_local_entitled(&self) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
-            Subject::Public | Subject::Principal(_) => Ok(()),
-            Subject::User(_) | Subject::Visitor(_) => {
+            ActorRef::Public | ActorRef::Principal(_) => Ok(()),
+            ActorRef::User(_) | ActorRef::Visitor(_) => {
                 Err(AuthorityError::TierDenied { tier: Tier::Local })
             }
         }
@@ -550,8 +550,8 @@ impl RuntimeAuthority {
     /// identified peers, not unauthenticated access.
     fn assert_shared_read_entitled(&self) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
-            Subject::Public => Err(AuthorityError::TierDenied { tier: Tier::Shared }),
-            Subject::User(_) | Subject::Principal(_) | Subject::Visitor(_) => Ok(()),
+            ActorRef::Public => Err(AuthorityError::TierDenied { tier: Tier::Shared }),
+            ActorRef::User(_) | ActorRef::Principal(_) | ActorRef::Visitor(_) => Ok(()),
         }
     }
 
@@ -569,20 +569,20 @@ impl RuntimeAuthority {
         match self.actor.as_ref() {
             // The operator (local CLI / authenticated hub user) writes
             // any principal's tiers.
-            Subject::User(_) => Ok(()),
+            ActorRef::User(_) => Ok(()),
             // A principal-typed actor writes only its own tiers. The
             // target's DID comes from its on-disk config, not from the
             // caller-supplied id string.
-            Subject::Principal(did) => {
+            ActorRef::Principal(did) => {
                 match self.principal_did_for_name(principal_name).as_deref() {
-                    Some(target) if target == did.0 => Ok(()),
+                    Some(target) if *did == target => Ok(()),
                     _ => {
                         self.deny_crossing(self.actor_label(), principal_name, tier)
                             .await
                     }
                 }
             }
-            Subject::Visitor(_) | Subject::Public => {
+            ActorRef::Visitor(_) | ActorRef::Public => {
                 self.deny_crossing(self.actor_label(), &principal.0, tier)
                     .await
             }
@@ -600,17 +600,17 @@ impl RuntimeAuthority {
         tier: Tier,
     ) -> Result<(), AuthorityError> {
         match self.actor.as_ref() {
-            Subject::User(_) => Ok(()),
-            Subject::Principal(did) => {
+            ActorRef::User(_) => Ok(()),
+            ActorRef::Principal(did) => {
                 match self.principal_did_for_name(principal_name).as_deref() {
-                    Some(target) if target == did.0 => Ok(()),
+                    Some(target) if *did == target => Ok(()),
                     _ => {
                         self.deny_crossing(self.actor_label(), principal_name, tier)
                             .await
                     }
                 }
             }
-            Subject::Visitor(_) | Subject::Public => {
+            ActorRef::Visitor(_) | ActorRef::Public => {
                 self.deny_crossing(self.actor_label(), principal_name, tier)
                     .await
             }
@@ -720,9 +720,9 @@ mod tests {
     #[test]
     fn local_gate_denies_subject_user() {
         let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("alice".into()));
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::User("alice".into()));
         let pid = principal_id("404");
-        // Subject::User is rejected even before the on-disk lookup.
+        // ActorRef::User is rejected even before the on-disk lookup.
         let result = authority.local_root(&pid);
         assert!(matches!(
             result,
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn shared_read_gate_rejects_subject_public() {
-        // The runtime (Subject::Public) cannot read Shared-tier paths
+        // The runtime (ActorRef::Public) cannot read Shared-tier paths
         // because it should always go through the Local runtime paths
         // when operating on its own behalf. If a runtime-internal path
         // is needed the caller should use `shared_*` only when it
@@ -769,10 +769,10 @@ mod tests {
     // (b) a principal-typed actor writing another principal's tiers
     //     gets `OwnershipDenied` (not `TierDenied`) and a Security
     //     audit event;
-    // (c) the operator (`Subject::User`) writes any principal;
-    // (d) a `Subject::Public` actor still gets `TierDenied` on Shared
+    // (c) the operator (`ActorRef::User`) writes any principal;
+    // (d) a `ActorRef::Public` actor still gets `TierDenied` on Shared
     //     (the ownership gate cannot rescue a tier-denied actor);
-    // (e) a `Subject::User` actor still gets `TierDenied` on Local;
+    // (e) a `ActorRef::User` actor still gets `TierDenied` on Local;
     // (f) visitors never write.
     // ---------------------------------------------------------------------
 
@@ -817,7 +817,8 @@ mod tests {
     #[tokio::test]
     async fn owner_writes_own_shared_tiers() {
         let (_tmp, resolver, pid) = with_real_principal();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let authority =
+            RuntimeAuthority::for_caller(resolver, ActorRef::Principal(alice_did().into()));
         assert!(authority.shared_config_write(&pid).await.is_ok());
         assert!(authority.shared_roles_dir_write(&pid).await.is_ok());
         assert!(authority.shared_identity_dir_write(&pid).await.is_ok());
@@ -827,7 +828,7 @@ mod tests {
     async fn cross_principal_write_is_denied() {
         let (_tmp, resolver, pid) = with_real_principal();
         let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory));
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::Principal(mallory.into()));
         let result = authority.shared_config_write(&pid).await;
         assert!(
             matches!(result, Err(AuthorityError::OwnershipDenied { .. })),
@@ -844,7 +845,7 @@ mod tests {
                 .expect("audit dir"),
         );
         let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory))
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::Principal(mallory.into()))
             .with_audit_sink(Some(observability));
 
         let result = authority.shared_roles_dir_write(&pid).await;
@@ -871,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn operator_writes_any_principal() {
         let (_tmp, resolver, pid) = with_real_principal();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("local".into()));
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::User("local".into()));
         assert!(authority.shared_config_write(&pid).await.is_ok());
     }
 
@@ -879,7 +880,7 @@ mod tests {
     async fn visitor_write_is_denied() {
         let (_tmp, resolver, pid) = with_real_principal();
         let authority =
-            RuntimeAuthority::for_caller(resolver, Subject::Visitor("visitor-1".to_string()));
+            RuntimeAuthority::for_caller(resolver, ActorRef::Visitor("visitor-1".into()));
         let result = authority.shared_config_write(&pid).await;
         assert!(matches!(
             result,
@@ -889,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn public_actor_on_shared_write_is_tier_denied() {
-        // The runtime (Subject::Public) cannot read Shared-tier paths
+        // The runtime (ActorRef::Public) cannot read Shared-tier paths
         // because it should always go through the Local runtime paths
         // when operating on its own behalf. The ownership gate cannot
         // rescue a tier-denied actor.
@@ -908,7 +909,8 @@ mod tests {
     #[tokio::test]
     async fn owner_writes_own_shared_tiers_for_name() {
         let (_tmp, resolver, _pid) = with_real_principal();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let authority =
+            RuntimeAuthority::for_caller(resolver, ActorRef::Principal(alice_did().into()));
         let result = authority.shared_config_write_for_name("alice").await;
         assert!(result.is_ok());
         assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
@@ -926,7 +928,7 @@ mod tests {
     async fn cross_principal_write_for_name_is_denied() {
         let (_tmp, resolver, _pid) = with_real_principal();
         let mallory = peko_subject::PrincipalDID("did:peko:public:mallory".to_string());
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(mallory));
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::Principal(mallory.into()));
         let result = authority.shared_roles_dir_write_for_name("alice").await;
         assert!(matches!(
             result,
@@ -936,11 +938,12 @@ mod tests {
 
     /// A principal-typed actor can never prove ownership of a principal
     /// that isn't on disk — fail closed. (The operator creates new
-    /// principals; `Subject::User` is unaffected.)
+    /// principals; `ActorRef::User` is unaffected.)
     #[tokio::test]
     async fn principal_actor_write_for_unknown_name_is_denied() {
         let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::Principal(alice_did()));
+        let authority =
+            RuntimeAuthority::for_caller(resolver, ActorRef::Principal(alice_did().into()));
         let result = authority.shared_roles_dir_write_for_name("ghost").await;
         assert!(matches!(
             result,
@@ -954,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn operator_write_for_unknown_name_yields_path() {
         let resolver = test_resolver();
-        let authority = RuntimeAuthority::for_caller(resolver, Subject::User("local".into()));
+        let authority = RuntimeAuthority::for_caller(resolver, ActorRef::User("local".into()));
         let result = authority.shared_roles_dir_write_for_name("ghost").await;
         assert!(result.is_ok());
         let path = result.unwrap().into_path_buf();
@@ -964,7 +967,7 @@ mod tests {
     #[tokio::test]
     async fn engine_runtime_accessor_skips_ownership_gate() {
         // The cron engine writes on behalf of the principal owner
-        // (Subject::Public from `for_runtime`); the principal's
+        // (ActorRef::Public from `for_runtime`); the principal's
         // `[[permissions]]` ACL is the only gate at that layer. The
         // `*_runtime` accessors skip the ownership check — only the
         // actor + tier gate fires. The principal lookup is the first
