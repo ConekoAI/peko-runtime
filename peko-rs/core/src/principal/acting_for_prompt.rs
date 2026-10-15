@@ -54,12 +54,12 @@ fn trust_line(trust: Trust) -> &'static str {
     match trust {
         Trust::Owner => "the owner of this peko",
         Trust::Trusted => {
-            "trusted by the owner's consent: full tools, within POLICY.md; sensitive actions \
-             are reviewed"
+            "trusted by the owner's consent: full tools except the owner's plans, within \
+             POLICY.md; sensitive actions are reviewed"
         }
         Trust::Untrusted => {
-            "untrusted (admitted to chat): no shell, files only inside this peko's workspace, \
-             protected files become proposals for the owner, and sensitive actions are \
+            "untrusted (admitted to chat): no shell or plans, files only inside this peko's \
+             workspace, protected files become proposals for the owner, and sensitive actions are \
              reviewed against POLICY.md"
         }
     }

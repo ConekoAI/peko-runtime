@@ -92,12 +92,14 @@ This document defines the public API surface for Peko, including the new Unified
   `with_acting_for`; `AgentView::acting_for` replaces `conversation_peer`;
   `TurnPromptContext.acting_for`, `PromptSectionRequest.acting_for`;
   `ToolFunnel::list_tool_definitions(principal, acting_for)` narrows the wire
-  catalog for untrusted runs. `AgenticLoop::with_caller_id` and the
+  catalog for every non-owner run (the floor's refusals: `Bash`/`MCP` below
+  trusted, `Plan` below owner). `AgenticLoop::with_caller_id` and the
   `caller_id` parameters of the funnel, tool executor, and `Agent` run
   methods are removed.
 - `peko::security`: `stamps` (`Stamps`, `TrustSource`, `Driver`,
-  `trust_for`, `compartment_of`, `visible_metas`, `may_reach`), `floor`,
-  `proposals`, `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
+  `trust_for`, `compartment_of`, `visible_metas`, `may_reach`), `floor`
+  (`OWNER_ONLY_TOOLS`: `Plan` is refused to every non-owner run and is no
+  longer in `judge::EXEMPT_TOOLS`), `proposals`, `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
   `GatedCall`, `Verdict`, `needs_review`).
 - `ToolDispatcher::{set_policy_gate, policy_gate}`;
   `PrincipalManager::install_policy_gate`; `PrincipalManager::receive_trunk`

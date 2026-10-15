@@ -269,3 +269,61 @@ async fn owners_and_exempt_tools_skip_review_and_approved_replays_pass() {
     assert!(out.success, "{}", out.display);
     assert_eq!(*replay.reviewed.lock().unwrap(), 0);
 }
+
+#[tokio::test]
+async fn plans_are_the_owners_alone() {
+    let h = ToolHarness::new().await;
+    // A gate that would allow anything: the floor refuses first.
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+
+    let out = h
+        .call(
+            "Plan",
+            json!({"action": "create", "title": "q3 launch", "nodes": [{"step": "one"}]}),
+        )
+        .await;
+    assert!(out.success, "the owner manages plans: {}", out.display);
+    let out = h.call("Plan", json!({"action": "list"})).await;
+    assert!(
+        out.success && out.display.contains("q3 launch"),
+        "{}",
+        out.display
+    );
+
+    let principal = PrincipalId(PRINCIPAL.into());
+    for trust in [Trust::Untrusted, Trust::Trusted] {
+        let caller = Caller::acting_for(guest(trust));
+        for params in [
+            json!({"action": "list"}),
+            json!({"action": "create", "title": "mine", "nodes": [{"step": "one"}]}),
+        ] {
+            let out = h.call_as(&caller, "Plan", params).await;
+            assert!(
+                !out.success && out.display.contains("not available"),
+                "{trust:?}: {}",
+                out.display
+            );
+            assert!(!out.display.contains("q3 launch"), "{}", out.display);
+        }
+        let catalog: Vec<String> = h
+            .tooling
+            .list_tool_definitions(&principal, Some(&guest(trust)))
+            .await
+            .definitions
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            !catalog.contains(&"Plan".to_string()),
+            "{trust:?}: {catalog:?}"
+        );
+    }
+    assert_eq!(*gate.reviewed.lock().unwrap(), 0, "the floor runs first");
+    let out = h.call("Plan", json!({"action": "list"})).await;
+    assert!(
+        !out.display.contains("\"mine\""),
+        "non-owner creates never landed: {}",
+        out.display
+    );
+}

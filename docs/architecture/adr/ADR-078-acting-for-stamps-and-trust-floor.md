@@ -138,6 +138,7 @@ Jobs without a stamp (written before ADR-078) fire only if they are the runtime'
 Enforced in the dispatcher for every call (`security::floor`):
 
 - **No shell below trusted.** `Bash` and the `MCP` administration tool are refused to untrusted runs and absent from their wire catalog; so is every method of an MCP server whose owner did not set `untrusted_ok: true` in its definition.
+- **Owner-only tools.** `Plan` is refused to every non-owner run and absent from its wire catalog (amended 2026-10-15): plans are the principal's internal work and carry no compartment, so any non-owner access would reach the owner's plans. Non-owner runs use the session-scoped `Task`.
 - **Confinement.** An untrusted run's `Read`/`Write`/`Edit`/`Glob`/`Grep` stay inside the principal's workspace; relative paths anchor there; paths are canonicalized through symlinks; `Glob` patterns may not climb out.
 - **Cross-principal boundary** (ADR-066 D9, now in the file tools): no run writes another principal's workspace; non-owner runs do not read it either.
 - **Protected files.** `POLICY.md`, `principal.toml`, `roles/`, `skills/`, `hooks/`, `mcp/`, `workflows/`, `plugins/`, `kb/MEMORY.md`, `kb/index.md`, `kb/CONVENTIONS.md`, `kb/roles/`, `kb/groups/`. Only owner runs write them. Any other run's write becomes a **proposal** in `kb/inbox/<compartment>/`, recording the stamp and the intended change (capped at 50 per compartment); nothing is merged automatically. `kb/inbox/` itself is written only by the runtime.
@@ -148,7 +149,7 @@ A non-owner run's note to someone other than the actor it serves carries a runti
 
 `POLICY.md` (workspace root, protected, seeded create-once) holds plain-language rules: optional front matter (`judge_model`, `review_replies`), default rules, and `## <actor address>` sections. The resolved rules for a run's actor (and its aliases) reach its `<acting-for>` block.
 
-**Review.** Every call of a non-owner run is reviewed, except `Plan`, `Task`, `ModelList`, `Sleep`, `RoleCatalog`, `Session`, `ChannelRead`, and a `ChannelSend` to the run's own channel. The reviewer is one tool-less completion on `judge_model` (else the principal's model), charged to the principal's quota, that sees the policy, the stamp, and the call — never the conversation. It answers `allow`, `deny`, or `ask_owner`; anything unreadable, and any reviewer failure, becomes `ask_owner`. Verdicts are reused for 10 minutes per (actor, call). With no reviewer bound, reviewed calls are refused.
+**Review.** Every call of a non-owner run is reviewed, except `Task`, `ModelList`, `Sleep`, `RoleCatalog`, `Session`, `ChannelRead`, and a `ChannelSend` to the run's own channel. The reviewer is one tool-less completion on `judge_model` (else the principal's model), charged to the principal's quota, that sees the policy, the stamp, and the call — never the conversation. It answers `allow`, `deny`, or `ask_owner`; anything unreadable, and any reviewer failure, becomes `ask_owner`. Verdicts are reused for 10 minutes per (actor, call). With no reviewer bound, reviewed calls are refused.
 
 **Owner consent.** `ask_owner` files a request in the principal's local tier (`approvals/<id>.json`, 24 h expiry), announces it in the owner's conversation, and tells the agent nothing was done yet. The owner answers with a message — `approve <id>`, `approve <id> always`, `deny <id>`, or `approvals` to list — which the runtime handles **before any agent turn** when the sender's trust is owner, so no model can approve on the owner's behalf. An approval replays exactly the call the owner saw (bound by digest) as a background task acting for the requester; its completion wakes the session that asked. *Always* appends a rule to the actor's `POLICY.md` section. A denial leaves a note in the requester's session.
 
@@ -204,7 +205,7 @@ A non-owner run's note to someone other than the actor it serves carries a runti
 
 ## 7. Tests pinning the floor
 
-- `security::dispatch_tests` — untrusted runs lose `Bash` and never see it; protected writes become proposals (owner writes directly); confinement against absolute, `../`, and `Glob` escapes; a call without a stamp reaches nothing; the gate's allow / deny / ask-owner paths; owner and exempt calls skip review; approved replays pass.
+- `security::dispatch_tests` — untrusted runs lose `Bash` and never see it; non-owner runs lose `Plan` and never see it; protected writes become proposals (owner writes directly); confinement against absolute, `../`, and `Glob` escapes; a call without a stamp reaches nothing; the gate's allow / deny / ask-owner paths; owner and exempt calls skip review; approved replays pass.
 - `security::{floor, stamps, proposals, policy, judge}` unit tests, including symlink escapes and alias-matched policy sections.
 - `session_runtime_impl::tests::a_non_owner_run_reaches_only_its_own_conversation`.
 - `subagent_integration_tests::a_guests_spawn_stays_in_its_conversation_and_cannot_reach_out`.
