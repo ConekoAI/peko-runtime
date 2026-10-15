@@ -7,7 +7,7 @@ use anyhow::Result;
 use peko_auth::Subject;
 use peko_engine::state::StateMachine;
 use peko_engine::AgentState;
-use peko_identity::{did::DIDScope, storage::KeyStorage, Identity};
+use peko_identity::{did::DIDScope, Identity};
 use peko_session::manager::{ResolvedSession, SessionManager};
 use peko_session::types::ChannelType;
 use peko_session::InboxRegistry;
@@ -1422,7 +1422,6 @@ impl Agent {
         temp_dir: &std::path::Path,
         tooling: Arc<ToolingRuntime>,
     ) -> Result<Self> {
-        use peko_identity::storage::KeyStorage;
         // Test agents act for the owner unless a test stamps otherwise.
         if config.acting_for.is_none() {
             config.acting_for = Some(peko_tools_core::ActingFor::runtime());
@@ -1439,7 +1438,9 @@ impl Agent {
         // Load or create identity in temp storage (name → DID alias,
         // same resolution as the production `load_or_create_identity`).
         let identity = {
-            let storage = KeyStorage::with_path(temp_dir.join("data").join("identities"))?;
+            let storage = crate::identity_compat::identity_key_storage(
+                temp_dir.join("data").join("identities"),
+            )?;
             storage.load_or_create_named(&config.name, DIDScope::Local)?
         };
 
@@ -1500,8 +1501,7 @@ impl Agent {
     // Private helper methods
 
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {
-        let storage =
-            KeyStorage::new(crate::identity_compat::default_identity_data_dir().as_ref())?;
+        let storage = crate::identity_compat::default_identity_key_storage()?;
 
         // Identity files are named by DID (`KeyStorage::identity_path`),
         // so a lookup by agent name can never hit directly — the stable

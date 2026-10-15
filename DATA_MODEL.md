@@ -218,6 +218,15 @@ seeded live beside the schedule in `local/cron/seeded_jobs.json`
 that deletes or replaces the job keeps it that way. A job the principal already
 named `memory` is kept and only recorded.
 
+**Idle schedules.** `Idle` jobs read principal activity from
+`<runtime_dir>/idle_activity.json`, a map of runtime `PrincipalId` to the
+RFC 3339 time someone last talked to the principal: an ingress turn starting
+or ending, or a message queued for a busy session. Cron turns, completion
+wakes, and other principals' posts do not count. A principal with no entry
+counts as active since daemon start. An `Idle { minutes }` job is due when
+the principal has been quiet that long and the job's `last_run` predates the
+last activity, so it fires once per quiet stretch.
+
 ## Principal agent run limit (ADR-067)
 
 `principal.toml` configures admission in the existing governance table:

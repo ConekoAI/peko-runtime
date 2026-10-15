@@ -290,20 +290,28 @@ impl CronEngine {
 
         debug!("Checking {} idle-triggered jobs", idle_jobs.len());
 
+        let now = chrono::Utc::now();
         for job in idle_jobs {
             if let ScheduleKind::Idle { minutes } = &job.schedule {
-                // `is_idle` is keyed by principal name (its idle-window
-                // store is per-name). Resolve DID → name lazily — most
-                // idle-trigger jobs come from a recently-active
-                // principal so the manager hit is the common path.
-                let principal_name = self
-                    .principal_name_for(&job.principal_id)
+                // Activity is keyed by the principal's runtime id; a job
+                // may carry the DID instead (pre-id configs), so resolve
+                // through the manager.
+                let principal_id = match self.principal_manager.as_ref() {
+                    Some(pm) => resolve_principal(pm, &job.principal_id)
+                        .await
+                        .map_or_else(|| job.principal_id.0.clone(), |p| p.id.0.clone()),
+                    None => job.principal_id.0.clone(),
+                };
+                // Once per idle stretch: idle long enough, and not run
+                // since the principal was last active.
+                if self
+                    .idle_detector
+                    .idle_job_due(&principal_id, *minutes, job.last_run, now)
                     .await
-                    .unwrap_or_else(|| job.principal_id.0.clone());
-                if self.idle_detector.is_idle(&principal_name, *minutes).await {
+                {
                     info!(
                         "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
-                        principal_name, minutes, job.name
+                        principal_id, minutes, job.name
                     );
                     // Detach per-job execution (same rationale as
                     // `check_and_run`).
@@ -635,8 +643,9 @@ impl CronEngine {
     /// fake reply (when the agent failed). The agent is responsible
     /// for communication; the cron engine's only audit trail is the
     /// `CronRun` history (operator-facing, via `peko cron history`),
-    /// the trunk session JSONL (engine context), and the
-    /// `IdleDetector::record_activity` bump.
+    /// and the trunk session JSONL (engine context). A cron turn is not
+    /// activity for `Idle` schedules: those count only people talking
+    /// to the principal (`peko_cron::idle`).
     async fn run_send_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         let Some(pm) = self.principal_manager.as_ref() else {
             return Ok((
@@ -746,9 +755,6 @@ impl CronEngine {
                                     }
                                 }
                             }
-                            self.idle_detector
-                                .record_activity(&principal.name().await)
-                                .await;
                             Ok(("success".to_string(), Some(outcome.final_text)))
                         }
                         Err(e) => Ok((
@@ -775,12 +781,7 @@ impl CronEngine {
             )
             .await
         {
-            Ok(response) => {
-                self.idle_detector
-                    .record_activity(&principal.name().await)
-                    .await;
-                Ok(("success".to_string(), Some(response.content)))
-            }
+            Ok(response) => Ok(("success".to_string(), Some(response.content))),
             Err(e) => Ok((
                 "failed".to_string(),
                 Some(format!("Principal trunk execution error: {e}")),
@@ -1882,10 +1883,120 @@ mod tests {
             "expected a successful run in history, got: {runs:?}"
         );
 
-        // Activity should have been recorded for the Principal.
-        assert!(!engine.idle_detector.is_idle("crony", 1).await);
+        // A cron turn is not activity: only people talking to the
+        // principal reset its idle window (`peko_cron::idle`).
+        assert_eq!(
+            engine.idle_detector.last_activity(&principal.id.0).await,
+            engine.idle_detector.last_activity("never-seen").await,
+            "a cron Send must not record activity"
+        );
 
         // Avoid dropping the principal early; it is not needed after this.
+        drop(principal);
+    }
+
+    /// An `Idle` job fires once per idle stretch: after two hours
+    /// without anyone talking to the principal it runs, a second check
+    /// does not run it again, and new activity re-arms it. The job keys
+    /// on the DID while activity keys on the runtime id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idle_job_fires_once_per_idle_stretch() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "dozy").await;
+        let idle = Arc::new(IdleDetector::new());
+        idle.record_activity_at(&principal.id.0, Utc::now() - Duration::hours(2))
+            .await;
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("dozy")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            Arc::clone(&idle),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            std::sync::Weak::new(),
+        );
+        let job = CronJob {
+            id: "nap".to_string(),
+            name: "idle-check-in".to_string(),
+            principal_id: PrincipalId::from_did(&principal.did().await),
+            schedule: peko_cron::ScheduleKind::Idle { minutes: 60 },
+            action: CronJobAction::Send {
+                message: "Anything to follow up on?".to_string(),
+                target: None,
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + Duration::days(36500),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
+        };
+        scheduler.add_job(&job).unwrap();
+
+        let finished_runs = |scheduler: &CronScheduler| {
+            scheduler
+                .get_run_history(&job.id, 10)
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.finished_at.is_some())
+                .count()
+        };
+        let wait_for = |want: usize| {
+            let scheduler = Arc::clone(&scheduler);
+            async move {
+                for _ in 0..50 {
+                    if finished_runs(&scheduler) >= want {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                panic!("expected {want} finished idle run(s)");
+            }
+        };
+
+        engine.check_idle().await.unwrap();
+        wait_for(1).await;
+        engine.check_idle().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            finished_runs(&scheduler),
+            1,
+            "same idle stretch: no second run"
+        );
+
+        // Someone spoke after the run, then went quiet for two hours.
+        idle.record_activity_at(&principal.id.0, Utc::now() + Duration::seconds(1))
+            .await;
+        assert!(
+            !idle
+                .idle_job_due(
+                    &principal.id.0,
+                    60,
+                    scheduler.get_job(&job.id).unwrap().unwrap().last_run,
+                    Utc::now()
+                )
+                .await
+        );
+        assert!(
+            idle.idle_job_due(
+                &principal.id.0,
+                60,
+                scheduler.get_job(&job.id).unwrap().unwrap().last_run,
+                Utc::now() + Duration::hours(2)
+            )
+            .await
+        );
         drop(principal);
     }
 

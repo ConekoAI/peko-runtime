@@ -24,8 +24,7 @@
 //! The trait deliberately exposes only the accessors the principal
 //! arms and helpers actually need (principal manager, streaming
 //! cancel-token registry, inbox registry, extension store, trust
-//! store, config/data/cache dir paths, tunnel dispatcher, and the
-//! `record_principal_activity` accessor for post-success stats).
+//! store, config/data/cache dir paths, and the tunnel dispatcher).
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -152,9 +151,8 @@ enum PrincipalSendResponseKind {
 ///
 /// `AppState` is the sole implementor. Most methods are sync (cheap
 /// references / `Arc` clones / `PathBuf` clones); `tunnel_dispatcher`
-/// and `record_principal_activity` are async because they drive live
-/// tunnel / activity-write paths. The trait needs `async_trait` for
-/// those two.
+/// is async because it drives the live tunnel path, so the trait needs
+/// `async_trait`.
 #[async_trait]
 pub(crate) trait PrincipalHost: Send + Sync {
     /// In-memory principal manager. Powers `PrincipalList` /
@@ -192,10 +190,6 @@ pub(crate) trait PrincipalHost: Send + Sync {
 
     /// Daemon cache directory used by principal runtime paths.
     fn cache_dir(&self) -> std::path::PathBuf;
-
-    /// Bump last-seen / activity counter for the principal; called
-    /// after a successful `PrincipalSend*` round-trip.
-    async fn record_principal_activity(&self, principal_name: &str);
 
     /// Live outbound tunnel dispatcher (F5 / F7 fourth-narrow-handle
     /// surface). `None` when tunnel is not active. Powers
@@ -2117,7 +2111,6 @@ async fn run_principal_send(
                     send_response(sink, done).await?;
                 }
             }
-            host.record_principal_activity(&name).await;
             return Ok(());
         }
         Err(e) => {
@@ -2515,7 +2508,6 @@ async fn run_principal_send(
                 error: None,
             };
             send_response(sink, done).await?;
-            host.record_principal_activity(&name).await;
 
             // Gap-2: drain any steering messages that arrived during the
             // final-iteration drain and start a successor run for each.
@@ -3768,9 +3760,6 @@ mod tests {
                 unimplemented!("not reached by read_principal_log")
             }
             fn cache_dir(&self) -> std::path::PathBuf {
-                unimplemented!("not reached by read_principal_log")
-            }
-            async fn record_principal_activity(&self, _principal_name: &str) {
                 unimplemented!("not reached by read_principal_log")
             }
             async fn tunnel_dispatcher(&self) -> Option<TunnelDispatcher> {

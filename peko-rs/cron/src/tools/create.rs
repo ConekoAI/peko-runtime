@@ -80,7 +80,8 @@ pub struct CronCreateArgs {
     /// Timezone for cron expression (default UTC)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    /// Idle duration in milliseconds before triggering
+    /// Quiet time in milliseconds (nobody talking to the principal)
+    /// before triggering; fires once per quiet stretch
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_ms: Option<u64>,
 }
@@ -199,7 +200,7 @@ impl Tool for CronCreateAction {
                 },
                 "idle_ms": {
                     "type": "integer",
-                    "description": "Fire once you (the principal) have had no activity for this long, in milliseconds (rounded down to whole minutes, at least one minute)"
+                    "description": "Fire once nobody has talked to you (the principal) for this long, in milliseconds (rounded down to whole minutes, at least one minute). Fires once per quiet stretch; cron turns are not activity"
                 }
             },
             "allOf": [
