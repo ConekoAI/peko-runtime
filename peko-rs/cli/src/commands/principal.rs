@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
-use peko_auth::{subject_from_string_with_default_user, Subject};
+use peko_auth::Subject;
 use peko_core::common::authority::TierPath;
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
@@ -162,13 +162,24 @@ pub enum PrincipalCommands {
         /// Peko name
         name: String,
 
-        /// Subject to grant permission to (e.g. `user:alice`, `public`)
+        /// Actor to grant permission to: `kind:local:<id>`, `kind:hub:<id>`,
+        /// or `public`
         subject: String,
 
         /// Permission to grant (e.g. `chat`, `manage_settings`). `trusted` is
         /// the owner's consent to give this actor's agents the full tool
         /// surface, including the shell (ADR-078).
         permission: String,
+    },
+
+    /// Transfer a peko to a new owner (only its current owner can)
+    Transfer {
+        /// Peko name
+        name: String,
+
+        /// The new owner: `user:local:local` (this runtime's local user) or
+        /// `user:hub:<account>`
+        owner: String,
     },
 
     /// Revoke a permission from a peko
@@ -302,6 +313,7 @@ pub async fn handle_principal(
             subject,
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
+        PrincipalCommands::Transfer { name, owner } => transfer_principal(&name, &owner).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
         PrincipalCommands::Invite { name, scope, ttl } => mint_invite(&name, scope, &ttl).await,
         PrincipalCommands::RevokeInvite { name, jti } => revoke_invite(&name, &jti).await,
@@ -1328,8 +1340,38 @@ fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
     }
 }
 
+/// An explicit actor reference (ADR-073/081): `kind:local:<id>`,
+/// `kind:hub:<id>`, or `public`. Bare names are refused — they never
+/// matched an actor.
+fn parse_actor_ref(text: &str) -> Result<Subject> {
+    if text == "public" {
+        return Ok(Subject::Public);
+    }
+    let subject: Subject = text
+        .parse()
+        .map_err(|e| anyhow::anyhow!("{e}; use kind:local:<id>, kind:hub:<id>, or public"))?;
+    anyhow::ensure!(
+        subject.subject_id().starts_with("local:") || subject.subject_id().starts_with("hub:"),
+        "Use kind:local:<id> or kind:hub:<id> (got `{text}`)"
+    );
+    Ok(subject)
+}
+
+async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
+    let owner = parse_actor_ref(owner)?;
+    let client = DaemonClient::connect().await?;
+    match client.principal_transfer(name, owner).await? {
+        ResponsePacket::PrincipalOwnerTransferred { name, owner, .. } => {
+            println!("Transferred '{name}' to {}", owner.canonical_address());
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
+        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+    }
+}
+
 async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
-    let subject = subject_from_string_with_default_user(subject_str);
+    let subject = parse_actor_ref(subject_str)?;
     let permission = parse_permission(permission_str)?;
 
     let client = DaemonClient::connect().await?;
@@ -1357,7 +1399,7 @@ async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -
 }
 
 async fn revoke_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
-    let subject = subject_from_string_with_default_user(subject_str);
+    let subject = parse_actor_ref(subject_str)?;
     let permission = parse_permission(permission_str)?;
 
     let client = DaemonClient::connect().await?;

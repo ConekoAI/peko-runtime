@@ -249,96 +249,6 @@ fn pair_ids_are_opaque_order_independent_and_collision_resistant() {
 }
 
 #[tokio::test]
-async fn learned_contacts_are_durable_scoped_and_survive_profile_updates() {
-    let temp = tempfile::tempdir().unwrap();
-    let port = store(temp.path());
-    let a = PrincipalId("prin_a".into());
-    let b = PrincipalId("prin_b".into());
-    let unrelated = PrincipalId("prin_unrelated".into());
-    let peer = Subject::Principal("local_peer".into());
-    port.register_actor(
-        &peer,
-        Some("peer-hub"),
-        Some("did:key:peer"),
-        Some("peer-key"),
-        Some("Peer"),
-        "public",
-    )
-    .await
-    .unwrap();
-    assert!(port.known_contacts(&a).await.unwrap().is_empty());
-    // Different store handles contend on the same actor file, without losing an owner.
-    let other = store(temp.path());
-    let (left, right) = tokio::join!(
-        port.remember_contact(&a, &peer),
-        other.remember_contact(&b, &peer)
-    );
-    left.unwrap();
-    right.unwrap();
-    port.remember_contact(&a, &"principal:hub:peer-hub".parse().unwrap())
-        .await
-        .unwrap();
-    port.register_actor(
-        &peer,
-        Some("peer-hub"),
-        Some("did:key:peer"),
-        Some("peer-key"),
-        Some("Renamed"),
-        "private",
-    )
-    .await
-    .unwrap();
-    let restarted = store(temp.path());
-    for principal in [&a, &b] {
-        let contacts = restarted.known_contacts(principal).await.unwrap();
-        assert_eq!(contacts.len(), 1);
-        assert_eq!(contacts[0].name.as_deref(), Some("Renamed"));
-        assert_eq!(contacts[0].registration, "private");
-    }
-    assert!(restarted
-        .known_contacts(&unrelated)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(restarted
-        .remember_contact(&a, &Subject::User("missing".into()))
-        .await
-        .is_err());
-}
-
-#[tokio::test]
-async fn legacy_actor_registry_does_not_grant_runtime_wide_contacts() {
-    let temp = tempfile::tempdir().unwrap();
-    let port = store(temp.path());
-    port.register_actor(
-        &Subject::Principal("prin_legacy".into()),
-        None,
-        None,
-        Some("legacy-key"),
-        None,
-        "local_only",
-    )
-    .await
-    .unwrap();
-    let mut records: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(temp.path().join("actors.json")).unwrap()).unwrap();
-    for record in records.as_array_mut().unwrap() {
-        record.as_object_mut().unwrap().remove("known_by");
-    }
-    std::fs::write(
-        temp.path().join("actors.json"),
-        serde_json::to_vec(&records).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(port.known_actors().await.unwrap().len(), 1);
-    assert!(port
-        .known_contacts(&PrincipalId("prin_other".into()))
-        .await
-        .unwrap()
-        .is_empty());
-}
-
-#[tokio::test]
 async fn verified_remote_leave_removes_all_aliases_from_current_roster() {
     let temp = tempfile::tempdir().unwrap();
     let port = store(temp.path());
@@ -468,7 +378,6 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
     .await
     .unwrap();
     let dm = port.ensure_dm(&owner, &remote, "/remote").await.unwrap();
-    port.remember_contact(&owner, &remote).await.unwrap();
     port.post(&dm, &remote, PostMsg::root("before promotion"))
         .await
         .unwrap();
@@ -507,10 +416,7 @@ async fn promoting_remote_contact_preserves_pair_history_and_learned_relationshi
     .await
     .unwrap();
     let restarted = store(temp.path());
-    assert_eq!(
-        restarted.known_contacts(&owner).await.unwrap(),
-        vec![info.clone()]
-    );
+    assert_eq!(restarted.actor_info(&Subject::from(&hosted)).await, info);
     assert_eq!(restarted.participants(&dm).await.unwrap().len(), 2);
     let posts = restarted
         .peek(&dm, &Checkpoint::default())
@@ -608,9 +514,6 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
         .ensure_dm(&owner, &hosted_subject, "/hosted")
         .await
         .unwrap();
-    port.remember_contact(&owner, &hosted_subject)
-        .await
-        .unwrap();
     port.post(&dm, &hosted_subject, PostMsg::root("before unhosting"))
         .await
         .unwrap();
@@ -635,7 +538,7 @@ async fn unhosting_and_unlinking_preserve_history_without_public_stale_aliases()
     assert!(events
         .iter()
         .any(|e| matches!(e, ChannelEvent::Posted { author, .. } if author == &remote.address)));
-    assert_eq!(port.known_contacts(&owner).await.unwrap(), vec![remote]);
+    assert_eq!(port.actor_info(&remote.subject()).await, remote);
     // Rehosting then unlinking the Hub identity preserves earlier Hub authors.
     port.register_actor(
         &hosted_subject,
@@ -727,7 +630,6 @@ async fn reconciling_legacy_proxies_uses_host_inventory_and_preserves_conversati
     )
     .await
     .unwrap();
-    port.remember_contact(&owner, &remote).await.unwrap();
     let dm = port.ensure_dm(&owner, &remote, "/remote").await.unwrap();
     port.post(&dm, &remote, PostMsg::root("legacy history"))
         .await
@@ -771,10 +673,7 @@ async fn reconciling_legacy_proxies_uses_host_inventory_and_preserves_conversati
             .await
             .is_err());
     }
-    assert_eq!(
-        port.known_contacts(&owner).await.unwrap(),
-        vec![actor.clone()]
-    );
+    assert_eq!(port.actor_info(&actor.subject()).await, actor);
     assert_eq!(
         port.ensure_dm(&owner, &actor.subject(), "/remote")
             .await

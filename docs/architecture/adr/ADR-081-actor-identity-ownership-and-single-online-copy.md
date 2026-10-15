@@ -88,9 +88,9 @@ pub struct ActorKey(String);                   // immutable identity
 - **Operator ≠ owner.** Local IPC and admin-scoped API keys keep *administrative* authority: settings, removal, import, export, registration. In conversation the operator is the local user, so the operator is the owner only when the local user owns the principal. An operator hosting someone else's principal administers it but chats at whatever trust the owner granted. This doesn't stop a determined operator, who holds the files and the vault; it keeps the trust model honest.
 - **Creation.** The owner is the local user, with whatever routes it has (a registered local user stores its Hub route).
 - **Seeds.** Seeds drop the owner and grants. ADR-060 seeds are never copies.
-- **Transfer.** `peko transfer <peko> <actor>` is an audited Security event.
-  - The current owner may transfer; the operator may transfer when the local user is the owner.
-  - Transferring an online principal also needs approval from the owner's Hub account (§5).
+- **Transfer.** `peko transfer <peko> <actor>` is an audited Security event (`principal.owner_transfer`).
+  - Only the current owner may transfer. The terminal is the local user, so the operator transfers exactly the principals the local user owns.
+  - An online principal's new owner must be a Hub actor; Hub learns the new owner from the linked runtime's next announce.
   - Grants and policy sections are unchanged.
 - **Registration needs a Hub owner.** A principal can register only when its owner has a Hub route, so every online principal has a Hub owner.
 
@@ -102,7 +102,7 @@ These move from runtime files into the principal and travel with it:
 |---|---|
 | Owner, grants | `principal.toml`, as `ActorRef`s |
 | Learned contacts | `local/contacts.json`: kind, routes, key, signing DID, name, verified-at |
-| Channel memberships | `local/channels.json`: channel ID, roster, own session binding (no logs) |
+| Channel memberships | `local/channels.json`, written at export from the channel store: channel ID, roster with immutable keys, own session binding (no logs) |
 | Policy | `POLICY.md`, sections resolved through D1 |
 | Cron creators | `CronJob.created_by` as `ActorRef` + compartment; trust re-derived at fire time |
 

@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Contacts and owner travel with the principal (ADR-081 phase 3, 0.1.0, 2026-10-15)
+
+- Learned contacts are the principal's own: they live in its Local tier
+  (`local/contacts.json`) with each actor's immutable key and routes, and the
+  runtime registry keeps only routing. A contact the registry cannot route to
+  the same actor is listed with `reachable: false`. Existing `known_by` lists
+  move into the books at daemon start; `ChannelPort::known_contacts` /
+  `remember_contact` and `known_by` are gone.
+- `.peko` snapshots carry the contact book, channel memberships
+  (`local/channels.json`), `POLICY.md`, `workflows/`, and `plugins/`, and
+  record their source runtime. Actor references in the owner, grants,
+  `POLICY.md` sections, and cron creators leave by one rule: Hub route when
+  the actor has one, else a local route qualified with the source runtime
+  (`kind:local:<id>@<runtime DID>`), which matches no local actor elsewhere.
+- On import: a Hub owner is unchanged; a local owner from another runtime
+  becomes this runtime's local user everywhere it is referenced, and its DM
+  session is rebound to the new pair; local routes of another runtime stay
+  dormant and revive when the principal returns. The local ID is this
+  runtime's to give: a returning principal gets its former ID back, any other
+  a fresh one (the snapshot's is never adopted), and a second copy of an
+  already hosted actor is refused unless keys are rotated.
+- `peko transfer <peko> <actor>`: only the current owner transfers; an online
+  principal's new owner must be a Hub actor. Audited as
+  `principal.owner_transfer`.
+- `peko permit` / `peko revoke` require an explicit `kind:local:<id>`,
+  `kind:hub:<id>`, or `public`; bare names (which never matched an actor) are
+  refused.
+
 ### One runtime identity; the runtime registers with its local user (ADR-081 phase 2, 0.1.0, 2026-10-15)
 
 - The runtime has one identity: the vault-held `did:key` in

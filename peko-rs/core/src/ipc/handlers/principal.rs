@@ -283,6 +283,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalImport { .. }
                 | RequestPacket::PrincipalGrantPermission { .. }
                 | RequestPacket::PrincipalRevokePermission { .. }
+                | RequestPacket::PrincipalTransfer { .. }
                 | RequestPacket::PrincipalPermissions { .. }
                 | RequestPacket::PrincipalSetStatus { .. }
                 | RequestPacket::PrincipalRegister { .. }
@@ -701,6 +702,25 @@ impl RequestHandler for PrincipalHandler {
                         send_response(sink, response).await?;
                     }
                 }
+            }
+
+            RequestPacket::PrincipalTransfer {
+                request_id,
+                name,
+                owner,
+            } => {
+                let response = match transfer_principal(host, caller, &name, owner).await {
+                    Ok(owner) => ResponsePacket::PrincipalOwnerTransferred {
+                        request_id,
+                        name,
+                        owner,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    },
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalRevokePermission {
@@ -2972,12 +2992,149 @@ async fn build_principal_packager(
         "Principal signing key does not match its identity"
     );
 
+    let portable = portable_export(host, &principal, &layout).await?;
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
             .with_roles_dir(&layout.shared.roles_dir)
             .with_sessions_dir(&layout.local.sessions_dir)
             .with_workspace_dir(&layout.shared.root)
-            .with_local_root(&layout.local.root),
+            .with_local_root(&layout.local.root)
+            .with_portable(portable),
+    )
+}
+
+/// Transfer `name` to `owner` (ADR-081 D4). Only the current owner may
+/// transfer — the terminal is the local user, so the operator transfers
+/// exactly the principals the local user owns. An online principal's new
+/// owner must be a Hub actor, and Hub learns it from the re-announce.
+/// Grants and policy sections are unchanged. Audited at Security severity.
+async fn transfer_principal(
+    host: &dyn PrincipalHost,
+    caller: &CallerContext,
+    name: &str,
+    owner: Subject,
+) -> anyhow::Result<Subject> {
+    use crate::common::identifiers::validate_agent_name;
+    validate_agent_name(name)
+        .map_err(|e| anyhow::anyhow!("[unsafe_name] invalid principal name: {e}"))?;
+    anyhow::ensure!(
+        owner.is_session_peer() && owner.route_runtime().is_none(),
+        "The new owner must be a user, visitor, or principal of this runtime or Hub"
+    );
+    let manager = host.principal_manager();
+    let principal = load_principal(host, name)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Principal '{name}' not found"))?;
+    let keys = host_keys(host);
+    let previous = principal.config.read().await.owner.clone();
+    anyhow::ensure!(
+        keys.same_actor(&caller.subject(), &previous),
+        "[permission_denied] only the principal's owner can transfer it"
+    );
+    let port = manager.channel_port();
+    if let Some(port) = &port {
+        let me = port.actor_info(&Subject::from(&principal.id)).await;
+        if me.hub_id.is_some() {
+            anyhow::ensure!(
+                port.actor_info(&owner).await.hub_id.is_some(),
+                "An online principal's owner must be a Hub actor"
+            );
+        }
+    }
+    host.authority_for(caller)
+        .shared_config_write_for_name(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("[permission_denied] {e}"))?;
+    manager
+        .update_config(name, |config| config.owner = owner.clone())
+        .await?;
+    if let Some(audit) = host.observability() {
+        audit
+            .audit_security_with_caller(
+                Some(&caller.subject()),
+                "principal.owner_transfer",
+                Some(&principal.id.0),
+                serde_json::json!({
+                    "from": previous.canonical_address(),
+                    "to": owner.canonical_address(),
+                }),
+            )
+            .await?;
+    }
+    if let Some(dispatcher) = host.tunnel_dispatcher().await {
+        if let Err(e) = dispatcher.announce_single_instance(name).await {
+            warn!(principal = %name, "owner transfer not yet announced to Hub: {e}");
+        }
+    }
+    Ok(owner)
+}
+
+/// What leaves with the snapshot (ADR-081 D6): the Hub routes of the
+/// actors its state references, and its channel memberships.
+async fn portable_export(
+    host: &dyn PrincipalHost,
+    principal: &crate::principal::Principal,
+    layout: &crate::common::paths::PrincipalLayout,
+) -> anyhow::Result<crate::registry::packaging::principal_packager::PortableExport> {
+    use crate::registry::packaging::portable::referenced_actors;
+    let manager = host.principal_manager();
+    let source_runtime = manager.runtime_did().to_string();
+    let Some(port) = manager.channel_port() else {
+        return Ok(
+            crate::registry::packaging::principal_packager::PortableExport {
+                source_runtime,
+                ..Default::default()
+            },
+        );
+    };
+    let config = principal.config.read().await.clone();
+    let policy = tokio::fs::read_to_string(
+        layout
+            .shared
+            .root
+            .join(crate::security::policy::POLICY_FILE),
+    )
+    .await
+    .ok();
+    let cron = tokio::fs::read(layout.local.cron_dir.join("schedule.toml"))
+        .await
+        .ok();
+    let mut hub_routes = std::collections::HashMap::new();
+    for subject in referenced_actors(&config, policy.as_deref(), cron.as_deref()) {
+        let actor = port.actor_info(&subject).await;
+        if let Some(hub) = &actor.hub_id {
+            if let Ok(route) = format!("{}:hub:{hub}", actor.kind).parse() {
+                hub_routes.insert(subject.canonical_address(), route);
+            }
+        }
+    }
+    let mut channels = Vec::new();
+    for channel in port.list_for_principal(&principal.id).await? {
+        let participants: Vec<_> = port
+            .participants(&channel)
+            .await?
+            .into_iter()
+            .map(|actor| {
+                serde_json::json!({
+                    "address": actor.address,
+                    "hub_id": actor.hub_id,
+                    "kind": actor.kind,
+                    "identity_key": actor.identity_key,
+                })
+            })
+            .collect();
+        channels.push(serde_json::json!({
+            "channel": channel,
+            "participants": participants,
+            "binding": port.binding_for(&channel, &principal.id).await?,
+        }));
+    }
+    Ok(
+        crate::registry::packaging::principal_packager::PortableExport {
+            source_runtime,
+            hub_routes,
+            channels: Some(serde_json::to_vec_pretty(&channels)?),
+        },
     )
 }
 
@@ -3708,6 +3865,118 @@ mod tests {
 
         let names = extract_agent_names_from_package(&files);
         assert_eq!(names, vec!["primary"]);
+    }
+
+    /// ADR-081 D4: only the current owner transfers a principal, and the
+    /// change is the owner's to make — not the operator's by position.
+    mod transfer {
+        use super::*;
+
+        struct Host {
+            manager: Arc<PrincipalManager>,
+            resolver: PathResolver,
+        }
+
+        #[async_trait]
+        impl PrincipalHost for Host {
+            fn principal_manager(&self) -> &Arc<PrincipalManager> {
+                &self.manager
+            }
+            fn streaming_runs(&self) -> Arc<Mutex<HashMap<String, StreamingRunHandle>>> {
+                unimplemented!()
+            }
+            fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
+                unimplemented!()
+            }
+            fn config_dir(&self) -> std::path::PathBuf {
+                self.resolver.config_dir().to_path_buf()
+            }
+            fn path_resolver(&self) -> PathResolver {
+                self.resolver.clone()
+            }
+            fn data_dir(&self) -> std::path::PathBuf {
+                unimplemented!()
+            }
+            fn cache_dir(&self) -> std::path::PathBuf {
+                unimplemented!()
+            }
+            async fn tunnel_dispatcher(&self) -> Option<TunnelDispatcher> {
+                None
+            }
+            fn runtime_signing_key(&self) -> Arc<ed25519_dalek::SigningKey> {
+                unimplemented!()
+            }
+            fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
+                unimplemented!()
+            }
+            fn pekohub_base_url(&self) -> String {
+                unimplemented!()
+            }
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn only_the_owner_transfers() {
+            let temp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("PEKO_HOME", temp.path());
+            peko_identity::init_test_env();
+            let resolver = PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let manager = Arc::new(PrincipalManager::with_path_resolver(
+                resolver.clone(),
+                Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+                Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            ));
+            manager
+                .create(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "mine", "preferred_model_id": "mock",
+                        "owner": {"kind": "user", "id": "local"}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let host = Host {
+                manager: manager.clone(),
+                resolver,
+            };
+            let alice = Subject::User("hub:alice".into());
+
+            let moved = transfer_principal(&host, &CallerContext::local(), "mine", alice.clone())
+                .await
+                .unwrap();
+            assert_eq!(moved, alice);
+            // The terminal no longer owns it, so it cannot take it back.
+            let err = transfer_principal(
+                &host,
+                &CallerContext::local(),
+                "mine",
+                Subject::User("local".into()),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("only the principal's owner"),
+                "{err}"
+            );
+            // Foreign-qualified routes are never owners.
+            let err = transfer_principal(
+                &host,
+                &CallerContext::from_jwt("alice".into()),
+                "mine",
+                Subject::User("local:local@did:key:zElsewhere".into()),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("new owner"), "{err}");
+            let principal = manager.get_by_name("mine").await.unwrap();
+            assert_eq!(principal.config.read().await.owner, alice);
+        }
     }
 
     // ─── Phase 11: read_principal_log reads the peer DM channel ──────

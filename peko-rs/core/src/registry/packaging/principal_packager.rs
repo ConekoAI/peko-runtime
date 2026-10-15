@@ -64,6 +64,18 @@ pub struct PrincipalPackager {
     sessions_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
     local_root: Option<PathBuf>,
+    portable: Option<PortableExport>,
+}
+
+/// What a snapshot needs to leave its runtime (ADR-081 D6): the source
+/// runtime, the Hub routes of the actors that have one, and the
+/// principal's channel memberships.
+#[derive(Debug, Clone, Default)]
+pub struct PortableExport {
+    pub source_runtime: String,
+    pub hub_routes: HashMap<String, peko_subject::Subject>,
+    /// `local/channels.json`: memberships, rosters, and own bindings.
+    pub channels: Option<Vec<u8>>,
 }
 
 impl PrincipalPackager {
@@ -76,6 +88,21 @@ impl PrincipalPackager {
             sessions_dir: None,
             workspace_dir: None,
             local_root: None,
+            portable: None,
+        }
+    }
+
+    /// Rewrite actor references for leaving this runtime (ADR-081 D6).
+    pub fn with_portable(mut self, portable: PortableExport) -> Self {
+        self.portable = Some(portable);
+        self
+    }
+
+    /// Apply the export rule (identity when the snapshot is not portable).
+    fn exported(&self, subject: &peko_subject::Subject) -> peko_subject::Subject {
+        match &self.portable {
+            Some(p) => super::portable::export_rule(&p.source_runtime, &p.hub_routes)(subject),
+            None => subject.clone(),
         }
     }
 
@@ -144,6 +171,7 @@ impl PrincipalPackager {
             .unwrap_or_else(|| self.identity.did.clone());
 
         let mut manifest = PrincipalManifest::new(&self.config.name, &did);
+        manifest.source_runtime = self.portable.as_ref().map(|p| p.source_runtime.clone());
 
         if let Some(ref desc) = options.description {
             manifest.description = Some(desc.clone());
@@ -212,7 +240,9 @@ impl PrincipalPackager {
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
-        let config_toml = toml::to_string_pretty(&self.config)?;
+        let mut config = self.config.clone();
+        super::portable::rewrite_config(&mut config, &|s| self.exported(s));
+        let config_toml = toml::to_string_pretty(&config)?;
         files.insert(
             "config/principal.toml".to_string(),
             config_toml.into_bytes(),
@@ -263,12 +293,27 @@ impl PrincipalPackager {
             if cron_dir.exists() {
                 self.export_dir_recursive(&cron_dir, "cron", files, manifest)
                     .await?;
+                // ADR-081 D6: cron creators leave by the portable rule.
+                if let Some(schedule) = files.get_mut("cron/schedule.toml") {
+                    *schedule = super::portable::rewrite_cron(schedule, &|s| self.exported(s));
+                    manifest.add_file("cron/schedule.toml", &files["cron/schedule.toml"]);
+                }
             }
             let plans_dir = local_root.join("plans");
             if plans_dir.exists() {
                 self.export_dir_recursive(&plans_dir, "plans", files, manifest)
                     .await?;
             }
+            // ADR-081 D5: the principal's own contact book.
+            let contacts = local_root.join(crate::principal::contacts::CONTACTS_FILE);
+            if let Ok(bytes) = tokio::fs::read(&contacts).await {
+                manifest.add_file("local/contacts.json", &bytes);
+                files.insert("local/contacts.json".into(), bytes);
+            }
+        }
+        if let Some(channels) = self.portable.as_ref().and_then(|p| p.channels.clone()) {
+            manifest.add_file("local/channels.json", &channels);
+            files.insert("local/channels.json".into(), channels);
         }
         Ok(())
     }
@@ -289,7 +334,7 @@ impl PrincipalPackager {
                 "Snapshot workspace must be an ordinary directory: {}",
                 workspace_dir.display()
             );
-            for dir_name in ["tools", "skills", "mcp", "hooks", "kb"] {
+            for dir_name in super::principal_manifest::WORKSPACE_DIRS {
                 let dir = workspace_dir.join(dir_name);
                 match tokio::fs::symlink_metadata(&dir).await {
                     Ok(_) => {
@@ -299,6 +344,14 @@ impl PrincipalPackager {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
+            }
+            // ADR-078 D7 / ADR-081 D5: the owner's policy travels too.
+            let policy = workspace_dir.join(crate::security::policy::POLICY_FILE);
+            if let Ok(text) = tokio::fs::read_to_string(&policy).await {
+                let text = super::portable::rewrite_policy(&text, &|s| self.exported(s));
+                let path = crate::security::policy::POLICY_FILE.to_string();
+                manifest.add_file(&path, text.as_bytes());
+                files.insert(path, text.into_bytes());
             }
         }
         Ok(())

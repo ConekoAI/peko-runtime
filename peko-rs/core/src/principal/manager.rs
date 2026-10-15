@@ -108,6 +108,9 @@ pub struct PrincipalManager {
     /// The manager's own `Arc`, once [`Self::install_policy_gate`] binds
     /// it: owner approval commands replay calls through it.
     self_ref: std::sync::OnceLock<std::sync::Weak<PrincipalManager>>,
+    /// This runtime's identity DID (ADR-081 D2): the runtime every local
+    /// route of this manager's principals and contacts belongs to.
+    runtime_did: std::sync::OnceLock<String>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
@@ -198,6 +201,7 @@ impl PrincipalManager {
         );
         Self {
             self_ref: std::sync::OnceLock::new(),
+            runtime_did: std::sync::OnceLock::new(),
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
@@ -319,6 +323,19 @@ impl PrincipalManager {
     /// child session. `None` (the default) disables provisioning —
     /// the right choice for tests / non-daemon contexts.
     #[must_use]
+    /// Bind this runtime's identity DID (ADR-081 D2).
+    pub fn with_runtime_did(self, runtime_did: impl Into<String>) -> Self {
+        let _ = self.runtime_did.set(runtime_did.into());
+        self
+    }
+
+    /// This runtime's identity DID; `"local"` for managers outside a daemon
+    /// (tests and offline CLI paths), whose routes never leave the process.
+    #[must_use]
+    pub fn runtime_did(&self) -> &str {
+        self.runtime_did.get().map_or("local", String::as_str)
+    }
+
     pub fn with_channel_port(mut self, channel_port: Arc<dyn peko_channel::ChannelPort>) -> Self {
         self.channel_port = Some(channel_port);
         self

@@ -1054,15 +1054,6 @@ impl ChannelPort for TunnelChannelPort {
     async fn known_actors(&self) -> Result<Vec<peko_channel::ActorInfo>> {
         self.local.known_actors().await
     }
-    async fn known_contacts(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<Vec<peko_channel::ActorInfo>> {
-        self.local.known_contacts(principal).await
-    }
-    async fn remember_contact(&self, principal: &PrincipalId, actor: &Subject) -> Result<()> {
-        self.local.remember_contact(principal, actor).await
-    }
     async fn resolve_actor(&self, reference: &str) -> Result<peko_channel::ActorInfo> {
         self.local.resolve_actor(reference).await
     }

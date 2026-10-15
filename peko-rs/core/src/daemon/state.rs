@@ -704,6 +704,7 @@ impl AppState {
             // Sprint 3 Phase 10: peer ingress auto-provisions the
             // peer's DM channel through the daemon-global port.
             .with_channel_port(channel_port.clone())
+            .with_runtime_did(runtime_identity.runtime_did.clone())
             // Human-started turns record activity for `Idle` schedules.
             .with_idle_detector(Arc::clone(&idle_detector));
 
@@ -752,6 +753,16 @@ impl AppState {
                 .await
             {
                 tracing::warn!("Could not record the local user's identity: {e}");
+            }
+            // ADR-081 D5: learned contacts move into each principal's book.
+            if let Err(e) = crate::principal::contacts::migrate_known_by(
+                &path_resolver.runtime_dir(),
+                &runtime_identity.runtime_did,
+                &manager.list_all().await,
+            )
+            .await
+            {
+                tracing::warn!("Could not move learned contacts into contact books: {e}");
             }
             manager
         };

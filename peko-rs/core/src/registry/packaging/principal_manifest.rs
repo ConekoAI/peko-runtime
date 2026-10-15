@@ -21,6 +21,11 @@ pub struct PrincipalManifest {
     /// Old v1 snapshots omit this field and restore ordinary files.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub executable_files: BTreeSet<String>,
+    /// The runtime the snapshot left (ADR-081 D6). Local routes in the
+    /// snapshot are qualified with it; a snapshot without it predates
+    /// portable identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_runtime: Option<String>,
 }
 
 impl PrincipalManifest {
@@ -34,6 +39,7 @@ impl PrincipalManifest {
             description: None,
             files: BTreeMap::new(),
             executable_files: BTreeSet::new(),
+            source_runtime: None,
         }
     }
 
@@ -65,10 +71,20 @@ impl PrincipalManifest {
     }
 }
 
+/// Workspace directories a snapshot carries (ADR-056, ADR-081 D5).
+pub const WORKSPACE_DIRS: [&str; 7] = [
+    "tools",
+    "skills",
+    "mcp",
+    "hooks",
+    "kb",
+    "workflows",
+    "plugins",
+];
+
 pub(crate) fn is_workspace_payload(path: &str) -> bool {
-    path.split_once('/').is_some_and(|(prefix, rest)| {
-        matches!(prefix, "tools" | "skills" | "mcp" | "hooks" | "kb") && !rest.is_empty()
-    })
+    path.split_once('/')
+        .is_some_and(|(prefix, rest)| WORKSPACE_DIRS.contains(&prefix) && !rest.is_empty())
 }
 
 #[cfg(test)]

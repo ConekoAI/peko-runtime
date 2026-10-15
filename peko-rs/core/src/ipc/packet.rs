@@ -623,6 +623,16 @@ pub enum RequestPacket {
         permission: peko_auth::ownership::Permission,
     },
 
+    /// Transfer a principal to a new owner (ADR-081 D4). Only the current
+    /// owner may transfer; an online principal's new owner must be a Hub
+    /// actor.
+    #[serde(rename = "principal_transfer")]
+    PrincipalTransfer {
+        request_id: u64,
+        name: String,
+        owner: peko_auth::Subject,
+    },
+
     #[serde(rename = "principal_revoke_permission")]
     PrincipalRevokePermission {
         request_id: u64,
@@ -880,6 +890,7 @@ impl RequestPacket {
             | Self::PrincipalImportPreview { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
             | Self::PrincipalRevokePermission { request_id, .. }
+            | Self::PrincipalTransfer { request_id, .. }
             | Self::PrincipalSetStatus { request_id, .. }
             | Self::PrincipalRegister { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
@@ -1702,6 +1713,13 @@ pub enum ResponsePacket {
         permission: peko_auth::ownership::Permission,
     },
 
+    #[serde(rename = "principal_owner_transferred")]
+    PrincipalOwnerTransferred {
+        request_id: u64,
+        name: String,
+        owner: peko_auth::Subject,
+    },
+
     #[serde(rename = "principal_permission_revoked")]
     PrincipalPermissionRevoked {
         request_id: u64,
@@ -2284,6 +2302,7 @@ impl ResponsePacket {
             | Self::PrincipalImportPreviewed { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
             | Self::PrincipalPermissionRevoked { request_id, .. }
+            | Self::PrincipalOwnerTransferred { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalRegistrationUpdated { request_id, .. }
@@ -2359,6 +2378,7 @@ impl ResponsePacket {
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
+            Self::PrincipalOwnerTransferred { .. } => "PrincipalOwnerTransferred",
             Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
             Self::PrincipalRegistrationUpdated { .. } => "PrincipalRegistrationUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",

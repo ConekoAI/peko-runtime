@@ -192,6 +192,65 @@ impl Subject {
             ),
         }
     }
+    /// Whether this is a local route (not Hub, not `public`).
+    #[must_use]
+    pub fn is_local_route(&self) -> bool {
+        !matches!(self, Self::Public) && !self.subject_id().starts_with("hub:")
+    }
+
+    /// The runtime a qualified local route belongs to
+    /// (`kind:local:<id>@<runtime DID>`, ADR-081 D1), if any.
+    #[must_use]
+    pub fn route_runtime(&self) -> Option<&str> {
+        if !self.is_local_route() {
+            return None;
+        }
+        let id = self.subject_id();
+        id.strip_prefix("local:")
+            .unwrap_or(id)
+            .split_once('@')
+            .map(|(_, runtime)| runtime)
+    }
+
+    /// This reference as seen from outside `runtime` (ADR-081 D6): a local
+    /// route of `runtime` gains its runtime qualifier so it can never be
+    /// mistaken for a local actor of another runtime. Hub routes, `public`,
+    /// and routes already qualified are unchanged.
+    #[must_use]
+    pub fn qualified_for(&self, runtime: &str) -> Self {
+        if !self.is_local_route() || self.route_runtime().is_some() {
+            return self.clone();
+        }
+        let id = self.subject_id();
+        self.with_id(format!(
+            "local:{}@{runtime}",
+            id.strip_prefix("local:").unwrap_or(id)
+        ))
+    }
+
+    /// This reference as seen from inside `runtime`: a route qualified with
+    /// `runtime` becomes an ordinary local route again (it revives); every
+    /// other reference is unchanged, so a foreign local route stays dormant.
+    #[must_use]
+    pub fn localized_on(&self, runtime: &str) -> Self {
+        if self.route_runtime() != Some(runtime) {
+            return self.clone();
+        }
+        let id = self.subject_id();
+        let bare = id.strip_prefix("local:").unwrap_or(id);
+        let local = bare.split_once('@').map_or(bare, |(local, _)| local);
+        self.with_id(format!("local:{local}"))
+    }
+
+    fn with_id(&self, id: String) -> Self {
+        match self {
+            Self::User(_) => Self::User(id),
+            Self::Principal(_) => Self::Principal(id.into()),
+            Self::Visitor(_) => Self::Visitor(id),
+            Self::Public => Self::Public,
+        }
+    }
+
     /// Get the kind tag for this subject.
     #[must_use]
     pub fn kind(&self) -> SubjectKind {
@@ -373,37 +432,36 @@ impl ActorKeys for CanonicalKeys {
     }
 }
 
-/// Parse a CLI ownership string into a `Subject`.
-///
-/// This is a CLI-level convenience parser: it tries `Subject::from_str`
-/// first and falls back to `Subject::User(s)` for bare strings (the
-/// common case for ownership CLI args). An empty string
-/// resolves to `Subject::User("")` (the "no owner" sentinel).
-///
-/// **Asymmetric prefix handling (intentional):**
-/// - `"user:alice"` → `Subject::User("alice")` (the `user:` prefix is
-///   stripped)
-/// - `"principal:helper"` / `"public"` → resolved via
-///   `Subject::from_str` (the full string is the kind:id pair or public)
-/// - bare `"alice"` → `Subject::User("alice")` (fallback when the
-///   string has no `:` separator)
-///
-/// On-disk configs should set `owner = { kind, id }` directly; this helper
-/// is only for CLI arguments that arrive as plain strings.
-#[must_use]
-pub fn subject_from_string_with_default_user(s: &str) -> Subject {
-    if s.is_empty() {
-        return Subject::User(String::new());
-    }
-    if let Ok(p) = Subject::from_str(s) {
-        return p;
-    }
-    Subject::User(s.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-081 D6: a local route leaves its runtime qualified, never
+    /// matches a local actor elsewhere, and revives on its own runtime.
+    #[test]
+    fn local_routes_qualify_and_revive() {
+        let keys = CanonicalKeys;
+        let owner = Subject::User("local".into());
+        let away = owner.qualified_for("did:key:zA");
+        assert_eq!(away, Subject::User("local:local@did:key:zA".into()));
+        assert_eq!(away.route_runtime(), Some("did:key:zA"));
+        assert!(!keys.same_actor(&away, &owner));
+        assert_eq!(away.qualified_for("did:key:zB"), away, "already qualified");
+        // Elsewhere it stays dormant; at home it revives.
+        assert_eq!(away.localized_on("did:key:zB"), away);
+        assert!(keys.same_actor(&away.localized_on("did:key:zA"), &owner));
+        let peer = Subject::Principal("prin_x".into());
+        assert!(keys.same_actor(
+            &peer.qualified_for("did:key:zA").localized_on("did:key:zA"),
+            &peer
+        ));
+        // Hub routes and the wildcard are never qualified.
+        let hub = Subject::User("hub:u".into());
+        assert_eq!(hub.qualified_for("did:key:zA"), hub);
+        assert_eq!(Subject::Public.qualified_for("did:key:zA"), Subject::Public);
+        // The qualified form round-trips through its wire text.
+        assert_eq!(away.to_string().parse::<Subject>().unwrap(), away);
+    }
 
     #[test]
     fn test_system_id_is_static_and_stable() {

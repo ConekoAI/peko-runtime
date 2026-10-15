@@ -23,6 +23,7 @@ pub mod catalog;
 pub(crate) mod channel_digest;
 pub(crate) mod child_turns;
 pub mod config;
+pub mod contacts;
 pub mod context;
 pub(crate) mod conversation;
 pub mod default_nodes;

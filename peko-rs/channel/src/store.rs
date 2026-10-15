@@ -74,8 +74,6 @@ struct ActorRecord {
     info: ActorInfo,
     identity_key: String,
     signing_did: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    known_by: BTreeSet<String>,
     /// Previous addresses resolve internally so history and membership survive
     /// promotion and unlinking. They are not public routing aliases.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -569,6 +567,23 @@ impl ChannelStore {
         }
         *self.actors.lock().expect("actor registry mutex") = actor_index(records);
         Ok(())
+    }
+
+    /// The local ID this runtime gave the principal with `identity_key`,
+    /// hosted now or before (ADR-081 D6): a principal that returns gets its
+    /// old local ID back, so its local relationships revive.
+    pub fn former_local_id(&self, identity_key: &str) -> Result<Option<String>> {
+        let records = load_actors(&self.cfg.runtime_dir.join("actors.json"))?;
+        Ok(records
+            .into_iter()
+            .find(|r| r.info.kind == "principal" && r.identity_key == identity_key)
+            .and_then(|r| {
+                r.info.local_id.clone().or_else(|| {
+                    r.historical_aliases
+                        .iter()
+                        .find_map(|alias| alias.strip_prefix("principal:local:").map(str::to_owned))
+                })
+            }))
     }
 
     /// The runtime's one local user (ADR-081 D3), created on first use with
@@ -2152,7 +2167,6 @@ impl ChannelPort for ChannelStore {
                     }),
                 info,
                 signing_did: signing_did.map(str::to_owned),
-                known_by: BTreeSet::new(),
                 historical_aliases: BTreeSet::new(),
             });
         if record.info.address != updated_info.address || record.info.hub_id != updated_info.hub_id
@@ -2212,34 +2226,6 @@ impl ChannelPort for ChannelStore {
             .collect::<Vec<_>>();
         actors.sort_by(|a, b| a.address.cmp(&b.address));
         Ok(actors)
-    }
-    async fn known_contacts(&self, principal: &PrincipalId) -> Result<Vec<ActorInfo>> {
-        let mut actors = load_actors(&self.cfg.runtime_dir.join("actors.json"))?
-            .into_iter()
-            .filter(|record| record.known_by.contains(&principal.0))
-            .map(|record| record.info())
-            .collect::<Vec<_>>();
-        actors.sort_by(|a, b| a.address.cmp(&b.address));
-        Ok(actors)
-    }
-    async fn remember_contact(&self, principal: &PrincipalId, actor: &Subject) -> Result<()> {
-        let path = self.cfg.runtime_dir.join("actors.json");
-        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
-            .await
-            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
-        let mut records = load_actors(&path)?;
-        let record = records
-            .iter_mut()
-            .find(|record| record.aliases().contains(&actor.to_string()))
-            .ok_or_else(|| ChannelError::Adapter("Cannot remember an unknown actor".into()))?;
-        if !record.known_by.insert(principal.0.clone()) {
-            return Ok(());
-        }
-        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        fs::write(&temp, serde_json::to_vec_pretty(&records)?).await?;
-        fs::rename(temp, path).await?;
-        *self.actors.lock().expect("actor registry mutex") = actor_index(records);
-        Ok(())
     }
     async fn resolve_actor(&self, reference: &str) -> Result<ActorInfo> {
         let subject: Subject = reference

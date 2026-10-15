@@ -4,6 +4,7 @@
 
 pub mod inventory;
 pub mod path_safety;
+pub mod portable;
 pub mod principal_manifest;
 pub mod principal_packager;
 pub mod principal_unpackager;

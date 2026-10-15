@@ -509,6 +509,21 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Transfer a Principal to a new owner (ADR-081 D4).
+    pub async fn principal_transfer(
+        &self,
+        name: impl Into<String>,
+        owner: peko_auth::Subject,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalTransfer {
+            request_id,
+            name: name.into(),
+            owner,
+        };
+        self.request_response(packet).await
+    }
+
     /// Revoke a permission from a Principal.
     pub async fn principal_revoke_permission(
         &self,
