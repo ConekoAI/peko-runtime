@@ -430,6 +430,15 @@ async fn test_e2e_tunnel_chat_with_llm() {
         "Runtime creation failed"
     );
 
+    // What `peko runtime register` records (ADR-081 D3): the local user —
+    // the principal's owner — gains the runtime's Hub account as its alias,
+    // so the principal has a Hub owner and may register.
+    crate::tunnel::TunnelHost::tunnel_channel_port(&app_state)
+        .local()
+        .link_local_user(&did, &user_id)
+        .await
+        .expect("link the local user to its Hub account");
+
     // Generate JWT for authenticated requests
     let jwt_token = generate_jwt(&user_id, &format!("e2etestuser{run_tag}"));
     let auth_header = format!("Bearer {jwt_token}");

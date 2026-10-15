@@ -418,7 +418,11 @@ impl TunnelDispatcher {
     /// The principal's owner as a Hub account, when it has one (ADR-081
     /// D4). Hub's wire form is the bare account UUID.
     async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<ActorRef> {
-        let owner = principal.config.read().await.owner.clone();
+        let mut owner = principal.config.read().await.owner.clone();
+        // An ownerless config belongs to the local operator (as in trust).
+        if owner.subject_id().is_empty() {
+            owner = ActorRef::User("local".into());
+        }
         let info = self.host.tunnel_channel_port().actor_info(&owner).await;
         match (info.kind.as_str(), info.hub_id) {
             ("user", Some(account)) => Some(ActorRef::User(account.into())),
