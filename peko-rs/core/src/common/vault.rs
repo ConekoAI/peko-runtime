@@ -147,7 +147,7 @@ const KEY_LENGTH: usize = 32;
 /// `PEKO_MASTER_PASSPHRASE` is not set. This is only compiled into test builds
 /// so that unit tests are self-contained in headless environments.
 #[cfg(test)]
-const TEST_MASTER_PASSPHRASE: &str = "peko-unit-test-passphrase-do-not-use";
+pub(crate) const TEST_MASTER_PASSPHRASE: &str = "peko-unit-test-passphrase-do-not-use";
 
 /// Argon2id default parameters for passphrase derivation.
 const ARGON2_MEMORY_COST: u32 = 65536; // 64 MB
@@ -2255,9 +2255,27 @@ impl Vault {
         dek
     }
 
+    /// The OS keychain entry holding the vault DEK. Test builds refuse:
+    /// tests go through the master-passphrase path only, so a test that
+    /// strays onto a keychain-mode vault (e.g. a developer's real one)
+    /// fails instead of raising a keychain permission dialog.
+    fn keychain_entry() -> Result<keyring::Entry> {
+        #[cfg(test)]
+        {
+            anyhow::bail!(
+                "test builds never use the OS keychain; use a passphrase vault \
+                 (set {MASTER_PASSPHRASE_ENV} or rely on the test fallback)"
+            )
+        }
+        #[cfg(not(test))]
+        {
+            Ok(keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+                .with_context(|| "failed to create keychain entry for vault DEK")?)
+        }
+    }
+
     fn store_dek_in_keychain(dek: &[u8]) -> Result<()> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-            .with_context(|| "failed to create keychain entry for vault DEK")?;
+        let entry = Self::keychain_entry()?;
         let dek_hex = hex::encode(dek);
         entry
             .set_password(&dek_hex)
@@ -2270,8 +2288,7 @@ impl Vault {
     /// Returns `Ok(None)` if no entry exists, `Ok(Some(dek))` if a valid DEK
     /// is found, and propagates any other keychain error.
     fn try_retrieve_dek_from_keychain() -> Result<Option<Vec<u8>>> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-            .with_context(|| "failed to create keychain entry for vault DEK")?;
+        let entry = Self::keychain_entry()?;
         match entry.get_password() {
             Ok(dek_hex) => {
                 let dek = hex::decode(&dek_hex)
@@ -2326,8 +2343,7 @@ impl Vault {
     /// as success — the goal is a clean state, and the entry may already
     /// be gone.
     fn delete_dek_from_keychain() -> Result<()> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-            .with_context(|| "failed to create keychain entry for vault DEK deletion")?;
+        let entry = Self::keychain_entry()?;
         match entry.delete_password() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()),

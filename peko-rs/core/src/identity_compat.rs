@@ -30,6 +30,8 @@ use peko_identity::host::{
     identity_credential_from_raw, IdentityCredential, IdentityDataDir, IdentityVault, RuntimePaths,
 };
 
+use peko_identity::storage::KeyStorage;
+
 use crate::common::paths::PathResolver;
 use crate::common::vault::{CredentialFilter, CredentialKind, Vault};
 
@@ -130,6 +132,42 @@ pub fn default_identity_data_dir() -> Arc<dyn IdentityDataDir> {
     Arc::new(DefaultIdentityDataDir)
 }
 
+/// Identity key storage at `base_path` (an `identities/` directory).
+///
+/// Test builds of this crate never touch the OS keychain: keys are sealed
+/// in encrypted files with `PEKO_IDENTITY_PASSPHRASE`, else
+/// `PEKO_MASTER_PASSPHRASE`, else the vault's test master passphrase —
+/// the master-key path the vault itself takes in tests. (The identity
+/// crate's own `cfg(test)` does not apply when core links it, so its
+/// keychain default would otherwise reach any core test that builds an
+/// agent while no passphrase env var happens to be set.) Production
+/// builds keep `KeyStorage::with_path`'s env-or-keychain behavior.
+pub fn identity_key_storage(base_path: std::path::PathBuf) -> anyhow::Result<KeyStorage> {
+    #[cfg(test)]
+    {
+        let passphrase = [
+            "PEKO_IDENTITY_PASSPHRASE",
+            crate::common::vault::MASTER_PASSPHRASE_ENV,
+        ]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| crate::common::vault::TEST_MASTER_PASSPHRASE.to_string());
+        KeyStorage::with_passphrase(base_path, secrecy::SecretString::new(passphrase.into()))
+    }
+    #[cfg(not(test))]
+    {
+        KeyStorage::with_path(base_path)
+    }
+}
+
+/// Identity key storage in the platform default data directory (see
+/// [`identity_key_storage`]).
+pub fn default_identity_key_storage() -> anyhow::Result<KeyStorage> {
+    identity_key_storage(peko_identity::identities_dir(
+        &default_identity_data_dir().default_data_dir(),
+    ))
+}
+
 /// Build an `Arc<dyn RuntimePaths>` for the supplied resolver. The
 /// `PathResolver` impl of `RuntimePaths` is in this file; this
 /// helper hides the `as` coercion at the call site.
@@ -152,6 +190,25 @@ mod tests {
     use crate::common::vault::Vault;
     use secrecy::ExposeSecret;
     use tempfile::TempDir;
+
+    /// Core tests never reach the OS keychain: identity keys are sealed
+    /// in an encrypted file under the master passphrase path, whether or
+    /// not any passphrase env var is set in this process.
+    #[test]
+    fn identity_key_storage_never_uses_the_keychain_in_tests() {
+        let dir = TempDir::new().unwrap();
+        let storage = identity_key_storage(dir.path().join("identities")).unwrap();
+        let identity = storage
+            .generate_identity(peko_identity::DIDScope::Local, None)
+            .unwrap();
+        let file = dir
+            .path()
+            .join("identities")
+            .join(format!("{}.json", identity.did.replace(':', "_")));
+        let stored = std::fs::read_to_string(file).unwrap();
+        assert!(stored.contains("\"encrypted_file\""), "{stored}");
+        assert!(!stored.contains("\"keychain\""), "{stored}");
+    }
 
     #[test]
     fn default_identity_data_dir_resolves() {
