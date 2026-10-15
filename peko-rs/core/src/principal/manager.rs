@@ -1260,7 +1260,9 @@ impl PrincipalManager {
                 exposure: config.exposure.clone(),
             }
         };
-        if let Err(denied) = check_permission(&resource, Permission::Chat, &authority) {
+        let port = self.channel_port();
+        let keys = crate::security::actor_keys(port.as_deref());
+        if let Err(denied) = check_permission(&resource, Permission::Chat, &authority, &*keys) {
             return Err(PrincipalManagerError::PermissionDenied(denied.to_string()));
         }
 
@@ -2686,6 +2688,70 @@ mod tests {
         .unwrap();
         assert!(policy.contains("## user:hub:x"), "{policy}");
         assert!(policy.contains("finances/q3.md"), "{policy}");
+    }
+
+    /// ADR-081 D8: a cron job's trust is re-derived when it fires and only
+    /// lowered, so revoking a grant reaches jobs that already exist.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn cron_trust_drops_when_its_grant_is_revoked() {
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let alice = Subject::User("hub:alice".into());
+        manager
+            .update_config("stressy", |config| {
+                config.permissions.push(PermissionGrant {
+                    subject: alice.clone(),
+                    permission: Permission::Trusted,
+                    granted_at: String::new(),
+                    granted_by: Subject::User("local".into()),
+                });
+            })
+            .await
+            .unwrap();
+        let job = peko_cron::CronJob {
+            id: "job".into(),
+            name: "job".into(),
+            principal_id: id.clone(),
+            schedule: peko_cron::ScheduleKind::Every {
+                every_ms: 3_600_000,
+            },
+            action: peko_cron::CronJobAction::Send {
+                message: "ping".into(),
+                target: None,
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            next_run: chrono::Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor {
+                actor: "user:hub:alice".into(),
+                name: None,
+                trust: peko_tools_core::Trust::Trusted,
+                compartment: peko_tools_core::Compartment::Internal,
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+            }),
+        };
+        let session = uuid::Uuid::new_v4().to_string();
+        let stamp = crate::principal::trust::cron_job_stamp(&principal, None, &job, &session)
+            .await
+            .unwrap();
+        assert_eq!(stamp.trust, peko_tools_core::Trust::Trusted);
+
+        manager
+            .update_config("stressy", |config| config.permissions.clear())
+            .await
+            .unwrap();
+        let stamp = crate::principal::trust::cron_job_stamp(&principal, None, &job, &session)
+            .await
+            .unwrap();
+        assert_eq!(stamp.trust, peko_tools_core::Trust::Untrusted);
     }
 
     /// ADR-078 D2: the trunk acts only for the owner. A non-owner stamp

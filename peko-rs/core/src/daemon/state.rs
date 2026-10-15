@@ -1179,17 +1179,6 @@ impl AppState {
         self.rate_limiter.clone()
     }
 
-    /// ADR-057: the pekohub owner id bound to this runtime, when the
-    /// runtime is logged into pekohub. The auth layer folds this into
-    /// local callers' attribution identity.
-    #[must_use]
-    pub fn hub_user_id(&self) -> Option<String> {
-        crate::tunnel::HubLogin::load(self.path_resolver.config_dir())
-            .ok()
-            .flatten()
-            .map(|login| login.user_id)
-    }
-
     /// Get the runtime identity (ADR-032)
     #[must_use]
     pub fn runtime_identity(&self) -> &peko_identity::runtime::RuntimeIdentity {
@@ -2090,18 +2079,11 @@ impl crate::tunnel::TunnelHost for AppState {
             .await
             .unwrap_or(false);
         if config.exposure == peko_auth::Exposure::Private && !already_member {
-            let mut resource_config = config.clone();
-            for grant in &mut resource_config.permissions {
-                grant.subject = self
-                    .tunnel_channel_port
-                    .actor_info(&grant.subject)
-                    .await
-                    .subject();
-            }
             peko_auth::ownership::check_permission(
-                &peko_auth::ownership::principal_resource(&resource_config),
+                &peko_auth::ownership::principal_resource(&*config),
                 peko_auth::ownership::Permission::Chat,
                 &source_actor.subject(),
+                &peko_channel::PortKeys(self.tunnel_channel_port.as_ref()),
             )
             .map_err(|e| anyhow::anyhow!("Channel invite denied: {e}"))?;
         }

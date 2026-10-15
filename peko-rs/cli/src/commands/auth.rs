@@ -235,10 +235,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(
-            super::super::identity_for_config_dir(&paths.config_dir),
-            format!("hub:{first}")
-        );
         let accepted = account_server(
             "200 OK",
             &serde_json::json!({"id":second,"namespace":"second"}).to_string(),
@@ -247,14 +243,6 @@ mod tests {
         handle_login(&paths, &accepted, Some("test-only-key".into()))
             .await
             .unwrap();
-        assert_eq!(
-            super::super::identity_for_config_dir(&paths.config_dir),
-            format!("hub:{second}")
-        );
         handle_logout(&paths, None).unwrap();
-        assert_eq!(
-            super::super::identity_for_config_dir(&paths.config_dir),
-            "local"
-        );
     }
 }

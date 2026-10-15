@@ -88,7 +88,7 @@ pub use attention::{AttentionItem, ChannelAttention};
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
-pub use port::{dm_channel_id, short_name_unambiguous, ActorInfo};
+pub use port::{dm_channel_id, short_name_unambiguous, ActorInfo, PortKeys};
 pub use port::{
     global_channel_port, set_global_channel_port, ChannelError, ChannelPort, ChannelQuery,
     Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier,

@@ -47,14 +47,3 @@ impl HubLogin {
         }
     }
 }
-
-impl HubLogin {
-    /// The logged-in account as an actor, if any.
-    #[must_use]
-    pub fn current_subject(config_dir: &Path) -> Option<peko_auth::Subject> {
-        Self::load(config_dir)
-            .ok()
-            .flatten()
-            .map(|login| peko_auth::Subject::User(format!("hub:{}", login.user_id)))
-    }
-}

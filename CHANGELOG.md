@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### One identity rule and one owner (ADR-081 phase 1, 0.1.0, 2026-10-15)
+
+- Every authorization decision compares actors through one function, the
+  actor registry's immutable key (`ActorKeys`, `ChannelPort::key_of`):
+  ingress chat permission, IPC settings checks, trust, the conversation
+  ceiling, `ChannelSend`, cross-runtime invites, the Hub private-instance
+  ACL, and `POLICY.md` sections. A grant to a principal's Hub alias now
+  matches the same principal arriving by its local ID, and the other way
+  round. `Subject::normalized_for_auth` and its `local_<id>` compatibility
+  rewrite are gone.
+- Exactly one owner: trust is `Owner` only for `config.owner`. The blanket
+  owner rules for `user:local` and the Hub account logged into the terminal
+  are removed. The terminal (and admin API keys) always attribute as the
+  local user; the operator is still admitted to chat with every principal it
+  hosts, but at the trust of whom it is.
+- The Hub private-instance ACL checks the principal's own grants and owner,
+  so the owner is admitted without a grant. The `allowedPrincipals` list,
+  which Hub no longer reads and whose `ExposureUpdate` echo could silently
+  empty the runtime's ACL, is removed from the tunnel protocol.
+- Cron jobs re-derive their creator's trust when they fire and only ever
+  lower it, so revoking a `trusted` grant reaches existing jobs.
+- Approval notices go to the owner's own conversation.
+- Seeds carry no authority: `peko create -s` drops a seed's `[owner]` and
+  grants, and exported seeds omit owner, grants, and Hub identity.
+- CLI unit tests take the passphrase vault process-wide (a `ctor` hook), so
+  no test can reach the OS keychain by forgetting `init_credentials`.
+
 ### Contacts and rosters scoped to the run's conversation (0.1.0, 2026-10-15)
 
 - `Contacts` follows the ADR-078 acting-for stamp. A run acting for anyone

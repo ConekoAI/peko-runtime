@@ -9,7 +9,7 @@
 //! format now carries a single `subject: Subject` on grant/revoke
 //! packets. `PermissionGrant` stores that `Subject` directly.
 
-use peko_subject::Subject;
+use peko_subject::{ActorKeys, Subject};
 use serde::{Deserialize, Serialize};
 
 use crate::host::{Exposure, PrincipalResourceView};
@@ -133,9 +133,12 @@ impl std::error::Error for PermissionDenied {}
 
 /// Check if a caller is permitted to perform an action on a resource.
 ///
-/// 1. Owner always passes (Subject equality).
-/// 2. Look up explicit grants for this subject, plus a `Public` grant
-///    applies to any caller.
+/// 1. The owner always passes.
+/// 2. Otherwise an explicit grant for the caller, or a `Public` grant,
+///    must cover the action.
+///
+/// Identity is decided by `keys` (ADR-081 D1): every alias of one actor
+/// matches, and equal ID text in different scopes never does.
 ///
 /// # Errors
 /// Returns `PermissionDenied` if the caller is not authorized.
@@ -143,19 +146,16 @@ pub fn check_permission(
     resource: &Resource,
     action: Permission,
     caller: &Subject,
+    keys: &dyn ActorKeys,
 ) -> Result<(), PermissionDenied> {
-    // 1. Owner always passes (Subject equality, not string equality).
-    let caller = caller.normalized_for_auth();
-    if resource.owner().normalized_for_auth() == caller {
+    if keys.same_actor(resource.owner(), caller) {
         return Ok(());
     }
-
-    // 2. Look up explicit grants for this subject, plus `Public` wildcard.
     for grant in resource.permissions() {
         if !grant.permission.covers(&action) {
             continue;
         }
-        if grant.subject.normalized_for_auth() == caller || grant.subject == Subject::Public {
+        if grant.subject == Subject::Public || keys.same_actor(&grant.subject, caller) {
             return Ok(());
         }
     }
@@ -163,7 +163,7 @@ pub fn check_permission(
     Err(PermissionDenied {
         resource: resource.id(),
         action,
-        caller: caller.to_string(),
+        caller: caller.canonical_address(),
     })
 }
 
@@ -189,6 +189,7 @@ pub fn principal_resource(view: &dyn PrincipalResourceView) -> Resource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peko_subject::CanonicalKeys;
 
     /// In-memory `PrincipalResourceView` mock so the leaf crate's
     /// tests don't need the root `PrincipalConfig` type.
@@ -214,6 +215,19 @@ mod tests {
         }
     }
 
+    fn grant(subject: Subject, permission: Permission) -> PermissionGrant {
+        PermissionGrant {
+            subject,
+            permission,
+            granted_at: "2026-06-07T10:00:00Z".to_string(),
+            granted_by: Subject::User("hub:123".into()),
+        }
+    }
+
+    fn check(view: &MockPrincipal, action: Permission, caller: &Subject) -> bool {
+        check_permission(&principal_resource(view), action, caller, &CanonicalKeys).is_ok()
+    }
+
     #[test]
     fn test_principal_resource_permission_checks() {
         let owner = Subject::User("hub:123".into());
@@ -223,64 +237,71 @@ mod tests {
             permissions: vec![],
             exposure: Exposure::Private,
         };
-
-        assert!(check_permission(&principal_resource(&view), Permission::Chat, &owner).is_ok());
-        assert!(check_permission(
-            &principal_resource(&view),
+        assert!(check(&view, Permission::Chat, &owner));
+        // Equal ID text in another scope is a different actor.
+        assert!(!check(
+            &view,
             Permission::Chat,
             &Subject::User("local:123".into())
-        )
-        .is_err());
-        assert!(check_permission(
-            &principal_resource(&view),
+        ));
+        assert!(!check(
+            &view,
             Permission::Chat,
             &Subject::User("other".into())
-        )
-        .is_err());
+        ));
 
         let grantee = Subject::User("hub:456".into());
         let view = MockPrincipal {
-            name: "alpha".to_string(),
-            owner: owner.clone(),
-            permissions: vec![PermissionGrant {
-                subject: grantee.clone(),
-                permission: Permission::Chat,
-                granted_at: "2026-06-07T10:00:00Z".to_string(),
-                granted_by: owner.clone(),
-            }],
-            exposure: Exposure::Private,
+            permissions: vec![grant(grantee.clone(), Permission::Chat)],
+            ..view
         };
-        assert!(check_permission(&principal_resource(&view), Permission::Chat, &grantee).is_ok());
-        assert!(check_permission(
-            &principal_resource(&view),
+        assert!(check(&view, Permission::Chat, &grantee));
+        // The retired `local_<id>` spelling no longer aliases a Hub account.
+        assert!(!check(
+            &view,
             Permission::Chat,
             &Subject::User("local_456".into())
-        )
-        .is_ok());
-        assert!(check_permission(
-            &principal_resource(&view),
-            Permission::Chat,
-            &Subject::User("local:local_456".into())
-        )
-        .is_err());
-        assert!(check_permission(
-            &principal_resource(&view),
+        ));
+        assert!(!check(
+            &view,
             Permission::Chat,
             &Subject::User("local:456".into())
-        )
-        .is_err());
+        ));
         for other_kind in [
-            Subject::Principal("456".into()),
-            Subject::Visitor("456".into()),
+            Subject::Principal("hub:456".into()),
+            Subject::Visitor("hub:456".into()),
         ] {
-            assert!(
-                check_permission(&principal_resource(&view), Permission::Chat, &other_kind)
-                    .is_err()
-            );
+            assert!(!check(&view, Permission::Chat, &other_kind));
         }
-        assert!(
-            check_permission(&principal_resource(&view), Permission::Delete, &grantee).is_err()
-        );
+        assert!(!check(&view, Permission::Delete, &grantee));
+    }
+
+    /// Every alias a registry maps to one key matches the same grant.
+    #[test]
+    fn grants_match_through_actor_keys() {
+        struct Registry;
+        impl ActorKeys for Registry {
+            fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+                match subject.canonical_address().as_str() {
+                    "principal:local:prin_y" | "principal:hub:v" => {
+                        peko_subject::ActorKey("key-y".into())
+                    }
+                    other => peko_subject::ActorKey(other.into()),
+                }
+            }
+        }
+        let view = MockPrincipal {
+            name: "alpha".to_string(),
+            owner: Subject::User("local".into()),
+            permissions: vec![grant(Subject::Principal("hub:v".into()), Permission::Chat)],
+            exposure: Exposure::Private,
+        };
+        let resource = principal_resource(&view);
+        let local = Subject::Principal("prin_y".into());
+        assert!(check_permission(&resource, Permission::Chat, &local, &Registry).is_ok());
+        assert!(check_permission(&resource, Permission::Chat, &local, &CanonicalKeys).is_err());
+        // `Public` is a wildcard grant, never an owner or an actor.
+        assert!(!Registry.same_actor(&Subject::Public, &Subject::Public));
     }
 
     // Tests for `Resource::Agent` / `Resource::Team` were removed when

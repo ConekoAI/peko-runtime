@@ -244,6 +244,11 @@ pub(crate) trait PrincipalHost: Send + Sync {
 
 // ─── Handler ──────────────────────────────────────────────────────────
 
+/// This runtime's identity comparison (ADR-081 D1).
+fn host_keys(host: &dyn PrincipalHost) -> Box<dyn peko_subject::ActorKeys> {
+    crate::security::shared_actor_keys(host.principal_manager().channel_port())
+}
+
 /// `principal` domain request handler. Constructed with an
 /// `Arc<dyn PrincipalHost>` (typically `Arc::new(app_state.clone())`
 /// from the dispatcher).
@@ -615,6 +620,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalGrantPermission denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -627,14 +633,12 @@ impl RequestHandler for PrincipalHandler {
                 // ADR-078: `trusted` is the owner's own consent for one
                 // named actor; a settings delegate cannot extend it.
                 if permission == Permission::Trusted {
-                    let owner = resource.owner().normalized_for_auth();
                     let refusal = if subject == peko_auth::Subject::Public {
                         Some("`trusted` must name an actor; it cannot be granted to `public`")
-                    } else if caller
-                        .permission_subject(resource.owner())
-                        .normalized_for_auth()
-                        != owner
-                    {
+                    } else if !host_keys(host).same_actor(
+                        &caller.permission_subject(resource.owner()),
+                        resource.owner(),
+                    ) {
                         Some("only the owner can grant `trusted`")
                     } else {
                         None
@@ -681,16 +685,6 @@ impl RequestHandler for PrincipalHandler {
                     .await
                 {
                     Ok(_) => {
-                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_principals(&name).await
-                            {
-                                warn!(
-                                    principal = %name,
-                                    "Failed to refresh allowed_users after principal grant: {e}"
-                                );
-                            }
-                        }
                         let response = ResponsePacket::PrincipalPermissionGranted {
                             request_id,
                             name,
@@ -750,6 +744,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRevokePermission denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -771,16 +766,6 @@ impl RequestHandler for PrincipalHandler {
                     .await
                 {
                     Ok(_) => {
-                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_principals(&name).await
-                            {
-                                warn!(
-                                    principal = %name,
-                                    "Failed to refresh allowed_users after principal revoke: {e}"
-                                );
-                            }
-                        }
                         let response = ResponsePacket::PrincipalPermissionRevoked {
                             request_id,
                             name,
@@ -831,6 +816,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ViewSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalPermissions denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1089,6 +1075,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalMintInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1208,6 +1195,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRevokeInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1422,6 +1410,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalUpdate denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1599,6 +1588,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalReload denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1662,6 +1652,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRemove denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1762,6 +1753,7 @@ async fn handle_principal_stop(
         &resource,
         Permission::Chat,
         &caller.permission_subject(resource.owner()),
+        &*host_keys(host),
     )
     .is_err()
     {
@@ -2006,7 +1998,9 @@ async fn run_principal_send(
     // owner's behalf.
     let stamps =
         crate::principal::trust::stamps_for(&principal, host.principal_manager().channel_port());
-    if stamps.driver(&peer, &permission_subject).await.trust == peko_tools_core::Trust::Owner {
+    // ADR-081 D4: the operator is admitted to chat (above), but chats at
+    // the trust of whom it is — the local user.
+    if stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner {
         if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
             host.principal_manager(),
             &principal,
@@ -2210,7 +2204,7 @@ async fn run_principal_send(
     let override_model_for_task = override_model.clone();
     // ADR-078: the run acts for the peer who spoke, at the trust their
     // permission subject earns.
-    let driver = turns.driver(&peer, &permission_subject).await;
+    let driver = turns.driver(&peer, &peer).await;
     let acting_for = turns
         .root_stamp(
             Some(&driver),
@@ -2796,7 +2790,7 @@ async fn run_steering_successor(
         };
         // ADR-078: the successor acts for the same peer, re-derived so
         // a grant change between turns applies.
-        let driver = turns.driver(&peer, &authority).await;
+        let driver = turns.driver(&peer, &peer).await;
         let acting_for = turns
             .root_stamp(
                 Some(&driver),
@@ -3184,7 +3178,9 @@ async fn resolve_log_thread(
     };
 
     // ── Chat permission ───────────────────────────────────────────
-    if !operator && check_permission(&resource, Permission::Chat, caller).is_err() {
+    if !operator
+        && check_permission(&resource, Permission::Chat, caller, &*host_keys(host)).is_err()
+    {
         return Err(PrincipalLogError::Forbidden(format!(
             "caller '{caller}' lacks Chat permission on principal '{name}'"
         )));

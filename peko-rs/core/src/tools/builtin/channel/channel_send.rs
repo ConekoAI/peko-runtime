@@ -342,16 +342,13 @@ impl ChannelSendTool {
         );
 
         {
-            let mut config = target.config.read().await.clone();
-            config.owner = ctx.channel_port.actor_info(&config.owner).await.subject();
-            for grant in &mut config.permissions {
-                grant.subject = ctx.channel_port.actor_info(&grant.subject).await.subject();
-            }
+            let config = target.config.read().await;
             if matches!(config.exposure, peko_auth::Exposure::Private) {
                 peko_auth::ownership::check_permission(
-                    &peko_auth::ownership::principal_resource(&config),
+                    &peko_auth::ownership::principal_resource(&*config),
                     peko_auth::ownership::Permission::Chat,
                     &Subject::from(&caller.id),
+                    &peko_channel::PortKeys(ctx.channel_port.as_ref()),
                 )
                 .map_err(|e| anyhow::anyhow!("DM delivery denied: {e}"))?;
             }

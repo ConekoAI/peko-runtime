@@ -121,13 +121,6 @@ pub struct InstanceAnnouncePayload {
     pub runtime_display_name: Option<String>,
     pub status: InstanceStatus,
     pub exposure: InstanceExposure,
-    /// Typed allow-list per ADR-041. PekoHub's post-#19 reader ignores
-    /// the legacy `allowedUsers` string-array field; the runtime now
-    /// emits `allowedPrincipals: Vec<Subject>` instead. The wire token
-    /// is `allowedPrincipals` (camelCase) and the entries are
-    /// `{kind, id}` objects.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,11 +152,6 @@ pub struct InstanceHeartbeatPayload {
 pub struct ExposureUpdatePayload {
     pub instance_id: String,
     pub exposure: InstanceExposure,
-    /// Typed allow-list per ADR-041. Replaces the legacy
-    /// `allowedUserIds: Vec<String>` field that PekoHub post-#19
-    /// no longer reads.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
 }
 
 /// Payload for `status_update` messages.
@@ -646,7 +634,6 @@ mod tests {
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
                 // B5: `runtime_direct_endpoint` and `transport_preference`
@@ -666,8 +653,8 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedPrincipals\""),
-            "Expected camelCase, got: {}",
+            !json.contains("allowedPrincipals"),
+            "retired allowedPrincipals must not be emitted, got: {}",
             json
         );
         assert!(
@@ -703,7 +690,6 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -746,7 +732,6 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -789,7 +774,6 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -824,7 +808,6 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -858,7 +841,6 @@ mod tests {
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -932,7 +914,6 @@ mod tests {
             payload: ExposureUpdatePayload {
                 instance_id: "inst-1".to_string(),
                 exposure: InstanceExposure::Public,
-                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -943,8 +924,8 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedPrincipals\""),
-            "Expected camelCase, got: {}",
+            !json.contains("allowedPrincipals"),
+            "retired allowedPrincipals must not be emitted, got: {}",
             json
         );
 

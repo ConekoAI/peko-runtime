@@ -2108,6 +2108,21 @@ impl ChannelPort for ChannelStore {
         *self.actors.lock().expect("actor registry mutex") = actor_index(records);
         Ok(answer)
     }
+    fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+        // Re-read so writers in other processes are seen; a transiently
+        // unreadable registry falls back to the last good index.
+        if let Ok(records) = load_actors(&self.cfg.runtime_dir.join("actors.json")) {
+            *self.actors.lock().expect("actor registry mutex") = actor_index(records);
+        }
+        let actors = self.actors.lock().expect("actor registry mutex");
+        peko_subject::ActorKey(
+            actors
+                .get(&subject.to_string())
+                .or_else(|| actors.get(&subject.canonical_address()))
+                .map(|record| record.identity_key.clone())
+                .unwrap_or_else(|| subject.canonical_address()),
+        )
+    }
     async fn actor_info(&self, subject: &Subject) -> ActorInfo {
         *self.actors.lock().expect("actor registry mutex") = actor_index(
             load_actors(&self.cfg.runtime_dir.join("actors.json"))

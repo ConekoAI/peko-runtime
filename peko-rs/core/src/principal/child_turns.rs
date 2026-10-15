@@ -104,7 +104,11 @@ struct TestOwnerTrust;
 #[cfg(test)]
 #[async_trait::async_trait]
 impl crate::security::TrustSource for TestOwnerTrust {
-    async fn trust_of(&self, _actor: &Subject) -> peko_tools_core::Trust {
+    async fn trust_of(
+        &self,
+        _actor: &Subject,
+        _keys: &(dyn peko_subject::ActorKeys + Sync),
+    ) -> peko_tools_core::Trust {
         peko_tools_core::Trust::Owner
     }
     async fn owner(&self) -> Subject {

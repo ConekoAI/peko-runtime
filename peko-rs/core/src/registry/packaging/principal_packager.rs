@@ -114,13 +114,18 @@ impl PrincipalPackager {
     }
 
     /// The stripped seed TOML (ADR-056): a `principal.toml` whose
-    /// `id`, `did`, and `boot_state` are removed, so `peko create -s`
-    /// mints a fresh identity and infers the boot state.
+    /// identity, boot state, owner, and grants are removed, so
+    /// `peko create -s` mints a fresh identity owned by whoever grows it
+    /// (ADR-081 D4).
     pub fn seed_toml(&self) -> anyhow::Result<String> {
         let mut seed_config = self.config.clone();
         seed_config.id = None;
         seed_config.did = None;
+        seed_config.hub_id = None;
+        seed_config.actor_key = None;
         seed_config.boot_state = None;
+        seed_config.owner = peko_auth::Subject::default();
+        seed_config.permissions.clear();
         toml::to_string_pretty(&seed_config)
             .map_err(|e| anyhow::anyhow!("Failed to serialize template config: {e}"))
     }
@@ -613,10 +618,22 @@ mod tests {
         let mut config = sample_config("template", &identity.did);
         config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
         config.set_boot_state(BootState::Organized);
+        config.owner = peko_auth::Subject::User("hub:seed-author".into());
+        config.hub_id = Some("hub-actor".into());
+        config.permissions.push(peko_auth::PermissionGrant {
+            subject: peko_auth::Subject::User("hub:friend".into()),
+            permission: peko_auth::Permission::Trusted,
+            granted_at: String::new(),
+            granted_by: config.owner.clone(),
+        });
 
         let packager = PrincipalPackager::new(config, identity);
         let artifact = packager.seed_toml().unwrap();
         assert!(!artifact.contains("prin_template_src"), "{artifact}");
+        // ADR-081 D4: a seed carries no owner, grants, or Hub identity.
+        assert!(!artifact.contains("seed-author"), "{artifact}");
+        assert!(!artifact.contains("friend"), "{artifact}");
+        assert!(!artifact.contains("hub-actor"), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(!artifact.contains("keys"), "{artifact}");
     }

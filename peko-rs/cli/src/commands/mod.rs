@@ -277,19 +277,6 @@ pub(crate) fn parse_recipient(s: &str) -> Recipient {
     }
 }
 
-/// ADR-057: the CLI's identity is derived, not specified — the hub
-/// owner id from the pekohub credential when the runtime is logged
-/// into pekohub, else `local`. Mirrors the daemon's
-/// `AppState::hub_user_id` resolution so the daemon-less in-process
-/// fallback paths attribute identically to the IPC path.
-fn identity_for_config_dir(config_dir: &std::path::Path) -> String {
-    peko_core::tunnel::HubLogin::load(config_dir)
-        .ok()
-        .flatten()
-        .map(|login| format!("hub:{}", login.user_id))
-        .unwrap_or_else(|| "local".into())
-}
-
 /// Build a [`GlobalPaths`] from a parsed [`Cli`] argument struct.
 ///
 /// Lives in the CLI crate (here in `commands/mod.rs`, then in
@@ -300,12 +287,12 @@ fn identity_for_config_dir(config_dir: &std::path::Path) -> String {
 pub fn from_cli(cli: &Cli) -> GlobalPaths {
     use peko_core::common::paths::{default_cache_dir, default_config_dir, default_data_dir};
     let config_dir = cli.config_dir.clone().unwrap_or_else(default_config_dir);
-    let user = identity_for_config_dir(&config_dir);
+    // ADR-081 D3: the terminal is always the runtime's local user.
     GlobalPaths::new(
         config_dir,
         cli.data_dir.clone().unwrap_or_else(default_data_dir),
         cli.cache_dir.clone().unwrap_or_else(default_cache_dir),
-        user,
+        "local".to_string(),
     )
 }
 

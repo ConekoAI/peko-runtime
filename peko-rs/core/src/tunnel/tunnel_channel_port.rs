@@ -1073,6 +1073,9 @@ impl ChannelPort for TunnelChannelPort {
     async fn actor_info(&self, subject: &Subject) -> peko_channel::ActorInfo {
         self.local.actor_info(subject).await
     }
+    fn key_of(&self, subject: &Subject) -> peko_subject::ActorKey {
+        self.local.key_of(subject)
+    }
     async fn participants(&self, channel: &ChannelId) -> Result<Vec<peko_channel::ActorInfo>> {
         self.local.participants(channel).await
     }

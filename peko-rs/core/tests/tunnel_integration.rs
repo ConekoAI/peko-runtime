@@ -244,7 +244,6 @@ async fn register_test_principal(
             runtime_display_name: Some("Transport Test Runtime".into()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,
-            allowed_principals: None,
             capabilities: Some(vec!["chat".into()]),
             metadata: None,
         },

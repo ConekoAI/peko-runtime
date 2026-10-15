@@ -3,6 +3,13 @@
 
 pub const MASTER_PASSPHRASE: &str = "test-cli-passphrase-do-not-use-in-production";
 
+/// Runs before any test in this binary, so no test can reach the OS
+/// keychain by forgetting [`init_credentials`].
+#[ctor::ctor]
+fn passphrase_vault_for_every_test() {
+    init_credentials();
+}
+
 pub fn init_credentials() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

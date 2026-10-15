@@ -173,29 +173,23 @@ impl fmt::Display for SubjectKind {
 }
 
 impl Subject {
-    /// Normalize internal local storage keys without erasing the Hub namespace.
-    /// A local actor and a Hub actor with the same ID are distinct authorities.
+    /// The canonical address (ADR-073/081): `kind:hub:<id>` for a Hub route,
+    /// `kind:local:<id>` otherwise, and `public` for the wildcard. This is
+    /// the identity of an actor no registry knows; [`ActorKeys`] maps known
+    /// actors' aliases onto their immutable key.
     #[must_use]
-    pub fn normalized_for_auth(&self) -> Self {
-        // Persisted ADR-073 user/visitor grants may still contain a bare proxy
-        // ID. Explicit local references never take this compatibility path.
-        if matches!(self, Self::User(_) | Self::Visitor(_)) {
-            if let Some(hub) = self.subject_id().strip_prefix("local_") {
-                return match self {
-                    Self::User(_) => Self::User(format!("hub:{hub}")),
-                    _ => Self::Visitor(format!("hub:{hub}")),
-                };
-            }
+    pub fn canonical_address(&self) -> String {
+        if matches!(self, Self::Public) {
+            return "public".into();
         }
-        let id = self
-            .subject_id()
-            .strip_prefix("local:")
-            .unwrap_or(self.subject_id());
-        match self {
-            Self::User(_) => Self::User(id.into()),
-            Self::Visitor(_) => Self::Visitor(id.into()),
-            Self::Principal(_) => Self::Principal(id.into()),
-            Self::Public => Self::Public,
+        let id = self.subject_id();
+        match id.strip_prefix("hub:") {
+            Some(hub) => format!("{}:hub:{hub}", self.kind()),
+            None => format!(
+                "{}:local:{}",
+                self.kind(),
+                id.strip_prefix("local:").unwrap_or(id)
+            ),
         }
     }
     /// Get the kind tag for this subject.
@@ -348,6 +342,34 @@ impl FromStr for Subject {
             "visitor" => Ok(Self::Visitor(id.to_string())),
             other => Err(SubjectParseError(format!("unknown kind '{other}'"))),
         }
+    }
+}
+
+/// An actor's immutable identity (ADR-081 D1). Two references name the same
+/// actor exactly when their keys are equal; every authorization decision
+/// compares keys, never address text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ActorKey(pub String);
+
+/// The single identity comparison (ADR-081 D1). The runtime's actor
+/// registry implements it so every alias of a known actor yields one key.
+pub trait ActorKeys: Send + Sync {
+    fn key_of(&self, subject: &Subject) -> ActorKey;
+
+    /// Whether `a` and `b` are the same actor. `Public` is never an actor.
+    fn same_actor(&self, a: &Subject, b: &Subject) -> bool {
+        !matches!(a, Subject::Public)
+            && !matches!(b, Subject::Public)
+            && self.key_of(a) == self.key_of(b)
+    }
+}
+
+/// Keys for actors no registry knows: the canonical address.
+pub struct CanonicalKeys;
+
+impl ActorKeys for CanonicalKeys {
+    fn key_of(&self, subject: &Subject) -> ActorKey {
+        ActorKey(subject.canonical_address())
     }
 }
 

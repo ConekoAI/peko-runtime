@@ -624,12 +624,11 @@ async fn provision_principal(
             config.id = None;
             config.did = None;
             config.boot_state = None;
-            // A seed without an `[owner]` section deserializes to
-            // the default empty subject — the creating local user owns
-            // the principal, same as a bare create.
-            if matches!(&config.owner, Subject::User(id) if id.is_empty()) {
-                config.owner = Subject::User("local".to_string());
-            }
+            // ADR-081 D4: a seed carries no authority. The creating local
+            // user owns what grows from it, and nobody else is granted
+            // anything until that owner says so.
+            config.owner = Subject::User("local".to_string());
+            config.permissions.clear();
             (config, bundle.persona)
         }
         None => {
@@ -2145,6 +2144,80 @@ mod tests {
             }
             _other => panic!("expected flattened top-level create command"),
         }
+    }
+
+    /// ADR-081 D4: a seed carries no authority — its `[owner]` and grants
+    /// are dropped, and the creating local user owns the result.
+    #[tokio::test]
+    async fn create_from_seed_drops_owner_and_grants() {
+        use peko_providers::catalog::ModelCatalog;
+        crate::test_support::init_credentials();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "list",
+        ]);
+        let paths = from_cli(&cli);
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.config_dir.join(ModelCatalog::FILENAME),
+            r#"
+version = "4.0"
+
+[entries.demo-model]
+id = "demo-model"
+display_name = "Demo"
+template_id = "anthropic"
+api_format = "anthropic_messages"
+base_url = "https://example.invalid"
+model_id = "demo"
+context_window = 100000
+credential_id = "00000000-0000-0000-0000-000000000000"
+requires_key = true
+enabled = true
+created_at = "2026-01-01T00:00:00Z"
+updated_at = "2026-01-01T00:00:00Z"
+"#,
+        )
+        .unwrap();
+        let seed = dir.path().join("seed.toml");
+        std::fs::write(
+            &seed,
+            r#"
+name = "ignored"
+owner = { kind = "user", id = "hub:seed-author" }
+
+[[permissions]]
+subject = { kind = "user", id = "hub:friend" }
+permission = "trusted"
+granted_at = ""
+granted_by = { kind = "user", id = "hub:seed-author" }
+"#,
+        )
+        .unwrap();
+
+        let manager = provision_principal(
+            "sprout",
+            Some("demo-model"),
+            Some(seed.to_str().unwrap()),
+            false,
+            false,
+            &paths,
+        )
+        .await
+        .expect("seeded create should succeed")
+        .expect("seeded create returns a manager");
+        let principal = manager.get_by_name("sprout").await.unwrap();
+        let config = principal.config.read().await;
+        assert_eq!(config.owner, Subject::User("local".into()));
+        assert!(config.permissions.is_empty(), "{:?}", config.permissions);
     }
 
     /// Bug 2 regression: a second `create` against an existing workspace

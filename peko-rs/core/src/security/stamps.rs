@@ -12,40 +12,35 @@ use async_trait::async_trait;
 use peko_auth::{Permission, PermissionGrant, Subject};
 use peko_channel::{ChannelId, ChannelPort};
 use peko_session::{SessionId, SessionMetadata};
-use peko_subject::PrincipalId;
+use peko_subject::{ActorKeys, CanonicalKeys, PrincipalId};
 use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
 
 /// Who an actor is to one principal (ADR-078 §2).
 #[async_trait]
 pub trait TrustSource: Send + Sync {
-    /// The trust the principal's owner consented to for `actor`.
-    async fn trust_of(&self, actor: &Subject) -> Trust;
+    /// The trust the principal's owner consented to for `actor`, with
+    /// identity decided by `keys` (ADR-081 D1).
+    async fn trust_of(&self, actor: &Subject, keys: &(dyn ActorKeys + Sync)) -> Trust;
     /// The principal's owner.
     async fn owner(&self) -> Subject;
 }
 
-/// Trust for `actor` under an owner, a grant list, and the account
-/// logged into this runtime's terminal (ADR-057: local trust is the
-/// owner, whichever account it is logged in as).
+/// Trust for `actor` under an owner and a grant list (ADR-078 §2,
+/// ADR-081 D4): `Owner` exactly when `actor` is the owner, `Trusted` when
+/// a grant names it with the owner's consent bit, else `Untrusted`.
 #[must_use]
 pub fn trust_for(
     owner: &Subject,
     grants: &[PermissionGrant],
-    local_login: Option<&Subject>,
+    keys: &dyn ActorKeys,
     actor: &Subject,
 ) -> Trust {
-    let actor = actor.normalized_for_auth();
-    let is_owner = actor == owner.normalized_for_auth()
-        || actor == Subject::User("local".into())
-        || local_login.is_some_and(|login| login.normalized_for_auth() == actor);
-    if is_owner {
+    if keys.same_actor(owner, actor) {
         return Trust::Owner;
     }
     // The consent bit must name the actor: a public grant never trusts.
     let trusted = grants.iter().any(|grant| {
-        grant.permission == Permission::Trusted
-            && grant.subject != Subject::Public
-            && grant.subject.normalized_for_auth() == actor
+        grant.permission == Permission::Trusted && keys.same_actor(&grant.subject, actor)
     });
     if trusted {
         Trust::Trusted
@@ -160,6 +155,18 @@ impl Stamps {
         }
     }
 
+    /// `actor`'s trust, with identity decided by this runtime's registry.
+    pub async fn trust_of(&self, actor: &Subject) -> Trust {
+        match &self.channels {
+            Some(port) => {
+                self.trust
+                    .trust_of(actor, &peko_channel::PortKeys(port.as_ref()))
+                    .await
+            }
+            None => self.trust.trust_of(actor, &CanonicalKeys).await,
+        }
+    }
+
     /// The actor address the stamp uses for `subject` (ADR-073/077).
     pub async fn address(&self, subject: &Subject) -> (String, Option<String>) {
         match &self.channels {
@@ -192,7 +199,7 @@ impl Stamps {
         Driver {
             actor,
             name,
-            trust: self.trust.trust_of(authority).await,
+            trust: self.trust_of(authority).await,
         }
     }
 
@@ -219,7 +226,7 @@ impl Stamps {
             if port.actor_info(&member).await.identity_key == me {
                 continue;
             }
-            let trust = self.trust.trust_of(&member).await;
+            let trust = self.trust_of(&member).await;
             ceiling = Some(ceiling.map_or(trust, |c| c.min(trust)));
         }
         ceiling.unwrap_or(Trust::Untrusted)
@@ -331,18 +338,29 @@ mod tests {
     }
 
     #[test]
-    fn owner_local_and_logged_in_account_are_owner() {
+    fn only_the_owner_is_owner() {
         let owner = Subject::User("hub:owner".into());
-        let login = Subject::User("hub:me".into());
-        assert_eq!(trust_for(&owner, &[], None, &owner), Trust::Owner);
+        let keys = CanonicalKeys;
+        assert_eq!(trust_for(&owner, &[], &keys, &owner), Trust::Owner);
+        // ADR-081 D4: neither the local user nor any other account is an
+        // implicit owner.
         assert_eq!(
-            trust_for(&owner, &[], None, &Subject::User("local".into())),
-            Trust::Owner
-        );
-        assert_eq!(trust_for(&owner, &[], Some(&login), &login), Trust::Owner);
-        assert_eq!(
-            trust_for(&owner, &[], None, &Subject::User("hub:me".into())),
+            trust_for(&owner, &[], &keys, &Subject::User("local".into())),
             Trust::Untrusted
+        );
+        assert_eq!(
+            trust_for(&owner, &[], &keys, &Subject::User("hub:me".into())),
+            Trust::Untrusted
+        );
+        let local_owner = Subject::User("local".into());
+        assert_eq!(
+            trust_for(
+                &local_owner,
+                &[],
+                &keys,
+                &Subject::User("local:local".into())
+            ),
+            Trust::Owner
         );
     }
 
@@ -354,11 +372,20 @@ mod tests {
             grant(alice.clone(), Permission::Chat),
             grant(Subject::Public, Permission::Trusted),
         ];
-        assert_eq!(trust_for(&owner, &grants, None, &alice), Trust::Untrusted);
+        assert_eq!(
+            trust_for(&owner, &grants, &CanonicalKeys, &alice),
+            Trust::Untrusted
+        );
         let grants = vec![grant(alice.clone(), Permission::Trusted)];
-        assert_eq!(trust_for(&owner, &grants, None, &alice), Trust::Trusted);
+        assert_eq!(
+            trust_for(&owner, &grants, &CanonicalKeys, &alice),
+            Trust::Trusted
+        );
         let bob = Subject::Principal("prin_bob".into());
-        assert_eq!(trust_for(&owner, &grants, None, &bob), Trust::Untrusted);
+        assert_eq!(
+            trust_for(&owner, &grants, &CanonicalKeys, &bob),
+            Trust::Untrusted
+        );
     }
 
     fn meta(id: u128, parent: Option<u128>, channel: Option<&str>) -> SessionMetadata {

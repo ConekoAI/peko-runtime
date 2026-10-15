@@ -23,5 +23,34 @@ pub use stamps::{
     TrustSource,
 };
 
+/// This runtime's identity comparison (ADR-081 D1): the actor registry
+/// behind `port`, or canonical addresses when there is none.
+#[must_use]
+pub fn actor_keys(
+    port: Option<&dyn peko_channel::ChannelPort>,
+) -> Box<dyn peko_subject::ActorKeys + '_> {
+    match port {
+        Some(port) => Box::new(peko_channel::PortKeys(port)),
+        None => Box::new(peko_subject::CanonicalKeys),
+    }
+}
+
+/// [`actor_keys`] over a shared port.
+#[must_use]
+pub fn shared_actor_keys(
+    port: Option<std::sync::Arc<dyn peko_channel::ChannelPort>>,
+) -> Box<dyn peko_subject::ActorKeys> {
+    struct SharedPortKeys(std::sync::Arc<dyn peko_channel::ChannelPort>);
+    impl peko_subject::ActorKeys for SharedPortKeys {
+        fn key_of(&self, subject: &peko_subject::Subject) -> peko_subject::ActorKey {
+            self.0.key_of(subject)
+        }
+    }
+    match port {
+        Some(port) => Box::new(SharedPortKeys(port)),
+        None => Box::new(peko_subject::CanonicalKeys),
+    }
+}
+
 #[cfg(test)]
 mod dispatch_tests;

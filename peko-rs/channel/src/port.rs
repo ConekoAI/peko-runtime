@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorKey, ActorKeys, PrincipalId, Subject};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,6 +46,13 @@ pub trait ChannelPort: Send + Sync + 'static {
 
     async fn actor_info(&self, subject: &Subject) -> ActorInfo {
         ActorInfo::from_subject(subject, None)
+    }
+
+    /// The actor's immutable key (ADR-081 D1): every alias of a known actor
+    /// maps to one key; an unknown actor's key is its canonical address.
+    /// Synchronous so permission checks can use it without plumbing.
+    fn key_of(&self, subject: &Subject) -> ActorKey {
+        ActorKey(ActorInfo::from_subject(subject, None).identity_key)
     }
 
     /// Register a local actor or a verified Hub-only contact. Signing keys are
@@ -529,18 +536,11 @@ pub struct ActorInfo {
 
 impl ActorInfo {
     pub fn from_subject(subject: &Subject, name: Option<&str>) -> Self {
-        let (scope, id) = if let Some(id) = subject.subject_id().strip_prefix("hub:") {
-            ("hub", id)
-        } else {
-            (
-                "local",
-                subject
-                    .subject_id()
-                    .strip_prefix("local:")
-                    .unwrap_or(subject.subject_id()),
-            )
-        };
-        let address = format!("{}:{scope}:{id}", subject.kind());
+        let address = subject.canonical_address();
+        let (scope, id) = address
+            .strip_prefix(&format!("{}:", subject.kind()))
+            .and_then(|rest| rest.split_once(':'))
+            .unwrap_or(("local", ""));
         Self {
             local_id: (scope == "local").then(|| id.into()),
             hub_id: (scope == "hub").then(|| id.into()),
@@ -598,6 +598,16 @@ impl ActorInfo {
         format!("{}:{id}", self.kind)
             .parse()
             .expect("registered actor kind")
+    }
+}
+
+/// A [`ChannelPort`]'s registry as the runtime's single identity
+/// comparison (ADR-081 D1).
+pub struct PortKeys<'a>(pub &'a dyn ChannelPort);
+
+impl ActorKeys for PortKeys<'_> {
+    fn key_of(&self, subject: &Subject) -> ActorKey {
+        self.0.key_of(subject)
     }
 }
 
