@@ -334,26 +334,6 @@ impl Subject {
             ))),
         }
     }
-
-    /// Canonical wire-side identifier for a principal (issue #28, ADR-041).
-    ///
-    /// Resolves a Principal config (or any source that gives us a
-    /// candidate DID and a local name) to the `Subject::Principal` value
-    /// that should flow through the tunnel, the P2P wire, and
-    /// `PermissionGrant` lookups:
-    ///
-    /// - **DID wins** when present and non-empty — this is the
-    ///   stable, runtime-independent identifier that lets cross-runtime
-    ///   references stay unambiguous.
-    /// - **Name is the fallback** when `did` is missing or empty.
-    /// - **Empty DID is treated as missing** for defense in depth.
-    #[must_use]
-    pub fn principal_wire_id(did: Option<&str>, name: &str) -> String {
-        match did {
-            Some(d) if !d.is_empty() => d.to_string(),
-            _ => name.to_string(),
-        }
-    }
 }
 
 impl fmt::Display for Subject {
@@ -644,41 +624,5 @@ mod tests {
         // `local` is the reserved local-owner id; a visitor must never
         // claim it (it would land in the `/local-user` peer child).
         assert!(Subject::from_bridge_claim("visitor", "local").is_err());
-    }
-
-    #[test]
-    fn test_toml_inline_table_parses_via_derive() {
-        // Sanity check: the `#[serde(tag = "kind", content = "id")]`
-        // derive parses a TOML inline table directly.
-        #[derive(serde::Deserialize, Debug)]
-        struct Wrap {
-            owner: Subject,
-        }
-        let toml_str = r#"owner = { kind = "principal", id = "helper" }"#;
-        let w: Wrap = toml::from_str(toml_str).expect("inline table parses");
-        assert_eq!(w.owner, Subject::Principal("helper".into()));
-    }
-
-    /// Issue #28: `principal_wire_id` is the single source of truth for
-    /// resolving a principal's DID-or-name into a wire identifier.
-    #[test]
-    fn test_principal_wire_id_prefers_did() {
-        // DID wins over name when present and non-empty.
-        assert_eq!(
-            Subject::principal_wire_id(Some("did:peko:local:abc123"), "helper"),
-            "did:peko:local:abc123"
-        );
-    }
-
-    #[test]
-    fn test_principal_wire_id_falls_back_to_name() {
-        // Missing DID -> name.
-        assert_eq!(Subject::principal_wire_id(None, "helper"), "helper");
-    }
-
-    #[test]
-    fn test_principal_wire_id_treats_empty_did_as_missing() {
-        // Empty DID is treated as missing for defense in depth.
-        assert_eq!(Subject::principal_wire_id(Some(""), "helper"), "helper");
     }
 }

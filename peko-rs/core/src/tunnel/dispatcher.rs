@@ -217,6 +217,17 @@ pub struct TunnelDispatcher {
     registration_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// A principal's Hub ID, from the actor registry (ADR-081 §3).
+async fn manager_hub_id(
+    host: &Arc<dyn TunnelHost>,
+    principal: &crate::principal::Principal,
+) -> Option<String> {
+    host.tunnel_channel_port()
+        .actor_info(&Subject::from(&principal.id))
+        .await
+        .hub_id
+}
+
 impl TunnelDispatcher {
     /// Create a new tunnel dispatcher bound to the given host (the daemon's
     /// `AppState`, behind the `TunnelHost` seam — F5).
@@ -347,7 +358,7 @@ impl TunnelDispatcher {
         let principals = principal_manager.list_all().await;
 
         for principal in principals {
-            if principal.config.read().await.hub_id.is_none() {
+            if manager_hub_id(&self.host, &principal).await.is_none() {
                 continue;
             }
             let name = principal.name().await;
@@ -450,7 +461,7 @@ impl TunnelDispatcher {
             }
         };
 
-        if registration_id.is_none() && principal.config.read().await.hub_id.is_none() {
+        if registration_id.is_none() && manager_hub_id(&self.host, &principal).await.is_none() {
             return Ok(());
         }
         let name = principal.name().await;
@@ -607,15 +618,7 @@ impl TunnelDispatcher {
                     },
                 )
                 .await?;
-                let name = config.name.clone();
                 drop(config);
-                if let Err(error) = manager
-                    .update_config(&name, |config| config.hub_id = Some(hub_id.clone()))
-                    .await
-                {
-                    // actors.json is the authority; principal.toml is its projection.
-                    warn!(%error, "Hub identity committed; config projection will be repaired on load");
-                }
                 if acknowledged {
                     state
                         .registration_receipts
@@ -1067,7 +1070,6 @@ impl TunnelDispatcher {
         drop(config);
         manager
             .update_config(&name, |c| {
-                c.hub_id = None;
                 c.exposure = peko_auth::Exposure::LocalOnly;
             })
             .await?;
@@ -1122,7 +1124,6 @@ impl TunnelDispatcher {
             drop(config);
             manager
                 .update_config(name, |c| {
-                    c.hub_id = None;
                     c.exposure = peko_auth::Exposure::LocalOnly;
                 })
                 .await?;
@@ -1193,8 +1194,7 @@ impl TunnelDispatcher {
         }
         let port: std::sync::Arc<dyn peko_channel::ChannelPort> = self.host.tunnel_channel_port();
         manager.register_actor_identity(&principal, &port).await?;
-        let hub_id = principal.config.read().await.hub_id.clone();
-        Ok(hub_id)
+        Ok(manager_hub_id(&self.host, &principal).await)
     }
 
     /// Set the exposure of an instance and send an exposure_update message to the hub.
@@ -2152,7 +2152,6 @@ mod tests {
             .await
             .unwrap();
         drop(config);
-        principal.config.write().await.hub_id = Some(hub_id);
     }
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::Receiver<TunnelMessage>) {
         let (tx, rx) = mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
@@ -2187,7 +2186,6 @@ mod tests {
         exposure: peko_auth::Exposure,
     ) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -3063,7 +3061,6 @@ mod tests {
             .unwrap();
         assert!(port.actor_info(&me).await.hub_id.is_none());
         let config = principal.config.read().await.clone();
-        assert!(config.hub_id.is_none());
         assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
 
         // A directory answer for the moved link cannot re-attach it here.
@@ -3186,7 +3183,7 @@ mod tests {
             .dispatch(receipt.clone(), handle.clone())
             .await
             .is_err());
-        assert!(principal.config.read().await.hub_id.is_none());
+        assert!(manager_hub_id(&dispatcher.host, &principal).await.is_none());
         dispatcher
             .state
             .write()
@@ -3999,7 +3996,6 @@ mod tests {
             .unwrap();
         let target_key = config.actor_key.clone().unwrap();
         drop(config);
-        principal.config.write().await.hub_id = Some(target_hub.clone());
         let runtime = peko_identity::keys::KeyPair::generate();
         let signer = peko_identity::keys::KeyPair::generate();
         let source_runtime = crate::tunnel::verifying_key_to_did_key(&runtime.verifying_key);

@@ -71,7 +71,6 @@ async fn create_test_principal(
     tokio::fs::write(&prompt_path, prompt_body).await.unwrap();
 
     let config = PrincipalConfig {
-        hub_id: None,
         actor_key: None,
         name: name.to_string(),
         id: None,
@@ -263,7 +262,6 @@ impl Fixture {
             )
             .await
             .unwrap();
-        self.caller.config.write().await.hub_id = Some("caller-hub".into());
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let tunnel = Arc::new(tokio::sync::RwLock::new(Some(
             crate::tunnel::client::TunnelHandle::new(tx),

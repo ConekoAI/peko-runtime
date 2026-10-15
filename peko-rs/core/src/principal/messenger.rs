@@ -329,7 +329,6 @@ mod tests {
         let owner = Subject::User("local".to_string());
         let principal = manager
             .create(crate::principal::PrincipalConfig {
-                hub_id: None,
                 actor_key: None,
                 name: "boss".to_string(),
                 id: None,

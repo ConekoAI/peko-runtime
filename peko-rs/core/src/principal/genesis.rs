@@ -714,7 +714,6 @@ mod tests {
 
     fn bare_config() -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "seedling".into(),
             boot_state: None,
@@ -729,7 +728,6 @@ mod tests {
             PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
         };
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: String::new(),
             id: None,

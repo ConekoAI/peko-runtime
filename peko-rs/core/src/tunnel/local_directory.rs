@@ -59,10 +59,11 @@ impl LocalFirstAgentDirectory {
         // Snapshot the loaded instances, then await their configs without
         // holding the manager lock. A busy config is not a directory miss.
         for principal in self.principal_manager.list_all().await {
-            let config = principal.config.read().await;
-            if config.hub_id.as_deref() != Some(did) {
+            let hub_id = self.principal_manager.hub_id_of(&principal).await;
+            if hub_id.as_deref() != Some(did) {
                 continue;
             }
+            let config = principal.config.read().await;
             let priority = match config.exposure {
                 peko_auth::Exposure::Public => 0,
                 peko_auth::Exposure::Private => 1,
@@ -73,7 +74,7 @@ impl LocalFirstAgentDirectory {
                 principal.id.0.clone(),
                 AgentResolution {
                     name: Some(config.name.clone()),
-                    hub_id: config.hub_id.clone().unwrap_or_default(),
+                    hub_id: hub_id.unwrap_or_default(),
                     local_id: principal.id.0.clone(),
                     identity_key: config.actor_key.clone().unwrap_or_default(),
                     runtime_id: self.runtime_id.clone(),
@@ -136,10 +137,11 @@ impl AgentDirectory for LocalFirstAgentDirectory {
                 .await
                 .or(self.principal_manager.get_by_name(name).await)
             {
+                let hub_id = self.principal_manager.hub_id_of(&principal).await;
                 let config = principal.config.read().await;
                 return Ok(AgentResolution {
                     name: Some(config.name.clone()),
-                    hub_id: config.hub_id.clone().unwrap_or_default(),
+                    hub_id: hub_id.unwrap_or_default(),
                     local_id: principal.id.0.clone(),
                     identity_key: config.actor_key.clone().unwrap_or_default(),
                     runtime_id: self.runtime_id.clone(),

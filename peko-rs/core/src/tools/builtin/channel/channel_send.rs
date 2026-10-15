@@ -974,7 +974,11 @@ impl ChannelSendTool {
         let target_principal_did = resolution.agent_did.as_str();
         if resolution.runtime_id != cross_runtime.caller_runtime_id {
             anyhow::ensure!(
-                caller.config.read().await.hub_id.is_some(),
+                cross_runtime
+                    .principal_manager
+                    .hub_id_of(&caller)
+                    .await
+                    .is_some(),
                 "Register the sending principal before using Hub transport"
             );
         }

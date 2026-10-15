@@ -24,14 +24,6 @@ pub enum Permission {
     ViewSettings,
     /// Write config and settings
     ManageSettings,
-    /// Enable/disable extensions
-    ManageExtensions,
-    /// Add/remove principal delegates
-    ManageMembers,
-    /// Configure private/public exposure
-    Expose,
-    /// Delete the resource
-    Delete,
     /// The owner's consent to trust this actor with the principal's full
     /// tool surface (ADR-078 §2). Never matched through a `Public` grant.
     Trusted,
@@ -273,7 +265,7 @@ mod tests {
         ] {
             assert!(!check(&view, Permission::Chat, &other_kind));
         }
-        assert!(!check(&view, Permission::Delete, &grantee));
+        assert!(!check(&view, Permission::ManageSettings, &grantee));
     }
 
     /// Every alias a registry maps to one key matches the same grant.

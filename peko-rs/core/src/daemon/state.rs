@@ -2060,9 +2060,15 @@ impl crate::tunnel::TunnelHost for AppState {
             );
         }
         // Registration gates every remote channel, including group invitations.
+        let registered = self
+            .tunnel_channel_port
+            .actor_info(&Subject::from(&principal.id))
+            .await
+            .hub_id
+            .is_some();
         let config = principal.config.read().await;
         anyhow::ensure!(
-            config.hub_id.is_some() && config.exposure != peko_auth::Exposure::LocalOnly,
+            registered && config.exposure != peko_auth::Exposure::LocalOnly,
             "Channel target is local-only"
         );
         let already_member = self

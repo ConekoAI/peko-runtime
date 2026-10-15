@@ -1,6 +1,6 @@
 # ADR-081: Actor identity, ownership, and a single online copy
 
-**Status:** Proposed
+**Status:** Accepted (implemented on `feature/adr-081-actor-identity`; PekoHub on `feature/adr-081-single-online-copy`)
 **Date:** 2026-10-15
 **Counterpart:** PekoHub ADR-081 (to be written from §5)
 
@@ -149,21 +149,22 @@ A `.peko` snapshot adds `local/contacts.json`, `local/channels.json`, `POLICY.md
 
 ## 3. Retired
 
-| Item | Replacement |
-|---|---|
-| `Subject`, string scopes inside IDs, `normalized_for_auth`, the `local_<id>` rewrite, `principal_wire_id`, `subject_from_string_with_default_user`, the `User("")` default | `ActorRef` / `Grantee` / `ActorKey` |
-| `subject_wire_form` and bare principal member rows | `ActorRef` rows |
-| Separate tunnel key, `pekohub.toml` `runtime_id`/`owner_id`, registration without proof | D2, D3 |
-| `hub-login.json`, `peko login`/`logout`, attributing the terminal as the logged-in account | D3 |
-| Owner rules for `user:local` and the logged-in account in `trust_for` | D4 |
-| `principal.toml` `hub_id` copy | Derived from the registry |
-| `ActorInfo.registration` strings duplicating `Exposure` | One registration enum |
-| `ActingFor.actor: String` | `ActorRef` |
-| ADR-033 permissions nothing checks (audit during phase 1) | Removed |
+| Item | Replacement | Status |
+|---|---|---|
+| `normalized_for_auth` and its `local_<id>` rewrite; the bare-string `subject_from_string_with_default_user`; `principal_wire_id` | `ActorKeys` / `canonical_address`; explicit `kind:local:<id>` / `kind:hub:<id>` / `public` | Done |
+| Owner rules for `user:local` and the logged-in account in `trust_for` | D4 | Done |
+| Separate tunnel key, `pekohub.toml` `runtime_id`/`owner_id`, registration without proof | D2, D3 | Done |
+| `hub-login.json`, `peko login`/`logout`, attributing the terminal as the logged-in account, `peko tunnel setup`/`start` | D3, `peko runtime register` | Done |
+| `principal.toml` `hub_id` copy | `PrincipalManager::hub_id_of` (registry) | Done |
+| `known_by` in `actors.json`, `ChannelPort::known_contacts`/`remember_contact` | D5 contact book | Done |
+| Hub `allowedPrincipals` push and its `ExposureUpdate` echo | D8 (runtime grants) | Done |
+| `ManageExtensions`, `ManageMembers`, `Expose`, `Delete` permissions (never checked) | — | Done |
+| `subject_wire_form` bare principal member rows | Canonical address rows | Remaining: every comparison already canonicalizes and reads accept both forms; the form is also the cross-runtime invite wire, so it changes with the Hub in one step |
+| `Subject` (string scopes inside IDs) | `ActorRef { kind, route }` | Remaining: behavior is centralized in `ActorKeys` and the qualification helpers; replacing the ~1,400 type uses is a mechanical follow-up |
+| `ActorInfo.registration` strings duplicating `Exposure` | One registration enum | Remaining |
+| `ActingFor.actor: String` | Kept: `peko-tools-core` is a leaf crate and cannot depend on `peko-subject`; the string is always a canonical address | Won't do |
 
-Pre-launch: no migration code. Principals and runtimes are re-created; stored automation using old addresses must be rewritten.
-
----
+Pre-launch: no migration code beyond moving existing `known_by` lists into contact books at daemon start. Principals and runtimes are re-created; stored automation using old addresses must be rewritten.
 
 ## 4. Phases
 

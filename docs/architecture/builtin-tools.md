@@ -301,8 +301,13 @@ includes its local ID, optional Hub ID, kind, name, registration state, canonica
 mention token. `resolve` accepts a scoped local or Hub reference; registered remote
 principals are learned through the Hub directory, anonymously for local-only callers
 or authenticated as registered callers. An unfamiliar locally hosted principal can
-be learned by its exact local ID. Learned principal contacts persist across restarts;
-another caller must perform its own lookup, even if the runtime already knows the actor.
+be learned by its exact local ID. Learned contacts live in the principal's own
+contact book (`local/contacts.json`, ADR-081 D5): they persist across restarts and
+travel in `.peko` snapshots. A learned contact this runtime cannot route to the same
+immutable actor (a local actor of another runtime, or a Hub contact not yet
+re-resolved here) is listed with `reachable: false` and cannot be addressed until
+resolved again. Another caller must perform its own lookup, even if the runtime
+already knows the actor.
 User and visitor resolution is limited to current participants of the caller's channels.
 Malformed directory identities are rejected before storage writes. Unknown arguments,
 missing references, and references supplied to `list` are rejected.

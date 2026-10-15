@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Legacy identity pieces retired (ADR-081 phase 5, 0.1.0, 2026-10-15)
+
+- `principal.toml` no longer stores a `hub_id` copy; the actor registry is the
+  only source (`PrincipalManager::hub_id_of`), and IPC summaries and
+  `peko show` read it from there.
+- Removed `Subject::principal_wire_id`, `AgentConfig::wire_agent_id`, and the
+  `ManageExtensions`, `ManageMembers`, `Expose`, and `Delete` permissions,
+  which nothing checked.
+- Following a moved principal uses one path for every channel
+  (`ChannelStore::replace_peer_route`, formerly DM-only) and retargets pending
+  envelopes so their message IDs are kept.
+- Docs: ADR-081 accepted with a retirement table (bare principal member rows,
+  the `Subject` → `ActorRef` type replacement, and the registration enum
+  remain as follow-ups); ADR-078's owner row, DATA_MODEL, API_SURFACE,
+  builtin-tools, the CLI reference, and the README describe the new model.
+
 ### One online copy (ADR-081 phase 4, 0.1.0, 2026-10-15)
 
 - When Hub moves a principal's online link to another runtime it sends

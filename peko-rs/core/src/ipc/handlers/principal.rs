@@ -328,7 +328,7 @@ impl RequestHandler for PrincipalHandler {
                 let principal_manager = host.principal_manager();
                 let mut principals = Vec::new();
                 for p in principal_manager.list_all().await {
-                    principals.push(p.summary().await);
+                    principals.push(p.summary_in(principal_manager).await);
                 }
                 let response = ResponsePacket::PrincipalList {
                     request_id,
@@ -340,7 +340,7 @@ impl RequestHandler for PrincipalHandler {
             RequestPacket::PrincipalGet { request_id, name } => {
                 let principal_manager = host.principal_manager();
                 let principal = match principal_manager.get_by_name(&name).await {
-                    Some(p) => Some(p.summary().await),
+                    Some(p) => Some(p.summary_in(principal_manager).await),
                     None => None,
                 };
                 let response = ResponsePacket::PrincipalGet {
@@ -1342,7 +1342,6 @@ impl RequestHandler for PrincipalHandler {
                 //    we honour the request's subject.
                 let description = description.unwrap_or_else(|| format!("The {name} Principal"));
                 let config = PrincipalConfig {
-                    hub_id: None,
                     actor_key: None,
                     name: name.clone(),
                     id: None,
@@ -1367,7 +1366,7 @@ impl RequestHandler for PrincipalHandler {
 
                 match host.principal_manager().create(config).await {
                     Ok(principal) => {
-                        let summary = principal.summary().await;
+                        let summary = principal.summary_in(host.principal_manager()).await;
                         let response = ResponsePacket::PrincipalCreated {
                             request_id,
                             principal: summary,
@@ -1534,7 +1533,7 @@ impl RequestHandler for PrincipalHandler {
                         }
                         let response = ResponsePacket::PrincipalUpdated {
                             request_id,
-                            principal: principal.summary().await,
+                            principal: principal.summary_in(host.principal_manager()).await,
                         };
                         send_response(sink, response).await?;
                     }
@@ -4053,7 +4052,6 @@ mod tests {
 
         fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
             crate::principal::PrincipalConfig {
-                hub_id: None,
                 actor_key: None,
                 name: name.to_string(),
                 id: None,

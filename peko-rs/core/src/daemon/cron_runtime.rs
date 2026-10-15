@@ -280,7 +280,6 @@ mod tests {
         .unwrap();
         manager
             .create(PrincipalConfig {
-                hub_id: None,
                 actor_key: None,
                 name: name.to_string(),
                 id: None,

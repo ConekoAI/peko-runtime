@@ -184,13 +184,40 @@ impl TunnelChannelPort {
         let Some(ctx) = self.ctx.read().await.clone() else {
             return false;
         };
-        if self.linked_runtime(&ctx, did, true).await.as_deref() != Some(source_runtime) {
+        let member = self
+            .local
+            .list_remote_members(channel)
+            .await
+            .is_ok_and(|rows| rows.iter().any(|row| row.principal_id == did));
+        if !member || self.linked_runtime(&ctx, did, true).await.as_deref() != Some(source_runtime)
+        {
             return false;
         }
-        self.local
-            .relocate_remote_member(channel, did, source_runtime)
+        self.follow_route(channel, did, source_runtime)
             .await
-            .unwrap_or(false)
+            .is_ok()
+    }
+
+    /// Move a remote member's route in `channel` to `runtime`, and its
+    /// pending envelopes with it (message IDs are kept).
+    async fn follow_route(
+        &self,
+        channel: &ChannelId,
+        did: &str,
+        runtime: &str,
+    ) -> std::result::Result<(), String> {
+        let old = self
+            .local
+            .replace_peer_route(channel, did, runtime)
+            .await
+            .map_err(|e| e.to_string())?;
+        for previous in old {
+            self.outbox
+                .retarget(channel, &previous, runtime)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub async fn set_ctx(&self, ctx: Arc<CrossRuntimeChannelCtx>) {
@@ -510,13 +537,13 @@ impl TunnelChannelPort {
             if let Some(linked) = self.linked_runtime(&ctx, &member.principal_id, false).await {
                 if linked != member.runtime_id {
                     let _ = self
-                        .local
-                        .relocate_remote_member(channel, &member.principal_id, &linked)
+                        .follow_route(channel, &member.principal_id, &linked)
                         .await;
                     member.runtime_id = linked;
                 }
             }
         }
+        remote_members.dedup();
         if remote_members.is_empty() {
             // No remote subscribers — nothing to do. The local store
             // is authoritative for the channel.
@@ -750,7 +777,7 @@ impl TunnelChannelPort {
         if channel.as_str().starts_with("dm_") {
             let old = self
                 .local
-                .replace_dm_peer_route(channel, &invitee_bare, invitee_runtime_id)
+                .replace_peer_route(channel, &invitee_bare, invitee_runtime_id)
                 .await
                 .map_err(|e| e.to_string())?;
             for runtime in old {
@@ -1908,7 +1935,7 @@ mod tests {
 
         // Outbound goes to the linked runtime.
         store
-            .relocate_remote_member(&channel, &remote_did, "did:key:zRuntimeOld")
+            .replace_peer_route(&channel, &remote_did, "did:key:zRuntimeOld")
             .await
             .unwrap();
         port.post(&channel, &Subject::from(&alice), PostMsg::root("hello"))

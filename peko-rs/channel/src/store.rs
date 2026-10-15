@@ -1651,33 +1651,6 @@ impl ChannelStore {
             .any(|rm| rm.runtime_id == runtime_id && rm.principal_id == principal_id))
     }
 
-    /// Point a remote principal's membership rows in `channel` at
-    /// `runtime_id` (ADR-081 D7): the principal's online link moved there.
-    /// Returns whether any row changed.
-    pub async fn relocate_remote_member(
-        &self,
-        channel: &ChannelId,
-        principal_id: &str,
-        runtime_id: &str,
-    ) -> Result<bool> {
-        let tier = self.resolve_tier(channel).await?;
-        let chan_dir = self.channel_dir_for_tier(tier, channel);
-        let _guard = self.lock_members(&chan_dir).await?;
-        let mut members = MembersJson::load(&chan_dir).await?;
-        let mut changed = false;
-        for row in &mut members.remote_members {
-            if row.principal_id == principal_id && row.runtime_id != runtime_id {
-                row.runtime_id = runtime_id.to_string();
-                changed = true;
-            }
-        }
-        members.remote_members.dedup();
-        if changed {
-            members.save(&chan_dir).await?;
-        }
-        Ok(changed)
-    }
-
     /// Add a [`RemoteMember`] row to this channel's `members.json`,
     /// idempotent on the `(runtime_id, principal_id)` pair. Used by
     /// the cross-runtime `invite` path (`TunnelChannelPort`) to
@@ -1704,8 +1677,11 @@ impl ChannelStore {
         Ok(())
     }
 
-    /// A pair DM addresses one peer identity even when its host changes.
-    pub async fn replace_dm_peer_route(
+    /// A remote principal is one member even when its host changes
+    /// (ADR-081 D7): its rows in `channel` now point at `runtime`. Returns
+    /// the runtimes it was routed to before, so pending envelopes can
+    /// follow.
+    pub async fn replace_peer_route(
         &self,
         channel: &ChannelId,
         did: &str,

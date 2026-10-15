@@ -146,11 +146,19 @@ impl Principal {
     /// return per-agent summaries (e.g. `AgentList`) now return
     /// `PrincipalSummary` so the CLI sees the on-disk truth instead
     /// of legacy mirror directories.
+    /// The summary with its Hub ID from the actor registry (ADR-081 §3).
+    pub async fn summary_in(&self, manager: &manager::PrincipalManager) -> PrincipalSummary {
+        let mut summary = self.summary().await;
+        summary.hub_id = manager.hub_id_of(self).await;
+        summary
+    }
+
     pub async fn summary(&self) -> PrincipalSummary {
         let config = self.config.read().await;
         PrincipalSummary {
             local_id: self.id.0.clone(),
-            hub_id: config.hub_id.clone(),
+            // Filled from the actor registry by callers that have it.
+            hub_id: None,
             name: config.name.clone(),
             did: self.did().await,
             owner: config.owner.clone(),

@@ -359,10 +359,6 @@ fn permission_name(p: &Permission) -> String {
         Permission::Chat => "Chat".to_string(),
         Permission::ViewSettings => "ViewSettings".to_string(),
         Permission::ManageSettings => "ManageSettings".to_string(),
-        Permission::ManageExtensions => "ManageExtensions".to_string(),
-        Permission::ManageMembers => "ManageMembers".to_string(),
-        Permission::Expose => "Expose".to_string(),
-        Permission::Delete => "Delete".to_string(),
         Permission::Trusted => "Trusted".to_string(),
     }
 }
@@ -489,7 +485,7 @@ mod tests {
     fn test_tampering_with_scope_invalidates_signature() {
         let kp = KeyPair::generate();
         let mut claims = sample_claims(3600);
-        claims.scope = vec![Permission::Delete, Permission::Chat];
+        claims.scope = vec![Permission::ManageSettings, Permission::Chat];
         let minted = mint_token(&kp.signing_key, &claims);
         // Strip the scope and re-mint to a "blank" claims shape;
         // the verifier's pre-image build will produce a different

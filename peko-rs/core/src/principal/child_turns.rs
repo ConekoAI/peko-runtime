@@ -1103,7 +1103,6 @@ mod tests {
     /// defaulted except `name` and `routing`.
     fn test_config(name: &str, routing: PrincipalRoutingConfig) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,

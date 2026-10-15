@@ -323,6 +323,13 @@ impl PrincipalManager {
     /// child session. `None` (the default) disables provisioning —
     /// the right choice for tests / non-daemon contexts.
     #[must_use]
+    /// The principal's Hub ID, from the actor registry — the only source
+    /// (ADR-081 §3). `None` while local-only or without a registry.
+    pub async fn hub_id_of(&self, principal: &Principal) -> Option<String> {
+        let port = self.channel_port()?;
+        port.actor_info(&Subject::from(&principal.id)).await.hub_id
+    }
+
     /// Bind this runtime's identity DID (ADR-081 D2).
     pub fn with_runtime_did(self, runtime_did: impl Into<String>) -> Self {
         let _ = self.runtime_did.set(runtime_did.into());
@@ -400,7 +407,6 @@ impl PrincipalManager {
         let mut config = config;
         let did = self.generate_identity(&name).await?;
         config.did = Some(PrincipalDID(did));
-        config.hub_id = None;
         config.actor_key = Some(uuid::Uuid::new_v4().to_string());
         // Persist the generated id so daemon restarts load the same
         // principal identity (peer DM channels are keyed by it).
@@ -686,7 +692,7 @@ impl PrincipalManager {
         }
         if let Some(hub) = name.strip_prefix("principal:hub:") {
             for principal in self.list_all().await {
-                if principal.config.read().await.hub_id.as_deref() == Some(hub) {
+                if self.hub_id_of(&principal).await.as_deref() == Some(hub) {
                     return Some(principal);
                 }
             }
@@ -775,7 +781,6 @@ impl PrincipalManager {
             "private"
         };
         drop(config);
-        principal.config.write().await.hub_id = hub_id.clone();
         port.register_actor(
             &Subject::from(&principal.id),
             hub_id.as_deref(),
@@ -1887,7 +1892,6 @@ mod tests {
 
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -2295,7 +2299,7 @@ mod tests {
         assert!(vault
             .get_principal_identity_private_key(&format!("{}#keys-1", did.0))
             .is_some());
-        assert!(principal.config.read().await.hub_id.is_none());
+        assert!(manager.hub_id_of(&principal).await.is_none());
     }
 
     /// ADR-058 D1: a manager wired with `with_identity_vault` (the
@@ -2467,7 +2471,7 @@ mod tests {
             .unwrap();
         assert_eq!(actor.local_id.as_deref(), Some(id.0.as_str()));
         assert_eq!(actor.hub_id.as_deref(), Some("promoted-hub"));
-        assert_eq!(principal.config.read().await.hub_id, actor.hub_id);
+        assert_eq!(manager.hub_id_of(&principal).await, actor.hub_id);
     }
 
     #[tokio::test(flavor = "multi_thread")]

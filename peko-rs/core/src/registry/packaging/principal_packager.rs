@@ -148,7 +148,6 @@ impl PrincipalPackager {
         let mut seed_config = self.config.clone();
         seed_config.id = None;
         seed_config.did = None;
-        seed_config.hub_id = None;
         seed_config.actor_key = None;
         seed_config.boot_state = None;
         seed_config.owner = peko_auth::Subject::default();
@@ -494,7 +493,6 @@ mod tests {
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -672,7 +670,6 @@ mod tests {
         config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
         config.set_boot_state(BootState::Organized);
         config.owner = peko_auth::Subject::User("hub:seed-author".into());
-        config.hub_id = Some("hub-actor".into());
         config.permissions.push(peko_auth::PermissionGrant {
             subject: peko_auth::Subject::User("hub:friend".into()),
             permission: peko_auth::Permission::Trusted,
@@ -686,7 +683,6 @@ mod tests {
         // ADR-081 D4: a seed carries no owner, grants, or Hub identity.
         assert!(!artifact.contains("seed-author"), "{artifact}");
         assert!(!artifact.contains("friend"), "{artifact}");
-        assert!(!artifact.contains("hub-actor"), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(!artifact.contains("keys"), "{artifact}");
     }

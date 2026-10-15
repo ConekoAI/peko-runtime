@@ -68,9 +68,6 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub did: Option<PrincipalDID>,
 
-    /// Hub-assigned stable actor ID; absent until explicit registration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub_id: Option<String>,
     /// Immutable conversation identity; registration and host changes never rekey DMs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_key: Option<String>,
@@ -521,7 +518,6 @@ mod tests {
     #[test]
     fn principal_config_model_field_roundtrip() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "alice".into(),
             id: None,
@@ -554,7 +550,6 @@ mod tests {
     #[test]
     fn principal_config_without_hints_does_not_emit_keys() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "bob".into(),
             id: None,
@@ -584,7 +579,6 @@ mod tests {
     #[test]
     fn principal_config_never_serializes_capabilities() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "alice".into(),
             id: None,
@@ -657,7 +651,6 @@ mod tests {
 
         // Empty permissions: only owner has access.
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "lockdown".into(),
             id: None,
@@ -713,7 +706,6 @@ mod tests {
     /// test so we don't repeat 12-field literals.
     fn make_test_config(name: &str, owner: peko_auth::Subject) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,

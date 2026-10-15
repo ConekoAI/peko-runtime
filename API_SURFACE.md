@@ -1273,12 +1273,29 @@ The following operations must be tested:
 - IPC `principal_register` takes `name` and `exposure` (`local_only`, `private`,
   `public`), returning `principal_registration_updated` with `local_id`, `hub_id`,
   and exposure. CLI: `peko register NAME [--public]`, `peko unregister NAME`.
-- `HubLogin` stores verified account metadata independently from tunnel ownership.
-  CLI: `peko login [--hub ORIGIN] --api-key KEY`, `peko logout [--hub ORIGIN]`.
-  Local caller attribution rereads login state; authenticated users and visitors
-  use Hub subjects without synthetic local IDs. Account changes preserve distinct IDs.
-- `ChannelStore::replace_dm_peer_route` and `ChannelOutbox::retarget` follow a moved
-  registered principal without changing its conversation or pending message IDs.
+- ADR-081 identity: `peko_subject::{ActorKey, ActorKeys, CanonicalKeys}` and
+  `Subject::{canonical_address, qualified_for, localized_on, route_runtime}`;
+  `ChannelPort::key_of` and `peko_channel::PortKeys` are the registry's single
+  identity comparison. `peko_auth::ownership::check_permission(resource, action,
+  caller, keys)` and `security::trust_for(owner, grants, keys, actor)` compare keys;
+  `security::{actor_keys, shared_actor_keys}` build them. `CallerContext` has no
+  Hub login: local and admin-key callers attribute as `user:local`.
+- `tunnel::registration::{register_runtime, unregister_runtime, runtime_key,
+  register_pop, local_user}`; CLI `peko runtime register|unregister`.
+  `ChannelStore::{ensure_local_user, link_local_user, unlink_local_user,
+  former_local_id}`. `PekoHubCredential` holds `url` and `tls`; `runtime_id` is set
+  from the runtime identity by `load_pekohub_credential(path, runtime_did)`.
+  `TunnelClient::new(credential, signing_key)` signs with the runtime identity key.
+- `principal::contacts::{ContactBook, ContactRecord, LocalRoute}` is the principal's
+  contact book; `PrincipalManager::{runtime_did, hub_id_of, with_runtime_did}`.
+  IPC `principal_transfer` → `principal_owner_transferred`; CLI `peko transfer`.
+- `registry::packaging::portable::{export_rule, import_rule, rewrite_config,
+  rewrite_policy, rewrite_cron}`; `PrincipalPackager::with_portable(PortableExport)`;
+  `PrincipalManifest.source_runtime`.
+- `ChannelStore::replace_peer_route` and `ChannelOutbox::retarget` follow a moved
+  registered principal in any channel without changing its conversation or pending
+  message IDs; `TunnelChannelPort::follow_link` accepts its traffic from the runtime
+  the directory confirms. Tunnel `principal_unlinked` takes a local copy offline.
 
 See [ADR-073](docs/architecture/adr/ADR-073-actor-addresses-and-conversation-bindings.md)
 for the coordinated pre-launch replacement contract.

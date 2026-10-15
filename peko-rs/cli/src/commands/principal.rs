@@ -940,6 +940,17 @@ async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
 async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<()> {
     let manager = build_manager(paths);
     let principal = load_principal(name, &manager, paths).await?;
+    // ADR-081 §3: the actor registry is the only source of a Hub ID.
+    let hub_id = {
+        use peko_channel::ChannelPort;
+        peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+            runtime_dir: paths.resolver().runtime_dir(),
+            shared_dir: None,
+        })
+        .actor_info(&Subject::from(&principal.id))
+        .await
+        .hub_id
+    };
 
     let (display_name, did, preferred_model_id) = {
         let config = principal.config.read().await;
@@ -1046,8 +1057,8 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         };
         let view = ShowView {
             local_id: &principal.id.0,
-            hub_id: config.hub_id.as_deref(),
-            registration: if config.hub_id.is_none() {
+            hub_id: hub_id.as_deref(),
+            registration: if hub_id.is_none() {
                 "local_only"
             } else {
                 config.exposure.as_str()
@@ -1070,12 +1081,12 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     println!("Peko: {}", display_name);
     let config = principal.config.read().await;
     println!("  Local ID: principal:local:{}", principal.id.0);
-    if let Some(hub) = &config.hub_id {
+    if let Some(hub) = &hub_id {
         println!("  Hub ID: principal:hub:{hub}");
     }
     println!(
         "  Registration: {}",
-        if config.hub_id.is_none() {
+        if hub_id.is_none() {
             "local_only"
         } else {
             config.exposure.as_str()
@@ -1327,14 +1338,6 @@ fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
         "manage_settings" | "manage-settings" | "managesettings" => {
             Ok(peko_auth::Permission::ManageSettings)
         }
-        "manage_extensions" | "manage-extensions" | "manageextensions" => {
-            Ok(peko_auth::Permission::ManageExtensions)
-        }
-        "manage_members" | "manage-members" | "managemembers" => {
-            Ok(peko_auth::Permission::ManageMembers)
-        }
-        "expose" => Ok(peko_auth::Permission::Expose),
-        "delete" => Ok(peko_auth::Permission::Delete),
         "trusted" => Ok(peko_auth::Permission::Trusted),
         other => anyhow::bail!("Unknown permission: {other}"),
     }
@@ -1619,7 +1622,6 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
-        hub_id: None,
         actor_key: None,
         name: name.to_string(),
         id: None,
@@ -1754,7 +1756,9 @@ mod tests {
             parse_permission("ManageSettings").unwrap(),
             Permission::ManageSettings
         );
-        assert_eq!(parse_permission("EXPOSE").unwrap(), Permission::Expose);
+        assert_eq!(parse_permission("TRUSTED").unwrap(), Permission::Trusted);
+        // ADR-081: permissions nothing checked are retired.
+        assert!(parse_permission("expose").is_err());
     }
 
     #[test]

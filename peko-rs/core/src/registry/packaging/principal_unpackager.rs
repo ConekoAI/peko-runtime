@@ -286,7 +286,6 @@ impl PrincipalUnpackager {
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
         config.name = name.clone();
-        config.hub_id = None;
         config.exposure = peko_auth::Exposure::LocalOnly;
         let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
             runtime_dir: PathResolver::with_dirs(
@@ -997,7 +996,6 @@ mod tests {
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -1069,7 +1067,6 @@ mod tests {
             .is_some());
         let restored: PrincipalConfig =
             toml::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
-        assert!(restored.hub_id.is_none());
         assert!(restored.id.is_some());
         assert!(restored.actor_key.is_some());
     }
@@ -1148,7 +1145,6 @@ mod tests {
         let source_id = peko_subject::PrincipalId::generate();
         config.id = Some(source_id.clone());
         config.actor_key = Some("original-actor".into());
-        config.hub_id = Some(uuid::Uuid::new_v4().to_string());
         config.exposure = peko_auth::Exposure::Public;
         let output = temp.path().join("source.peko");
         PrincipalPackager::new(config, identity)
@@ -1178,7 +1174,6 @@ mod tests {
         assert!(result.did.starts_with("did:key:"));
         assert_ne!(config.id.unwrap(), source_id);
         assert_ne!(config.actor_key.as_deref(), Some("original-actor"));
-        assert!(config.hub_id.is_none());
         assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
         assert!(vault
             .get_principal_identity_private_key(&format!("{}#keys-1", result.did))

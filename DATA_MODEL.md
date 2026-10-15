@@ -3045,14 +3045,9 @@ persisted session, task, cron, or workflow fields.
 `hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
 and optional private `signing_did`. Private `historical_aliases` preserve address
 resolution for past authors and memberships after promotion/unlinking; they are
-not accepted by public `resolve_actor` routing. An optional `known_by` array records the local
-principal IDs that explicitly learned this contact; absent arrays default to empty.
-Current channel participants are discovered from membership, without adding them
-to `known_by`. Actor profile updates retain the learned relationships. Contact
-discovery combines the caller's own actor, current channel rosters, and its
-`known_by` entries; it never enumerates the runtime registry. Legacy registry rows
-do not automatically become every principal's contacts.
-The identity key, signing DID, and `known_by` are omitted
+not accepted by public `resolve_actor` routing. The registry is a routing index:
+which principals learned which contacts lives in each principal's contact book
+(below), not here. The identity key and signing DID are omitted
 from tool profiles. Under ADR-077, `local_id` and `hub_id` are optional, with at
 least one present. Local-only actors have a local ID, registered local principals
 have both, and remote principals/accounts/visitors have only a Hub ID (`local_id:
@@ -3062,21 +3057,20 @@ Registry writes use a file lock and atomic replacement. Aliases and immutable
 keys cannot belong to distinct actors. Startup reconciles legacy proxies against
 the complete hosted-principal inventory, preserving real hosted IDs and recording
 retired proxy aliases privately. Failed principal loads skip reconciliation. Local
-and Hub scopes remain distinct in authorization checks. Existing bare proxy
-user/visitor grants normalize to scoped Hub subjects; explicitly scoped local
-grants do not.
+and Hub scopes remain distinct in authorization checks; every check compares the
+registry's immutable keys (ADR-081 D1).
 
-`principal.toml` stores `id`, `actor_key`, optional `hub_id`, signing `did`, and
-`exposure` (`local_only`, `private`, `public`). The registry is authoritative for the
-Hub link; loading or editing a workspace cannot manufacture a verified Hub alias.
-New principals are local-only until an explicit registration receipt. Signing keys
-are vault-backed independently of Hub login.
+`principal.toml` stores `id`, `actor_key`, signing `did`, `owner`, and `exposure`
+(`local_only`, `private`, `public`). It holds no Hub ID: the registry is the only
+source of a principal's Hub link, written only by its registration receipt. New
+principals are local-only until an explicit registration receipt. Signing keys
+are vault-backed.
 
-`runtime/hub-login.json` stores `{user_id, hub_url}` for the current authenticated
-human. API credentials stay in the vault. Tunnel `pekohub.toml.owner_id` identifies
-the runtime registrar and does not select the local caller. The default user's
-local ID is `local`; authenticated accounts/visitors use Hub-only identities,
-with kind preserved. Login state is reread per request and remains cached when offline.
+`runtime/pekohub.toml` stores only the Hub tunnel `url` and optional `tls`; the
+runtime is known to Hub by its identity DID (`runtime/identity.toml`). There is no
+terminal login file: the terminal is the local user, whose registry record carries
+the fixed key `local@<runtime DID>` and, once the runtime is registered, the account
+as its Hub alias.
 
 Conversation `SessionEntry.channel_id` is the sole binding. Binding clears
 `peer_type`/`peer_id`, and index backfill does not restore actor stamps onto a
@@ -3108,3 +3102,31 @@ key unless keys are rotated. An already hosted actor retains its destination
 local ID. A remote contact gains a fresh local ID on import, retaining its
 immutable actor key, learned relationships, and verified Hub link when installed
 by the principal manager. DM pair IDs do not change on promotion.
+
+
+## ADR-081 portable identity
+
+Local routes name the runtime that issued them. Outside that runtime they are
+written `kind:local:<id>@<runtime DID>` and match no local actor; on it they read
+as `kind:local:<id>`.
+
+`<data>/principals/<name>/local/contacts.json` — the principal's contact book:
+`[{kind, local?: {runtime, id}, hub_id?, identity_key, signing_did?, name?,
+registration}]`, keyed by `identity_key`, written under a file lock with atomic
+replacement. A contact is reachable when this runtime's registry routes one of its
+routes to the same key; otherwise Contacts lists it with `reachable: false`.
+
+`local/channels.json` (written into snapshots, restored on import) —
+`[{channel, participants: [{address, hub_id?, kind, identity_key}], binding}]`.
+
+Snapshots (`peko-snapshot-v1`) add `manifest.source_runtime`, `POLICY.md`,
+`workflows/`, `plugins/`, `local/contacts.json`, and `local/channels.json`. The
+owner, grant subjects and granters, `POLICY.md` `## <actor>` headings, and cron
+`created_by.actor` are written by Hub route when the actor has one, else as a
+source-qualified local route. Import localizes routes of the destination runtime,
+replaces a source-local owner with `user:local` everywhere, rebinds that owner's DM
+session to the new pair ID, reuses a former local ID by actor key (never the
+snapshot's), and refuses a key already hosted here unless keys are rotated.
+
+Cron `created_by` trust is re-derived from the creator's current trust when a job
+fires and only lowered.

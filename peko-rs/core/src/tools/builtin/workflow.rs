@@ -806,7 +806,6 @@ mod tests {
 
     fn principal_config(name: &str) -> crate::principal::PrincipalConfig {
         crate::principal::PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
