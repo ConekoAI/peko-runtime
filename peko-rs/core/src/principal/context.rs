@@ -604,13 +604,15 @@ async fn install_principal_tool_bag(
     crate::tools::installation::install_workspace(core.catalog(), workspace, principal_id).await?;
 
     if !core.tool_bag_installed() {
-        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 5] = [
+        let section_providers: [Arc<dyn crate::tools::prompt_sections::PromptSectionProvider>; 6] = [
             // ADR-078 D1: whom the run acts for, ahead of who it is.
             Arc::new(crate::principal::acting_for_prompt::ActingForPromptHandler),
             Arc::new(crate::principal::identity_prompt::WorkspaceIdentityPromptHandler::new()),
             Arc::new(WorkspaceRolesPromptHandler::new()),
             Arc::new(WorkspaceSkillsPromptHandler::new()),
             Arc::new(crate::tools::builtin::WorkspaceWorkflowsPromptHandler::new()),
+            // The principal's open plans, for owner runs.
+            Arc::new(crate::principal::plan_prompt::WorkspacePlansPromptHandler),
         ];
         for provider in section_providers {
             core.register_prompt_section(provider);

@@ -460,6 +460,8 @@ At least one of status or owner is required, in addition to taskId.
 
 Required `action`: `create`, `list`, `get`, `add_step`, `mark_step`, `record_evidence`, `close`. Each action accepts only its documented fields.
 
+Open plans also reach every owner run without a call: the `## Open plans` tail section lists up to five unfinished plans (most recently active first) with their in-progress, ready, and blocked or failed steps, and re-injects when a plan changes.
+
 **Owner runs only (ADR-078).** Plans are the principal's internal work and
 carry no compartment: every action reaches every plan the principal holds. The
 trust floor (`security::floor::OWNER_ONLY_TOOLS`) therefore refuses `Plan` to
