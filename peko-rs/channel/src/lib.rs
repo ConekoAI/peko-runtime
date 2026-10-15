@@ -70,6 +70,7 @@
 
 #![allow(clippy::module_inception)]
 
+pub mod attention;
 pub mod cli_handlers;
 pub mod cost;
 pub mod cursors;
@@ -83,6 +84,7 @@ pub mod subscription;
 // Flat re-exports — channel callers should not need to know which
 // submodule a type lives in. Mirrors `peko_cron::lib.rs:59-65` and
 // `peko-rs/cron/src/lib.rs:53-67`.
+pub use attention::{AttentionItem, ChannelAttention};
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;

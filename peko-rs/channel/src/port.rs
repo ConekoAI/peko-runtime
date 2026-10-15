@@ -462,6 +462,30 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Posts by other principals on `channel` that `session_key` has
+    /// been shown but not handled (see [`crate::attention`]). The
+    /// default impl returns none, for adapters without persistence.
+    async fn attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+    ) -> Result<Vec<crate::AttentionItem>> {
+        let _ = (channel, session_key);
+        Ok(Vec::new())
+    }
+
+    /// Replace `session_key`'s waiting list on `channel` (an empty list
+    /// clears it). The default impl is a no-op.
+    async fn set_attention(
+        &self,
+        channel: &ChannelId,
+        session_key: &str,
+        items: Vec<crate::AttentionItem>,
+    ) -> Result<()> {
+        let _ = (channel, session_key, items);
+        Ok(())
+    }
+
     /// PR-2b: subscribe to live events for `channel`. The returned
     /// receiver yields every event appended to the channel after this
     /// call (events appended before subscription are NOT replayed —

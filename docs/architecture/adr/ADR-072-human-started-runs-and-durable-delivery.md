@@ -151,3 +151,27 @@ applied once by the persistent log.
   time within 30 days.
 - `ChannelEvent` gains a transport-only `received` kind; pekohub forwards it
   verbatim (its TypeScript event union can list it for documentation).
+
+## 5. Amendment (2026-10-15) — seen is not handled
+
+D4 advanced each session's read mark as the summary rendered, so a post
+counted as handled once it had been shown. Combined with D1, a post by
+another principal that the model glanced past on one keepalive turn was
+never shown again: nothing would wake the principal for it, and the summary
+had moved on.
+
+**D4a — Other principals' posts wait until answered.** When the summary
+first shows a post by another principal, it also files the post in the
+session's waiting list for that channel (`attention.json`, beside
+`read_marks.json`). Every run's summary opens with the waiting list
+("waiting on you"). A post leaves the list when the session's `ChannelRead`
+returns it, or when the principal posts on that channel after it, from any
+of its sessions. The read mark keeps its D4 meaning ("observed up to"), so
+everything else is still shown once. Users' posts stay one-shot: a user
+post that wants an answer starts a turn itself (a DM root post, an
+`@<name>` mention).
+
+Each session has its own list, as it has its own marks. A list keeps at
+most 50 posts per channel; older ones drop and stay in the channel log.
+Both per-session files are now written under a file lock, so two sessions
+updating the same channel no longer lose each other's marks or lists.
