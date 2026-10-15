@@ -123,6 +123,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-074](architecture/adr/ADR-074-per-principal-contact-discovery.md) | Per-principal contact discovery: caller-scoped lists, durable learned contacts, and validated directory results |
 | [ADR-068](architecture/adr/ADR-068-api-format-model-configuration.md) | Explicit endpoint/model configuration; vendor presets retired |
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
+| [ADR-080](architecture/adr/ADR-080-daily-memory-maintenance.md) | Daily memory maintenance: a `memory` job seeded once per principal turns each day's sessions into its `kb/` |
 
 ---
 

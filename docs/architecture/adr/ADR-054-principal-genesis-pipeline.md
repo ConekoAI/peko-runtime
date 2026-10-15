@@ -166,6 +166,10 @@ not cadential.
 
 ### D5: Memory/dream is a convention, not machinery (yet)
 
+> **Amended by [ADR-080](ADR-080-daily-memory-maintenance.md) (2026-10-15):**
+> the runtime now seeds a daily `memory` maintenance job once per principal,
+> including organized ones (a narrow, create-once exception to D4).
+
 P2/P3 plant memory conventions through the trunk's own organization —
 the genesis brief asks it to decide what standing structure and memory
 habits it needs. The runtime does NOT build consolidation/"dream"
@@ -241,7 +245,8 @@ surfaces, it gets its own design pass (same rule as ADR-041 §3.2).
   IPC (needs the template payload on the wire, or a desktop-written
   template file).
 - **`boot_state` in `principal show` / list summaries.**
-- **Memory/dream machinery** (see D5).
+- **Memory/dream machinery** (see D5). First slice shipped in ADR-080
+  (daily maintenance job); evidence capture and review remain deferred.
 
 ## 6. References
 
