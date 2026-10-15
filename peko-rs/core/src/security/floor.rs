@@ -11,6 +11,12 @@ use peko_tools_core::ActingFor;
 /// every other rule depends on) and the owner's MCP administration.
 pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["Bash", "MCP"];
 
+/// Built-in tools only an owner run gets: the principal's internal work.
+/// `Plan` reads and writes every plan the principal holds, and plans have
+/// no compartment, so a run acting for anyone else would reach the
+/// owner's.
+pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan"];
+
 /// Workspace files only an owner run may write. Everything an agent's
 /// prompt is built from, plus the policy itself.
 pub const PROTECTED_FILES: &[&str] = &[
@@ -57,6 +63,17 @@ pub fn tool_refusal(
     tool_name: &str,
     mcp_untrusted_ok: Option<bool>,
 ) -> Option<String> {
+    if stamp.is_owner() {
+        return None;
+    }
+    if OWNER_ONLY_TOOLS.contains(&tool_name) {
+        return Some(format!(
+            "`{tool_name}` holds the owner's internal work and is not available while acting \
+             for {} ({}). Track this conversation's work in your replies or with `Task`.",
+            stamp.actor,
+            stamp.trust.as_str()
+        ));
+    }
     if !stamp.is_untrusted() {
         return None;
     }
@@ -268,6 +285,17 @@ mod tests {
         assert!(tool_refusal(&low, "mcp__docs__search", Some(true)).is_none());
         assert!(tool_refusal(&low, "Read", None).is_none());
         assert!(tool_refusal(&stamp(Trust::Trusted), "Bash", None).is_none());
+    }
+
+    #[test]
+    fn only_owner_runs_get_plans() {
+        for trust in [Trust::Untrusted, Trust::Trusted] {
+            let reason = tool_refusal(&stamp(trust), "Plan", None).expect("refused");
+            assert!(reason.contains(trust.as_str()), "{reason}");
+        }
+        assert!(tool_refusal(&stamp(Trust::Owner), "Plan", None).is_none());
+        assert!(tool_refusal(&ActingFor::runtime(), "Plan", None).is_none());
+        assert!(tool_refusal(&ActingFor::unattributed(), "Plan", None).is_some());
     }
 
     #[test]

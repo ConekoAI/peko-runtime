@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Plans are owner-only (0.1.0, 2026-10-15)
+
+- ADR-078: the `Plan` tool is refused to every run not acting for the owner
+  and left out of that run's wire catalog. Plans carry no compartment, so a
+  guest's standing child or a group member's `@mention` turn could list,
+  read, and edit all of the owner's plans; it was also exempt from policy
+  review. The floor now refuses it with a `floor_denied` outcome before
+  review, and `Plan` is dropped from the reviewer's exempt list. The
+  `<acting-for>` block tells trusted and untrusted runs they have no plans;
+  they track conversation work with the session-scoped `Task` tool.
+
 ### Open plans in every owner run (0.1.0, 2026-10-15)
 
 - Open plans now ride a change-detected `## Open plans` tail section in

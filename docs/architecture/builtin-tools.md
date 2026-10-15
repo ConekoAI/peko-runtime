@@ -5,7 +5,9 @@ describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
-Every registered tool appears in the native wire catalog (ADR-066). ToolCatalog
+Every registered tool appears in the native wire catalog (ADR-066), except the
+ones the ADR-078 trust floor refuses the run: `Bash` and `MCP` below trusted,
+`Plan` below owner. ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
 to its principal's tool ledger (ADR-079), and emits one attributed audit event. Every principal can use every registered tool. There is
 no tool allowlist or capability filter. Principal bindings select workspace and
@@ -459,6 +461,16 @@ At least one of status or owner is required, in addition to taskId.
 Required `action`: `create`, `list`, `get`, `add_step`, `mark_step`, `record_evidence`, `close`. Each action accepts only its documented fields.
 
 Open plans also reach every owner run without a call: the `## Open plans` tail section lists up to five unfinished plans (most recently active first) with their in-progress, ready, and blocked or failed steps, and re-injects when a plan changes.
+
+**Owner runs only (ADR-078).** Plans are the principal's internal work and
+carry no compartment: every action reaches every plan the principal holds. The
+trust floor (`security::floor::OWNER_ONLY_TOOLS`) therefore refuses `Plan` to
+any run not acting for the owner — trusted and untrusted peers alike, including
+their standing children, group `@mention` turns, cron jobs they created, and
+subagents spawned from those runs — and leaves it out of their wire catalog. The
+refusal is a `floor_denied` ledger outcome, decided before policy review. An
+owner run in a mixed group is capped below owner and loses `Plan` too. Non-owner
+runs track their conversation's work with the session-scoped `Task` tool.
 
 #### create
 

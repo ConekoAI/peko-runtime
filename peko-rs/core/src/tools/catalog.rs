@@ -353,7 +353,7 @@ impl ToolCatalog {
         mut snapshot: peko_engine::tooling::ToolCatalogSnapshot,
         stamp: &peko_tools_core::ActingFor,
     ) -> peko_engine::tooling::ToolCatalogSnapshot {
-        if !stamp.is_untrusted() {
+        if stamp.is_owner() {
             return snapshot;
         }
         let Some(binding) = snapshot

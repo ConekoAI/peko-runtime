@@ -12,9 +12,9 @@ use peko_tools_core::ActingFor;
 use serde::{Deserialize, Serialize};
 
 /// Tools never reviewed: bookkeeping, read-only catalogs, and the tools
-/// the floor already confines to the run's own compartment.
+/// the floor already confines to the run's own compartment. (`Plan` never
+/// reaches review: the floor refuses it to every non-owner run.)
 pub const EXEMPT_TOOLS: &[&str] = &[
-    "Plan",
     "Task",
     "ModelList",
     "RoleCatalog",
@@ -210,7 +210,7 @@ mod tests {
     fn owner_runs_and_exempt_tools_skip_review() {
         let params = serde_json::json!({});
         assert!(!needs_review(&ActingFor::runtime(), "Write", &params));
-        assert!(!needs_review(&stamp(Trust::Untrusted), "Plan", &params));
+        assert!(!needs_review(&stamp(Trust::Untrusted), "Task", &params));
         assert!(needs_review(&stamp(Trust::Untrusted), "Read", &params));
         assert!(needs_review(&stamp(Trust::Trusted), "Bash", &params));
         let own = serde_json::json!({"to": "dm_a", "text": "hi"});
