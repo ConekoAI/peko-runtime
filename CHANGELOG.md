@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Contacts and rosters scoped to the run's conversation (0.1.0, 2026-10-15)
+
+- `Contacts` follows the ADR-078 acting-for stamp. A run acting for anyone
+  but the owner now lists only its own actor and its own conversation's
+  participants: not the principal's other DMs and groups, their rosters,
+  session binding paths, or its learned contacts. `resolve` searches the
+  same scope, and only owner runs learn new contacts (the shared
+  `known_by` list). Before, an untrusted visitor's run could enumerate every
+  conversation, held back only by the policy reviewer.
+- The per-turn "known contacts and conversations" prompt section shows
+  non-owner (and unstamped) runs only their own conversation. Before, it put
+  every channel's roster into every run's context.
+
 ### Stale docs and dead session helpers (0.1.0, 2026-10-15)
 
 - Docs brought in line with the current runtime: PEKO.md (per-run reach

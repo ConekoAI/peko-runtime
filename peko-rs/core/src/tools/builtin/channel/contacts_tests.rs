@@ -114,6 +114,110 @@ async fn list_and_alias_resolution_are_scoped_to_current_channels() {
     assert!(!listed.to_string().contains(&visitor.address));
 }
 
+/// ADR-078 D4: a run acting for anyone but the owner sees only its own
+/// conversation — not the principal's other channels, their rosters, or
+/// the contacts it learned — and cannot learn new contacts.
+#[tokio::test]
+async fn non_owner_runs_see_only_their_own_conversation() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = Arc::new(ChannelStore::new(ChannelConfig {
+        runtime_dir: temp.path().into(),
+        shared_dir: None,
+    }));
+    let a = PrincipalId("prin_a".into());
+    let b = PrincipalId("prin_b".into());
+    let me = register(&*port, &Subject::from(&a), "Alice").await;
+    let learned = register(&*port, &Subject::from(&b), "Bob").await;
+    let guest = register(&*port, &Subject::User("guest".into()), "Guest").await;
+    let friend = register(&*port, &Subject::User("friend".into()), "Friend").await;
+    let visitor = register(&*port, &Subject::Visitor("visitor".into()), "Visitor").await;
+    port.remember_contact(&a, &learned.subject()).await.unwrap();
+    let guest_dm = port
+        .ensure_dm(&a, &guest.subject(), "/guest")
+        .await
+        .unwrap();
+    let friend_dm = port
+        .ensure_dm(&a, &friend.subject(), "/friend")
+        .await
+        .unwrap();
+    let group = port.create(&a, CreateOpts::runtime("team")).await.unwrap();
+    port.invite(&group, &a, &visitor.subject()).await.unwrap();
+    let tool = ContactsTool::new(port.clone(), Weak::new());
+
+    let mut ctx =
+        ToolContext::default_for_tool("Contacts").with_acting_for(peko_tools_core::ActingFor {
+            actor: guest.address.clone(),
+            name: None,
+            trust: peko_tools_core::Trust::Untrusted,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: guest_dm.as_str().into(),
+            },
+            origin: peko_tools_core::Origin::Ingress { channel: None },
+        });
+    ctx.principal_id = Some(a.0.clone());
+    let listed = tool
+        .execute_with_context(json!({"action":"list"}), &ctx)
+        .await
+        .unwrap();
+    let channels = listed["channels"].as_array().unwrap();
+    assert_eq!(channels.len(), 1, "{listed}");
+    assert_eq!(channels[0]["channel"], guest_dm.as_str());
+    let actors = listed["actors"].as_array().unwrap();
+    assert_eq!(actors.len(), 2, "{listed}");
+    for actor in [&me, &guest] {
+        assert!(actors.contains(&serde_json::to_value(actor).unwrap()));
+    }
+    let text = listed.to_string();
+    for hidden in [&learned, &friend, &visitor] {
+        assert!(!text.contains(&hidden.address), "{hidden:?} leaked: {text}");
+    }
+    for hidden in [friend_dm.as_str(), group.as_str()] {
+        assert!(!text.contains(hidden), "{hidden} leaked: {text}");
+    }
+
+    // Resolution goes through the same scope, and never learns.
+    let resolved = tool
+        .execute_with_context(json!({"action":"resolve","reference":guest.address}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(resolved["actor"], serde_json::to_value(&guest).unwrap());
+    for hidden in [&friend, &visitor] {
+        assert!(tool
+            .execute_with_context(json!({"action":"resolve","reference":hidden.address}), &ctx)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not a contact"));
+    }
+    let err = tool
+        .execute_with_context(
+            json!({"action":"resolve","reference":learned.address}),
+            &ctx,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("only the owner"), "{err}");
+
+    // A call without a stamp is unattributed: it sees no conversation.
+    let mut bare = ToolContext::default_for_tool("Contacts");
+    bare.principal_id = Some(a.0.clone());
+    let listed = tool
+        .execute_with_context(json!({"action":"list"}), &bare)
+        .await
+        .unwrap();
+    assert_eq!(listed["channels"], json!([]));
+    assert_eq!(listed["actors"].as_array().unwrap().len(), 1);
+
+    // The owner still sees everything.
+    let listed = tool
+        .execute_with_context(json!({"action":"list"}), &context(&a))
+        .await
+        .unwrap();
+    assert_eq!(listed["channels"].as_array().unwrap().len(), 3);
+    assert!(listed.to_string().contains(&learned.address));
+}
+
 #[tokio::test]
 async fn strict_arguments_and_principal_context_are_required() {
     let h = ToolHarness::new().await;
