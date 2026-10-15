@@ -125,7 +125,7 @@ pub struct ActingFor {
 
 An owner run reaches the whole store. Any other run sees its own compartment plus the ancestors that anchor its slug paths; it lists, finds, reads, resumes, attaches, copies, moves, compacts, branches, and removes only inside its compartment; everything else reads as missing. A non-owner run cannot mint a session at an absolute path outside its conversation, and no branch overwrite may mix compartments. Enforced in `SessionManagerRuntime` (per call, from the `Session` tool's context) and in the subagent executor.
 
-The unread digest shows other channels only to owner runs, and `ChannelRead` serves non-owner runs only their own conversation.
+The unread digest and the per-turn "known contacts and conversations" roster show other channels only to owner runs; `ChannelRead` and `Contacts` serve non-owner runs only their own conversation (amended 2026-10-15: `Contacts list` no longer returns other channels, their rosters, or learned contacts to non-owner runs, and only owner runs learn new contacts).
 
 ### D5: Cron jobs carry their creator's stamp
 

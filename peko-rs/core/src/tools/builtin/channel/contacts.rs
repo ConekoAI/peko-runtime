@@ -4,7 +4,7 @@ use crate::tunnel::CrossRuntimeA2aCtx;
 use async_trait::async_trait;
 use peko_channel::{ActorInfo, ChannelPort};
 use peko_subject::{PrincipalId, Subject};
-use peko_tools_core::{Tool, ToolContext};
+use peko_tools_core::{ActingFor, Tool, ToolContext};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
@@ -47,21 +47,30 @@ impl ContactsTool {
             .validate(params)
     }
 
+    /// The actors and conversations `stamp` may see (ADR-078 D4): the
+    /// owner sees every channel and every learned contact; any other run
+    /// sees its own actor and the participants of its own conversation.
     async fn discover(
         &self,
         id: &PrincipalId,
+        stamp: &ActingFor,
     ) -> anyhow::Result<(BTreeMap<String, ActorInfo>, Vec<Value>)> {
-        let mut actors = self
-            .port
-            .known_contacts(id)
-            .await?
-            .into_iter()
-            .map(|actor| (actor.address.clone(), actor))
-            .collect::<BTreeMap<_, _>>();
+        let owner = stamp.is_owner();
+        let mut actors = if owner {
+            self.port.known_contacts(id).await?
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .map(|actor| (actor.address.clone(), actor))
+        .collect::<BTreeMap<_, _>>();
         let me = self.port.actor_info(&Subject::from(id)).await;
         actors.insert(me.address.clone(), me);
         let mut channels = Vec::new();
         for channel in self.port.list_for_principal(id).await? {
+            if !owner && stamp.compartment.channel() != Some(channel.as_str()) {
+                continue;
+            }
             let participants = self.port.participants(&channel).await?;
             for actor in &participants {
                 actors.insert(actor.address.clone(), actor.clone());
@@ -81,7 +90,7 @@ impl Tool for ContactsTool {
         "Contacts"
     }
     fn description(&self) -> String {
-        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned, with canonical addresses, known names and mention tokens. resolve accepts kind:local:<id> or kind:hub:<id>; use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal and survive restarts.".into()
+        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned (a run acting for anyone but the owner sees only its own conversation), with canonical addresses, known names and mention tokens. resolve accepts kind:local:<id> or kind:hub:<id>; use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal and survive restarts.".into()
     }
     fn parameters(&self) -> Value {
         Self::tool_parameters()
@@ -101,9 +110,10 @@ impl Tool for ContactsTool {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("Contacts requires principal context"))?,
         );
+        let stamp = ctx.acting_for();
         match params.get("action").and_then(Value::as_str) {
             Some("list") => {
-                let (actors, channels) = self.discover(&id).await?;
+                let (actors, channels) = self.discover(&id, &stamp).await?;
                 Ok(json!({"actors":actors.into_values().collect::<Vec<_>>(),"channels":channels}))
             }
             Some("resolve") => {
@@ -120,7 +130,7 @@ impl Tool for ContactsTool {
                     matches!(scope, "local" | "hub") && !identifier.is_empty(),
                     "Use kind:local:<id> or kind:hub:<id>"
                 );
-                let (actors, _) = self.discover(&id).await?;
+                let (actors, _) = self.discover(&id, &stamp).await?;
                 if let Some(actor) = actors.values().find(|actor| {
                     actor.address == reference || actor.hub_address().as_deref() == Some(reference)
                 }) {
@@ -129,6 +139,12 @@ impl Tool for ContactsTool {
                 anyhow::ensure!(
                     matches!(subject, Subject::Principal(_)),
                     "Actor is not a contact of this principal"
+                );
+                // Learned contacts are the principal's own knowledge, shared by
+                // all of its runs; only the owner's runs add to it.
+                anyhow::ensure!(
+                    stamp.is_owner(),
+                    "Actor is not a contact of this conversation; only the owner can learn new contacts"
                 );
                 let context = self
                     .context()

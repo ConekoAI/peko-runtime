@@ -307,6 +307,12 @@ User and visitor resolution is limited to current participants of the caller's c
 Malformed directory identities are rejected before storage writes. Unknown arguments,
 missing references, and references supplied to `list` are rejected.
 
+Reach follows the run's acting-for stamp (ADR-078 D4). An owner run sees every
+channel and every learned contact. Any other run sees its own actor and the
+participants of its own conversation only; `resolve` searches the same scope, and
+learning a new contact (local or Hub) is refused. An unstamped call sees no
+conversation.
+
 ### ChannelSend
 
 Send with `to` (the old `channel` input is a compatibility alias; do not supply both).

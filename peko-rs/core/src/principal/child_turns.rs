@@ -950,11 +950,21 @@ impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContex
             me.hub_address().unwrap_or_else(|| "none".into()),
             me.registration
         )];
+        // ADR-078 D4: only owner runs see the principal's other
+        // conversations; any other run (or an unattributed render) sees
+        // its own conversation alone.
+        let stamp = input
+            .acting_for
+            .clone()
+            .unwrap_or_else(peko_tools_core::ActingFor::unattributed);
         for channel in port
             .list_for_principal(&principal_id)
             .await
             .unwrap_or_default()
         {
+            if !stamp.is_owner() && stamp.compartment.channel() != Some(channel.as_str()) {
+                continue;
+            }
             let roster = port.participants(&channel).await.unwrap_or_default();
             let names = roster
                 .into_iter()
@@ -991,6 +1001,63 @@ mod tests {
         PrincipalRoutingConfig,
     };
     use peko_channel::ChannelPort;
+
+    /// ADR-078 D4: the "known contacts and conversations" section shows
+    /// a non-owner run only its own conversation; the owner sees all.
+    #[tokio::test]
+    async fn roster_section_shows_non_owner_runs_only_their_conversation() {
+        use crate::tools::prompt_sections::{PromptSectionInput, PromptSectionProvider};
+        let tmp = tempfile::tempdir().unwrap();
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().into(),
+                shared_dir: None,
+            },
+        ));
+        let id = peko_subject::PrincipalId("prin_a".into());
+        let guest = Subject::User("hub:guest".into());
+        let friend = Subject::User("hub:friend".into());
+        let guest_dm = port.ensure_dm(&id, &guest, "/guest").await.unwrap();
+        let friend_dm = port.ensure_dm(&id, &friend, "/friend").await.unwrap();
+        let render = |acting_for| {
+            let port = port.clone();
+            let id = id.clone();
+            async move {
+                PeersSessionContextHandler
+                    .render(&PromptSectionInput {
+                        principal_id: id.0.clone(),
+                        workspace: "/workspace/a".into(),
+                        session_id: String::new(),
+                        channel_port: Some(port),
+                        acting_for,
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let guest_stamp = peko_tools_core::ActingFor {
+            actor: "user:hub:guest".into(),
+            name: None,
+            trust: peko_tools_core::Trust::Untrusted,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: guest_dm.as_str().into(),
+            },
+            origin: peko_tools_core::Origin::Ingress { channel: None },
+        };
+        let out = render(Some(guest_stamp)).await;
+        assert!(out.contains(guest_dm.as_str()), "{out}");
+        assert!(!out.contains(friend_dm.as_str()), "{out}");
+        assert!(!out.contains("user:hub:friend"), "{out}");
+
+        let out = render(None).await;
+        assert!(!out.contains(guest_dm.as_str()), "{out}");
+        assert!(!out.contains(friend_dm.as_str()), "{out}");
+
+        let out = render(Some(peko_tools_core::ActingFor::runtime())).await;
+        assert!(out.contains(guest_dm.as_str()), "{out}");
+        assert!(out.contains(friend_dm.as_str()), "{out}");
+    }
 
     #[tokio::test]
     async fn resumed_group_surface_has_a_channel_and_no_invented_user() {
