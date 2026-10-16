@@ -98,6 +98,23 @@ pub trait PolicyGate: Send + Sync {
         let _ = (principal_id, source);
         crate::security::memory_gate::SourceClass::Unknown
     }
+    /// Check each claim against what it cites (ADR-085). Unchecked
+    /// unless the gate can run a reviewer, so the lines are held.
+    async fn check_claims(
+        &self,
+        principal_id: &str,
+        claims: &[crate::security::memory_gate::Claim],
+    ) -> Vec<crate::security::memory_gate::ClaimCheck> {
+        let _ = principal_id;
+        claims
+            .iter()
+            .map(|_| {
+                crate::security::memory_gate::ClaimCheck::Unchecked(
+                    "no reviewer is configured".into(),
+                )
+            })
+            .collect()
+    }
 }
 
 /// Why the owner, not the reviewer, decides this call, if they do: a

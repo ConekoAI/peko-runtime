@@ -3191,6 +3191,147 @@ mod tests {
         let _ = id;
     }
 
+    /// ADR-085 D4: with only the owner talking to the principal, the
+    /// default `memory_review: guests` skips the reviewer; once someone
+    /// else speaks it reviews, and `always` / `off` override.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_runs_only_while_others_talk_to_the_principal() {
+        use crate::security::judge::PolicyGate as _;
+        use crate::security::memory_gate::{Claim, ClaimCheck};
+        let (_temp, manager, adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let port = manager.channel_port().expect("port");
+        let mine = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            mine.dm_channel.as_ref().expect("owner DM"),
+            &owner.to_string(),
+            "I like tea",
+        )
+        .await
+        .expect("post");
+        let gate =
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let claims = vec![Claim {
+            line: "- owner likes tea (source: /local-user)".into(),
+            sources: vec!["/local-user".into()],
+        }];
+        assert!(
+            !crate::principal::policy_gate::others_spoke_recently(&principal, Some(port.clone()))
+                .await
+        );
+        assert!(matches!(
+            gate.check_claims(&id.0, &claims).await.as_slice(),
+            [ClaimCheck::Skipped(_)]
+        ));
+
+        let theirs = manager
+            .ensure_peer_child_ingress(&principal, &ActorRef::User("alice".into()))
+            .await
+            .expect("guest ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            theirs.dm_channel.as_ref().expect("guest DM"),
+            "user:local:alice",
+            "hello",
+        )
+        .await
+        .expect("post");
+        assert!(
+            crate::principal::policy_gate::others_spoke_recently(&principal, Some(port.clone()))
+                .await
+        );
+        adapter.queue_text("1: supported");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![ClaimCheck::Supported]
+        );
+
+        let policy_path = principal
+            .workspace_path
+            .join(crate::security::policy::POLICY_FILE);
+        std::fs::write(&policy_path, "---\nmemory_review: off\n---\n# Policy\n").unwrap();
+        assert!(matches!(
+            gate.check_claims(&id.0, &claims).await.as_slice(),
+            [ClaimCheck::Skipped(_)]
+        ));
+    }
+
+    /// ADR-085: the reviewer's evidence for a channel source is the cited
+    /// event and its neighbours, or the posts sharing words with the claim.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_evidence_quotes_the_cited_posts() {
+        let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let ingress = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        let port = manager.channel_port().expect("port");
+        let dm = ingress.dm_channel.expect("owner DM");
+        for text in [
+            "the weather is fine",
+            "I drink green tea every morning",
+            "bye",
+        ] {
+            crate::principal::peer_dm::post_peer_dm_inbound(
+                &port,
+                &principal.id,
+                &dm,
+                &owner.to_string(),
+                text,
+            )
+            .await
+            .expect("post");
+        }
+        use peko_channel::ChannelPort as _;
+        let events = store
+            .peek_with_ids(&dm, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let tea_id = events
+            .iter()
+            .find(|(_, e)| matches!(e, peko_protocol::channel::ChannelEvent::Posted { text, .. } if text.contains("tea")))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let claim = "- owner drinks green tea in the morning";
+        let cited = crate::principal::policy_gate::source_excerpt(
+            &principal,
+            Some(&port),
+            &format!("{}#{tea_id}", dm.0),
+            claim,
+        )
+        .await;
+        assert!(
+            cited.contains("green tea") && cited.contains("weather"),
+            "{cited}"
+        );
+        let searched =
+            crate::principal::policy_gate::source_excerpt(&principal, Some(&port), &dm.0, claim)
+                .await;
+        assert!(
+            searched.contains("green tea") && !searched.contains("weather"),
+            "{searched}"
+        );
+        assert!(crate::principal::policy_gate::source_excerpt(
+            &principal,
+            Some(&port),
+            "/no-such-session",
+            claim
+        )
+        .await
+        .is_empty());
+    }
+
     /// ADR-080 D4: a hot-memory source counts as the owner's only when
     /// nobody else speaks in it.
     #[tokio::test(flavor = "multi_thread")]

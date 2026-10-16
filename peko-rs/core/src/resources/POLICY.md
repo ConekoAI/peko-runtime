@@ -1,6 +1,7 @@
 ---
 judge_model:           # catalog model id for the policy judge; empty uses this peko's model
 review_replies: false  # also review final replies to anyone but the owner
+memory_review: guests  # check scheduled memory writes against their sources: guests (only while others are talking to this peko), always, or off
 ---
 # Policy
 

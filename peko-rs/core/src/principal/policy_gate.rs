@@ -146,6 +146,27 @@ impl PrincipalPolicyGate {
         policy: &policy::Policy,
         prompt: &str,
     ) -> Result<String> {
+        Self::ask_model(
+            manager,
+            principal,
+            policy,
+            judge::REVIEWER_SYSTEM,
+            prompt,
+            300,
+        )
+        .await
+    }
+
+    /// One completion on the policy's `judge_model` (else the
+    /// principal's own model), charged to the principal's quota.
+    async fn ask_model(
+        manager: &PrincipalManager,
+        principal: &Principal,
+        policy: &policy::Policy,
+        system: &str,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<String> {
         let resolver = manager
             .llm_resolver()
             .context("no model resolver on this runtime")?;
@@ -161,16 +182,11 @@ impl PrincipalPolicyGate {
         let provider = resolver.build_provider(&choice.config).await?;
         let options = peko_provider_api::ChatOptions {
             temperature: Some(0.0),
-            max_tokens: Some(300),
+            max_tokens: Some(max_tokens),
             ..Default::default()
         };
         let response = provider
-            .chat_response_with_options(
-                Some(judge::REVIEWER_SYSTEM),
-                prompt,
-                &choice.model_id,
-                &options,
-            )
+            .chat_response_with_options(Some(system), prompt, &choice.model_id, &options)
             .await?;
         let cost = peko_engine::compute_cost_usd(
             choice.config.spec.and_then(|s| s.pricing),
@@ -345,6 +361,8 @@ impl PolicyGate for PrincipalPolicyGate {
         };
         let channels = manager.channel_port();
         let compartment = if let Some(channel) = channel_of(source) {
+            // An existing channel; the event id, if any, is the reviewer's
+            // concern (ADR-085).
             let Some(port) = &channels else {
                 return SourceClass::Unknown;
             };
@@ -356,21 +374,9 @@ impl PolicyGate for PrincipalPolicyGate {
                 channel: channel.to_string(),
             }
         } else {
-            let mut sessions = peko_session::SessionManager::new()
-                .with_sessions_dir_internal(principal.memory.sessions_dir());
-            let metas = sessions.list_all_sessions(false).await.unwrap_or_default();
-            // Paths resolve from the trunk, like the memory run's own;
-            // a bare id needs no anchor.
-            let anchor = metas
-                .iter()
-                .find(|m| m.parent_session_id.is_none())
-                .map_or(peko_session::SessionId(uuid::Uuid::nil()), |m| m.session_id);
-            let Ok(id) = peko_session::path::resolve_reference(&metas, anchor, source) else {
+            let Some((id, metas)) = resolve_session(&principal, source).await else {
                 return SourceClass::Unknown;
             };
-            if !metas.iter().any(|m| m.session_id == id) {
-                return SourceClass::Unknown;
-            }
             crate::security::compartment_of(&metas, id)
         };
         let stamps = crate::principal::trust::stamps_for(&principal, channels);
@@ -380,6 +386,198 @@ impl PolicyGate for PrincipalPolicyGate {
             SourceClass::Other(compartment)
         }
     }
+
+    async fn check_claims(
+        &self,
+        principal_id: &str,
+        claims: &[crate::security::memory_gate::Claim],
+    ) -> Vec<crate::security::memory_gate::ClaimCheck> {
+        use crate::security::memory_gate::{self, ClaimCheck};
+        let unchecked = |reason: String| vec![ClaimCheck::Unchecked(reason); claims.len()];
+        let Some((manager, principal)) = self.principal(principal_id).await else {
+            return unchecked("the principal is not loaded".into());
+        };
+        let channels = manager.channel_port();
+        let policy = policy::load(&principal.workspace_path).unwrap_or_default();
+        // ADR-085 D4: review only while a run could carry someone else's
+        // words, unless the owner says otherwise.
+        let skip = |reason: &str| vec![ClaimCheck::Skipped(reason.into()); claims.len()];
+        match policy.memory_review {
+            policy::MemoryReview::Off => return skip("memory_review: off"),
+            policy::MemoryReview::Guests
+                if !others_spoke_recently(&principal, channels.clone()).await =>
+            {
+                return skip("no conversation with anyone but the owner this week");
+            }
+            _ => {}
+        }
+        let mut checks = Vec::with_capacity(claims.len());
+        for batch in claims.chunks(memory_gate::CLAIMS_PER_REVIEW) {
+            let mut items = Vec::with_capacity(batch.len());
+            for claim in batch {
+                let mut evidence = Vec::new();
+                for source in &claim.sources {
+                    let excerpt =
+                        source_excerpt(&principal, channels.as_ref(), source, &claim.line).await;
+                    evidence.push((source.clone(), excerpt));
+                }
+                items.push((claim.clone(), evidence));
+            }
+            let prompt = memory_gate::review_prompt(&items);
+            let max_tokens = 40 + 40 * batch.len() as u32;
+            match Self::ask_model(
+                &manager,
+                &principal,
+                &policy,
+                memory_gate::REVIEW_SYSTEM,
+                &prompt,
+                max_tokens,
+            )
+            .await
+            {
+                Ok(answer) => checks.extend(memory_gate::parse_review(&answer, batch.len())),
+                Err(e) => {
+                    checks.extend(batch.iter().map(|_| {
+                        ClaimCheck::Unchecked(format!("the reviewer could not run: {e:#}"))
+                    }))
+                }
+            }
+        }
+        checks
+    }
+}
+
+/// Whether any of the principal's conversations with someone besides the
+/// owner had activity in the last
+/// [`crate::security::memory_gate::GUEST_ACTIVITY_DAYS`] days. Unknown
+/// is yes: a channel whose roster or log cannot be read counts.
+pub(crate) async fn others_spoke_recently(
+    principal: &Arc<Principal>,
+    channels: Option<Arc<dyn peko_channel::ChannelPort>>,
+) -> bool {
+    let Some(port) = channels.clone() else {
+        return false;
+    };
+    let Ok(list) = port.list_for_principal(&principal.id).await else {
+        return true;
+    };
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::days(crate::security::memory_gate::GUEST_ACTIVITY_DAYS);
+    let stamps = crate::principal::trust::stamps_for(principal, channels);
+    for channel in list {
+        let compartment = peko_tools_core::Compartment::Conversation {
+            channel: channel.0.clone(),
+        };
+        if stamps.ceiling(&compartment).await == peko_tools_core::Trust::Owner {
+            continue;
+        }
+        let Ok(tail) = port.peek_tail(&channel, 1, None).await else {
+            return true;
+        };
+        let recent = tail.events.last().is_some_and(|(_, event)| {
+            chrono::DateTime::parse_from_rfc3339(event.at())
+                .map_or(true, |at| at.with_timezone(&chrono::Utc) >= cutoff)
+        });
+        if recent {
+            return true;
+        }
+    }
+    false
+}
+
+/// The session a hot-memory source names, with the store's metadata.
+/// Paths resolve from the trunk, like the memory run's own; a bare id
+/// needs no anchor.
+async fn resolve_session(
+    principal: &Principal,
+    source: &str,
+) -> Option<(peko_session::SessionId, Vec<peko_session::SessionMetadata>)> {
+    let mut sessions = peko_session::SessionManager::new()
+        .with_sessions_dir_internal(principal.memory.sessions_dir());
+    let metas = sessions.list_all_sessions(false).await.unwrap_or_default();
+    let anchor = metas
+        .iter()
+        .find(|m| m.parent_session_id.is_none())
+        .map_or(peko_session::SessionId(uuid::Uuid::nil()), |m| m.session_id);
+    let id = peko_session::path::resolve_reference(&metas, anchor, source).ok()?;
+    metas
+        .iter()
+        .any(|m| m.session_id == id)
+        .then_some((id, metas))
+}
+
+/// What `source` says that bears on `claim` (ADR-085), capped at
+/// [`crate::security::memory_gate::EXCERPT_BYTES_PER_SOURCE`]. A
+/// `<channel>#<event>` source quotes that event and its neighbours; a
+/// bare channel or a session quotes the passages sharing the most words
+/// with the claim. Empty when nothing is found.
+pub(crate) async fn source_excerpt(
+    principal: &Principal,
+    channels: Option<&Arc<dyn peko_channel::ChannelPort>>,
+    source: &str,
+    claim: &str,
+) -> String {
+    use crate::security::memory_gate::{
+        best_excerpts, channel_of, clip, EXCERPT_BYTES_PER_SOURCE, PASSAGE_BYTES,
+    };
+    if let Some(channel) = channel_of(source) {
+        let Some(port) = channels else {
+            return String::new();
+        };
+        let id = peko_channel::ChannelId(channel.to_string());
+        let Ok(events) = port
+            .peek_with_ids(&id, &peko_channel::Checkpoint::default())
+            .await
+        else {
+            return String::new();
+        };
+        // (event id, label, text)
+        let posts: Vec<(String, String, String)> = events
+            .into_iter()
+            .filter_map(|(id, event)| match event {
+                peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+                    let label = format!("[{id}] {author}");
+                    Some((id, label, text))
+                }
+                _ => None,
+            })
+            .collect();
+        let event = source.split_once('#').map(|(_, e)| e.trim());
+        if let Some(at) = event.and_then(|e| posts.iter().position(|(id, _, _)| id == e)) {
+            let window = &posts[at.saturating_sub(2)..(at + 3).min(posts.len())];
+            let text: Vec<String> = window
+                .iter()
+                .map(|(_, label, text)| clip(&format!("{label}: {text}"), PASSAGE_BYTES))
+                .collect();
+            return clip(&text.join("\n"), EXCERPT_BYTES_PER_SOURCE);
+        }
+        let passages: Vec<(String, String)> = posts
+            .into_iter()
+            .map(|(_, label, text)| (label, text))
+            .collect();
+        return best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE);
+    }
+    let Some((id, _)) = resolve_session(principal, source).await else {
+        return String::new();
+    };
+    let storage = peko_session::jsonl::SessionStorage::new(principal.memory.sessions_dir());
+    let Ok(entries) = storage.load_normalized(&id.to_string()).await else {
+        return String::new();
+    };
+    let passages: Vec<(String, String)> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            use peko_session::jsonl::NormalizedEntry as E;
+            let (who, text) = match entry {
+                E::UserMessage { content, .. } => ("user", content),
+                E::AssistantMessage { content, .. } => ("assistant", content),
+                E::Compaction { summary, .. } => ("earlier summary", summary),
+                _ => return None,
+            };
+            Some((who.to_string(), text))
+        })
+        .collect();
+    best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE)
 }
 
 /// An owner's approval command, parsed.

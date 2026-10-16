@@ -124,8 +124,10 @@ inbox, but these writes come from an owner run.
 
 What this does not cover:
 - A line citing an owner source it did not come from, such as a reader agent's
-  internal session. Internal sessions count as the owner's own work. Checking
-  claims against their sources is the deferred reviewer.
+  internal session. Internal sessions count as the owner's own work.
+  *Addressed by [ADR-085](ADR-085-memory-claims-reviewed-against-their-sources.md):*
+  a reviewer model checks each sourced line against excerpts of its sources,
+  and holds what it does not find supported.
 - `kb/index.md`, and the group and role notes injected into specific agents.
   (`kb/CONVENTIONS.md` is covered since rev 3, D8.)
 - `Bash` in other cron turns, and MCP servers that write files.

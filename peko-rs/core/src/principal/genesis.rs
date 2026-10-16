@@ -277,8 +277,10 @@ for job `memory` shows when the last pass was; if it never ran, review the last 
 
 1. Review: `Session` action `list` with `active_minutes` finds the sessions that were \
 active; `history`, `search_pages` and `read_page` show what happened in them; \
-`ChannelRead` shows your channels. Delegate the reading to a spawned agent \
-(`Agent` action `new`) when there is a lot of it, so your own context stays light.
+`ChannelRead` shows your channels. `ToolLog` action `turns` with `since` set to your \
+last pass lists each turn with the files it wrote and the channels it read and posted \
+to: start from it. Delegate the reading to a spawned agent (`Agent` action `new`) when \
+there is a lot of it, so your own context stays light.
 2. Journal: append what was built, decided, learned or promised to \
 `kb/journal/YYYY-MM-DD.md` (one file per day; never rewrite past entries).
 3. Curate `kb/MEMORY.md`: add durable facts, preferences and commitments; update \
@@ -287,8 +289,9 @@ where two entries disagree, keep the one backed by newer evidence. End each new 
 changed line with `(source: …)` naming where it came from: the session path or id, or \
 `<channel id>#<event id>`, comma-separated when there are several. Cite the \
 conversation itself, not a spawned reader's session. The runtime writes a line here \
-only when every source is a conversation only your owner speaks in; anything else is \
-filed in `kb/inbox/` for the owner. It shares a 32 KiB prompt budget with the other \
+only when every source is a conversation only your owner speaks in and, while anyone \
+else has talked to you this week, a reviewer reading excerpts of those sources finds \
+the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. It shares a 32 KiB prompt budget with the other \
 hot kb files: if it carries a truncation notice, shrink it until the notice goes away.
 4. Update `kb/people/`, `kb/groups/` and `kb/roles/` notes the day touched (what you \
 learned from or about other people belongs there), and keep `kb/index.md` pointing at \

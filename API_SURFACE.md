@@ -149,8 +149,12 @@ This document defines the public API surface for Peko, including the new Unified
   longer in `judge::EXEMPT_TOOLS`), `proposals` (`file`, `file_held`, `pending`), `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
   `GatedCall`, `Verdict`, `needs_review`), `memory_gate` (ADR-080 D4:
   `is_scheduled_owner`, `is_memory_run`, `sources`, `cited`, `screen`,
-  `SourceClass`, `Held`). `PolicyGate::source_class` (default `Unknown`)
-  classifies a hot-memory source.
+  `SourceClass`, `Held`, and ADR-085's `Claim`, `ClaimCheck`, `claims`,
+  `review_prompt`, `parse_review`, `hold_unsupported`, `best_excerpts`).
+  `PolicyGate::source_class` (default `Unknown`) classifies a hot-memory
+  source; `PolicyGate::check_claims` (default: unchecked, so lines are held)
+  reviews sourced lines against their sources. `ledger::read::turns` groups
+  ledger calls by run for `ToolLog` `turns`.
 - `ToolDispatcher::{set_policy_gate, policy_gate}`;
   `PrincipalManager::install_policy_gate`; `PrincipalManager::receive_trunk`
   takes the run's `ActingFor` and refuses non-owner stamps.

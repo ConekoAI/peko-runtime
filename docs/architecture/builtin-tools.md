@@ -812,6 +812,7 @@ run acted for, the session, and how the call ended.
 |---|---|---|
 | `search` | optional `tool`, `tool_action`, `session` (slug path or own session id) + `subtree` (default false), `actor`, `outcome`, `since` / `until` (RFC 3339 or an age like `30m`, `6h`, `2d`; default since 7d), `limit` (default 50, 1–200), `cursor` | `{ calls, next_cursor }`: compact rows newest first — `call_id`, `ts`, `tool`, `action`, `session` path, `actor`, `trust`, `outcome`, `duration_ms`, `exit_code`, `parent` |
 | `get` | required `call_id` | The call's `start` and `ends` records (redacted params, result excerpt), its session path, its `parent` row, and its `children` rows |
+| `turns` | optional `session` + `subtree`, `since` / `until` (default since 1d), `limit` (default 50, 1–200; the newest turns are kept) | `{ turns, omitted_older }`: one row per run, oldest first — `run_id`, `session` path, `actor`, `trust`, `started`, `ended`, `calls`, `tools` (name → count), `failed`, and the files it `wrote` / `read` and the channels it read (`channels_read`) and posted to (`channels_posted`) (ADR-085). Turns without tool calls are not listed |
 
 Outcomes: `ok`, `error` (including a tool-reported failure such as a non-zero
 Bash exit), `cancelled`, `floor_denied`, `policy_denied`, `awaiting_owner`,

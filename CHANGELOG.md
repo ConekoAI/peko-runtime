@@ -4,6 +4,28 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Memory claims reviewed against their sources (ADR-085, 0.1.0, 2026-10-16)
+
+- A scheduled owner run's sourced lines for `kb/MEMORY.md` or
+  `kb/CONVENTIONS.md` that pass the ADR-080 source check now also go to a
+  reviewer model, one call per write and up to 20 lines per call. The reviewer
+  sees each line with excerpts of what it cites: the cited channel event and
+  its neighbours, or the session or channel messages sharing the most words
+  with the line. The model is the policy's `judge_model`, else the principal's
+  own, charged to its quota. Unsupported lines, and lines with no finding
+  (including when no reviewer can run), are filed in `kb/inbox/internal/` with
+  the reason; the rest is written. The review runs only while some
+  conversation with someone besides the owner has been active in the last week;
+  `POLICY.md` `memory_review: guests | always | off` (default `guests`) changes
+  that, and the seeded policy shows the setting.
+- `ToolLog` gains `turns`: the window's calls grouped into one row per run,
+  with session, actor, trust, tool counts, failures, files written and read,
+  and channels read and posted to. The nightly memory brief starts its review
+  from it and asks for lines that say what the source says.
+- `PolicyGate::check_claims` (default: unchecked); `memory_gate::{Claim,
+  ClaimCheck, claims, review_prompt, parse_review, hold_unsupported,
+  best_excerpts}`; `ledger::read::turns`.
+
 ### Goals as plans, and check-ins (ADR-084, 0.1.0, 2026-10-16)
 
 - Plan steps take `checkAt` (`Plan` `create` nodes, `add_step`, `mark_step`):

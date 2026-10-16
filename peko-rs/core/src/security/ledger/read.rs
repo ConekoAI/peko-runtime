@@ -247,7 +247,117 @@ pub fn row(call: &Call, path_of: &dyn Fn(&str) -> Option<String>) -> Value {
     row
 }
 
-/// A principal's session tree, for showing slug paths and filtering by
+/// One turn's evidence (ADR-085): the calls of one run, grouped, with
+/// what they touched. Built from the ledger at read time; nothing extra
+/// is written per turn.
+#[derive(Debug, Default)]
+struct Turn {
+    run_id: String,
+    session: Option<String>,
+    actor: Value,
+    trust: Value,
+    started: Option<String>,
+    ended: Option<String>,
+    calls: usize,
+    failed: usize,
+    tools: BTreeMap<String, usize>,
+    wrote: Vec<String>,
+    read: Vec<String>,
+    channels_read: Vec<String>,
+    channels_posted: Vec<String>,
+}
+
+fn push_unique(list: &mut Vec<String>, value: Option<&str>) {
+    if let Some(value) = value.filter(|v| !v.is_empty()) {
+        if !list.iter().any(|v| v == value) {
+            list.push(value.to_string());
+        }
+    }
+}
+
+/// Turns from `calls` (oldest first), each the calls sharing a `run_id`;
+/// a call without one is a turn of its own. `path_of` maps session ids
+/// to slug paths. The caller filters `calls` first (reach, window,
+/// sessions).
+#[must_use]
+pub fn turns(calls: &[&Call], path_of: &dyn Fn(&str) -> Option<String>) -> Vec<Value> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_run: HashMap<String, Turn> = HashMap::new();
+    for call in calls {
+        let Some(start) = call.start.as_ref() else {
+            continue;
+        };
+        let run_id = start["run_id"]
+            .as_str()
+            .filter(|r| !r.is_empty())
+            .unwrap_or(&call.call_id)
+            .to_string();
+        let turn = by_run.entry(run_id.clone()).or_insert_with(|| {
+            order.push(run_id.clone());
+            Turn {
+                run_id,
+                session: call
+                    .session_id()
+                    .map(|id| path_of(id).unwrap_or_else(|| id.to_string())),
+                actor: start["acting_for"]["actor"].clone(),
+                trust: start["acting_for"]["trust"].clone(),
+                started: start["ts"].as_str().map(str::to_string),
+                ..Turn::default()
+            }
+        });
+        turn.calls += 1;
+        let ended = call.ends.last().and_then(|end| end["ts"].as_str());
+        if let Some(ended) = ended.or(start["ts"].as_str()) {
+            turn.ended = Some(ended.to_string());
+        }
+        if !matches!(call.outcome(), Some("ok" | "detached") | None) {
+            turn.failed += 1;
+        }
+        let tool = call.tool().unwrap_or_default();
+        *turn.tools.entry(tool.to_string()).or_default() += 1;
+        let params = &start["params"];
+        match tool {
+            "Write" | "Edit" => push_unique(&mut turn.wrote, params["file_path"].as_str()),
+            "Read" => push_unique(&mut turn.read, params["file_path"].as_str()),
+            "ChannelRead" => push_unique(&mut turn.channels_read, params["channel"].as_str()),
+            "ChannelSend" => push_unique(&mut turn.channels_posted, params["to"].as_str()),
+            _ => {}
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|run| by_run.remove(&run))
+        .map(|turn| {
+            let mut row = json!({
+                "run_id": turn.run_id,
+                "session": turn.session,
+                "actor": turn.actor,
+                "trust": turn.trust,
+                "started": turn.started,
+                "ended": turn.ended,
+                "calls": turn.calls,
+                "tools": turn.tools,
+            });
+            let object = row.as_object_mut().expect("row is an object");
+            if turn.failed > 0 {
+                object.insert("failed".into(), json!(turn.failed));
+            }
+            for (key, list) in [
+                ("wrote", turn.wrote),
+                ("read", turn.read),
+                ("channels_read", turn.channels_read),
+                ("channels_posted", turn.channels_posted),
+            ] {
+                if !list.is_empty() {
+                    object.insert(key.into(), json!(list));
+                }
+            }
+            row
+        })
+        .collect()
+}
+
+/// A principal's session tree, for showing slug paths and filtering by/// A principal's session tree, for showing slug paths and filtering by
 /// session. Paths resolve at read time, so a moved session shows its
 /// current path.
 pub struct Sessions {
