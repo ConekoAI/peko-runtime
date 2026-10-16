@@ -72,12 +72,12 @@ pub struct SessionInfo {
     pub created_at: String,
     pub last_activity: String,
     pub message_count: usize,
-    /// Subject type ("user", "principal", or "public") — present when
+    /// ActorRef type ("user", "principal", or "public") — present when
     /// the underlying `SessionMetadata` was written with peer info.
     /// Branched sessions may have `None` here (see `branch_session_by_id`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_type: Option<String>,
-    /// Subject ID (e.g. `"alice"` for `user:alice`). `None` when no
+    /// ActorRef ID (e.g. `"alice"` for `user:alice`). `None` when no
     /// peer is recorded for the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_id: Option<String>,
@@ -402,7 +402,7 @@ pub trait SessionRuntime: Send + Sync {
     /// could not be reconciled.
     async fn list_sessions(
         &self,
-        peer: Option<&peko_subject::Subject>,
+        peer: Option<&peko_subject::ActorRef>,
         agent_id: Option<&str>,
         limit: usize,
         active_minutes: Option<i64>,
@@ -439,7 +439,7 @@ pub trait SessionRuntime: Send + Sync {
     async fn search_sessions(
         &self,
         query: &str,
-        peer: Option<&peko_subject::Subject>,
+        peer: Option<&peko_subject::ActorRef>,
         limit: usize,
         subtree: Option<&str>,
     ) -> anyhow::Result<Vec<SessionSearchHit>>;

@@ -224,34 +224,44 @@ peko stop my-principal --peer user:alice
 
 ---
 
-### `login` — Log in to PekoHub
+### `runtime register` — Register this runtime with PekoHub
 
-Authenticate with the PekoHub registry. The token is stored in the encrypted vault.
+Everything works without PekoHub. Registering links this runtime and its
+local user to one PekoHub account (ADR-081): the runtime proves possession
+of its identity key, and the account becomes the local user's Hub alias.
+A principal can go online only after its runtime is registered and its
+owner has a Hub account.
 
 ```bash
-peko login [--api-key <KEY>]
+peko runtime register [--hub <ORIGIN>] --api-key <KEY>
+peko runtime unregister --api-key <KEY>
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--api-key <KEY>` | Authenticate with an API key instead of OAuth |
+| `--hub <ORIGIN>` | PekoHub origin (default `https://pekohub.org`) |
+| `--api-key <KEY>` | API key of the account to register under (or `PEKOHUB_API_KEY`) |
 
-### `logout` — Log out from PekoHub
+`unregister` drops the local user's Hub alias at once and removes the
+registration; unregister registered principals first (`peko unregister <name>`).
+The terminal is always the local user — there is no separate login.
 
-Remove the stored registry token.
+### `transfer` — Transfer a peko to a new owner
+
+Only the current owner can transfer. An online peko's new owner must be a
+Hub account. The change is audited.
 
 ```bash
-peko logout
+peko transfer <NAME> user:hub:<ACCOUNT>
+peko transfer <NAME> user:local:local
 ```
 
 ---
 
 ### `auth` — Authentication status
 
-Show the current PekoHub authentication status: which registry you're
-logged into, the masked token, the active runtime identity, and the
-effective scopes. Run this to confirm `peko login` succeeded, or to
-debug a "not authenticated" error from a registry call.
+Show the local user and, when the runtime is registered, its PekoHub
+account alias.
 
 ```bash
 peko auth status
@@ -457,7 +467,7 @@ peko capability list --principal my-principal
 
 Search the PekoHub registry for published principals and extensions,
 and inspect a specific bundle. Search is read-only and does not
-require `peko login` for public bundles; private bundles are gated on
+require registration for public bundles; private bundles are gated on
 your PekoHub credentials (use `peko auth status` to check).
 
 ```bash
@@ -845,8 +855,8 @@ encrypted vault (OS keychain); store them with `peko model add --key` or
 ## Quick Reference Card
 
 ```bash
-# Log in
-peko login --api-key "$PEKO_API_KEY"
+# Register this runtime with PekoHub (optional; local use needs nothing)
+peko runtime register --api-key "$PEKO_API_KEY"
 peko auth status
 
 # peko management
@@ -902,7 +912,7 @@ operators and scripts, not day-to-day peko use.
 | `peko config` | Read/write global `config.toml` |
 | `peko registry` | Registry host configuration |
 | `peko runtime` | Runtime identity and known-runtimes trust |
-| `peko tunnel` | PekoHub tunnel setup and status |
+| `peko tunnel` | PekoHub tunnel stop and status |
 | `peko vault migrate` | Switch vault unlock mode |
 
 ---

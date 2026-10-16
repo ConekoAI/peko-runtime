@@ -62,7 +62,7 @@ There are three kinds of actor. Trust is decided by **owner consent** at admissi
 
 | Actor | How they get it | Trust |
 |---|---|---|
-| **Owner** | `config.owner`; the offline local user `user:local`; the Hub account logged into this runtime's terminal (ADR-077); any operator credential (local IPC, admin-scoped API key — ADR-057 D2) | Full |
+| **Owner** | `config.owner` — exactly one actor, matched by immutable key ([ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) D4; the earlier rules making `user:local` and the terminal's Hub login owners of every principal are retired). Operator credentials keep administrative authority but chat as the local user. | Full |
 | **Trusted** | An actor named in a `Permission::Trusted` grant: `peko permit <peko> <actor> trusted` | Full tools, within `POLICY.md` |
 | **Untrusted** | Everyone else admitted to chat: `Chat`-only grants, `Public` wildcard matches, visitors, principals without the consent bit | Floor-restricted tools, within `POLICY.md` |
 

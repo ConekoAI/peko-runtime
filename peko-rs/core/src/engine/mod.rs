@@ -38,7 +38,7 @@
 //!   `peko_engine::AgenticLoop` (Phase 9b.N.5b.9). The actual production
 //!   loop now lives in `peko_engine::agentic_loop`. Tests stay in root
 //!   because they need root-only fixture types (`Agent`, `ToolingRuntime`,
-//!   `Subject`, `SessionManager`, etc.) that `peko-engine` cannot depend
+//!   `ActorRef`, `SessionManager`, etc.) that `peko-engine` cannot depend
 //!   on. Mirrors the `tool_executor_compat` precedent.
 //! - [`tool_runtime`] — `ToolDispatcher` + concrete `tools::builtin::*`
 //!   imports. Plan: move concrete tool impls and adapter into

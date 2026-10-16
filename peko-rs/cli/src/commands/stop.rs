@@ -70,10 +70,10 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
     }
 }
 
-/// Parse a `--peer` value into a `Subject`. Accepts the wire format
+/// Parse a `--peer` value into a `ActorRef`. Accepts the wire format
 /// `user:<id>`, `principal:<did>`, or `public`.
-fn parse_subject(value: &str) -> Result<peko_auth::Subject> {
-    peko_auth::Subject::from_str(value)
+fn parse_subject(value: &str) -> Result<peko_auth::ActorRef> {
+    peko_auth::ActorRef::from_str(value)
         .map_err(|e| anyhow::anyhow!("invalid --peer value '{value}': {e}"))
 }
 

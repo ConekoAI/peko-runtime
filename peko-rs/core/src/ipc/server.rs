@@ -87,7 +87,7 @@ pub enum ServerSocket {
     },
 }
 
-/// Subject address returned by `ServerSocket::recv_from` and threaded through
+/// ActorRef address returned by `ServerSocket::recv_from` and threaded through
 /// the request handlers so they can `send_to` the response back. Unix domain
 /// datagram sockets return the sender's filesystem path; UDP returns a
 /// `std::net::SocketAddr`. Windows named pipes (ADR-038) are
@@ -1061,10 +1061,8 @@ impl IpcServer {
                 if !is_local_connection {
                     return Err(AuthError::InvalidCredential);
                 }
-                // ADR-057: local callers carry the runtime's pekohub
-                // owner id (when logged in) so their attribution
-                // identity derives hub-side; `None` = not logged in.
-                Ok(CallerContext::local_with_hub_user_id(state.hub_user_id()))
+                // ADR-081 D3: the terminal is the runtime's local user.
+                Ok(CallerContext::local())
             }
             AuthCredential::Jwt(token) => {
                 if !auth_config.enable_pekohub_jwt() {
@@ -1090,9 +1088,7 @@ impl IpcServer {
                     match verifier.verify(key).await {
                         Some(entry) => {
                             let key_id = peko_auth::api_key::ApiKeyStore::extract_key_id(key);
-                            let mut caller = CallerContext::from_api_key(key_id, entry.scopes);
-                            caller.hub_user_id = state.hub_user_id();
-                            Ok(caller)
+                            Ok(CallerContext::from_api_key(key_id, entry.scopes))
                         }
                         None => Err(AuthError::InvalidCredential),
                     }

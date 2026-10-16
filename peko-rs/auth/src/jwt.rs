@@ -19,7 +19,7 @@ use super::caller::CallerContext;
 /// Validated JWT claims extracted from a token
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedJwt {
-    /// Subject (pekohub user ID)
+    /// ActorRef (pekohub user ID)
     pub sub: String,
     /// ADR-058 D5: typed caller kind for bridge tokens
     /// (`"user" | "visitor"`). Optional at the validator layer — the
@@ -486,7 +486,7 @@ impl JwtValidator {
         }
 
         if let Some(kind) = claims.kind.as_deref() {
-            peko_subject::Subject::from_bridge_claim(kind, &claims.sub)
+            peko_subject::ActorRef::from_bridge_claim(kind, &claims.sub)
                 .map_err(|_| JwtError::InvalidFormat)?;
         }
         // Verify signature

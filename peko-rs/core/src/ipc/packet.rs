@@ -110,7 +110,7 @@ pub enum RequestPacket {
         /// starts with this prefix (e.g. `"cron."`).
         event_type_prefix: Option<String>,
         /// Optional filter: only return events whose `details.principal_name`
-        /// matches (or whose caller is a `Subject::Principal` with
+        /// matches (or whose caller is a `ActorRef::Principal` with
         /// this id). The `peko audit tail --principal` flag uses this.
         principal: Option<String>,
     },
@@ -460,7 +460,7 @@ pub enum RequestPacket {
 
     // ── Ownership and Permission (ADR-039) ──
     //
-    // Grant/revoke packets carry a single `subject: Subject`.
+    // Grant/revoke packets carry a single `subject: ActorRef`.
     // The legacy `(subject_id, subject_type)` wire fields from ADR-033
     // were dropped in issue #30.
     // ── Principal operations ─────────────────────────────────────────
@@ -515,7 +515,7 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         /// None means "the principal's owner" (default thread).
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
     },
 
     /// Read a peer's conversation thread with a Principal.
@@ -532,7 +532,7 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         /// None means "the principal's owner" (default view).
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
         /// Cap on number of messages returned (default 50, max 1000).
         limit: Option<usize>,
         /// Only messages newer than `now() - since_secs` are returned.
@@ -549,7 +549,7 @@ pub enum RequestPacket {
         #[serde(default)]
         query: Option<String>,
         /// Optional exact author filter (the raw channel-log author —
-        /// a peer Subject wire form or the principal's id).
+        /// a peer ActorRef wire form or the principal's id).
         #[serde(default)]
         author: Option<String>,
     },
@@ -577,7 +577,7 @@ pub enum RequestPacket {
         request_id: u64,
         name: String,
         /// None means "the principal's owner" (default thread).
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
         /// Replay seed — rows strictly newer than this line-number
         /// cursor. `None` replays from the start.
         #[serde(default)]
@@ -619,15 +619,25 @@ pub enum RequestPacket {
     PrincipalGrantPermission {
         request_id: u64,
         name: String,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
+    },
+
+    /// Transfer a principal to a new owner (ADR-081 D4). Only the current
+    /// owner may transfer; an online principal's new owner must be a Hub
+    /// actor.
+    #[serde(rename = "principal_transfer")]
+    PrincipalTransfer {
+        request_id: u64,
+        name: String,
+        owner: peko_auth::ActorRef,
     },
 
     #[serde(rename = "principal_revoke_permission")]
     PrincipalRevokePermission {
         request_id: u64,
         name: String,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
     },
 
@@ -880,6 +890,7 @@ impl RequestPacket {
             | Self::PrincipalImportPreview { request_id, .. }
             | Self::PrincipalGrantPermission { request_id, .. }
             | Self::PrincipalRevokePermission { request_id, .. }
+            | Self::PrincipalTransfer { request_id, .. }
             | Self::PrincipalSetStatus { request_id, .. }
             | Self::PrincipalRegister { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
@@ -901,24 +912,24 @@ impl RequestPacket {
         }
     }
 
-    /// Resolve the canonical `Subject` subject for a grant/revoke
+    /// Resolve the canonical `ActorRef` subject for a grant/revoke
     /// packet. The legacy ADR-033 wire shape was removed in issue #30;
     /// every grant/revoke packet now carries the subject inline.
     ///
     /// Only the four grant/revoke variants carry a subject. For any
-    /// other variant this method returns `Ok(Subject::User(""))` so
+    /// other variant this method returns `Ok(ActorRef::User(""))` so
     /// callers can use the same match arm — but in practice the server
     /// only calls this inside the grant/revoke arms.
     #[must_use]
-    pub fn resolved_subject(&self) -> peko_auth::Subject {
-        use peko_auth::Subject;
+    pub fn resolved_subject(&self) -> peko_auth::ActorRef {
+        use peko_auth::ActorRef;
 
         match self {
             Self::PrincipalGrantPermission { subject, .. }
             | Self::PrincipalRevokePermission { subject, .. } => subject.clone(),
             // Non-grant/revoke packets have no subject. Return the
             // default sentinel so the caller doesn't have to special-case.
-            _ => Subject::User(String::new()),
+            _ => ActorRef::User("".into()),
         }
     }
 
@@ -1008,7 +1019,7 @@ pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
 pub struct PrincipalLogMessage {
     pub schema_version: u8,
     pub id: String,
-    pub sender: peko_auth::Subject,
+    pub sender: peko_auth::ActorRef,
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1018,7 +1029,7 @@ pub struct PrincipalLogMessage {
 impl PrincipalLogMessage {
     #[must_use]
     pub fn new(
-        sender: peko_auth::Subject,
+        sender: peko_auth::ActorRef,
         text: impl Into<String>,
         correlation_id: Option<String>,
     ) -> Self {
@@ -1109,12 +1120,12 @@ pub enum ResponsePacket {
     },
 
     /// Invite acknowledged. ADR-049 Phase 1: the invitee is
-    /// `Subject`-typed (a principal or a `user:<id>` user).
+    /// `ActorRef`-typed (a principal or a `user:<id>` user).
     #[serde(rename = "channel_invited")]
     ChannelInvited {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
-        invitee: peko_subject::Subject,
+        invitee: peko_subject::ActorRef,
     },
 
     /// Post acknowledged — returns the new task id.
@@ -1161,13 +1172,13 @@ pub enum ResponsePacket {
         event: peko_protocol::channel::ChannelEvent,
     },
 
-    /// Members list. ADR-049 Phase 1: members are `Subject`-typed
+    /// Members list. ADR-049 Phase 1: members are `ActorRef`-typed
     /// (principals and users).
     #[serde(rename = "channel_members_result")]
     ChannelMembersResult {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
-        members: Vec<peko_subject::Subject>,
+        members: Vec<peko_subject::ActorRef>,
         /// P1.2 attribution: per-member runtime provenance (`runtime_id
         /// = None` for local members). Default empty so pre-PR-3b
         /// consumers that don't read this field see no change to the
@@ -1649,7 +1660,7 @@ pub enum ResponsePacket {
     PrincipalLog {
         request_id: u64,
         name: String,
-        peer: peko_auth::Subject,
+        peer: peko_auth::ActorRef,
         messages: Vec<PrincipalLogMessage>,
         next_cursor: Option<String>,
         has_more: bool,
@@ -1698,15 +1709,22 @@ pub enum ResponsePacket {
     PrincipalPermissionGranted {
         request_id: u64,
         name: String,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
+    },
+
+    #[serde(rename = "principal_owner_transferred")]
+    PrincipalOwnerTransferred {
+        request_id: u64,
+        name: String,
+        owner: peko_auth::ActorRef,
     },
 
     #[serde(rename = "principal_permission_revoked")]
     PrincipalPermissionRevoked {
         request_id: u64,
         name: String,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
     },
 
@@ -2284,6 +2302,7 @@ impl ResponsePacket {
             | Self::PrincipalImportPreviewed { request_id, .. }
             | Self::PrincipalPermissionGranted { request_id, .. }
             | Self::PrincipalPermissionRevoked { request_id, .. }
+            | Self::PrincipalOwnerTransferred { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalRegistrationUpdated { request_id, .. }
@@ -2359,6 +2378,7 @@ impl ResponsePacket {
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
+            Self::PrincipalOwnerTransferred { .. } => "PrincipalOwnerTransferred",
             Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
             Self::PrincipalRegistrationUpdated { .. } => "PrincipalRegistrationUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
@@ -2553,7 +2573,7 @@ mod tests {
         let req = RequestPacket::PrincipalStop {
             request_id: 2,
             name: "scout".to_string(),
-            peer: Some(peko_auth::Subject::User("alice".to_string())),
+            peer: Some(peko_auth::ActorRef::User("alice".into())),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -2565,7 +2585,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 2);
                 assert_eq!(name, "scout");
-                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
+                assert_eq!(peer, Some(peko_auth::ActorRef::User("alice".into())));
             }
             _ => panic!("Wrong variant"),
         }
@@ -2753,7 +2773,7 @@ mod tests {
                 hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: peko_auth::Subject::User("alice".to_string()),
+                owner: peko_auth::ActorRef::User("alice".into()),
                 description: Some("test principal".to_string()),
                 exposure: peko_auth::Exposure::default(),
                 status: None,
@@ -2786,7 +2806,7 @@ mod tests {
                 hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: peko_auth::Subject::User("alice".to_string()),
+                owner: peko_auth::ActorRef::User("alice".into()),
                 description: None,
                 exposure: peko_auth::Exposure::default(),
                 status: None,
@@ -3216,7 +3236,7 @@ mod tests {
                 hub_id: None,
                 name: "alice".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
-                owner: peko_auth::Subject::User("alice".to_string()),
+                owner: peko_auth::ActorRef::User("alice".into()),
                 description: Some("updated".to_string()),
                 exposure: peko_auth::Exposure::Public,
                 status: Some(crate::principal::config::Status::Busy),
@@ -3272,7 +3292,7 @@ mod tests {
                 hub_id: None,
                 name: "alice".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:alice".to_string()),
-                owner: peko_auth::Subject::User("alice".to_string()),
+                owner: peko_auth::ActorRef::User("alice".into()),
                 description: Some("personal assistant".to_string()),
                 exposure: peko_auth::Exposure::default(),
                 status: None,
@@ -3822,7 +3842,7 @@ mod tests {
                 hub_id: None,
                 name: "helper".to_string(),
                 did: peko_subject::PrincipalDID("did:peko:local:helper".to_string()),
-                owner: peko_auth::Subject::User("alice".to_string()),
+                owner: peko_auth::ActorRef::User("alice".into()),
                 description: None,
                 exposure: peko_auth::Exposure::default(),
                 status: None,
@@ -4034,7 +4054,7 @@ mod tests {
 
     // -- issue #30: `RequestPacket::resolved_subject` --
 
-    fn grant_pkt(subject: peko_auth::Subject) -> RequestPacket {
+    fn grant_pkt(subject: peko_auth::ActorRef) -> RequestPacket {
         RequestPacket::PrincipalGrantPermission {
             request_id: 1,
             name: "p".into(),
@@ -4047,10 +4067,10 @@ mod tests {
     fn test_resolved_subject_canonical_shape() {
         // The grant carries the subject directly (ADR-039). The
         // resolver just clones it out.
-        let pkt = grant_pkt(peko_auth::Subject::Principal("helper".into()));
+        let pkt = grant_pkt(peko_auth::ActorRef::Principal("helper".into()));
         assert_eq!(
             pkt.resolved_subject(),
-            peko_auth::Subject::Principal("helper".into())
+            peko_auth::ActorRef::Principal("helper".into())
         );
     }
 
@@ -4060,30 +4080,27 @@ mod tests {
         let pkt = RequestPacket::PrincipalRevokePermission {
             request_id: 1,
             name: "p".into(),
-            subject: peko_auth::Subject::Public,
+            subject: peko_auth::ActorRef::Public,
             permission: peko_auth::ownership::Permission::Chat,
         };
-        assert_eq!(pkt.resolved_subject(), peko_auth::Subject::Public);
+        assert_eq!(pkt.resolved_subject(), peko_auth::ActorRef::Public);
     }
 
     #[test]
     fn test_resolved_subject_non_grant_revoke_returns_sentinel() {
         // Any non-grant/revoke variant must not panic — returns a
-        // sentinel `Subject::User("")` that the caller can ignore.
+        // sentinel `ActorRef::User("")` that the caller can ignore.
         let pkt = RequestPacket::Ping { request_id: 1 };
-        assert_eq!(
-            pkt.resolved_subject(),
-            peko_auth::Subject::User(String::new())
-        );
+        assert_eq!(pkt.resolved_subject(), peko_auth::ActorRef::User("".into()));
     }
 
     #[test]
     fn test_grant_serialization_carries_subject_inline() {
-        // After issue #30, the grant carries the `Subject` directly —
+        // After issue #30, the grant carries the `ActorRef` directly —
         // no legacy `subject_id` / `subject_type` fields exist on the
         // wire anymore. The wire must serialize `subject` and not the
         // dropped fields.
-        let pkt = grant_pkt(peko_auth::Subject::Principal("helper".into()));
+        let pkt = grant_pkt(peko_auth::ActorRef::Principal("helper".into()));
         let json = serde_json::to_string(&pkt).unwrap();
         assert!(
             json.contains("\"subject\""),
@@ -4285,7 +4302,7 @@ mod tests {
         let req = RequestPacket::PrincipalGrantPermission {
             request_id: 5002,
             name: "helper".to_string(),
-            subject: peko_auth::Subject::User("bob".to_string()),
+            subject: peko_auth::ActorRef::User("bob".into()),
             permission: peko_auth::ownership::Permission::Chat,
         };
         let bytes = req.to_bytes().unwrap();
@@ -4299,7 +4316,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5002);
                 assert_eq!(name, "helper");
-                assert_eq!(subject, peko_auth::Subject::User("bob".to_string()));
+                assert_eq!(subject, peko_auth::ActorRef::User("bob".into()));
                 assert_eq!(permission, peko_auth::ownership::Permission::Chat);
             }
             _ => panic!("Wrong variant"),
@@ -4430,7 +4447,7 @@ mod tests {
         let req = RequestPacket::PrincipalLog {
             request_id: 5200,
             name: "helper".to_string(),
-            peer: Some(peko_auth::Subject::User("alice".to_string())),
+            peer: Some(peko_auth::ActorRef::User("alice".into())),
             limit: Some(100),
             since_secs: Some(86_400),
             cursor: None,
@@ -4451,7 +4468,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5200);
                 assert_eq!(name, "helper");
-                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
+                assert_eq!(peer, Some(peko_auth::ActorRef::User("alice".into())));
                 assert_eq!(limit, Some(100));
                 assert_eq!(since_secs, Some(86_400));
                 assert_eq!(cursor, None);
@@ -4468,7 +4485,7 @@ mod tests {
     #[test]
     fn principal_log_message_round_trips_with_camel_case_metadata() {
         let message = PrincipalLogMessage::new(
-            peko_auth::Subject::User("local".to_string()),
+            peko_auth::ActorRef::User("local".into()),
             "hello",
             Some("request-1".to_string()),
         );
@@ -4490,9 +4507,9 @@ mod tests {
         let resp = ResponsePacket::PrincipalLog {
             request_id: 6200,
             name: "helper".to_string(),
-            peer: peko_auth::Subject::User("alice".to_string()),
+            peer: peko_auth::ActorRef::User("alice".into()),
             messages: vec![PrincipalLogMessage::new(
-                peko_auth::Subject::User("alice".to_string()),
+                peko_auth::ActorRef::User("alice".into()),
                 "hi",
                 None,
             )],
@@ -4512,7 +4529,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 6200);
                 assert_eq!(name, "helper");
-                assert_eq!(peer, peko_auth::Subject::User("alice".to_string()));
+                assert_eq!(peer, peko_auth::ActorRef::User("alice".into()));
                 assert_eq!(messages.len(), 1);
                 assert_eq!(messages[0].text, "hi");
                 assert_eq!(next_cursor.as_deref(), Some("opaque-cursor"));
@@ -4534,7 +4551,7 @@ mod tests {
         let req = RequestPacket::PrincipalLogWatch {
             request_id: 5300,
             name: "helper".to_string(),
-            peer: Some(peko_auth::Subject::User("alice".to_string())),
+            peer: Some(peko_auth::ActorRef::User("alice".into())),
             since_cursor: Some("42".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
@@ -4548,7 +4565,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5300);
                 assert_eq!(name, "helper");
-                assert_eq!(peer, Some(peko_auth::Subject::User("alice".to_string())));
+                assert_eq!(peer, Some(peko_auth::ActorRef::User("alice".into())));
                 assert_eq!(since_cursor.as_deref(), Some("42"));
             }
             _ => panic!("Wrong variant"),
@@ -4579,7 +4596,7 @@ mod tests {
         let resp = ResponsePacket::PrincipalLogAppended {
             request_id: 5300,
             message: PrincipalLogMessage::new(
-                peko_auth::Subject::User("alice".to_string()),
+                peko_auth::ActorRef::User("alice".into()),
                 "hi",
                 None,
             ),
@@ -4593,10 +4610,7 @@ mod tests {
             } => {
                 assert_eq!(request_id, 5300);
                 assert_eq!(message.text, "hi");
-                assert_eq!(
-                    message.sender,
-                    peko_auth::Subject::User("alice".to_string())
-                );
+                assert_eq!(message.sender, peko_auth::ActorRef::User("alice".into()));
             }
             _ => panic!("Wrong variant"),
         }
@@ -4610,10 +4624,10 @@ mod tests {
     #[test]
     fn test_principal_permissions_response_roundtrip() {
         let grant = peko_auth::ownership::PermissionGrant {
-            subject: peko_auth::Subject::User("bob".to_string()),
+            subject: peko_auth::ActorRef::User("bob".into()),
             permission: peko_auth::ownership::Permission::Chat,
             granted_at: "2026-06-01T00:00:00Z".to_string(),
-            granted_by: peko_auth::Subject::User("alice".to_string()),
+            granted_by: peko_auth::ActorRef::User("alice".into()),
         };
         let resp = ResponsePacket::PrincipalPermissions {
             request_id: 6001,
@@ -4630,7 +4644,7 @@ mod tests {
                 assert_eq!(permissions.len(), 1);
                 assert_eq!(
                     permissions[0].subject,
-                    peko_auth::Subject::User("bob".to_string())
+                    peko_auth::ActorRef::User("bob".into())
                 );
             }
             _ => panic!("Wrong variant"),
@@ -4650,7 +4664,7 @@ mod tests {
         let req_grant = RequestPacket::PrincipalGrantPermission {
             request_id: 2,
             name: "p".to_string(),
-            subject: peko_auth::Subject::Public,
+            subject: peko_auth::ActorRef::Public,
             permission: peko_auth::ownership::Permission::Chat,
         };
         assert_eq!(req_grant.request_id(), 2);
@@ -4658,7 +4672,7 @@ mod tests {
         let req_revoke = RequestPacket::PrincipalRevokePermission {
             request_id: 3,
             name: "p".to_string(),
-            subject: peko_auth::Subject::Public,
+            subject: peko_auth::ActorRef::Public,
             permission: peko_auth::ownership::Permission::Chat,
         };
         assert_eq!(req_revoke.request_id(), 3);

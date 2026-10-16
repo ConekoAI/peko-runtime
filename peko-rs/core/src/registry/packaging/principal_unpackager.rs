@@ -8,7 +8,7 @@ use crate::principal::config::PrincipalConfig;
 use crate::registry::packaging::path_safety::{reject_destination_links, safe_join};
 use crate::registry::packaging::principal_manifest::{is_workspace_payload, PrincipalManifest};
 use crate::registry::packaging::validation::ValidationResult;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_identity::{Identity, KeyPairExport};
 use peko_subject::PrincipalDID;
 use std::collections::HashMap;
@@ -36,10 +36,10 @@ pub struct PrincipalImportOptions {
     pub expected_manifest_checksum: Option<String>,
     /// Caller subject for the ownership write gate (ADR-066 D9). The
     /// IPC handler passes `caller.subject().clone()`; defaults to
-    /// `Subject::User("local")` so library callers (tests, the CLI
+    /// `ActorRef::User("local")` so library callers (tests, the CLI
     /// `import` subcommand if it ever bypasses the IPC layer) clear
     /// the Shared tier actor gate.
-    pub caller_subject: Subject,
+    pub caller_subject: ActorRef,
     /// Observability hub for the ADR-066 D9 `Security` audit event a
     /// denied ownership-crossing write emits. `None` skips the event.
     pub observability: Option<Arc<peko_observability::Observability>>,
@@ -54,7 +54,7 @@ impl Default for PrincipalImportOptions {
             import_local_state: true,
             force: false,
             expected_manifest_checksum: None,
-            caller_subject: Subject::User("local".to_string()),
+            caller_subject: ActorRef::User("local".into()),
             observability: None,
         }
     }
@@ -205,7 +205,7 @@ impl PrincipalUnpackager {
             "[identity_binding_failed] Snapshot DID document does not match its keys"
         );
         // Parse configuration before any identity or tooling writes.
-        let _: PrincipalConfig =
+        let snapshot_config: PrincipalConfig =
             toml::from_str(std::str::from_utf8(&files["config/principal.toml"])?)?;
 
         let name = options
@@ -220,6 +220,21 @@ impl PrincipalUnpackager {
         // `common::identifiers::validate_agent_name`).
         crate::common::identifiers::validate_agent_name(&name)
             .map_err(|e| anyhow::anyhow!("[unsafe_name] {e}"))?;
+
+        // ADR-081 D6 step 1 / D7: one actor is hosted at most once per
+        // runtime. A second copy of a hosted key is refused before any write;
+        // rotating keys makes a new actor instead.
+        if !options.rotate_keys {
+            if let Some(key) = snapshot_config.actor_key.as_deref() {
+                if let Some(hosted) = self.hosted_name_for_key(key, &name)? {
+                    anyhow::bail!(
+                        "This principal is already hosted here as '{hosted}'. A runtime \
+                         hosts one copy of an actor; import with --rotate-keys to make \
+                         a new actor instead."
+                    );
+                }
+            }
+        }
 
         // Preflight before installing keys or writing any snapshot payload.
         let workspace = self.config_dir.join("principals").join(&name);
@@ -268,31 +283,10 @@ impl PrincipalUnpackager {
             .await?;
         let mut config = self.import_config(&files, &name, &identity)?;
 
-        // ADR-066 P2: no capability negotiation — the wire's
-        // `selected_capabilities` was dropped from
-        // `PrincipalImportOptions`; imported principals carry no
-        // grants (the `[capabilities]` section is ignored on load
-        // and never persisted).
         // Update DID in config to match the imported/rotated identity
         config.did = Some(PrincipalDID(identity.did.clone()));
         config.name = name.clone();
-        config.hub_id = None;
         config.exposure = peko_auth::Exposure::LocalOnly;
-        if options.rotate_keys {
-            config.id = Some(peko_subject::PrincipalId::generate());
-            config.actor_key = Some(uuid::Uuid::new_v4().to_string());
-        } else {
-            config
-                .id
-                .get_or_insert_with(peko_subject::PrincipalId::generate);
-            config
-                .actor_key
-                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
-        }
-
-        // Reuse an existing hosted identity. Remote contacts have no local ID;
-        // importing their credential promotes them using the immutable actor key.
-        use peko_channel::ChannelPort;
         let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
             runtime_dir: PathResolver::with_dirs(
                 self.config_dir.clone(),
@@ -302,19 +296,46 @@ impl PrincipalUnpackager {
             .runtime_dir(),
             shared_dir: None,
         });
-        if let Some(actor) = store.known_actors().await?.into_iter().find(|a| {
-            a.kind == "principal" && config.actor_key.as_deref() == Some(a.identity_key.as_str())
-        }) {
-            if let Some(local_id) = actor.local_id {
-                config.id = Some(peko_subject::PrincipalId(local_id));
-            } else {
-                config.id = Some(peko_subject::PrincipalId::generate());
-            }
+        // ADR-081 D6 step 1: the local ID is this runtime's to give. A
+        // principal that was hosted here before gets its old ID back; any
+        // other gets a fresh one. The snapshot's ID — the source runtime's
+        // — is never adopted.
+        if options.rotate_keys {
+            config.actor_key = Some(uuid::Uuid::new_v4().to_string());
+            config.id = Some(peko_subject::PrincipalId::generate());
+        } else {
+            let key = config
+                .actor_key
+                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone();
+            config.id = Some(
+                store
+                    .former_local_id(&key)?
+                    .map(peko_subject::PrincipalId)
+                    .unwrap_or_else(peko_subject::PrincipalId::generate),
+            );
         }
 
-        // Default owner to local user unless already set
-        if matches!(config.owner, Subject::User(ref u) if u == "default") {
-            config.owner = Subject::User("local".to_string());
+        // ADR-081 D6 step 2–3: actor references arrive by the portable rule.
+        // A snapshot from before portable identity names only this
+        // runtime's actors; its owner becomes the local user as before.
+        let destination = self.destination_runtime();
+        let portable = manifest.source_runtime.is_some();
+        let foreign_owner = portable
+            .then(|| super::portable::foreign_local_owner(&config, &destination))
+            .flatten();
+        let rule: Box<super::portable::Rewrite<'_>> = if portable {
+            Box::new(super::portable::import_rule(
+                &destination,
+                foreign_owner.as_ref(),
+            ))
+        } else {
+            Box::new(|subject: &ActorRef| subject.clone())
+        };
+        if portable {
+            super::portable::rewrite_config(&mut config, &*rule);
+        } else {
+            config.owner = ActorRef::User("local".into());
         }
 
         // ADR-056 grounding semantics: what the import *is* follows
@@ -355,7 +376,7 @@ impl PrincipalUnpackager {
             self.import_sessions(&files, &name).await?;
         }
 
-        self.import_workspace_tooling(&files, &manifest, &name)
+        self.import_workspace_tooling(&files, &manifest, &name, &*rule)
             .await?;
         if carried_local_state && options.import_local_state {
             let effective_principal_id = config
@@ -364,8 +385,37 @@ impl PrincipalUnpackager {
                 .map(|pid| pid.0)
                 .or_else(|| config.did.clone().map(|d| d.0))
                 .unwrap_or_else(|| name.clone());
-            self.import_local_authored(&files, &name, &effective_principal_id)
+            self.import_local_authored(&files, &name, &effective_principal_id, &*rule)
                 .await?;
+        }
+        // ADR-081 D5: the principal's contact book and membership record.
+        let local_root = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        )
+        .principal_layout(&name)
+        .local
+        .root;
+        for (path, file) in [
+            (
+                "local/contacts.json",
+                crate::principal::contacts::CONTACTS_FILE,
+            ),
+            ("local/channels.json", "channels.json"),
+        ] {
+            if let Some(bytes) = files.get(path) {
+                tokio::fs::create_dir_all(&local_root).await?;
+                tokio::fs::write(local_root.join(file), bytes).await?;
+            }
+        }
+        // ADR-081 D6 step 5: the owner's conversation follows a local owner
+        // to this runtime's local user.
+        if foreign_owner.is_some() && options.import_sessions {
+            if let Some(channels) = files.get("local/channels.json") {
+                self.rebind_owner_dm(&store, &config, &local_root, channels, &destination)
+                    .await?;
+            }
         }
 
         let config_path = self.save_config(&config, &name).await?;
@@ -486,7 +536,6 @@ impl PrincipalUnpackager {
 
         config.name = new_name.to_string();
         config.did = Some(PrincipalDID(identity.did.clone()));
-        config.owner = Subject::User("local".to_string());
 
         Ok(config)
     }
@@ -574,6 +623,7 @@ impl PrincipalUnpackager {
         files: &HashMap<String, Vec<u8>>,
         manifest: &PrincipalManifest,
         principal_name: &str,
+        rule: &super::portable::Rewrite<'_>,
     ) -> anyhow::Result<()> {
         let resolver = PathResolver::with_dirs(
             self.config_dir.clone(),
@@ -582,9 +632,17 @@ impl PrincipalUnpackager {
         );
         let workspace_root = resolver.principal_layout(principal_name).shared.root;
 
-        const TOOLING_PREFIXES: [&str; 5] = ["tools", "skills", "mcp", "hooks", "kb"];
+        if let Some(policy) = files.get(crate::security::policy::POLICY_FILE) {
+            let text = super::portable::rewrite_policy(&String::from_utf8_lossy(policy), rule);
+            let dest = workspace_root.join(crate::security::policy::POLICY_FILE);
+            reject_destination_links(&workspace_root, &dest)?;
+            tokio::fs::create_dir_all(&workspace_root).await?;
+            tokio::fs::write(&dest, text).await?;
+        }
         for (path, content) in files {
-            let Some((prefix, rest)) = split_snapshot_path(path, &TOOLING_PREFIXES) else {
+            let Some((prefix, rest)) =
+                split_snapshot_path(path, &super::principal_manifest::WORKSPACE_DIRS)
+            else {
                 continue;
             };
             let dest_dir = workspace_root.join(prefix);
@@ -626,6 +684,7 @@ impl PrincipalUnpackager {
         files: &HashMap<String, Vec<u8>>,
         principal_name: &str,
         new_principal_id: &str,
+        rule: &super::portable::Rewrite<'_>,
     ) -> anyhow::Result<()> {
         let resolver = PathResolver::with_dirs(
             self.config_dir.clone(),
@@ -650,10 +709,104 @@ impl PrincipalUnpackager {
             }
             if prefix == "cron" && rest == "schedule.toml" {
                 let remapped = remap_cron_principal_ids(content, new_principal_id);
+                let remapped = super::portable::rewrite_cron(&remapped, rule);
                 tokio::fs::write(dest_path, remapped).await?;
             } else {
                 tokio::fs::write(dest_path, content).await?;
             }
+        }
+        Ok(())
+    }
+
+    /// The hosted principal (other than `target`, which `--force` may
+    /// replace) whose immutable actor key is `key`.
+    fn hosted_name_for_key(&self, key: &str, target: &str) -> anyhow::Result<Option<String>> {
+        let Ok(entries) = std::fs::read_dir(self.config_dir.join("principals")) else {
+            return Ok(None);
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == target {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(entry.path().join("principal.toml")) else {
+                continue;
+            };
+            let Ok(config) = toml::from_str::<PrincipalConfig>(&text) else {
+                continue;
+            };
+            if config.actor_key.as_deref() == Some(key) {
+                return Ok(Some(name));
+            }
+        }
+        Ok(None)
+    }
+
+    /// This runtime's identity DID (`runtime/identity.toml`); `"local"`
+    /// before the runtime has an identity.
+    fn destination_runtime(&self) -> String {
+        let path = PathResolver::with_dirs(
+            self.config_dir.clone(),
+            self.data_dir.clone(),
+            self.data_dir.clone(),
+        )
+        .runtime_identity();
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| toml::from_str::<peko_identity::runtime::RuntimeIdentity>(&text).ok())
+            .map_or_else(|| "local".to_string(), |identity| identity.runtime_did)
+    }
+
+    /// Move the owner's DM session to this runtime's local user (ADR-081
+    /// D6 step 5): the pair ID is recomputed from the principal's key and
+    /// the local user's here, and the imported sessions bound to the old
+    /// pair are rebound, compartment included.
+    async fn rebind_owner_dm(
+        &self,
+        store: &peko_channel::ChannelStore,
+        config: &PrincipalConfig,
+        local_root: &Path,
+        channels: &[u8],
+        destination: &str,
+    ) -> anyhow::Result<()> {
+        let Some(principal_key) = config.actor_key.as_deref() else {
+            return Ok(());
+        };
+        let channels: Vec<serde_json::Value> = serde_json::from_slice(channels).unwrap_or_default();
+        let Some(old) = channels.iter().find_map(|channel| {
+            let participants = channel["participants"].as_array()?;
+            let owner_dm = participants.len() == 2
+                && participants
+                    .iter()
+                    .any(|p| p["address"] == "user:local:local");
+            owner_dm.then(|| channel["channel"].as_str().map(str::to_owned))?
+        }) else {
+            return Ok(());
+        };
+        let local = store.ensure_local_user(destination).await?;
+        let new = peko_channel::dm_channel_id(principal_key, &local.identity_key);
+        if new.as_str() == old {
+            return Ok(());
+        }
+        let manager = std::sync::Arc::new(tokio::sync::RwLock::new(
+            peko_session::SessionManager::new()
+                .with_sessions_dir_internal(local_root.join("sessions")),
+        ));
+        let mut manager = manager.write().await;
+        for meta in manager.list_all_sessions(false).await? {
+            if meta.channel_id.as_deref() != Some(old.as_str()) {
+                continue;
+            }
+            let id = meta.session_id.to_string();
+            manager.bind_session_channel(&id, new.as_str()).await?;
+            manager
+                .set_session_compartment(
+                    &id,
+                    peko_tools_core::Compartment::Conversation {
+                        channel: new.as_str().to_string(),
+                    },
+                )
+                .await?;
         }
         Ok(())
     }
@@ -838,17 +991,16 @@ mod tests {
         // Defaults clear the Shared tier gate so library callers
         // (tests, future direct-call sites) don't have to thread
         // `caller_subject` through every constructor.
-        assert!(matches!(opts.caller_subject, Subject::User(ref u) if u == "local"));
+        assert!(matches!(opts.caller_subject, ActorRef::User(ref u) if u == "local"));
     }
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),
-            owner: Subject::User("local".to_string()),
+            owner: ActorRef::User("local".into()),
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
@@ -915,7 +1067,6 @@ mod tests {
             .is_some());
         let restored: PrincipalConfig =
             toml::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
-        assert!(restored.hub_id.is_none());
         assert!(restored.id.is_some());
         assert!(restored.actor_key.is_some());
     }
@@ -945,19 +1096,20 @@ mod tests {
             runtime_dir: config_dir.join("runtime"),
             shared_dir: None,
         });
-        let remote: Subject = "principal:hub:portable".parse().unwrap();
-        port.register_actor(
-            &remote,
-            Some("portable"),
-            Some(&signer),
-            Some("portable-key"),
-            None,
-            "public",
-        )
-        .await
-        .unwrap();
-        let learner = PrincipalId::generate();
-        port.remember_contact(&learner, &remote).await.unwrap();
+        let remote: ActorRef = "principal:hub:portable".parse().unwrap();
+        let known = port
+            .register_actor(
+                &remote,
+                Some("portable"),
+                Some(&signer),
+                Some("portable-key"),
+                None,
+                peko_channel::Registration::Public,
+            )
+            .await
+            .unwrap();
+        // Another principal here learned the remote contact.
+        let learned = crate::principal::contacts::ContactRecord::from_actor(&known, "local");
         let result = PrincipalUnpackager::new(&package, config_dir, temp.path().join("data"))
             .import(PrincipalImportOptions::default())
             .await
@@ -970,16 +1122,18 @@ mod tests {
         assert_eq!(restored.actor_key.as_deref(), Some("portable-key"));
         let promoted = port
             .register_actor(
-                &Subject::from(&local_id),
+                &ActorRef::from(&local_id),
                 Some("portable"),
                 Some(&signer),
                 Some("portable-key"),
                 None,
-                "private",
+                peko_channel::Registration::Private,
             )
             .await
             .unwrap();
-        assert_eq!(port.known_contacts(&learner).await.unwrap(), vec![promoted]);
+        // Promotion keeps the learned relationship routable: same key.
+        assert_eq!(promoted.identity_key, "portable-key");
+        assert!(learned.reachable_on(&port, "local"));
     }
 
     #[tokio::test]
@@ -991,7 +1145,6 @@ mod tests {
         let source_id = peko_subject::PrincipalId::generate();
         config.id = Some(source_id.clone());
         config.actor_key = Some("original-actor".into());
-        config.hub_id = Some(uuid::Uuid::new_v4().to_string());
         config.exposure = peko_auth::Exposure::Public;
         let output = temp.path().join("source.peko");
         PrincipalPackager::new(config, identity)
@@ -1021,7 +1174,6 @@ mod tests {
         assert!(result.did.starts_with("did:key:"));
         assert_ne!(config.id.unwrap(), source_id);
         assert_ne!(config.actor_key.as_deref(), Some("original-actor"));
-        assert!(config.hub_id.is_none());
         assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
         assert!(vault
             .get_principal_identity_private_key(&format!("{}#keys-1", result.did))
@@ -1215,6 +1367,209 @@ mod tests {
         );
     }
 
+    fn write_runtime_identity(config_dir: &Path, did: &str) {
+        let identity = peko_identity::runtime::RuntimeIdentity {
+            runtime_did: did.into(),
+            key_id: format!("{did}#keys-1"),
+            created_at: chrono::Utc::now(),
+        };
+        let path = config_dir.join("runtime/identity.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, toml::to_string_pretty(&identity).unwrap()).unwrap();
+    }
+
+    /// ADR-081 D6: a snapshot carries contacts, policy, grants, cron
+    /// creators, and the owner. A local owner becomes the destination's
+    /// local user (its DM session follows), local grants go dormant away
+    /// from home and revive on return, and a hosted actor is never imported
+    /// twice.
+    #[tokio::test]
+    async fn portable_identity_moves_and_returns() {
+        use crate::registry::packaging::principal_packager::{
+            PortableExport, PrincipalExportOptions,
+        };
+        use peko_subject::ActorKeys;
+        const SRC: &str = "did:key:zSource";
+        const DST: &str = "did:key:zDest";
+
+        let identity = Identity::new("mover", DIDScope::Local).await.unwrap();
+        let mut config = sample_config("mover", &identity.did);
+        config.actor_key = Some("mover-key".into());
+        config.permissions.push(peko_auth::PermissionGrant {
+            subject: "principal:local:prin_peer".parse().unwrap(),
+            permission: peko_auth::Permission::Trusted,
+            granted_at: String::new(),
+            granted_by: ActorRef::User("local".into()),
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join("src/shared");
+        let local = tmp.path().join("src/local");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(
+            shared.join("POLICY.md"),
+            "# Defaults\n\n## principal:local:prin_peer\n- peers\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(shared.join("workflows")).unwrap();
+        std::fs::write(shared.join("workflows/daily.yaml"), "steps: []\n").unwrap();
+        std::fs::create_dir_all(local.join("cron")).unwrap();
+        std::fs::write(
+            local.join("cron/schedule.toml"),
+            serde_json::json!({"version": 2, "jobs": [{"id": "brief", "principal_id": "prin_src",
+                "created_by": {"actor": "user:local:local", "trust": "owner"}}]})
+            .to_string(),
+        )
+        .unwrap();
+        let contact = crate::principal::contacts::ContactRecord {
+            kind: "principal".into(),
+            local: Some(crate::principal::contacts::LocalRoute {
+                runtime: SRC.into(),
+                id: "prin_peer".into(),
+            }),
+            hub_id: None,
+            identity_key: "peer-key".into(),
+            signing_did: None,
+            name: Some("peer".into()),
+            registration: peko_channel::Registration::LocalOnly,
+        };
+        crate::principal::contacts::ContactBook::in_local_root(&local)
+            .remember(contact.clone())
+            .await
+            .unwrap();
+        // The owner's DM session on the source runtime.
+        let old_dm = peko_channel::dm_channel_id("mover-key", &format!("local@{SRC}"));
+        let mut sessions =
+            peko_session::SessionManager::new().with_sessions_dir_internal(local.join("sessions"));
+        let session = sessions
+            .create_session(
+                "root",
+                &ActorRef::Public,
+                peko_session::SessionCreateOptions::new(),
+            )
+            .await
+            .unwrap()
+            .session_id()
+            .to_string();
+        sessions
+            .bind_session_channel(&session, old_dm.as_str())
+            .await
+            .unwrap();
+        let channels = serde_json::to_vec(&serde_json::json!([{
+            "channel": old_dm.as_str(),
+            "participants": [
+                {"address": "principal:local:prin_src", "identity_key": "mover-key"},
+                {"address": "user:local:local", "identity_key": format!("local@{SRC}")},
+            ],
+            "binding": "/local-user",
+        }]))
+        .unwrap();
+
+        let out = tmp.path().join("mover.peko");
+        PrincipalPackager::new(config, identity)
+            .with_sessions_dir(local.join("sessions"))
+            .with_workspace_dir(&shared)
+            .with_local_root(&local)
+            .with_portable(PortableExport {
+                source_runtime: SRC.into(),
+                hub_routes: Default::default(),
+                channels: Some(channels),
+            })
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Move to another runtime.
+        let dst_config = tmp.path().join("dst/config");
+        let dst_data = tmp.path().join("dst/data");
+        write_runtime_identity(&dst_config, DST);
+        let moved = PrincipalUnpackager::new(&out, dst_config.clone(), dst_data.clone())
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+        let restored: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(&moved.config_path).unwrap()).unwrap();
+        let keys = peko_subject::CanonicalKeys;
+        assert_eq!(
+            restored.owner,
+            ActorRef::User("local".into()),
+            "local owner reassigned"
+        );
+        assert!(
+            !keys.same_actor(
+                &restored.permissions[0].subject,
+                &"principal:local:prin_peer".parse().unwrap()
+            ),
+            "a local grant is dormant away from home"
+        );
+        assert_ne!(
+            restored.id.as_ref().unwrap().0,
+            "prin_src",
+            "foreign local ID not adopted"
+        );
+        let workspace = dst_config.join("principals/mover");
+        let policy = std::fs::read_to_string(workspace.join("POLICY.md")).unwrap();
+        assert!(
+            policy.contains("## principal:local:prin_peer@did:key:zSource"),
+            "{policy}"
+        );
+        assert!(workspace.join("workflows/daily.yaml").exists());
+        let dst_local = dst_data.join("principals/mover/local");
+        let book = crate::principal::contacts::ContactBook::in_local_root(&dst_local);
+        assert_eq!(
+            book.list().unwrap(),
+            vec![contact.clone()],
+            "contacts survive the move"
+        );
+        let cron = std::fs::read_to_string(dst_local.join("cron/schedule.toml")).unwrap();
+        assert!(cron.contains("\"actor\": \"user:local:local\""), "{cron}");
+        let new_dm = peko_channel::dm_channel_id("mover-key", &format!("local@{DST}"));
+        let rebound = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(dst_local.join("sessions"))
+            .list_all_sessions(false)
+            .await
+            .unwrap();
+        assert_eq!(
+            rebound[0].channel_id.as_deref(),
+            Some(new_dm.as_str()),
+            "owner DM follows"
+        );
+
+        // A second copy of the same actor is refused on this runtime.
+        let err = PrincipalUnpackager::new(&out, dst_config.clone(), dst_data.clone())
+            .import(PrincipalImportOptions {
+                new_name: Some("mover-two".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already hosted here"), "{err}");
+
+        // Back home, the local grant and policy section revive.
+        let home_config = tmp.path().join("home/config");
+        let home_data = tmp.path().join("home/data");
+        write_runtime_identity(&home_config, SRC);
+        let back = PrincipalUnpackager::new(&out, home_config.clone(), home_data)
+            .import(PrincipalImportOptions::default())
+            .await
+            .unwrap();
+        let home: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(&back.config_path).unwrap()).unwrap();
+        assert!(keys.same_actor(&home.owner, &ActorRef::User("local".into())));
+        assert!(keys.same_actor(
+            &home.permissions[0].subject,
+            &"principal:local:prin_peer".parse().unwrap()
+        ));
+        let policy =
+            std::fs::read_to_string(home_config.join("principals/mover/POLICY.md")).unwrap();
+        assert!(
+            policy.contains("## principal:local:prin_peer\n"),
+            "{policy}"
+        );
+    }
+
     /// ADR-056: a package that carries NO Local-tier state (legacy
     /// definition-shaped, or a keyless template) resets the boot state
     /// so ADR-054's inference applies. An `organized` source must not
@@ -1372,7 +1727,7 @@ principal_id = "prin_old"
         );
 
         let opts = PrincipalImportOptions {
-            caller_subject: peko_auth::Subject::Visitor("visitor-1".to_string()),
+            caller_subject: peko_auth::ActorRef::Visitor("visitor-1".into()),
             observability: Some(observability),
             ..PrincipalImportOptions::default()
         };

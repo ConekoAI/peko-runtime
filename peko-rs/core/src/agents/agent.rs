@@ -4,7 +4,7 @@ use crate::agents::agent_config::AgentConfig;
 use crate::agents::subagent_executor::SubagentExecutor;
 use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_engine::state::StateMachine;
 use peko_engine::AgentState;
 use peko_identity::{did::DIDScope, Identity};
@@ -67,7 +67,7 @@ pub struct Agent {
     /// Caller principal's stable DID. Bound at construction by
     /// `with_caller_principal_did` so `send_peer` can attribute
     /// the outbound request under
-    /// `Subject::Principal(caller_principal_did)` on the wire.
+    /// `ActorRef::Principal(caller_principal_did)` on the wire.
     /// `None` means the tool is not registered.
     caller_principal_did: Option<String>,
     /// Spawning principal's runtime id. Inherited by subagent spawns
@@ -919,7 +919,7 @@ impl Agent {
             .with_path_resolver(path_resolver, self.name())
             .await?;
         let session = session_manager
-            .get_or_create_base(self.name(), &Subject::User("local".to_string()))
+            .get_or_create_base(self.name(), &ActorRef::User("local".into()))
             .await?;
 
         let result = match loop_
@@ -1359,7 +1359,7 @@ impl Agent {
     /// types. Tracked for a follow-up.
     pub async fn resolve_session(
         &self,
-        peer: &Subject,
+        peer: &ActorRef,
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
@@ -1373,7 +1373,7 @@ impl Agent {
     ///
     /// Convenience method for CLI and simple channels.
     pub async fn resolve_default_session(&self) -> Result<ResolvedSession> {
-        let peer = Subject::User("default".to_string());
+        let peer = ActorRef::User("default".into());
         self.resolve_session(&peer, ChannelType::Cli, "default")
             .await
     }
@@ -1387,7 +1387,7 @@ impl Agent {
     /// and the operations handle (`handle`).
     pub async fn spawn_session(
         &self,
-        peer: &Subject,
+        peer: &ActorRef,
         task: &str,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
@@ -1712,7 +1712,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_session_routing() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
         use peko_session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
@@ -1729,7 +1729,7 @@ mod tests {
         let agent = Agent::new(config, tooling).await.unwrap();
 
         // Session manager should be able to route to sessions
-        let peer = Subject::User("test_user".to_string());
+        let peer = ActorRef::User("test_user".into());
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
             .await;
@@ -1742,7 +1742,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_resolve_session() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
         use peko_session::types::ChannelType;
 
         // Force the encrypted-file identity fallback — see
@@ -1757,7 +1757,7 @@ mod tests {
         };
 
         let agent = Agent::new(config, tooling).await.unwrap();
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
 
         let resolved = agent
             .resolve_session(&peer, ChannelType::Cli, "default")
@@ -1771,7 +1771,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(core)]
     async fn test_agent_tool_session() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
 
         // Force the encrypted-file identity fallback — see
         // `peko_identity::init_test_env` for the rationale.
@@ -1785,7 +1785,7 @@ mod tests {
         };
 
         let agent = Agent::new(config, tooling).await.unwrap();
-        let peer = Subject::User("bob".to_string());
+        let peer = ActorRef::User("bob".into());
 
         // Create a parent session first
         let parent_resolved = agent

@@ -714,7 +714,6 @@ mod tests {
 
     fn bare_config() -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "seedling".into(),
             boot_state: None,
@@ -729,12 +728,11 @@ mod tests {
             PrincipalGovernanceConfig, PrincipalIntentConfig, PrincipalRoutingConfig,
         };
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: String::new(),
             id: None,
             did: None,
-            owner: peko_auth::Subject::User("local".into()),
+            owner: peko_auth::ActorRef::User("local".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),

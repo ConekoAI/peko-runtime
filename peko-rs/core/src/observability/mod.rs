@@ -71,13 +71,13 @@ impl AuditSink for ObservabilityAuditSink {
         let details = event.details.clone();
         let severity: ObsSeverity = severity_into_obs(event.severity);
         tokio::task::spawn(async move {
-            // `audit_with_severity` takes `Option<&Subject>` for
-            // the caller; we don't have a Subject here, only the
+            // `audit_with_severity` takes `Option<&ActorRef>` for
+            // the caller; we don't have a ActorRef here, only the
             // principal DID — that's exactly what `audit` uses
             // (without severity). Compose: pass `None` for
             // caller, then escalate severity via the severity
             // path. The two-stage approach avoids inventing a
-            // Subject just to pass severity.
+            // ActorRef just to pass severity.
             let _ = observability
                 .audit_with_severity(severity, None, &event_type, principal.as_deref(), details)
                 .await;

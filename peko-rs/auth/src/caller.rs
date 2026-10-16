@@ -1,6 +1,6 @@
 //! Caller context — resolved identity for every incoming request
 
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 use super::types::ApiKeyScope;
 
@@ -55,32 +55,18 @@ pub struct CallerContext {
     pub rate_limit_bucket: String,
     /// API key scopes (only populated for API key auth)
     pub api_key_scopes: Vec<ApiKeyScope>,
-    /// ADR-057: hub user id bound to this runtime (the pekohub user
-    /// that owns the runtime registration). Only set for `Local`
-    /// callers — the daemon rereads authenticated login metadata
-    /// on each request. `None` means "not logged into pekohub" and the
-    /// local terminal attributes as `user:local`.
-    pub hub_user_id: Option<String>,
 }
 
 impl CallerContext {
-    /// Create a local-trust caller context
+    /// Create a local-trust caller context: the runtime's local user
+    /// (ADR-081 D3).
     #[must_use]
     pub fn local() -> Self {
-        Self::local_with_hub_user_id(None)
-    }
-
-    /// Create a local-trust caller context with a known pekohub
-    /// owner (ADR-057). `hub_user_id` is the hub user id captured from
-    /// authenticated login metadata; `None` = not logged in.
-    #[must_use]
-    pub fn local_with_hub_user_id(hub_user_id: Option<String>) -> Self {
         Self {
             identity: Identity::Local,
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: "local".to_string(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            hub_user_id,
         }
     }
 
@@ -94,7 +80,6 @@ impl CallerContext {
             auth_method: AuthMethod::PekohubJwt,
             rate_limit_bucket: bucket,
             api_key_scopes: Vec::new(), // N/A for JWT
-            hub_user_id: None,
         }
     }
 
@@ -105,7 +90,6 @@ impl CallerContext {
             identity: Identity::Visitor(sub),
             auth_method: AuthMethod::PekohubJwt,
             api_key_scopes: Vec::new(),
-            hub_user_id: None,
         }
     }
 
@@ -118,14 +102,13 @@ impl CallerContext {
             auth_method: AuthMethod::ApiKey,
             rate_limit_bucket: bucket,
             api_key_scopes: scopes,
-            hub_user_id: None,
         }
     }
 
     /// Permission projection for a resource. Physical local trust is owner-equivalent;
     /// the message actor and its conversation remain the logged-in account.
     #[must_use]
-    pub fn permission_subject(&self, owner: &Subject) -> Subject {
+    pub fn permission_subject(&self, owner: &ActorRef) -> ActorRef {
         if self.is_operator() {
             owner.clone()
         } else {
@@ -150,29 +133,29 @@ impl CallerContext {
     /// The local actor ID. Credential diagnostics use rate_limit_bucket separately.
     #[must_use]
     pub fn subject_id(&self) -> String {
-        self.subject().subject_id().to_string()
+        self.subject().subject_id()
     }
 
-    /// Get the caller's `Subject` projection (ADR-039, ADR-041).
+    /// Get the caller's `ActorRef` projection (ADR-039, ADR-041).
     ///
     /// R5 — typed `Principal` projection for API keys (issue: per-PR
     /// audit): API-key callers are *not* pekohub users, they are a
-    /// distinct actor class. They project as `Subject::Principal`
+    /// distinct actor class. They project as `ActorRef::Principal`
     /// carrying a typed `PrincipalDID` of the form `apikey:{key_id}`.
     /// `User` uses the same scoped Hub account ID for ownership, attribution and
     /// channel membership. Hub accounts have no runtime-local proxy identity.
     ///
     /// Equality across kinds is intentionally prevented
-    /// (`Subject::User("apikey:...") != Subject::Principal(...)` of the
+    /// (`ActorRef::User("apikey:...") != ActorRef::Principal(...)` of the
     /// same id string) — switching to the typed projection means a
     /// grant issued for an API key cannot accidentally match a user
     /// with the same id, and vice versa.
     #[must_use]
-    pub fn subject(&self) -> Subject {
+    pub fn subject(&self) -> ActorRef {
         match &self.identity {
             Identity::Local => self.attribution_subject(),
-            Identity::User(sub) => Subject::User(format!("hub:{sub}")),
-            Identity::Visitor(sub) => Subject::Visitor(format!("hub:{sub}")),
+            Identity::User(sub) => ActorRef::User(peko_subject::Route::hub(sub.clone())),
+            Identity::Visitor(sub) => ActorRef::Visitor(peko_subject::Route::hub(sub.clone())),
             Identity::ApiKey(_) => self.attribution_subject(),
         }
     }
@@ -186,41 +169,23 @@ impl CallerContext {
             auth_method: AuthMethod::LocalTrust,
             rate_limit_bucket: bucket.clone(),
             api_key_scopes: vec![ApiKeyScope::Read, ApiKeyScope::Write, ApiKeyScope::Admin],
-            hub_user_id: None,
         }
     }
 
-    /// ADR-057: the single attribution identity this caller speaks
-    /// as — derived from the caller, never from the request packet.
+    /// The single attribution identity this caller speaks as — derived
+    /// from the caller, never from the request packet.
     ///
-    /// There are exactly three identity classes (ADR-057):
-    ///
-    /// - **user** — a pekohub-verified human: a local terminal whose
-    ///   runtime is logged into pekohub (`Subject::User(<hub owner
-    ///   id>)`) or a remote pekohub JWT caller
-    ///   (`Subject::User(<bare sub>)`; ownership checks use that same canonical subject).
-    /// - **local** — the unverified local terminal
-    ///   (`Subject::User("local")`).
-    /// - **principal** — a cross-runtime actor, signature-verified
-    ///   per event (not projected here; tunnel peers carry their own
-    ///   DID).
-    ///
-    /// An API key is *not* a fourth class: it is a scoped credential
-    /// of the runtime owner, so it attributes exactly as the owner
-    /// would (hub user when logged in, else `local`). Its scopes —
-    /// not its identity — are the least-privilege mechanism, and the
-    /// audit trail records the credential id separately.
+    /// The terminal is always the runtime's local user (ADR-081 D3); its
+    /// Hub route, once the runtime is registered, is an alias of that one
+    /// actor rather than a second identity. An API key is a scoped
+    /// credential of the operator and attributes the same way. Remote
+    /// callers attribute as their Hub account or visitor ID.
     #[must_use]
-    pub fn attribution_subject(&self) -> Subject {
+    pub fn attribution_subject(&self) -> ActorRef {
         match &self.identity {
-            Identity::Local | Identity::ApiKey(_) => Subject::User(
-                self.hub_user_id
-                    .as_ref()
-                    .map(|id| format!("hub:{id}"))
-                    .unwrap_or_else(|| "local".to_string()),
-            ),
-            Identity::User(sub) => Subject::User(format!("hub:{sub}")),
-            Identity::Visitor(sub) => Subject::Visitor(format!("hub:{sub}")),
+            Identity::Local | Identity::ApiKey(_) => ActorRef::User("local".into()),
+            Identity::User(sub) => ActorRef::User(peko_subject::Route::hub(sub.clone())),
+            Identity::Visitor(sub) => ActorRef::Visitor(peko_subject::Route::hub(sub.clone())),
         }
     }
 
@@ -242,25 +207,15 @@ mod tests {
     #[test]
     fn local_subject_is_user_local() {
         let s = CallerContext::local().subject();
-        assert_eq!(s, Subject::User("local".to_string()));
+        assert_eq!(s, ActorRef::User("local".into()));
     }
 
-    /// ADR-057: attribution identity for a local caller not logged
-    /// into pekohub is `user:local`.
+    /// ADR-081 D3: the terminal is always the local user.
     #[test]
-    fn local_attribution_defaults_to_user_local() {
-        let s = CallerContext::local().attribution_subject();
-        assert_eq!(s, Subject::User("local".to_string()));
-    }
-
-    /// ADR-057: a local caller on a pekohub-logged-in runtime
-    /// attributes as the hub owner id — while its grant-matching
-    /// subject stays `user:local` (authority is unchanged; D2).
-    #[test]
-    fn local_attribution_uses_hub_owner_when_logged_in() {
-        let c = CallerContext::local_with_hub_user_id(Some("39".to_string()));
-        assert_eq!(c.attribution_subject(), Subject::User("hub:39".to_string()));
-        assert_eq!(c.subject(), Subject::User("hub:39".to_string()));
+    fn local_attribution_is_the_local_user() {
+        let c = CallerContext::local();
+        assert_eq!(c.attribution_subject(), ActorRef::User("local".into()));
+        assert_eq!(c.subject(), ActorRef::User("local".into()));
         assert!(c.is_local());
     }
 
@@ -269,8 +224,8 @@ mod tests {
     #[test]
     fn jwt_attribution_is_scoped_hub_subject() {
         let c = CallerContext::from_jwt("39".to_string());
-        assert_eq!(c.attribution_subject(), Subject::User("hub:39".to_string()));
-        assert_eq!(c.subject(), Subject::User("hub:39".to_string()));
+        assert_eq!(c.attribution_subject(), ActorRef::User("hub:39".into()));
+        assert_eq!(c.subject(), ActorRef::User("hub:39".into()));
     }
 
     /// ADR-057: API-key callers attribute as the runtime owner (a key
@@ -280,39 +235,37 @@ mod tests {
     #[test]
     fn api_key_attribution_is_owner_identity() {
         let c = CallerContext::from_api_key("pkr_abc".to_string(), vec![]);
-        assert_eq!(c.attribution_subject(), Subject::User("local".to_string()));
+        assert_eq!(c.attribution_subject(), ActorRef::User("local".into()));
         // Authority stays key-typed (least privilege).
-        assert_eq!(c.subject(), Subject::User("local".to_string()));
+        assert_eq!(c.subject(), ActorRef::User("local".into()));
     }
 
     #[test]
     fn jwt_subject_is_user_with_sub() {
         let s = CallerContext::from_jwt("alice".to_string()).subject();
-        assert_eq!(s, Subject::User("hub:alice".to_string()));
+        assert_eq!(s, ActorRef::User("hub:alice".into()));
     }
 
     #[test]
     fn credentials_do_not_create_principal_actors() {
-        let mut caller = CallerContext::from_api_key("pkr_key".into(), vec![]);
-        assert_eq!(caller.subject(), Subject::User("local".into()));
+        let caller = CallerContext::from_api_key("pkr_key".into(), vec![]);
+        assert_eq!(caller.subject(), ActorRef::User("local".into()));
         assert_eq!(caller.subject_id(), "local");
         assert_eq!(caller.rate_limit_bucket, "apikey:pkr_key");
-        caller.hub_user_id = Some("account".into());
-        assert_eq!(caller.subject(), Subject::User("hub:account".into()));
     }
     #[test]
     fn visitor_and_user_tokens_with_same_id_are_distinct() {
         let user = CallerContext::from_jwt("same".into());
         let visitor = CallerContext::from_visitor_jwt("same".into());
         assert_ne!(user.subject(), visitor.subject());
-        assert_eq!(visitor.subject(), Subject::Visitor("hub:same".into()));
+        assert_eq!(visitor.subject(), ActorRef::Visitor("hub:same".into()));
         assert!(!visitor.is_operator());
     }
     #[test]
     fn local_permission_projection_does_not_change_the_message_actor() {
-        let caller = CallerContext::local_with_hub_user_id(Some("account".into()));
-        let owner = Subject::User("local".into());
+        let caller = CallerContext::local();
+        let owner = ActorRef::User("hub:account".into());
         assert_eq!(caller.permission_subject(&owner), owner);
-        assert_eq!(caller.subject(), Subject::User("hub:account".into()));
+        assert_eq!(caller.subject(), ActorRef::User("local".into()));
     }
 }

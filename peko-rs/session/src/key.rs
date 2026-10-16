@@ -117,37 +117,41 @@ pub fn safe_filename_component(s: &str) -> String {
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
 ///
-/// After ADR-039, `Subject` is an alias for `Subject`. The key format
-/// is **byte-stable** for `Subject::User`, `Subject::Principal`, and
-/// `Subject::Visitor` (ADR-058 D5) — these are the valid session peers
-/// (`Subject::is_session_peer`).
-/// For `Subject::Public`, the function falls back to `peer:user:default`
+/// After ADR-039, `ActorRef` is an alias for `ActorRef`. The key format
+/// is **byte-stable** for `ActorRef::User`, `ActorRef::Principal`, and
+/// `ActorRef::Visitor` (ADR-058 D5) — these are the valid session peers
+/// (`ActorRef::is_session_peer`).
+/// For `ActorRef::Public`, the function falls back to `peer:user:default`
 /// and logs a warning, so a stray non-peer subject never produces an
 /// orphan key. This is the documented behavior, not a bug.
 #[must_use]
-pub fn derive_base_session_key(agent: &str, peer: &peko_subject::Subject) -> String {
-    use peko_subject::Subject;
+pub fn derive_base_session_key(agent: &str, peer: &peko_subject::ActorRef) -> String {
+    use peko_subject::ActorRef;
     match peer {
-        Subject::User(id) => {
-            format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
+        ActorRef::User(id) => {
+            format!(
+                "agent:{}:peer:user:{}",
+                agent,
+                sanitize_key_component(&id.to_string())
+            )
         }
-        Subject::Principal(id) => {
+        ActorRef::Principal(id) => {
             format!(
                 "agent:{}:peer:agent:{}",
                 agent,
-                sanitize_key_component(id.as_str())
+                sanitize_key_component(&id.to_string())
             )
         }
-        Subject::Visitor(id) => {
+        ActorRef::Visitor(id) => {
             format!(
                 "agent:{}:peer:visitor:{}",
                 agent,
-                sanitize_key_component(id)
+                sanitize_key_component(&id.to_string())
             )
         }
-        Subject::Public => {
+        ActorRef::Public => {
             tracing::warn!(
-                "derive_base_session_key called with non-peer Subject {peer}; \
+                "derive_base_session_key called with non-peer ActorRef {peer}; \
                  falling back to peer:user:default (ADR-039)"
             );
             format!("agent:{agent}:peer:user:default")
@@ -274,13 +278,13 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        use peko_subject::Subject;
+        use peko_subject::ActorRef;
 
-        let user_peer = Subject::User("alice".to_string());
+        let user_peer = ActorRef::User("alice".into());
         let key = derive_base_session_key("test_agent", &user_peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
-        let agent_peer = Subject::Principal("helper".into());
+        let agent_peer = ActorRef::Principal("helper".into());
         let key = derive_base_session_key("test_agent", &agent_peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }

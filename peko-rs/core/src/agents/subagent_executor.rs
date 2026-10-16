@@ -36,7 +36,7 @@ use crate::async_exec::executor::{
     TaskMetadata, WaitResult,
 };
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 use peko_subject::PrincipalId;
@@ -950,7 +950,7 @@ impl SubagentExecutor {
         let run_id = format!("run_{}", uuid::Uuid::new_v4().simple());
 
         // Create spawn session
-        let peer = Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
+        let peer = ActorRef::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
         let spawn_resolved = {
             let mut manager = self.session_manager.write().await;
             manager
@@ -1820,7 +1820,7 @@ impl SubagentExecutor {
             // verbatim snapshot below is the fidelity path). The task is
             // carried by the run registration, not seeded into the session.
             let peer =
-                Subject::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
+                ActorRef::Principal(format!("spawn_{}", uuid::Uuid::new_v4().simple()).into());
             let (child_session_key, child_session_id, child_base) = {
                 let mut manager = self.session_manager.write().await;
                 let handle = manager
@@ -3560,7 +3560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_cleanup_delete_policy() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
 
         // Create a session manager with path resolver
         let path_resolver: Arc<dyn peko_subject::PathResolverLike> =
@@ -3572,7 +3572,7 @@ mod tests {
         let manager = Arc::new(RwLock::new(manager));
 
         // Create a parent session
-        let parent_peer = Subject::User("parent".to_string());
+        let parent_peer = ActorRef::User("parent".into());
         {
             let mut mgr = manager.write().await;
             let parent_handle = mgr
@@ -3592,7 +3592,7 @@ mod tests {
             let handle = mgr
                 .create_spawn_overlay(
                     "test_agent",
-                    &Subject::Principal("child".into()),
+                    &ActorRef::Principal("child".into()),
                     "test task",
                     false,
                     "agent:test_agent:peer:user:parent",

@@ -46,7 +46,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::RwLock;
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
 
@@ -104,11 +104,15 @@ struct TestOwnerTrust;
 #[cfg(test)]
 #[async_trait::async_trait]
 impl crate::security::TrustSource for TestOwnerTrust {
-    async fn trust_of(&self, _actor: &Subject) -> peko_tools_core::Trust {
+    async fn trust_of(
+        &self,
+        _actor: &ActorRef,
+        _keys: &(dyn peko_subject::ActorKeys + Sync),
+    ) -> peko_tools_core::Trust {
         peko_tools_core::Trust::Owner
     }
-    async fn owner(&self) -> Subject {
-        Subject::User("local".into())
+    async fn owner(&self) -> ActorRef {
+        ActorRef::User("local".into())
     }
 }
 
@@ -133,7 +137,7 @@ pub(crate) struct PeerChildIngress {
 pub(crate) fn peer_child_session_manager(
     principal: &Principal,
     agent_name: &str,
-    owner: &Subject,
+    owner: &ActorRef,
 ) -> Arc<RwLock<SessionManager>> {
     Arc::new(RwLock::new(
         SessionManager::new()
@@ -376,8 +380,8 @@ impl PeerChildTurns {
     /// were checked against (ADR-057 D2).
     pub(crate) async fn driver(
         &self,
-        author: &Subject,
-        authority: &Subject,
+        author: &ActorRef,
+        authority: &ActorRef,
     ) -> crate::security::Driver {
         match self.executor.stamps() {
             Some(stamps) => stamps.driver(author, authority).await,
@@ -495,7 +499,7 @@ impl PeerChildTurns {
     /// itself is unaffected); a missing port skips provisioning with a
     /// debug log (standalone/test contexts). `dm_channel` is `None` in
     /// both cases (callers skip the posts).
-    pub(crate) async fn ensure_child_ingress(&self, peer: &Subject) -> Result<PeerChildIngress> {
+    pub(crate) async fn ensure_child_ingress(&self, peer: &ActorRef) -> Result<PeerChildIngress> {
         let port = self
             .channel_port
             .clone()
@@ -504,7 +508,7 @@ impl PeerChildTurns {
         let peer = if known.identity_key != known.address {
             known.subject()
         } else {
-            let hub = peer.subject_id().strip_prefix("hub:");
+            let hub = peer.route().filter(|r| r.is_hub()).map(|r| r.id());
             port.register_actor(
                 peer,
                 hub,
@@ -512,9 +516,9 @@ impl PeerChildTurns {
                 None,
                 None,
                 if hub.is_some() {
-                    "registered"
+                    peko_channel::Registration::Registered
                 } else {
-                    "local_only"
+                    peko_channel::Registration::LocalOnly
                 },
             )
             .await?
@@ -526,7 +530,7 @@ impl PeerChildTurns {
             .clone()
             .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
         let initial_guard = initial_lock.lock().await;
-        let me = port.actor_info(&Subject::from(&self.principal_id)).await;
+        let me = port.actor_info(&ActorRef::from(&self.principal_id)).await;
         let other = port.actor_info(&peer).await;
         let expected = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
         let created = !port
@@ -792,7 +796,7 @@ impl crate::agents::subagent_executor::PeerTurnSurface for PeerTurnSurfaceImpl {
             .list_members(&id)
             .await
             .ok()?
-            .contains(&Subject::from(&self.principal_id))
+            .contains(&ActorRef::from(&self.principal_id))
         {
             Some(channel.clone())
         } else {
@@ -943,7 +947,7 @@ impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContex
         let port = input.channel_port.clone()?;
         let principal_id = peko_subject::PrincipalId(principal_id);
 
-        let me = port.actor_info(&Subject::from(&principal_id)).await;
+        let me = port.actor_info(&ActorRef::from(&principal_id)).await;
         let mut lines = vec![format!(
             "your actor: {} — Hub ID: {} — registration: {}",
             me.address,
@@ -1015,8 +1019,8 @@ mod tests {
             },
         ));
         let id = peko_subject::PrincipalId("prin_a".into());
-        let guest = Subject::User("hub:guest".into());
-        let friend = Subject::User("hub:friend".into());
+        let guest = ActorRef::User("hub:guest".into());
+        let friend = ActorRef::User("hub:friend".into());
         let guest_dm = port.ensure_dm(&id, &guest, "/guest").await.unwrap();
         let friend_dm = port.ensure_dm(&id, &friend, "/friend").await.unwrap();
         let render = |acting_for| {
@@ -1099,12 +1103,11 @@ mod tests {
     /// defaulted except `name` and `routing`.
     fn test_config(name: &str, routing: PrincipalRoutingConfig) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
@@ -1397,7 +1400,7 @@ mod tests {
             Some(Arc::new(tokio::sync::Mutex::new(()))),
         );
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let child_id = turns.ensure_child_ingress(&peer).await.unwrap().child_id;
 
         // The DM channel exists, named + bound to the peer child.
@@ -1445,7 +1448,7 @@ mod tests {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
         let error = turns
-            .ensure_child_ingress(&Subject::User("alice".into()))
+            .ensure_child_ingress(&ActorRef::User("alice".into()))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("requires a channel store"));
@@ -1470,7 +1473,7 @@ mod tests {
             Some(Arc::new(tokio::sync::Mutex::new(()))),
         ));
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let mut handles = Vec::new();
         for _ in 0..6 {
             let turns = Arc::clone(&turns);
@@ -1512,7 +1515,7 @@ mod tests {
             Some(Arc::new(tokio::sync::Mutex::new(()))),
         );
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
         let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
 
@@ -1559,7 +1562,7 @@ mod tests {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
         let error = turns
-            .ensure_child_ingress(&Subject::User("alice".into()))
+            .ensure_child_ingress(&ActorRef::User("alice".into()))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("requires a channel store"));
@@ -1580,7 +1583,7 @@ mod tests {
             Some(Arc::new(tokio::sync::Mutex::new(()))),
         );
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let ingress = turns.ensure_child_ingress(&peer).await.unwrap();
         let dm = ingress.dm_channel.expect("port attached ⇒ DM channel");
 
@@ -1601,7 +1604,7 @@ mod tests {
         let (_dir, manager, _store) = dm_fixture().await;
         let turns = bare_turns(manager, None, None, None);
         let error = turns
-            .ensure_child_ingress(&Subject::User("alice".into()))
+            .ensure_child_ingress(&ActorRef::User("alice".into()))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("requires a channel store"));

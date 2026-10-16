@@ -20,7 +20,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_subject::PrincipalId;
 use peko_tools_core::{ActingFor, Origin};
 use serde::{Deserialize, Serialize};
@@ -139,19 +139,6 @@ impl PrincipalPolicyGate {
         Some((manager, principal))
     }
 
-    /// The actor's aliases, so a section headed by either address applies.
-    async fn aliases(manager: &PrincipalManager, actor: &str) -> Vec<String> {
-        let Some(port) = manager.channel_port() else {
-            return Vec::new();
-        };
-        match port.resolve_actor(actor).await {
-            Ok(info) => std::iter::once(info.address.clone())
-                .chain(info.hub_address())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
     /// One reviewer completion; `Err` when no reviewer model could run.
     async fn ask_reviewer(
         manager: &PrincipalManager,
@@ -205,15 +192,15 @@ impl PrincipalPolicyGate {
             .collect())
     }
 
-    /// The owner, as the subject their conversation is keyed by.
-    async fn owner_subjects(principal: &Principal) -> Vec<Subject> {
+    /// The owner, as the subject their conversation is keyed by
+    /// (ADR-081 D8: the one owner's own conversation).
+    async fn owner_subjects(principal: &Principal) -> Vec<ActorRef> {
         let owner = principal.config.read().await.owner.clone();
-        let mut subjects = Vec::new();
-        if !owner.subject_id().is_empty() {
-            subjects.push(owner);
+        if owner.subject_id().is_empty() {
+            vec![ActorRef::User("local".into())]
+        } else {
+            vec![owner]
         }
-        subjects.push(Subject::User("local".into()));
-        subjects
     }
 
     /// Tell the owner a request waits; best-effort (the `approvals`
@@ -266,8 +253,8 @@ impl PolicyGate for PrincipalPolicyGate {
             );
         };
         let policy = policy::load(&principal.workspace_path).unwrap_or_default();
-        let aliases = Self::aliases(&manager, &call.stamp.actor).await;
-        let rules = policy.for_actor(&call.stamp.actor, &aliases);
+        let keys = crate::security::shared_actor_keys(manager.channel_port());
+        let rules = policy.for_actor(&call.stamp.actor, &*keys);
         let prompt = judge::reviewer_prompt(call, &rules);
         let verdict = match Self::ask_reviewer(&manager, &principal, &policy, &prompt).await {
             Ok(text) => judge::parse_verdict(&text),
@@ -338,8 +325,8 @@ impl PolicyGate for PrincipalPolicyGate {
         if !policy.review_replies {
             return Verdict::Allow;
         }
-        let aliases = Self::aliases(&manager, &stamp.actor).await;
-        let rules = policy.for_actor(&stamp.actor, &aliases);
+        let keys = crate::security::shared_actor_keys(manager.channel_port());
+        let rules = policy.for_actor(&stamp.actor, &*keys);
         let prompt = judge::reply_prompt(stamp, &rules, reply);
         match Self::ask_reviewer(&manager, &principal, &policy, &prompt).await {
             Ok(text) => match judge::parse_verdict(&text) {

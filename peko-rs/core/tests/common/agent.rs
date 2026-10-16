@@ -31,7 +31,7 @@ pub fn create_mock_principal_with_tools(
     peko_core::principal::genesis::seed_default_root_role(&root).expect("seed root role");
     let mut config: peko_core::principal::config::PrincipalConfig =
         toml::from_str(&format!("name = {name:?}\n")).expect("fixture config");
-    config.owner = peko_auth::Subject::User("local".into());
+    config.owner = peko_auth::ActorRef::User("local".into());
     config.preferred_model_id = Some("mock-llm".into());
     config.set_boot_state(peko_core::principal::config::BootState::Organized);
     std::fs::write(

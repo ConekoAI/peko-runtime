@@ -37,7 +37,7 @@ use std::sync::{Arc, Weak};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_channel::{ChannelError, ChannelPort, PostMsg};
 use peko_protocol::channel::{ChannelId as ProtoChannelId, ChannelKind as ProtoChannelKind};
 use peko_session::events::MessageSource;
@@ -243,7 +243,7 @@ impl ChannelSendTool {
         session_id: &str,
         agent_label: Option<&str>,
         label: Option<&str>,
-        target: &Subject,
+        target: &ActorRef,
         message: &str,
         acting_for: &peko_tools_core::ActingFor,
     ) -> serde_json::Value {
@@ -342,23 +342,20 @@ impl ChannelSendTool {
         );
 
         {
-            let mut config = target.config.read().await.clone();
-            config.owner = ctx.channel_port.actor_info(&config.owner).await.subject();
-            for grant in &mut config.permissions {
-                grant.subject = ctx.channel_port.actor_info(&grant.subject).await.subject();
-            }
+            let config = target.config.read().await;
             if matches!(config.exposure, peko_auth::Exposure::Private) {
                 peko_auth::ownership::check_permission(
-                    &peko_auth::ownership::principal_resource(&config),
+                    &peko_auth::ownership::principal_resource(&*config),
                     peko_auth::ownership::Permission::Chat,
-                    &Subject::from(&caller.id),
+                    &ActorRef::from(&caller.id),
+                    &peko_channel::PortKeys(ctx.channel_port.as_ref()),
                 )
                 .map_err(|e| anyhow::anyhow!("DM delivery denied: {e}"))?;
             }
         }
 
         // Provision the caller's session binding and pair conversation.
-        let caller_peer = Subject::from(&target.id);
+        let caller_peer = ActorRef::from(&target.id);
         let caller_ingress = match ctx
             .principal_manager
             .ensure_peer_child_ingress(caller, &caller_peer)
@@ -385,7 +382,7 @@ impl ChannelSendTool {
         own_msg.via = via.clone();
         let own_line = match ctx
             .channel_port
-            .post(&own_channel, &Subject::from(&caller.id), own_msg)
+            .post(&own_channel, &ActorRef::from(&caller.id), own_msg)
             .await
         {
             Ok(l) => l,
@@ -400,7 +397,7 @@ impl ChannelSendTool {
         // Add the target's independent binding and local membership to the
         // same pair channel. Adapters exposing separate projections still
         // receive the same message ID rather than unrelated duplicate posts.
-        let target_peer = Subject::from(&caller.id);
+        let target_peer = ActorRef::from(&caller.id);
         let target_ingress = match ctx
             .principal_manager
             .ensure_peer_child_ingress(&target, &target_peer)
@@ -423,7 +420,7 @@ impl ChannelSendTool {
         };
         if let Err(e) = ctx
             .channel_port
-            .invite(&target_channel, &target.id, &Subject::from(&caller.id))
+            .invite(&target_channel, &target.id, &ActorRef::from(&caller.id))
             .await
         {
             return Ok(self.error_value(
@@ -436,7 +433,7 @@ impl ChannelSendTool {
         if target_channel != own_channel {
             if let Err(e) = ctx
                 .channel_port
-                .post(&target_channel, &Subject::from(&caller.id), target_msg)
+                .post(&target_channel, &ActorRef::from(&caller.id), target_msg)
                 .await
             {
                 return Ok(self.error_value(
@@ -453,7 +450,7 @@ impl ChannelSendTool {
             success: true,
             target: Some(
                 ctx.channel_port
-                    .actor_info(&Subject::Principal(target_did.into()))
+                    .actor_info(&ActorRef::Principal(target_did.into()))
                     .await
                     .address,
             ),
@@ -488,7 +485,7 @@ impl ChannelSendTool {
         //    machinery): the channel is the conversation's home on
         //    this runtime, and the remote runtime mirrors it via the
         //    invite/fan-out below.
-        let peer = Subject::Principal(PrincipalDID(target_did.to_string()));
+        let peer = ActorRef::Principal(PrincipalDID(target_did.to_string()).into());
         let ingress = match ctx
             .principal_manager
             .ensure_peer_child_ingress(caller, &peer)
@@ -557,7 +554,7 @@ impl ChannelSendTool {
         msg.via = via;
         let line = match ctx
             .channel_port
-            .post(&channel, &Subject::from(&caller.id), msg)
+            .post(&channel, &ActorRef::from(&caller.id), msg)
             .await
         {
             Ok(l) => l,
@@ -592,7 +589,7 @@ impl ChannelSendTool {
             success: true,
             target: Some(
                 ctx.channel_port
-                    .actor_info(&Subject::Principal(target_did.into()))
+                    .actor_info(&ActorRef::Principal(target_did.into()))
                     .await
                     .address,
             ),
@@ -820,7 +817,7 @@ impl ChannelSendTool {
             None => PostMsg::root(text.to_string()),
         };
         msg.via = via;
-        let sender = Subject::from(&PrincipalId(principal_str.to_string()));
+        let sender = ActorRef::from(&PrincipalId(principal_str.to_string()));
         match self.port.post(channel_id, &sender, msg).await {
             Ok(task_id) => Ok(serde_json::to_value(ChannelSendResult {
                 success: true,
@@ -966,18 +963,22 @@ impl ChannelSendTool {
                 Some(&resolution.identity_key),
                 resolution.name.as_deref(),
                 if resolution.hub_id.is_empty() {
-                    "local_only"
+                    peko_channel::Registration::LocalOnly
                 } else if resolution.exposure == ResolvedExposure::Public {
-                    "public"
+                    peko_channel::Registration::Public
                 } else {
-                    "private"
+                    peko_channel::Registration::Private
                 },
             )
             .await?;
         let target_principal_did = resolution.agent_did.as_str();
         if resolution.runtime_id != cross_runtime.caller_runtime_id {
             anyhow::ensure!(
-                caller.config.read().await.hub_id.is_some(),
+                cross_runtime
+                    .principal_manager
+                    .hub_id_of(&caller)
+                    .await
+                    .is_some(),
                 "Register the sending principal before using Hub transport"
             );
         }
@@ -1038,7 +1039,7 @@ mod tests {
     use peko_channel::{
         ChannelConfig, ChannelEvent, ChannelId, ChannelStore, Checkpoint, CreateOpts,
     };
-    use peko_subject::{PrincipalId, Subject};
+    use peko_subject::{ActorRef, PrincipalId};
     use peko_tools_core::ToolContext;
     use serde_json::json;
     use std::sync::Mutex;
@@ -1312,7 +1313,7 @@ mod tests {
         async fn deliver_note(
             &self,
             _principal_id: &str,
-            target: &Subject,
+            target: &ActorRef,
             note: &str,
             _source: MessageSource,
             _caller_label: Option<&str>,
@@ -1343,7 +1344,7 @@ mod tests {
     #[tokio::test]
     async fn notes_for_someone_else_carry_the_runtime_attribution() {
         let messenger = StubMessenger::delivering();
-        let target = Subject::User("hub:bob".to_string());
+        let target = ActorRef::User("hub:bob".into());
         let out = ChannelSendTool::execute_user_target(
             &messenger,
             "prin_x",
@@ -1370,7 +1371,7 @@ mod tests {
     #[tokio::test]
     async fn notes_to_the_served_actor_keep_the_agent_label() {
         let messenger = StubMessenger::delivering();
-        let target = Subject::User("hub:bob".to_string());
+        let target = ActorRef::User("hub:bob".into());
         let out = ChannelSendTool::execute_user_target(
             &messenger,
             "prin_x",
@@ -1391,7 +1392,7 @@ mod tests {
     /// label, then the default.
     #[tokio::test]
     async fn empty_labels_fall_through_to_the_next_choice() {
-        let target = Subject::User("bob".to_string());
+        let target = ActorRef::User("bob".into());
         for (agent_label, label, shown) in [
             (Some("worker"), Some(""), "[worker]"),
             (Some(""), Some(""), "[agent]"),
@@ -1418,7 +1419,7 @@ mod tests {
     /// the reason; nothing claims success.
     #[tokio::test]
     async fn undelivered_notes_are_structured_failures() {
-        let target = Subject::User("bob".to_string());
+        let target = ActorRef::User("bob".into());
         for (delivered, expected) in [
             (Some(false), "no conversational session yet"),
             (None, "note delivery failed: messenger offline"),

@@ -1,5 +1,5 @@
 //! End-to-end scenario for grant/revoke round-trips with inline
-//! `Subject` subjects (ADR-039, post issue #30).
+//! `ActorRef` subjects (ADR-039, post issue #30).
 //!
 //! # Scope
 //!
@@ -7,7 +7,7 @@
 //! `tests/scenarios/s6_revoke_principal_collapse_e2e.rs`, which tested
 //! the legacy `(subject_id, subject_type)` wire shape from issue #25.
 //! That legacy shape was dropped in issue #30; grant/revoke packets now
-//! carry a single `subject: Subject`. This scenario exercises the
+//! carry a single `subject: ActorRef`. This scenario exercises the
 //! same persistence path (IPC → service layer → on-disk config) with
 //! the new inline shape.
 //!
@@ -18,10 +18,10 @@
 //!
 //! # What this test asserts
 //!
-//! 1. **Principal grant/revoke round-trip** — `Subject::Principal("peer")`
+//! 1. **Principal grant/revoke round-trip** — `ActorRef::Principal("peer")`
 //!    granted to a Principal, then revoked via IPC; on-disk
 //!    `principal.toml` shows the grant is gone.
-//! 2. **Public grant/revoke round-trip** — `Subject::Public` granted
+//! 2. **Public grant/revoke round-trip** — `ActorRef::Public` granted
 //!    to a Principal, then revoked.
 //! 3. **Idempotent revoke** — revoking a subject that was never
 //!    granted returns success and leaves the permissions list empty.
@@ -41,7 +41,7 @@ mod common;
 use common::{DaemonGuard, PekoCli};
 use serial_test::serial;
 
-use peko_auth::{Permission, Subject};
+use peko_auth::{ActorRef, Permission};
 use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
 use peko_core::ipc::DaemonClient;
 
@@ -71,7 +71,7 @@ fn read_principal_permissions(cli: &PekoCli, name: &str) -> Vec<Permission> {
 }
 
 /// Issue a principal grant packet and assert it succeeds.
-async fn grant_principal(client: &DaemonClient, name: &str, subject: Subject, perm: Permission) {
+async fn grant_principal(client: &DaemonClient, name: &str, subject: ActorRef, perm: Permission) {
     let packet = RequestPacket::PrincipalGrantPermission {
         request_id: 1,
         name: name.into(),
@@ -89,7 +89,7 @@ async fn grant_principal(client: &DaemonClient, name: &str, subject: Subject, pe
 }
 
 /// Issue a principal revoke packet and assert it succeeds.
-async fn revoke_principal(client: &DaemonClient, name: &str, subject: Subject, perm: Permission) {
+async fn revoke_principal(client: &DaemonClient, name: &str, subject: ActorRef, perm: Permission) {
     let packet = RequestPacket::PrincipalRevokePermission {
         request_id: 2,
         name: name.into(),
@@ -110,8 +110,8 @@ async fn revoke_principal(client: &DaemonClient, name: &str, subject: Subject, p
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Principal grant/revoke round-trip with a non-User `Subject::Principal`
-/// subject. Pre-#25 the revoke handler hardcoded `Subject::User(...)`,
+/// Principal grant/revoke round-trip with a non-User `ActorRef::Principal`
+/// subject. Pre-#25 the revoke handler hardcoded `ActorRef::User(...)`,
 /// so this would have been a silent no-op.
 #[tokio::test]
 #[serial]
@@ -124,7 +124,7 @@ async fn s6_principal_subject_round_trips_through_ipc() {
     let _guard = DaemonGuard::spawn(&cli);
     let client = DaemonClient::connect().await.expect("connect daemon");
 
-    let subject = Subject::Principal("peer".into());
+    let subject = ActorRef::Principal("peer".into());
 
     grant_principal(&client, name, subject.clone(), Permission::Chat).await;
     let perms_after_grant = read_principal_permissions(&cli, name);
@@ -142,7 +142,7 @@ async fn s6_principal_subject_round_trips_through_ipc() {
     );
 }
 
-/// Public grant/revoke round-trip with `Subject::Public` on a Principal.
+/// Public grant/revoke round-trip with `ActorRef::Public` on a Principal.
 #[tokio::test]
 #[serial]
 async fn s6_public_subject_round_trips_through_ipc() {
@@ -154,7 +154,7 @@ async fn s6_public_subject_round_trips_through_ipc() {
     let _guard = DaemonGuard::spawn(&cli);
     let client = DaemonClient::connect().await.expect("connect daemon");
 
-    grant_principal(&client, name, Subject::Public, Permission::ViewSettings).await;
+    grant_principal(&client, name, ActorRef::Public, Permission::ViewSettings).await;
     let perms_after_grant = read_principal_permissions(&cli, name);
     assert_eq!(
         perms_after_grant,
@@ -162,7 +162,7 @@ async fn s6_public_subject_round_trips_through_ipc() {
         "Public grant should be persisted"
     );
 
-    revoke_principal(&client, name, Subject::Public, Permission::ViewSettings).await;
+    revoke_principal(&client, name, ActorRef::Public, Permission::ViewSettings).await;
     let perms_after_revoke = read_principal_permissions(&cli, name);
     assert!(
         perms_after_revoke.is_empty(),
@@ -186,7 +186,7 @@ async fn s6_revoke_missing_grant_is_idempotent() {
     revoke_principal(
         &client,
         name,
-        Subject::Principal("never-granted".into()),
+        ActorRef::Principal("never-granted".into()),
         Permission::Chat,
     )
     .await;

@@ -504,8 +504,8 @@ fn severity_icon(s: AuditSeverity) -> &'static str {
 fn event_matches_principal(event: &AuditEvent, principal: &str) -> bool {
     if let Some(caller) = &event.caller {
         match caller {
-            peko_auth::Subject::Principal(id) if id.as_str() == principal => return true,
-            peko_auth::Subject::User(id) if id == principal => return true,
+            peko_auth::ActorRef::Principal(id) if id.as_str() == principal => return true,
+            peko_auth::ActorRef::User(id) if id == principal => return true,
             _ => {}
         }
     }

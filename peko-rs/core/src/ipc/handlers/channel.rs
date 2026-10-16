@@ -25,7 +25,7 @@ use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
 use peko_auth::caller::CallerContext;
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use std::str::FromStr;
 
 /// Narrow port the `channel` handler uses to reach daemon state.
@@ -198,9 +198,9 @@ enum CallerBinding {
     /// the hub owner id when the runtime is logged into pekohub) or
     /// its scoped API key — a key is a credential of the owner, not a
     /// separate identity class.
-    Derived(Subject),
+    Derived(ActorRef),
     /// A pekohub JWT user — may only act as this exact user subject.
-    User(Subject),
+    User(ActorRef),
 }
 
 /// Map a [`CallerContext`] to its [`CallerBinding`].
@@ -248,7 +248,7 @@ impl RequestHandler for ChannelHandler {
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
         let actor = caller.attribution_subject();
-        let hub = actor.subject_id().strip_prefix("hub:");
+        let hub = actor.route().filter(|r| r.is_hub()).map(|r| r.id());
         self.host
             .channel_port()
             .register_actor(
@@ -258,9 +258,9 @@ impl RequestHandler for ChannelHandler {
                 None,
                 None,
                 if hub.is_some() {
-                    "registered"
+                    peko_channel::Registration::Registered
                 } else {
-                    "local_only"
+                    peko_channel::Registration::LocalOnly
                 },
             )
             .await?;
@@ -360,10 +360,10 @@ impl RequestHandler for ChannelHandler {
                 // `PrincipalManager` resolution at this layer).
                 // Anything else is resolved as a principal name, as
                 // before.
-                let invitee = match Subject::from_str(&invitee_name) {
-                    Ok(s @ Subject::User(_)) => s,
+                let invitee = match ActorRef::from_str(&invitee_name) {
+                    Ok(s @ ActorRef::User(_)) => s,
                     _ => match self.resolve_principal(&invitee_name) {
-                        Some(p) => Subject::from(&p),
+                        Some(p) => ActorRef::from(&p),
                         None => {
                             let response = ResponsePacket::Error {
                                 request_id,
@@ -403,7 +403,7 @@ impl RequestHandler for ChannelHandler {
                         // on kickoff success. ADR-049 Phase 1: the hook
                         // stays principal-typed — a user invitee has no
                         // subscriber to ensure.
-                        if let Subject::Principal(did) = &resp.invitee {
+                        if let ActorRef::Principal(did) = &resp.invitee {
                             self.host.ensure_invitee_subscriber(
                                 &PrincipalId::from_did(did),
                                 &resp.channel,
@@ -439,9 +439,9 @@ impl RequestHandler for ChannelHandler {
                 };
                 let sender = match &sender_name {
                     None => own,
-                    Some(raw) => match Subject::from_str(raw) {
-                        Ok(s @ Subject::User(_)) if s == own => own,
-                        Ok(_s @ Subject::User(_)) => {
+                    Some(raw) => match ActorRef::from_str(raw) {
+                        Ok(s @ ActorRef::User(_)) if s == own => own,
+                        Ok(_s @ ActorRef::User(_)) => {
                             let response = ResponsePacket::Error {
                                 request_id,
                                 message: format!(
@@ -465,7 +465,7 @@ impl RequestHandler for ChannelHandler {
                             return Ok(());
                         }
                         _ => match self.resolve_principal(raw) {
-                            Some(p) => Subject::from(&p),
+                            Some(p) => ActorRef::from(&p),
                             None => {
                                 let response = ResponsePacket::Error {
                                     request_id,
@@ -1056,11 +1056,11 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .invite(&ch, &creator, &Subject::User("local".to_string()))
+            .invite(&ch, &creator, &ActorRef::User("local".into()))
             .await
             .expect("invite local user");
         adapter
-            .post(&ch, &Subject::from(&creator), PostMsg::root("hi"))
+            .post(&ch, &ActorRef::from(&creator), PostMsg::root("hi"))
             .await
             .expect("post");
         ch
@@ -1438,11 +1438,11 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .invite(&ch, &creator, &Subject::User("hub:alice".to_string()))
+            .invite(&ch, &creator, &ActorRef::User("hub:alice".into()))
             .await
             .expect("invite user");
         adapter
-            .invite(&ch, &creator, &Subject::User("local".to_string()))
+            .invite(&ch, &creator, &ActorRef::User("local".into()))
             .await
             .expect("invite local user");
         (adapter, ch)
@@ -1454,7 +1454,7 @@ mod tests {
     }
 
     /// Phase 2, amended by ADR-057: a member user posts as their own
-    /// derived identity (`sender_name: None`) — the store's Subject
+    /// derived identity (`sender_name: None`) — the store's ActorRef
     /// membership is the write authorization. A `user:<id>` sender is
     /// refused for every caller class, including Local (impersonation
     /// is closed; the identity comes from the connection).
@@ -2349,7 +2349,7 @@ mod tests {
             .await
             .expect("create");
         adapter
-            .post(&ch, &Subject::from(&creator), PostMsg::root("hello"))
+            .post(&ch, &ActorRef::from(&creator), PostMsg::root("hello"))
             .await
             .expect("post 1");
 
@@ -2383,7 +2383,7 @@ mod tests {
             live_port
                 .post(
                     &live_ch,
-                    &Subject::from(&live_creator),
+                    &ActorRef::from(&live_creator),
                     PostMsg::root("live"),
                 )
                 .await

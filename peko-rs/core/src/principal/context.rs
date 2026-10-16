@@ -93,7 +93,7 @@ pub struct PrincipalContext {
     /// either is `None`, the principal installation phase skips
     /// registering `ChannelSend` — the tool needs a stable caller
     /// identity to attribute outbound requests under
-    /// `Subject::Principal(caller_principal_did)`.
+    /// `ActorRef::Principal(caller_principal_did)`.
     caller_principal_did: OnceLock<String>,
     caller_runtime_id: OnceLock<String>,
     /// Optional observability hub. Set from the `RouterContext` by the root

@@ -15,7 +15,6 @@
 
 use secrecy::SecretString;
 
-use peko_core::common::vault::Vault;
 use peko_core::tunnel::PekoHubCredential;
 use peko_identity::keychain::{EncryptedKeyStorage, KeyStorageRef};
 use peko_identity::storage::KeyStorage;
@@ -33,7 +32,6 @@ fn test_pekohub_credential_does_not_contain_raw_key() {
     let cred = PekoHubCredential {
         url: "wss://pekohub.org/v1/tunnel".to_string(),
         runtime_id: "did:key:z6MkTest".to_string(),
-        owner_id: None,
         tls: None,
     };
 
@@ -211,40 +209,4 @@ fn test_encrypted_key_storage_roundtrip() {
 
     let retrieved = EncryptedKeyStorage::retrieve_key(&file_path, &passphrase).unwrap();
     assert_eq!(retrieved, private_key);
-}
-
-#[test]
-fn test_credential_resolve_private_key_from_vault() {
-    let temp = tempfile::tempdir().unwrap();
-    let vault = Vault::for_test(temp.path(), "tunnel-security-test");
-
-    let cred = PekoHubCredential {
-        url: "wss://example.com".to_string(),
-        runtime_id: "did:key:z6MkTest".to_string(),
-        owner_id: None,
-        tls: None,
-    };
-
-    vault
-        .set_tunnel_private_key(&cred.runtime_id, "dGVzdC1rZXk=")
-        .unwrap();
-
-    let resolved = cred.resolve_private_key(&vault).unwrap();
-    assert_eq!(resolved, "dGVzdC1rZXk=");
-}
-
-#[test]
-fn test_credential_resolve_private_key_missing() {
-    let temp = tempfile::tempdir().unwrap();
-    let vault = Vault::for_test(temp.path(), "tunnel-security-test");
-
-    let cred = PekoHubCredential {
-        url: "wss://example.com".to_string(),
-        runtime_id: "did:key:z6MkTest".to_string(),
-        owner_id: None,
-        tls: None,
-    };
-
-    let result = cred.resolve_private_key(&vault);
-    assert!(result.is_err());
 }

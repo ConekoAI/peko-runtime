@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 
 /// Audit logger
 pub struct AuditLogger {
@@ -41,20 +41,20 @@ pub struct AuditEvent {
     pub event_type: String,
     /// Which agent (if any)
     pub agent_did: Option<String>,
-    /// Resolved caller identity as a typed `Subject` (ADR-039).
+    /// Resolved caller identity as a typed `ActorRef` (ADR-039).
     /// Populated on every event that flows through the request path so
     /// the audit trail is attributable to a real subject — `User` /
     /// `Principal` / `Public`. `None` only on legacy events that pre-date the
     /// per-user attribution plumbing (issue #17) or on system-emitted
-    /// events with no caller context (use `Subject::User("local")` —
-    /// via `CallerContext::local().subject()` — or `Subject::Public`
+    /// events with no caller context (use `ActorRef::User("local")` —
+    /// via `CallerContext::local().subject()` — or `ActorRef::Public`
     /// for genuinely unauthenticated events, issue #26). For
     /// security events with no caller context, prefer
-    /// `Subject::Public` over `None` so per-user audit queries can
+    /// `ActorRef::Public` over `None` so per-user audit queries can
     /// still distinguish "unauthenticated security event" from "no
     /// caller recorded" (issue #26 review feedback).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caller: Option<Subject>,
+    pub caller: Option<ActorRef>,
     /// Event details
     pub details: serde_json::Value,
     /// Severity level
@@ -409,7 +409,7 @@ mod tests {
         assert!(nested.is_dir());
     }
 
-    /// Issue #26: `caller: Option<Subject>` must serialize in the
+    /// Issue #26: `caller: Option<ActorRef>` must serialize in the
     /// canonical `{kind, id}` shape that ADR-039 mandates (so per-user
     /// and per-agent audit queries can index on the tag instead of
     /// string-parsing the legacy `user:{sub}` convention) AND must be
@@ -424,12 +424,12 @@ mod tests {
             component: "tunnel".to_string(),
             event_type: "tunnel_proxied_request".to_string(),
             agent_did: Some("agent-a".to_string()),
-            caller: Some(Subject::Principal("helper".into())),
+            caller: Some(ActorRef::Principal("helper".into())),
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
         let v: serde_json::Value = serde_json::to_value(&with_agent_caller).unwrap();
-        // The Subject enum is `#[serde(tag = "kind", content = "id")]`
+        // The ActorRef enum is `#[serde(tag = "kind", content = "id")]`
         // so it serializes as an inline `{kind, id}` object — not nested
         // under another key. This is the wire shape PekoHub query API
         // will key on (issue #26 acceptance criteria).
@@ -440,10 +440,10 @@ mod tests {
         assert_eq!(v["caller"].as_object().unwrap().len(), 2);
 
         // Round-trip: re-parse the value into an `AuditEvent` and check
-        // the `Subject` survives — guards against accidental
+        // the `ActorRef` survives — guards against accidental
         // string-conversion regressions on the audit wire format.
         let parsed: AuditEvent = serde_json::from_value(v.clone()).unwrap();
-        assert_eq!(parsed.caller, Some(Subject::Principal("helper".into())));
+        assert_eq!(parsed.caller, Some(ActorRef::Principal("helper".into())));
 
         // User caller — also projects cleanly.
         let with_user_caller = AuditEvent {
@@ -451,7 +451,7 @@ mod tests {
             component: "tunnel".to_string(),
             event_type: "tunnel_proxied_request".to_string(),
             agent_did: Some("agent-a".to_string()),
-            caller: Some(Subject::User("user:user-42".to_string())),
+            caller: Some(ActorRef::User("user:user-42".into())),
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
@@ -465,12 +465,12 @@ mod tests {
             component: "cron".to_string(),
             event_type: "cron.execute".to_string(),
             agent_did: None,
-            caller: Some(Subject::Public),
+            caller: Some(ActorRef::Public),
             details: serde_json::json!({}),
             severity: AuditSeverity::Info,
         };
         let v: serde_json::Value = serde_json::to_value(&with_public_caller).unwrap();
-        // `Subject::Public` is a unit variant of an enum tagged
+        // `ActorRef::Public` is a unit variant of an enum tagged
         // `#[serde(tag = "kind", content = "id")]` — so it serializes
         // as `{"kind": "public"}` with no `id` field (there is no id
         // to carry). This still round-trips correctly through the
@@ -478,11 +478,11 @@ mod tests {
         assert_eq!(v["caller"]["kind"], "public");
         assert!(
             v["caller"].get("id").is_none(),
-            "Subject::Public must not serialize an id, got: {}",
+            "ActorRef::Public must not serialize an id, got: {}",
             v["caller"]
         );
         let parsed: AuditEvent = serde_json::from_value(v).unwrap();
-        assert_eq!(parsed.caller, Some(Subject::Public));
+        assert_eq!(parsed.caller, Some(ActorRef::Public));
 
         // No caller — must be omitted, not serialized as null.
         let without_caller = AuditEvent {

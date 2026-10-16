@@ -68,15 +68,12 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub did: Option<PrincipalDID>,
 
-    /// Hub-assigned stable actor ID; absent until explicit registration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hub_id: Option<String>,
     /// Immutable conversation identity; registration and host changes never rekey DMs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_key: Option<String>,
 
     #[serde(default)]
-    pub owner: peko_auth::Subject,
+    pub owner: peko_auth::ActorRef,
 
     #[serde(default)]
     pub identity: PrincipalIdentityConfig,
@@ -378,7 +375,7 @@ impl PrincipalResourceView for PrincipalConfig {
         &self.name
     }
 
-    fn owner(&self) -> &peko_auth::Subject {
+    fn owner(&self) -> &peko_auth::ActorRef {
         &self.owner
     }
 
@@ -475,7 +472,7 @@ mod tests {
     /// persisted (peer DM channels are keyed by it).
     #[test]
     fn principal_config_id_roundtrip() {
-        let mut cfg = make_test_config("alice", peko_auth::Subject::User("user:a".into()));
+        let mut cfg = make_test_config("alice", peko_auth::ActorRef::User("user:a".into()));
         cfg.id = Some(PrincipalId("prin_0123456789abcdef".into()));
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -521,7 +518,6 @@ mod tests {
     #[test]
     fn principal_config_model_field_roundtrip() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "alice".into(),
             id: None,
@@ -554,7 +550,6 @@ mod tests {
     #[test]
     fn principal_config_without_hints_does_not_emit_keys() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "bob".into(),
             id: None,
@@ -584,7 +579,6 @@ mod tests {
     #[test]
     fn principal_config_never_serializes_capabilities() {
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "alice".into(),
             id: None,
@@ -642,22 +636,21 @@ mod tests {
     ///   owner can invoke the Principal (no implicit grants from
     ///   PekoHub, no Public wildcard by default).
     /// - A `Public` grant opens the Principal to every caller.
-    /// - A grant scoped to a specific Subject opens only that
-    ///   Subject.
+    /// - A grant scoped to a specific ActorRef opens only that
+    ///   ActorRef.
     ///
     /// Combined with the auth-side tests in
     /// `peko-auth::ownership::tests::test_principal_resource_permission_checks`,
     /// this locks the runtime ↔ auth contract.
     #[test]
     fn principal_config_permissions_surfaces_through_view() {
-        use peko_auth::Subject;
+        use peko_auth::ActorRef;
 
-        let alice = Subject::User("user:alice".to_string());
-        let bob = Subject::User("user:bob".to_string());
+        let alice = ActorRef::User("user:alice".into());
+        let bob = ActorRef::User("user:bob".into());
 
         // Empty permissions: only owner has access.
         let cfg = PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: "lockdown".into(),
             id: None,
@@ -682,7 +675,7 @@ mod tests {
         // Single Public grant: every caller authorized.
         let cfg = PrincipalConfig {
             permissions: vec![peko_auth::PermissionGrant {
-                subject: Subject::Public,
+                subject: ActorRef::Public,
                 permission: peko_auth::Permission::Chat,
                 granted_at: "2026-01-01T00:00:00Z".to_string(),
                 granted_by: alice.clone(),
@@ -691,7 +684,7 @@ mod tests {
         };
         let view: &dyn peko_auth::host::PrincipalResourceView = &cfg;
         assert_eq!(view.permissions().len(), 1);
-        assert_eq!(view.permissions()[0].subject, Subject::Public);
+        assert_eq!(view.permissions()[0].subject, ActorRef::Public);
 
         // Scoped grant: only Bob gets Chat; other subjects don't.
         let cfg = PrincipalConfig {
@@ -711,9 +704,8 @@ mod tests {
     /// Build a PrincipalConfig with the given name + owner and
     /// everything else defaulted. Helper for the permissions-view
     /// test so we don't repeat 12-field literals.
-    fn make_test_config(name: &str, owner: peko_auth::Subject) -> PrincipalConfig {
+    fn make_test_config(name: &str, owner: peko_auth::ActorRef) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -808,7 +800,7 @@ mod tests {
     /// rewrites (e.g. `peko principal set-model`) don't drop it.
     #[test]
     fn children_roundtrip() {
-        let mut cfg = make_test_config("rt", peko_auth::Subject::User("user:a".into()));
+        let mut cfg = make_test_config("rt", peko_auth::ActorRef::User("user:a".into()));
         cfg.children.insert(
             "memory".to_string(),
             ChildDeclaration {
@@ -859,7 +851,7 @@ mod tests {
     /// over inference.
     #[test]
     fn boot_state_roundtrip() {
-        let mut cfg = make_test_config("rt", peko_auth::Subject::User("user:a".into()));
+        let mut cfg = make_test_config("rt", peko_auth::ActorRef::User("user:a".into()));
         cfg.set_boot_state(BootState::GenesisPending);
         let serialized = toml::to_string(&cfg).expect("serialize");
         assert!(
@@ -874,7 +866,7 @@ mod tests {
     /// lists, and a custom root prompt.
     #[test]
     fn has_definition_sources() {
-        let mut cfg = make_test_config("d", peko_auth::Subject::User("user:a".into()));
+        let mut cfg = make_test_config("d", peko_auth::ActorRef::User("user:a".into()));
         assert!(!cfg.has_definition());
 
         cfg.identity.display_name = Some("  ".into());
@@ -883,7 +875,7 @@ mod tests {
         cfg.intent.goals.push("ship".into());
         assert!(cfg.has_definition());
 
-        let mut cfg = make_test_config("d2", peko_auth::Subject::User("user:a".into()));
+        let mut cfg = make_test_config("d2", peko_auth::ActorRef::User("user:a".into()));
         cfg.routing.root_prompt = Some("/tmp/prompt.md".into());
         assert!(cfg.has_definition());
     }

@@ -257,7 +257,7 @@ mod tests {
         let mut manager = peko_session::SessionManager::new()
             .with_sessions_dir_internal(temp.path())
             .with_agent_name("wf-agent");
-        let peer = peko_subject::Subject::User("alice".to_string());
+        let peer = peko_subject::ActorRef::User("alice".into());
         manager
             .create_session(
                 "wf-agent",

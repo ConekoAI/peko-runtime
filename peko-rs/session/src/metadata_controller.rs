@@ -466,7 +466,7 @@ impl MetadataController {
     /// - Metadata is removed from the index
     /// - JSONL file is deleted
     /// - Cache is updated
-    /// - Subject routing is cleaned up (if this session is the active one for its peer)
+    /// - ActorRef routing is cleaned up (if this session is the active one for its peer)
     ///
     /// Returns Ok(true) if session existed and was deleted, Ok(false) if not found.
     pub async fn delete_session(&mut self, session_id: &str) -> Result<bool> {
@@ -492,14 +492,17 @@ impl MetadataController {
         // errors when sending without --new flag.
         if let Some(e) = entry {
             use crate::key::derive_base_session_key;
-            use peko_subject::Subject;
+            use peko_subject::ActorRef;
 
             let peer = match e.peer_type.as_deref() {
-                Some("user") => e.peer_id.as_ref().map(|id| Subject::User(id.clone())),
+                Some("user") => e
+                    .peer_id
+                    .as_ref()
+                    .map(|id| ActorRef::User(id.clone().into())),
                 Some("agent") | Some("principal") => e
                     .peer_id
                     .as_ref()
-                    .map(|id| Subject::Principal(id.clone().into())),
+                    .map(|id| ActorRef::Principal(id.clone().into())),
                 _ => None,
             };
 
@@ -1185,7 +1188,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_session_scrubs_peer_session_ids() {
         let (mut controller, _temp) = setup_controller().await;
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let peer_key = derive_base_session_key("test_agent", &peer);
 
         for id in ["sess_a", "sess_b"] {

@@ -32,7 +32,7 @@ use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 
 /// Hit payload returned by the hub's `/v1/principals/by-hub-id/:did` and
 /// `/v1/principals/by-handle/:owner/:principal_name` endpoints.
@@ -67,7 +67,7 @@ pub struct AgentResolution {
     /// the response contract (the hub mirrors it for client-side
     /// trust display) and audit code wants it.
     #[serde(rename = "ownerPrincipal", alias = "ownerSubject")]
-    pub owner_principal: Subject,
+    pub owner_principal: ActorRef,
     /// Visibility of the target instance. Drives the local-side check
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
@@ -482,7 +482,7 @@ mod tests {
             runtime_id: "did:key:zHostingRuntime".to_string(),
             instance_id: "inst-abc-123".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
-            owner_principal: Subject::User("alice".to_string()),
+            owner_principal: ActorRef::User("alice".into()),
             exposure: ResolvedExposure::Public,
         }
     }
@@ -527,7 +527,7 @@ mod tests {
         assert_eq!(decoded.exposure, ResolvedExposure::Public);
     }
 
-    /// `Subject::Principal` and `Subject::Public` also decode — the
+    /// `ActorRef::Principal` and `ActorRef::Public` also decode — the
     /// hub returns these on the by-did path for agent-owned or
     /// publicly-owned instances respectively.
     #[test]
@@ -535,13 +535,13 @@ mod tests {
         for (kind_json, expected) in [
             (
                 r#"{ "kind": "user", "id": "alice" }"#,
-                Subject::User("alice".to_string()),
+                ActorRef::User("alice".into()),
             ),
             (
                 r#"{ "kind": "principal", "id": "did:peko:agent:abc" }"#,
-                Subject::Principal("did:peko:agent:abc".into()),
+                ActorRef::Principal("did:peko:agent:abc".into()),
             ),
-            (r#"{ "kind": "public" }"#, Subject::Public),
+            (r#"{ "kind": "public" }"#, ActorRef::Public),
         ] {
             let body = format!(
                 r#"{{
@@ -555,7 +555,7 @@ mod tests {
                 }}"#
             );
             let decoded: AgentResolution =
-                serde_json::from_str(&body).expect("must decode every Subject kind");
+                serde_json::from_str(&body).expect("must decode every ActorRef kind");
             assert_eq!(decoded.owner_principal, expected);
         }
     }
@@ -585,7 +585,6 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
-            owner_id: None,
             tls: None,
         };
         let client = HubAgentDirectoryClient::from_credential(&cred).unwrap();
@@ -597,7 +596,6 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "ws://localhost:4000/v1/tunnel".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
-            owner_id: None,
             tls: None,
         };
         let client = HubAgentDirectoryClient::from_credential(&cred).unwrap();
@@ -609,7 +607,6 @@ mod tests {
         let cred = crate::tunnel::PekoHubCredential {
             url: "ftp://pekohub.org/".to_string(),
             runtime_id: "did:key:zRuntime".to_string(),
-            owner_id: None,
             tls: None,
         };
         assert!(matches!(

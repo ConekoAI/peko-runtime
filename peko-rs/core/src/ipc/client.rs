@@ -226,13 +226,13 @@ impl DaemonClient {
     ///
     /// This is the read complement to `principal_send`. Pass `None` for
     /// `peer` to read the principal's owner-root view; pass a
-    /// `Subject::User`/`Subject::Principal` to read that peer's thread
+    /// `ActorRef::User`/`ActorRef::Principal` to read that peer's thread
     /// (caller must equal peer or be the principal's owner — the daemon
     /// enforces this).
     pub async fn principal_log(
         &self,
         principal: impl Into<String>,
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
         limit: Option<usize>,
         since_secs: Option<u64>,
         cursor: Option<String>,
@@ -266,7 +266,7 @@ impl DaemonClient {
     pub async fn principal_log_watch(
         &self,
         name: impl Into<String>,
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
         since_cursor: Option<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
@@ -428,7 +428,7 @@ impl DaemonClient {
     pub async fn principal_stop(
         &self,
         name: impl Into<String>,
-        peer: Option<peko_auth::Subject>,
+        peer: Option<peko_auth::ActorRef>,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalStop {
@@ -496,7 +496,7 @@ impl DaemonClient {
     pub async fn principal_grant_permission(
         &self,
         name: impl Into<String>,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
@@ -509,11 +509,26 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// Transfer a Principal to a new owner (ADR-081 D4).
+    pub async fn principal_transfer(
+        &self,
+        name: impl Into<String>,
+        owner: peko_auth::ActorRef,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalTransfer {
+            request_id,
+            name: name.into(),
+            owner,
+        };
+        self.request_response(packet).await
+    }
+
     /// Revoke a permission from a Principal.
     pub async fn principal_revoke_permission(
         &self,
         name: impl Into<String>,
-        subject: peko_auth::Subject,
+        subject: peko_auth::ActorRef,
         permission: peko_auth::ownership::Permission,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();

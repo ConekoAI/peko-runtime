@@ -280,12 +280,11 @@ mod tests {
         .unwrap();
         manager
             .create(PrincipalConfig {
-                hub_id: None,
                 actor_key: None,
                 name: name.to_string(),
                 id: None,
                 did: None,
-                owner: peko_subject::Subject::User("owner".into()),
+                owner: peko_subject::ActorRef::User("owner".into()),
                 identity: Default::default(),
                 intent: Default::default(),
                 governance: Default::default(),

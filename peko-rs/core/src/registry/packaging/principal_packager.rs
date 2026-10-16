@@ -64,6 +64,18 @@ pub struct PrincipalPackager {
     sessions_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
     local_root: Option<PathBuf>,
+    portable: Option<PortableExport>,
+}
+
+/// What a snapshot needs to leave its runtime (ADR-081 D6): the source
+/// runtime, the Hub routes of the actors that have one, and the
+/// principal's channel memberships.
+#[derive(Debug, Clone, Default)]
+pub struct PortableExport {
+    pub source_runtime: String,
+    pub hub_routes: HashMap<String, peko_subject::ActorRef>,
+    /// `local/channels.json`: memberships, rosters, and own bindings.
+    pub channels: Option<Vec<u8>>,
 }
 
 impl PrincipalPackager {
@@ -76,6 +88,21 @@ impl PrincipalPackager {
             sessions_dir: None,
             workspace_dir: None,
             local_root: None,
+            portable: None,
+        }
+    }
+
+    /// Rewrite actor references for leaving this runtime (ADR-081 D6).
+    pub fn with_portable(mut self, portable: PortableExport) -> Self {
+        self.portable = Some(portable);
+        self
+    }
+
+    /// Apply the export rule (identity when the snapshot is not portable).
+    fn exported(&self, subject: &peko_subject::ActorRef) -> peko_subject::ActorRef {
+        match &self.portable {
+            Some(p) => super::portable::export_rule(&p.source_runtime, &p.hub_routes)(subject),
+            None => subject.clone(),
         }
     }
 
@@ -114,13 +141,17 @@ impl PrincipalPackager {
     }
 
     /// The stripped seed TOML (ADR-056): a `principal.toml` whose
-    /// `id`, `did`, and `boot_state` are removed, so `peko create -s`
-    /// mints a fresh identity and infers the boot state.
+    /// identity, boot state, owner, and grants are removed, so
+    /// `peko create -s` mints a fresh identity owned by whoever grows it
+    /// (ADR-081 D4).
     pub fn seed_toml(&self) -> anyhow::Result<String> {
         let mut seed_config = self.config.clone();
         seed_config.id = None;
         seed_config.did = None;
+        seed_config.actor_key = None;
         seed_config.boot_state = None;
+        seed_config.owner = peko_auth::ActorRef::default();
+        seed_config.permissions.clear();
         toml::to_string_pretty(&seed_config)
             .map_err(|e| anyhow::anyhow!("Failed to serialize template config: {e}"))
     }
@@ -139,6 +170,7 @@ impl PrincipalPackager {
             .unwrap_or_else(|| self.identity.did.clone());
 
         let mut manifest = PrincipalManifest::new(&self.config.name, &did);
+        manifest.source_runtime = self.portable.as_ref().map(|p| p.source_runtime.clone());
 
         if let Some(ref desc) = options.description {
             manifest.description = Some(desc.clone());
@@ -207,7 +239,9 @@ impl PrincipalPackager {
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut PrincipalManifest,
     ) -> anyhow::Result<()> {
-        let config_toml = toml::to_string_pretty(&self.config)?;
+        let mut config = self.config.clone();
+        super::portable::rewrite_config(&mut config, &|s| self.exported(s));
+        let config_toml = toml::to_string_pretty(&config)?;
         files.insert(
             "config/principal.toml".to_string(),
             config_toml.into_bytes(),
@@ -258,12 +292,27 @@ impl PrincipalPackager {
             if cron_dir.exists() {
                 self.export_dir_recursive(&cron_dir, "cron", files, manifest)
                     .await?;
+                // ADR-081 D6: cron creators leave by the portable rule.
+                if let Some(schedule) = files.get_mut("cron/schedule.toml") {
+                    *schedule = super::portable::rewrite_cron(schedule, &|s| self.exported(s));
+                    manifest.add_file("cron/schedule.toml", &files["cron/schedule.toml"]);
+                }
             }
             let plans_dir = local_root.join("plans");
             if plans_dir.exists() {
                 self.export_dir_recursive(&plans_dir, "plans", files, manifest)
                     .await?;
             }
+            // ADR-081 D5: the principal's own contact book.
+            let contacts = local_root.join(crate::principal::contacts::CONTACTS_FILE);
+            if let Ok(bytes) = tokio::fs::read(&contacts).await {
+                manifest.add_file("local/contacts.json", &bytes);
+                files.insert("local/contacts.json".into(), bytes);
+            }
+        }
+        if let Some(channels) = self.portable.as_ref().and_then(|p| p.channels.clone()) {
+            manifest.add_file("local/channels.json", &channels);
+            files.insert("local/channels.json".into(), channels);
         }
         Ok(())
     }
@@ -284,7 +333,7 @@ impl PrincipalPackager {
                 "Snapshot workspace must be an ordinary directory: {}",
                 workspace_dir.display()
             );
-            for dir_name in ["tools", "skills", "mcp", "hooks", "kb"] {
+            for dir_name in super::principal_manifest::WORKSPACE_DIRS {
                 let dir = workspace_dir.join(dir_name);
                 match tokio::fs::symlink_metadata(&dir).await {
                     Ok(_) => {
@@ -294,6 +343,14 @@ impl PrincipalPackager {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
+            }
+            // ADR-078 D7 / ADR-081 D5: the owner's policy travels too.
+            let policy = workspace_dir.join(crate::security::policy::POLICY_FILE);
+            if let Ok(text) = tokio::fs::read_to_string(&policy).await {
+                let text = super::portable::rewrite_policy(&text, &|s| self.exported(s));
+                let path = crate::security::policy::POLICY_FILE.to_string();
+                manifest.add_file(&path, text.as_bytes());
+                files.insert(path, text.into_bytes());
             }
         }
         Ok(())
@@ -436,12 +493,11 @@ mod tests {
 
     fn sample_config(name: &str, did: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
             did: Some(PrincipalDID(did.to_string())),
-            owner: peko_auth::Subject::User("local".to_string()),
+            owner: peko_auth::ActorRef::User("local".into()),
             identity: Default::default(),
             intent: Default::default(),
             governance: Default::default(),
@@ -613,10 +669,20 @@ mod tests {
         let mut config = sample_config("template", &identity.did);
         config.id = Some(peko_subject::PrincipalId("prin_template_src".into()));
         config.set_boot_state(BootState::Organized);
+        config.owner = peko_auth::ActorRef::User("hub:seed-author".into());
+        config.permissions.push(peko_auth::PermissionGrant {
+            subject: peko_auth::ActorRef::User("hub:friend".into()),
+            permission: peko_auth::Permission::Trusted,
+            granted_at: String::new(),
+            granted_by: config.owner.clone(),
+        });
 
         let packager = PrincipalPackager::new(config, identity);
         let artifact = packager.seed_toml().unwrap();
         assert!(!artifact.contains("prin_template_src"), "{artifact}");
+        // ADR-081 D4: a seed carries no owner, grants, or Hub identity.
+        assert!(!artifact.contains("seed-author"), "{artifact}");
+        assert!(!artifact.contains("friend"), "{artifact}");
         assert!(!artifact.contains("boot_state"), "{artifact}");
         assert!(!artifact.contains("keys"), "{artifact}");
     }

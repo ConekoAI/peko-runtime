@@ -14,14 +14,14 @@ fn context(principal: &PrincipalId) -> ToolContext {
     ctx
 }
 
-async fn register(port: &dyn ChannelPort, actor: &Subject, name: &str) -> ActorInfo {
+async fn register(port: &dyn ChannelPort, actor: &ActorRef, name: &str) -> ActorInfo {
     port.register_actor(
         actor,
         Some(&format!("hub-{name}")),
         None,
         Some(&format!("key-{name}")),
         Some(name),
-        "private",
+        peko_channel::Registration::Private,
     )
     .await
     .unwrap()
@@ -36,11 +36,11 @@ async fn list_and_alias_resolution_are_scoped_to_current_channels() {
     }));
     let a = PrincipalId("prin_a".into());
     let b = PrincipalId("prin_b".into());
-    let me = register(&*port, &Subject::from(&a), "Alice").await;
-    register(&*port, &Subject::from(&b), "Bob").await;
-    let human = register(&*port, &Subject::User("human".into()), "Human").await;
-    let visitor = register(&*port, &Subject::Visitor("visitor".into()), "Visitor").await;
-    let unrelated = register(&*port, &Subject::User("unrelated".into()), "Unrelated").await;
+    let me = register(&*port, &ActorRef::from(&a), "Alice").await;
+    register(&*port, &ActorRef::from(&b), "Bob").await;
+    let human = register(&*port, &ActorRef::User("human".into()), "Human").await;
+    let visitor = register(&*port, &ActorRef::Visitor("visitor".into()), "Visitor").await;
+    let unrelated = register(&*port, &ActorRef::User("unrelated".into()), "Unrelated").await;
     let dm = port
         .ensure_dm(&a, &human.subject(), "/human")
         .await
@@ -126,12 +126,11 @@ async fn non_owner_runs_see_only_their_own_conversation() {
     }));
     let a = PrincipalId("prin_a".into());
     let b = PrincipalId("prin_b".into());
-    let me = register(&*port, &Subject::from(&a), "Alice").await;
-    let learned = register(&*port, &Subject::from(&b), "Bob").await;
-    let guest = register(&*port, &Subject::User("guest".into()), "Guest").await;
-    let friend = register(&*port, &Subject::User("friend".into()), "Friend").await;
-    let visitor = register(&*port, &Subject::Visitor("visitor".into()), "Visitor").await;
-    port.remember_contact(&a, &learned.subject()).await.unwrap();
+    let me = register(&*port, &ActorRef::from(&a), "Alice").await;
+    let learned = register(&*port, &ActorRef::from(&b), "Bob").await;
+    let guest = register(&*port, &ActorRef::User("guest".into()), "Guest").await;
+    let friend = register(&*port, &ActorRef::User("friend".into()), "Friend").await;
+    let visitor = register(&*port, &ActorRef::Visitor("visitor".into()), "Visitor").await;
     let guest_dm = port
         .ensure_dm(&a, &guest.subject(), "/guest")
         .await
@@ -215,7 +214,6 @@ async fn non_owner_runs_see_only_their_own_conversation() {
         .await
         .unwrap();
     assert_eq!(listed["channels"].as_array().unwrap().len(), 3);
-    assert!(listed.to_string().contains(&learned.address));
 }
 
 #[tokio::test]
@@ -318,6 +316,12 @@ impl AgentDirectory for Directory {
     }
 }
 
+fn book(principal: &crate::principal::Principal) -> Vec<crate::principal::contacts::ContactRecord> {
+    crate::principal::contacts::ContactBook::of(principal)
+        .list()
+        .unwrap()
+}
+
 struct Fixture {
     temp: tempfile::TempDir,
     port: Arc<ChannelStore>,
@@ -402,7 +406,7 @@ impl Fixture {
                 runtime_id: "remote-runtime".into(),
                 instance_id: "remote-instance".into(),
                 agent_did: "did:key:remote".into(),
-                owner_principal: peko_auth::Subject::Public,
+                owner_principal: peko_auth::ActorRef::Public,
                 exposure: ResolvedExposure::Public,
             }),
             calls: Mutex::new(Vec::new()),
@@ -508,20 +512,26 @@ async fn learned_remote_contacts_persist_without_leaking_to_other_principals() {
         .unwrap_err()
         .to_string()
         .contains("not permitted"));
-    assert_eq!(fx.port.known_contacts(&fx.other.id).await.unwrap().len(), 0);
+    assert!(book(&fx.other).is_empty());
+    // ADR-081 D5: learned contacts live in the principal's own book.
+    assert_eq!(book(&fx.caller).len(), 1);
     let restarted = Arc::new(ChannelStore::new(ChannelConfig {
         runtime_dir: fx.temp.path().join("runtime"),
         shared_dir: None,
     }));
-    let tool = ContactsTool::new(restarted, Weak::new());
+    let tool = ContactsTool::new(restarted, Arc::downgrade(fx.tooling.services()));
     let listed = tool
         .execute_with_context(json!({"action":"list"}), &context(&fx.caller.id))
         .await
         .unwrap();
-    assert!(listed["actors"]
+    let learned = listed["actors"]
         .as_array()
         .unwrap()
-        .contains(&resolved["actor"]));
+        .iter()
+        .find(|actor| actor["address"] == resolved["actor"]["address"])
+        .unwrap();
+    assert_eq!(learned["reachable"], true);
+    assert_eq!(learned["hub_id"], resolved["actor"]["hub_id"]);
     assert!(
         fx.tooling
             .catalog()
@@ -538,12 +548,12 @@ async fn registered_callers_authenticate_directory_lookups() {
     let config = fx.caller.config.read().await;
     fx.port
         .register_actor(
-            &Subject::from(&fx.caller.id),
+            &ActorRef::from(&fx.caller.id),
             Some("caller-hub"),
             Some(&fx.caller.did().await.0),
             config.actor_key.as_deref(),
             Some("caller"),
-            "private",
+            peko_channel::Registration::Private,
         )
         .await
         .unwrap();
@@ -616,16 +626,8 @@ async fn exact_local_lookup_learns_only_for_the_requesting_principal() {
     assert_eq!(result["actor"]["address"], reference);
     assert_eq!(result["actor"]["registration"], "local_only");
     assert!(fx.directory.calls.lock().unwrap().is_empty());
-    assert_eq!(
-        fx.port.known_contacts(&fx.caller.id).await.unwrap().len(),
-        1
-    );
-    assert!(fx
-        .port
-        .known_contacts(&fx.other.id)
-        .await
-        .unwrap()
-        .is_empty());
+    assert_eq!(book(&fx.caller).len(), 1);
+    assert!(book(&fx.other).is_empty());
     fx.directory.response.lock().unwrap().runtime_id = "local-runtime".into();
     fx.directory.response.lock().unwrap().local_id = fx.other.id.0.clone();
     let other_config = fx.other.config.read().await;
@@ -674,10 +676,5 @@ async fn same_runtime_directory_claims_must_match_a_hosted_identity() {
         .to_string()
         .contains("does not match the hosted principal"));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert!(fx
-        .port
-        .known_contacts(&fx.caller.id)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(book(&fx.caller).is_empty());
 }

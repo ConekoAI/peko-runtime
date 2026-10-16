@@ -4,6 +4,132 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Typed actor references (ADR-081 §3 follow-ups, 0.1.0, 2026-10-15)
+
+- `Subject` is replaced by `ActorRef` (`User | Principal | Visitor (Route) | Public`)
+  with a typed `Route::{Local { id, runtime }, Hub(id)}`: scope is a type, no
+  longer a prefix inside an ID string. `SubjectKind` is `ActorKind`. The text
+  and `{kind, id}` wire forms are unchanged, so grants, session peers, and child
+  slugs on disk keep working. `ActorRef::parse_scoped` is the one parser for
+  explicit `kind:local:<id>` / `kind:hub:<id>` references (registry resolution,
+  Contacts, `peko permit`); Hub routes are built with `Route::hub`, and
+  `ActorInfo` builds from the route instead of re-splitting address text (a
+  foreign-qualified route keeps its qualifier).
+- `members.json` rows are written as canonical addresses (`member_row`,
+  replacing `subject_wire_form`); rows written before still read as the same
+  member, and `peko channel show` provenance is normalized through the registry.
+- `ActorInfo.registration` is `peko_channel::Registration` (`local_only`,
+  `private`, `public`, `registered` on the wire, unchanged).
+
+### Legacy identity pieces retired (ADR-081 phase 5, 0.1.0, 2026-10-15)
+
+- `principal.toml` no longer stores a `hub_id` copy; the actor registry is the
+  only source (`PrincipalManager::hub_id_of`), and IPC summaries and
+  `peko show` read it from there.
+- Removed `Subject::principal_wire_id`, `AgentConfig::wire_agent_id`, and the
+  `ManageExtensions`, `ManageMembers`, `Expose`, and `Delete` permissions,
+  which nothing checked.
+- Following a moved principal uses one path for every channel
+  (`ChannelStore::replace_peer_route`, formerly DM-only) and retargets pending
+  envelopes so their message IDs are kept.
+- Docs: ADR-081 accepted with a retirement table (bare principal member rows,
+  the `Subject` → `ActorRef` type replacement, and the registration enum
+  remain as follow-ups); ADR-078's owner row, DATA_MODEL, API_SURFACE,
+  builtin-tools, the CLI reference, and the README describe the new model.
+
+### One online copy (ADR-081 phase 4, 0.1.0, 2026-10-15)
+
+- When Hub moves a principal's online link to another runtime it sends
+  `principal_unlinked`; this runtime's copy keeps its identity and history but
+  goes offline-only (no Hub route, local-only exposure), audited as
+  `principal.online_link_moved`. A notice naming a different Hub link is
+  ignored.
+- A directory answer can no longer attach a Hub route to a principal hosted
+  here: only that principal's own registration receipt does. This closes the
+  path by which a copy registered elsewhere could make this runtime announce
+  it too.
+- Channel membership follows a moved principal: outbound fan-out re-resolves
+  each registered remote member's link through the directory (cached for five
+  minutes) and delivers to the runtime it is linked to now; inbound envelopes
+  from a new runtime are accepted only when the directory confirms the link,
+  and the membership row follows.
+
+### Contacts and owner travel with the principal (ADR-081 phase 3, 0.1.0, 2026-10-15)
+
+- Learned contacts are the principal's own: they live in its Local tier
+  (`local/contacts.json`) with each actor's immutable key and routes, and the
+  runtime registry keeps only routing. A contact the registry cannot route to
+  the same actor is listed with `reachable: false`. Existing `known_by` lists
+  move into the books at daemon start; `ChannelPort::known_contacts` /
+  `remember_contact` and `known_by` are gone.
+- `.peko` snapshots carry the contact book, channel memberships
+  (`local/channels.json`), `POLICY.md`, `workflows/`, and `plugins/`, and
+  record their source runtime. Actor references in the owner, grants,
+  `POLICY.md` sections, and cron creators leave by one rule: Hub route when
+  the actor has one, else a local route qualified with the source runtime
+  (`kind:local:<id>@<runtime DID>`), which matches no local actor elsewhere.
+- On import: a Hub owner is unchanged; a local owner from another runtime
+  becomes this runtime's local user everywhere it is referenced, and its DM
+  session is rebound to the new pair; local routes of another runtime stay
+  dormant and revive when the principal returns. The local ID is this
+  runtime's to give: a returning principal gets its former ID back, any other
+  a fresh one (the snapshot's is never adopted), and a second copy of an
+  already hosted actor is refused unless keys are rotated.
+- `peko transfer <peko> <actor>`: only the current owner transfers; an online
+  principal's new owner must be a Hub actor. Audited as
+  `principal.owner_transfer`.
+- `peko permit` / `peko revoke` require an explicit `kind:local:<id>`,
+  `kind:hub:<id>`, or `public`; bare names (which never matched an actor) are
+  refused.
+
+### One runtime identity; the runtime registers with its local user (ADR-081 phase 2, 0.1.0, 2026-10-15)
+
+- The runtime has one identity: the vault-held `did:key` in
+  `runtime/identity.toml` signs the tunnel handshake, registration, invite
+  tokens, and cross-runtime envelopes. The separate tunnel key (`peko tunnel
+  setup`, vault `tunnel:<did>`) is gone, and `pekohub.toml` stores only the
+  Hub URL and TLS settings. An older `pekohub.toml` is refused with the way
+  out.
+- `peko runtime register --hub <origin> --api-key <key>` registers the
+  runtime and its local user together: registration always proves possession
+  of the runtime key (no unproven fallback), and the Hub account becomes the
+  local user's alias in the actor registry. The local user keeps one fixed key
+  (`local@<runtime DID>`), so registering re-keys nothing.
+  `peko runtime unregister` drops the alias at once and removes the
+  registration; registered principals must be unregistered first.
+- Retired: `peko tunnel setup`, the standalone `peko tunnel start`,
+  `peko login` / `peko logout`, and `runtime/hub-login.json`. `peko auth
+  status` shows the local user and its Hub alias.
+- A principal can register only when its owner has a Hub account, and
+  announces carry that owner to Hub.
+
+### One identity rule and one owner (ADR-081 phase 1, 0.1.0, 2026-10-15)
+
+- Every authorization decision compares actors through one function, the
+  actor registry's immutable key (`ActorKeys`, `ChannelPort::key_of`):
+  ingress chat permission, IPC settings checks, trust, the conversation
+  ceiling, `ChannelSend`, cross-runtime invites, the Hub private-instance
+  ACL, and `POLICY.md` sections. A grant to a principal's Hub alias now
+  matches the same principal arriving by its local ID, and the other way
+  round. `Subject::normalized_for_auth` and its `local_<id>` compatibility
+  rewrite are gone.
+- Exactly one owner: trust is `Owner` only for `config.owner`. The blanket
+  owner rules for `user:local` and the Hub account logged into the terminal
+  are removed. The terminal (and admin API keys) always attribute as the
+  local user; the operator is still admitted to chat with every principal it
+  hosts, but at the trust of whom it is.
+- The Hub private-instance ACL checks the principal's own grants and owner,
+  so the owner is admitted without a grant. The `allowedPrincipals` list,
+  which Hub no longer reads and whose `ExposureUpdate` echo could silently
+  empty the runtime's ACL, is removed from the tunnel protocol.
+- Cron jobs re-derive their creator's trust when they fire and only ever
+  lower it, so revoking a `trusted` grant reaches existing jobs.
+- Approval notices go to the owner's own conversation.
+- Seeds carry no authority: `peko create -s` drops a seed's `[owner]` and
+  grants, and exported seeds omit owner, grants, and Hub identity.
+- CLI unit tests take the passphrase vault process-wide (a `ctor` hook), so
+  no test can reach the OS keychain by forgetting `init_credentials`.
+
 ### Contacts and rosters scoped to the run's conversation (0.1.0, 2026-10-15)
 
 - `Contacts` follows the ADR-078 acting-for stamp. A run acting for anyone

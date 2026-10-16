@@ -3,7 +3,7 @@ use crate::extensions::framework::core::ExtensionServices;
 use crate::tunnel::CrossRuntimeA2aCtx;
 use async_trait::async_trait;
 use peko_channel::{ActorInfo, ChannelPort};
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use peko_tools_core::{ActingFor, Tool, ToolContext};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -47,25 +47,62 @@ impl ContactsTool {
             .validate(params)
     }
 
+    /// The principal's contact book, when the principal is loaded here.
+    async fn book(
+        &self,
+        id: &PrincipalId,
+    ) -> Option<(crate::principal::contacts::ContactBook, String)> {
+        let manager = Arc::clone(&self.context()?.principal_manager);
+        let principal = manager.get(id.clone()).await?;
+        Some((
+            crate::principal::contacts::ContactBook::of(&principal),
+            manager.runtime_did().to_string(),
+        ))
+    }
+
     /// The actors and conversations `stamp` may see (ADR-078 D4): the
     /// owner sees every channel and every learned contact; any other run
     /// sees its own actor and the participants of its own conversation.
+    /// Learned contacts the registry here cannot route to the same actor
+    /// are dormant (ADR-081 D1): listed with `reachable: false`.
     async fn discover(
         &self,
         id: &PrincipalId,
         stamp: &ActingFor,
-    ) -> anyhow::Result<(BTreeMap<String, ActorInfo>, Vec<Value>)> {
+    ) -> anyhow::Result<(BTreeMap<String, Value>, Vec<Value>)> {
         let owner = stamp.is_owner();
-        let mut actors = if owner {
-            self.port.known_contacts(id).await?
-        } else {
-            Vec::new()
+        // An unreadable registry is an error, never an empty answer.
+        self.port.known_actors().await?;
+        let mut actors = BTreeMap::new();
+        if owner {
+            if let Some((book, runtime)) = self.book(id).await {
+                for contact in book.list()? {
+                    let Some(subject) = contact.subject_on(&runtime) else {
+                        continue;
+                    };
+                    let entry = if contact.reachable_on(self.port.as_ref(), &runtime) {
+                        let mut value = json!(self.port.actor_info(&subject).await);
+                        value["reachable"] = json!(true);
+                        value
+                    } else {
+                        json!({
+                            "address": subject.canonical_address(),
+                            "kind": contact.kind,
+                            "hub_id": contact.hub_id,
+                            "name": contact.name,
+                            "registration": contact.registration,
+                            "reachable": false,
+                        })
+                    };
+                    actors.insert(
+                        entry["address"].as_str().unwrap_or_default().to_string(),
+                        entry,
+                    );
+                }
+            }
         }
-        .into_iter()
-        .map(|actor| (actor.address.clone(), actor))
-        .collect::<BTreeMap<_, _>>();
-        let me = self.port.actor_info(&Subject::from(id)).await;
-        actors.insert(me.address.clone(), me);
+        let me = self.port.actor_info(&ActorRef::from(id)).await;
+        actors.insert(me.address.clone(), json!(me));
         let mut channels = Vec::new();
         for channel in self.port.list_for_principal(id).await? {
             if !owner && stamp.compartment.channel() != Some(channel.as_str()) {
@@ -73,12 +110,28 @@ impl ContactsTool {
             }
             let participants = self.port.participants(&channel).await?;
             for actor in &participants {
-                actors.insert(actor.address.clone(), actor.clone());
+                actors.insert(actor.address.clone(), json!(actor));
             }
             channels.push(json!({"channel":channel,"participants":participants,
                 "binding":self.port.binding_for(&channel,id).await?}));
         }
         Ok((actors, channels))
+    }
+
+    /// Learn `actor` into the principal's contact book.
+    async fn remember(
+        &self,
+        id: &PrincipalId,
+        actor: &ActorInfo,
+        signing_did: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let (book, runtime) = self
+            .book(id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
+        let mut record = crate::principal::contacts::ContactRecord::from_actor(actor, &runtime);
+        record.signing_did = signing_did.map(str::to_owned);
+        book.remember(record).await
     }
 }
 #[async_trait]
@@ -90,7 +143,7 @@ impl Tool for ContactsTool {
         "Contacts"
     }
     fn description(&self) -> String {
-        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned (a run acting for anyone but the owner sees only its own conversation), with canonical addresses, known names and mention tokens. resolve accepts kind:local:<id> or kind:hub:<id>; use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal and survive restarts.".into()
+        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned (a run acting for anyone but the owner sees only its own conversation), with canonical addresses, known names and mention tokens. resolve accepts kind:local:<id> or kind:hub:<id>; use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal, survive restarts, and travel with it; a contact this runtime cannot route to is listed with reachable: false.".into()
     }
     fn parameters(&self) -> Value {
         Self::tool_parameters()
@@ -121,23 +174,29 @@ impl Tool for ContactsTool {
                     .get("reference")
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("Contacts resolve requires reference"))?;
-                let subject: Subject = reference.parse()?;
-                let identifier = subject.subject_id();
-                let (scope, identifier) = identifier
-                    .split_once(':')
+                let subject = ActorRef::parse_scoped(reference)
+                    .map_err(|_| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
+                let route = subject
+                    .route()
                     .ok_or_else(|| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
-                anyhow::ensure!(
-                    matches!(scope, "local" | "hub") && !identifier.is_empty(),
-                    "Use kind:local:<id> or kind:hub:<id>"
-                );
+                let (scope, identifier) = (route.scope(), route.id());
                 let (actors, _) = self.discover(&id, &stamp).await?;
                 if let Some(actor) = actors.values().find(|actor| {
-                    actor.address == reference || actor.hub_address().as_deref() == Some(reference)
+                    actor["reachable"] != json!(false)
+                        && (actor["address"] == json!(reference)
+                            || actor["hub_id"].as_str().is_some_and(|hub| {
+                                reference
+                                    == format!("{}:hub:{hub}", actor["kind"].as_str().unwrap_or(""))
+                            }))
                 }) {
-                    return Ok(json!({"actor":actor}));
+                    let mut actor = actor.clone();
+                    if let Some(fields) = actor.as_object_mut() {
+                        fields.remove("reachable");
+                    }
+                    return Ok(json!({ "actor": actor }));
                 }
                 anyhow::ensure!(
-                    matches!(subject, Subject::Principal(_)),
+                    matches!(subject, ActorRef::Principal(_)),
                     "Actor is not a contact of this principal"
                 );
                 // Learned contacts are the principal's own knowledge, shared by
@@ -153,7 +212,7 @@ impl Tool for ContactsTool {
                     anyhow::ensure!(context.principal_manager.get(PrincipalId(identifier.into())).await.is_some(),
                         "Unknown local principal; use principal:hub:<id> to learn a remote principal");
                     let actor = self.port.resolve_actor(reference).await?;
-                    self.port.remember_contact(&id, &actor.subject()).await?;
+                    self.remember(&id, &actor, None).await?;
                     return Ok(json!({"actor":actor}));
                 }
                 let hub_id = reference.strip_prefix("principal:hub:").ok_or_else(|| {
@@ -166,7 +225,7 @@ impl Tool for ContactsTool {
                     .get(id.clone())
                     .await
                     .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
-                let caller_profile = self.port.actor_info(&Subject::from(&caller.id)).await;
+                let caller_profile = self.port.actor_info(&ActorRef::from(&caller.id)).await;
                 let result = if caller_profile.hub_id.is_some() {
                     context
                         .directory
@@ -210,13 +269,13 @@ impl Tool for ContactsTool {
                         result.name.as_deref(),
                         if result.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public
                         {
-                            "public"
+                            peko_channel::Registration::Public
                         } else {
-                            "private"
+                            peko_channel::Registration::Private
                         },
                     )
                     .await?;
-                self.port.remember_contact(&id, &actor.subject()).await?;
+                self.remember(&id, &actor, Some(&result.agent_did)).await?;
                 Ok(
                     json!({"actor":actor,"runtime_id":result.runtime_id,"local":result.runtime_id==context.caller_runtime_id}),
                 )

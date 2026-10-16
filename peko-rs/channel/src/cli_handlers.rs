@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use serde::{Deserialize, Serialize};
 
 use crate::port::{ChannelPort, Checkpoint, CreateOpts, PostMsg, Result};
@@ -93,13 +93,13 @@ impl ChannelCliRouter {
 
     /// `peko channel invite <channel> <invitee>` — add `invitee` to
     /// `channel` as `inviter`. ADR-049 Phase 1: the invitee is
-    /// [`Subject`]-typed (principals and users); the inviter stays a
+    /// [`ActorRef`]-typed (principals and users); the inviter stays a
     /// principal.
     pub async fn handle_invite(
         &self,
         channel: &ChannelId,
         inviter: &PrincipalId,
-        invitee: &Subject,
+        invitee: &ActorRef,
     ) -> Result<InviteResponse> {
         self.port.invite(channel, inviter, invitee).await?;
         Ok(InviteResponse {
@@ -110,13 +110,13 @@ impl ChannelCliRouter {
 
     /// `peko channel post <channel> [--parent <task_id>] <text>` —
     /// append a message. Returns the new task id. ADR-049 Phase 2:
-    /// the sender is [`Subject`]-typed — a `user:<id>` member posts as
-    /// themselves; store-level Subject membership is the
+    /// the sender is [`ActorRef`]-typed — a `user:<id>` member posts as
+    /// themselves; store-level ActorRef membership is the
     /// authorization.
     pub async fn handle_post(
         &self,
         channel: &ChannelId,
-        sender: &Subject,
+        sender: &ActorRef,
         text: &str,
         parent: Option<String>,
     ) -> Result<PostResponse> {
@@ -219,9 +219,9 @@ pub struct CreateResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InviteResponse {
     pub channel: ChannelId,
-    /// ADR-049 Phase 1: the invitee is `Subject`-typed (a principal or
+    /// ADR-049 Phase 1: the invitee is `ActorRef`-typed (a principal or
     /// a user).
-    pub invitee: Subject,
+    pub invitee: ActorRef,
 }
 
 /// `--json` output for `peko channel post`.
@@ -249,9 +249,9 @@ pub struct LeaveResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MembersResponse {
     pub channel: ChannelId,
-    /// ADR-049 Phase 1: members are `Subject`-typed (principals and
+    /// ADR-049 Phase 1: members are `ActorRef`-typed (principals and
     /// users).
-    pub members: Vec<Subject>,
+    pub members: Vec<ActorRef>,
     /// P1.2 attribution: per-member runtime provenance. Empty for
     /// channels with no remote members; legacy pre-PR-3b
     /// implementations may omit the field entirely

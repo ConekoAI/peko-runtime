@@ -29,7 +29,7 @@ use peko_channel::{ChannelCliRouter, ChannelConfig, ChannelStore};
 use peko_core::ipc::packet::{RequestPacket, ResponsePacket};
 use peko_core::ipc::DaemonClient;
 use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
-use peko_subject::{PrincipalId, Subject};
+use peko_subject::{ActorRef, PrincipalId};
 use std::str::FromStr;
 
 use crate::commands::GlobalPaths;
@@ -67,7 +67,7 @@ pub enum ChannelCommands {
         /// Inviter principal name (must already be a member).
         inviter: String,
         /// Invitee principal name (must exist on disk), or a
-        /// `user:<id>` Subject wire form to invite a user (ADR-049
+        /// `user:<id>` ActorRef wire form to invite a user (ADR-049
         /// Phase 1 — validated by wire form only, no principal
         /// lookup).
         invitee: String,
@@ -253,8 +253,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         // ADR-049 Phase 1: a `user:<id>` invitee is taken
                         // verbatim (validated by wire form only); anything
                         // else resolves as a principal name.
-                        let invitee_subject = match Subject::from_str(&invitee) {
-                            Ok(s @ Subject::User(_)) => s,
+                        let invitee_subject = match ActorRef::from_str(&invitee) {
+                            Ok(s @ ActorRef::User(_)) => s,
                             _ => {
                                 let id = paths
                                     .resolver()
@@ -262,7 +262,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                                     .with_context(|| {
                                         format!("Invitee peko '{invitee}' not found on disk")
                                     })?;
-                                Subject::from(&id)
+                                ActorRef::from(&id)
                             }
                         };
                         let resp = router
@@ -301,8 +301,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             let sender_name: Option<String> = if sender == "me" {
                 None
             } else {
-                if let Ok(s) = Subject::from_str(&sender) {
-                    if matches!(s, Subject::User(_)) {
+                if let Ok(s) = ActorRef::from_str(&sender) {
+                    if matches!(s, ActorRef::User(_)) {
                         anyhow::bail!(
                             "user identities cannot be specified — the daemon derives yours \
                              from the connection. Use `me` to post as yourself, or a \
@@ -328,7 +328,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         // speaks as the CLI's derived identity; the
                         // daemon path resolves it server-side.
                         let sender_subject = if sender == "me" {
-                            Subject::User(paths.user().to_string())
+                            ActorRef::User(paths.user().into())
                         } else {
                             let id = paths
                                 .resolver()
@@ -336,7 +336,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                                 .with_context(|| {
                                     format!("Sender peko '{sender}' not found on disk")
                                 })?;
-                            Subject::from(&id)
+                            ActorRef::from(&id)
                         };
                         let resp = router
                             .handle_post(&ch, &sender_subject, &text, parent)
@@ -639,8 +639,8 @@ mod response_tests {
         })
         .unwrap();
         assert_eq!(created, channel);
-        let user = Subject::from_str("user:local").unwrap();
-        let invited: (ChannelId, Subject) =
+        let user = ActorRef::from_str("user:local").unwrap();
+        let invited: (ChannelId, ActorRef) =
             decode_daemon_response(ResponsePacket::ChannelInvited {
                 request_id: 2,
                 channel: channel.clone(),
@@ -702,11 +702,11 @@ mod response_tests {
         assert_eq!(channels, vec![channel.clone()]);
         let reply: ResponsePacket = serde_json::from_value(serde_json::json!({
             "type": "channel_members_result", "request_id": 2,
-            "channel": channel.to_string(), "members": [Subject::from_str("user:local").unwrap()]
+            "channel": channel.to_string(), "members": [ActorRef::from_str("user:local").unwrap()]
         }))
         .unwrap();
-        let members: Vec<Subject> = decode_daemon_response(reply).unwrap();
-        assert_eq!(members, vec![Subject::from_str("user:local").unwrap()]);
+        let members: Vec<ActorRef> = decode_daemon_response(reply).unwrap();
+        assert_eq!(members, vec![ActorRef::from_str("user:local").unwrap()]);
         let reply: ResponsePacket = serde_json::from_value(serde_json::json!({
             "type": "channel_peek_result", "request_id": 3,
             "channel": channel.to_string(), "events": []

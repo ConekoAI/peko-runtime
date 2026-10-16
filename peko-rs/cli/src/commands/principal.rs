@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 
 use crate::commands::GlobalPaths;
-use peko_auth::{subject_from_string_with_default_user, Subject};
+use peko_auth::ActorRef;
 use peko_core::common::authority::TierPath;
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
@@ -162,7 +162,8 @@ pub enum PrincipalCommands {
         /// Peko name
         name: String,
 
-        /// Subject to grant permission to (e.g. `user:alice`, `public`)
+        /// Actor to grant permission to: `kind:local:<id>`, `kind:hub:<id>`,
+        /// or `public`
         subject: String,
 
         /// Permission to grant (e.g. `chat`, `manage_settings`). `trusted` is
@@ -171,12 +172,22 @@ pub enum PrincipalCommands {
         permission: String,
     },
 
+    /// Transfer a peko to a new owner (only its current owner can)
+    Transfer {
+        /// Peko name
+        name: String,
+
+        /// The new owner: `user:local:local` (this runtime's local user) or
+        /// `user:hub:<account>`
+        owner: String,
+    },
+
     /// Revoke a permission from a peko
     Revoke {
         /// Peko name
         name: String,
 
-        /// Subject to revoke permission from
+        /// ActorRef to revoke permission from
         subject: String,
 
         /// Permission to revoke
@@ -302,6 +313,7 @@ pub async fn handle_principal(
             subject,
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
+        PrincipalCommands::Transfer { name, owner } => transfer_principal(&name, &owner).await,
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
         PrincipalCommands::Invite { name, scope, ttl } => mint_invite(&name, scope, &ttl).await,
         PrincipalCommands::RevokeInvite { name, jti } => revoke_invite(&name, &jti).await,
@@ -624,12 +636,11 @@ async fn provision_principal(
             config.id = None;
             config.did = None;
             config.boot_state = None;
-            // A seed without an `[owner]` section deserializes to
-            // the default empty subject — the creating local user owns
-            // the principal, same as a bare create.
-            if matches!(&config.owner, Subject::User(id) if id.is_empty()) {
-                config.owner = Subject::User("local".to_string());
-            }
+            // ADR-081 D4: a seed carries no authority. The creating local
+            // user owns what grows from it, and nobody else is granted
+            // anything until that owner says so.
+            config.owner = ActorRef::User("local".into());
+            config.permissions.clear();
             (config, bundle.persona)
         }
         None => {
@@ -678,7 +689,7 @@ async fn provision_principal(
     // via the typed `SharedLayout` — the `RuntimeAuthority` accessor
     // requires a `PrincipalId`, but at create time the principal
     // doesn't exist yet, so we use the resolver directly. The CLI
-    // operates from `Subject::User`, which is entitled to write its
+    // operates from `ActorRef::User`, which is entitled to write its
     // own principal's shared state.
     let roles_dir = paths.resolver().principal_layout(name).shared.roles_dir;
     tokio::fs::create_dir_all(&roles_dir).await?;
@@ -929,6 +940,17 @@ async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
 async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<()> {
     let manager = build_manager(paths);
     let principal = load_principal(name, &manager, paths).await?;
+    // ADR-081 §3: the actor registry is the only source of a Hub ID.
+    let hub_id = {
+        use peko_channel::ChannelPort;
+        peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+            runtime_dir: paths.resolver().runtime_dir(),
+            shared_dir: None,
+        })
+        .actor_info(&ActorRef::from(&principal.id))
+        .await
+        .hub_id
+    };
 
     let (display_name, did, preferred_model_id) = {
         let config = principal.config.read().await;
@@ -1035,8 +1057,8 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         };
         let view = ShowView {
             local_id: &principal.id.0,
-            hub_id: config.hub_id.as_deref(),
-            registration: if config.hub_id.is_none() {
+            hub_id: hub_id.as_deref(),
+            registration: if hub_id.is_none() {
                 "local_only"
             } else {
                 config.exposure.as_str()
@@ -1059,12 +1081,12 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     println!("Peko: {}", display_name);
     let config = principal.config.read().await;
     println!("  Local ID: principal:local:{}", principal.id.0);
-    if let Some(hub) = &config.hub_id {
+    if let Some(hub) = &hub_id {
         println!("  Hub ID: principal:hub:{hub}");
     }
     println!(
         "  Registration: {}",
-        if config.hub_id.is_none() {
+        if hub_id.is_none() {
             "local_only"
         } else {
             config.exposure.as_str()
@@ -1316,21 +1338,36 @@ fn parse_permission(value: &str) -> Result<peko_auth::Permission> {
         "manage_settings" | "manage-settings" | "managesettings" => {
             Ok(peko_auth::Permission::ManageSettings)
         }
-        "manage_extensions" | "manage-extensions" | "manageextensions" => {
-            Ok(peko_auth::Permission::ManageExtensions)
-        }
-        "manage_members" | "manage-members" | "managemembers" => {
-            Ok(peko_auth::Permission::ManageMembers)
-        }
-        "expose" => Ok(peko_auth::Permission::Expose),
-        "delete" => Ok(peko_auth::Permission::Delete),
         "trusted" => Ok(peko_auth::Permission::Trusted),
         other => anyhow::bail!("Unknown permission: {other}"),
     }
 }
 
+/// An explicit actor reference (ADR-073/081): `kind:local:<id>`,
+/// `kind:hub:<id>`, or `public`. Bare names are refused — they never
+/// matched an actor.
+fn parse_actor_ref(text: &str) -> Result<ActorRef> {
+    if text == "public" {
+        return Ok(ActorRef::Public);
+    }
+    ActorRef::parse_scoped(text).map_err(|e| anyhow::anyhow!("{e}, or public"))
+}
+
+async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
+    let owner = parse_actor_ref(owner)?;
+    let client = DaemonClient::connect().await?;
+    match client.principal_transfer(name, owner).await? {
+        ResponsePacket::PrincipalOwnerTransferred { name, owner, .. } => {
+            println!("Transferred '{name}' to {}", owner.canonical_address());
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
+        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+    }
+}
+
 async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
-    let subject = subject_from_string_with_default_user(subject_str);
+    let subject = parse_actor_ref(subject_str)?;
     let permission = parse_permission(permission_str)?;
 
     let client = DaemonClient::connect().await?;
@@ -1358,7 +1395,7 @@ async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -
 }
 
 async fn revoke_permission(name: &str, subject_str: &str, permission_str: &str) -> Result<()> {
-    let subject = subject_from_string_with_default_user(subject_str);
+    let subject = parse_actor_ref(subject_str)?;
     let permission = parse_permission(permission_str)?;
 
     let client = DaemonClient::connect().await?;
@@ -1578,12 +1615,11 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
 
 fn default_principal_config(name: &str) -> PrincipalConfig {
     PrincipalConfig {
-        hub_id: None,
         actor_key: None,
         name: name.to_string(),
         id: None,
         did: None,
-        owner: Subject::User("local".to_string()),
+        owner: ActorRef::User("local".into()),
         // ADR-054: leave `[identity]` empty on the bare-create
         // defaults path — the genesis turn adopts a working
         // self-description (the brief tells it to). No
@@ -1713,7 +1749,9 @@ mod tests {
             parse_permission("ManageSettings").unwrap(),
             Permission::ManageSettings
         );
-        assert_eq!(parse_permission("EXPOSE").unwrap(), Permission::Expose);
+        assert_eq!(parse_permission("TRUSTED").unwrap(), Permission::Trusted);
+        // ADR-081: permissions nothing checked are retired.
+        assert!(parse_permission("expose").is_err());
     }
 
     #[test]
@@ -2145,6 +2183,80 @@ mod tests {
             }
             _other => panic!("expected flattened top-level create command"),
         }
+    }
+
+    /// ADR-081 D4: a seed carries no authority — its `[owner]` and grants
+    /// are dropped, and the creating local user owns the result.
+    #[tokio::test]
+    async fn create_from_seed_drops_owner_and_grants() {
+        use peko_providers::catalog::ModelCatalog;
+        crate::test_support::init_credentials();
+
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "list",
+        ]);
+        let paths = from_cli(&cli);
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.config_dir.join(ModelCatalog::FILENAME),
+            r#"
+version = "4.0"
+
+[entries.demo-model]
+id = "demo-model"
+display_name = "Demo"
+template_id = "anthropic"
+api_format = "anthropic_messages"
+base_url = "https://example.invalid"
+model_id = "demo"
+context_window = 100000
+credential_id = "00000000-0000-0000-0000-000000000000"
+requires_key = true
+enabled = true
+created_at = "2026-01-01T00:00:00Z"
+updated_at = "2026-01-01T00:00:00Z"
+"#,
+        )
+        .unwrap();
+        let seed = dir.path().join("seed.toml");
+        std::fs::write(
+            &seed,
+            r#"
+name = "ignored"
+owner = { kind = "user", id = "hub:seed-author" }
+
+[[permissions]]
+subject = { kind = "user", id = "hub:friend" }
+permission = "trusted"
+granted_at = ""
+granted_by = { kind = "user", id = "hub:seed-author" }
+"#,
+        )
+        .unwrap();
+
+        let manager = provision_principal(
+            "sprout",
+            Some("demo-model"),
+            Some(seed.to_str().unwrap()),
+            false,
+            false,
+            &paths,
+        )
+        .await
+        .expect("seeded create should succeed")
+        .expect("seeded create returns a manager");
+        let principal = manager.get_by_name("sprout").await.unwrap();
+        let config = principal.config.read().await;
+        assert_eq!(config.owner, ActorRef::User("local".into()));
+        assert!(config.permissions.is_empty(), "{:?}", config.permissions);
     }
 
     /// Bug 2 regression: a second `create` against an existing workspace

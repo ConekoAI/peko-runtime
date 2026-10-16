@@ -542,7 +542,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = peko_session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-persist-completions";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -619,7 +619,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = peko_session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-persist-noop";
 
         storage.create_session(session_id, None).await.unwrap();

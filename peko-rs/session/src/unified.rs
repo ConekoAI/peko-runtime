@@ -32,7 +32,7 @@ use chrono::Utc;
 use peko_message::ContentBlock;
 use peko_message::LlmMessage;
 use peko_providers::TokenUsage as ProviderTokenUsage;
-use peko_subject::{PathResolverLike, Subject};
+use peko_subject::{ActorRef, PathResolverLike};
 use tracing::warn;
 
 /// Session - internal implementation for conversation persistence
@@ -51,7 +51,7 @@ pub struct Session {
     /// Session key for peer-based lookup
     pub session_key: String,
     /// The peer this session belongs to
-    pub peer: Subject,
+    pub peer: ActorRef,
     /// Storage backend for JSONL files
     storage: SessionStorage,
     /// Last message ID (for chaining)
@@ -123,7 +123,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Subject,
+        peer: ActorRef,
         storage: SessionStorage,
     ) -> Self {
         Self {
@@ -164,12 +164,12 @@ impl Session {
     /// * `session_id` - The session ID
     /// * `sessions_dir` - The sessions directory
     /// * `peer` - Optional peer info. If provided, restores session identity from this peer.
-    ///            If None, defaults to `Subject::User("default`")
+    ///            If None, defaults to `ActorRef::User("default`")
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
         sessions_dir: impl AsRef<std::path::Path>,
-        peer: Option<&Subject>,
+        peer: Option<&ActorRef>,
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
@@ -181,9 +181,7 @@ impl Session {
         // The legacy `"default"` literal is no longer used as a fallback
         // user-attribution placeholder; empty is distinguishable from
         // a real, resolved caller.
-        let peer = peer
-            .cloned()
-            .unwrap_or_else(|| Subject::User(String::new()));
+        let peer = peer.cloned().unwrap_or_else(|| ActorRef::User("".into()));
         let session_key = crate::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
@@ -207,7 +205,7 @@ impl Session {
         session_id: String,
         agent_name: String,
         session_key: String,
-        peer: Subject,
+        peer: ActorRef,
         storage: SessionStorage,
         entries: Vec<NormalizedEntry>,
     ) -> Result<Self> {
@@ -1202,7 +1200,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use crate::*;
-    use peko_subject::Subject;
+    use peko_subject::ActorRef;
 
     // Note: Creation tests moved to SessionManager tests
     // Session::create* methods were removed in Phase 3
@@ -1210,11 +1208,11 @@ mod tests {
 
     #[test]
     fn test_derive_base_session_key() {
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let key = crate::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
-        let peer = Subject::Principal("helper".into());
+        let peer = ActorRef::Principal("helper".into());
         let key = crate::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
@@ -1226,7 +1224,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-session-123";
 
         // Create a session
@@ -1337,7 +1335,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-session-f32a";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1397,7 +1395,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-build-context";
 
         // Create session and add messages
@@ -1434,7 +1432,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-build-context-compact";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1493,7 +1491,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-fast-context";
 
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1532,7 +1530,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-fast-context-invalidate";
 
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1580,7 +1578,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-add-user-with-source";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -1674,7 +1672,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-update-cache";
 
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1724,7 +1722,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-full-compaction";
 
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1821,7 +1819,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-append-event";
 
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
@@ -1962,7 +1960,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-boundary";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2063,7 +2061,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-user-messages";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2110,7 +2108,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-two-compactions";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2162,7 +2160,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-footer-lifecycle";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2192,7 +2190,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-branch-window-src";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2246,7 +2244,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-branch-window-plain";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2269,7 +2267,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-no-compaction";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2305,7 +2303,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-boundary-tail";
 
         storage.create_session(session_id, None).await.unwrap();
@@ -2357,7 +2355,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let storage = crate::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
-        let peer = peko_subject::Subject::User("default".to_string());
+        let peer = peko_subject::ActorRef::User("default".into());
         let session_id = "test-resume-malformed";
 
         storage.create_session(session_id, None).await.unwrap();

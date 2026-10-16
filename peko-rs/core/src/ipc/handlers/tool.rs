@@ -415,7 +415,7 @@ mod tests {
         PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
         PrincipalRoutingConfig,
     };
-    use peko_auth::Subject;
+    use peko_auth::ActorRef;
 
     use peko_tools_core::Tool as _;
     use serde_json::json;
@@ -471,12 +471,11 @@ mod tests {
 
     fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
         crate::principal::PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig::default(),
             intent: PrincipalIntentConfig::default(),
             governance: PrincipalGovernanceConfig::default(),
@@ -1087,7 +1086,7 @@ mod tests {
         let mut manager = peko_session::SessionManager::new()
             .with_sessions_dir_internal(temp.path())
             .with_agent_name("wf-agent");
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         manager
             .create_session(
                 "wf-agent",
@@ -1323,7 +1322,7 @@ mod tests {
         let mut manager = peko_session::SessionManager::new()
             .with_sessions_dir_internal(sessions_dir)
             .with_agent_name(principal);
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         manager
             .create_session(
                 principal,

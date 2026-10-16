@@ -1064,7 +1064,7 @@ pub struct GlobalPaths {
     /// **Phase B.** Tier-typed authority that hands out
     /// `LocalPath`/`SharedPath`/`RuntimePath` newtypes. Mirrors
     /// `AppState::authority` on the daemon side. CLI is its own
-    /// subject (`Subject::User(self.user.clone())`) so it cannot
+    /// subject (`ActorRef::User(self.user.clone())`) so it cannot
     /// obtain `LocalPath` for principals it doesn't own.
     authority: Arc<crate::common::authority::RuntimeAuthority>,
 }
@@ -1111,7 +1111,7 @@ impl GlobalPaths {
 
         let authority = Arc::new(crate::common::authority::RuntimeAuthority::for_caller(
             resolver.clone(),
-            peko_subject::Subject::User(user.clone()),
+            peko_subject::ActorRef::User(user.clone().into()),
         ));
 
         Self {
@@ -1138,7 +1138,7 @@ impl GlobalPaths {
     }
 
     /// Get the tier-typed authority (**Phase B**). The CLI builds
-    /// this once at startup with `Subject::User(...)` so a CLI
+    /// this once at startup with `ActorRef::User(...)` so a CLI
     /// command never silently gets `LocalPath` access.
     #[must_use]
     pub fn authority(&self) -> &Arc<crate::common::authority::RuntimeAuthority> {

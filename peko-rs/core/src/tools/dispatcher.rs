@@ -930,7 +930,7 @@ impl ToolDispatcher {
         let Some(audit) = self.audit.as_ref() else {
             return;
         };
-        let caller = stamp.actor.parse::<peko_subject::Subject>().ok();
+        let caller = stamp.actor.parse::<peko_subject::ActorRef>().ok();
         let result = audit
             .audit_security_with_caller(
                 caller.as_ref(),
@@ -971,7 +971,7 @@ impl ToolDispatcher {
         let caller = call
             .acting_for
             .as_ref()
-            .and_then(|stamp| stamp.actor.parse::<peko_subject::Subject>().ok());
+            .and_then(|stamp| stamp.actor.parse::<peko_subject::ActorRef>().ok());
         let result = audit
             .audit_with_caller(
                 caller.as_ref(),

@@ -93,13 +93,22 @@ impl Policy {
         policy
     }
 
-    /// The rules that apply to `actor` (and its aliases): the defaults
-    /// and its own sections, capped at [`POLICY_EXCERPT_MAX_BYTES`].
+    /// The rules that apply to `actor`: the defaults and the sections
+    /// naming it under any alias (ADR-081 D1, identity decided by `keys`),
+    /// capped at [`POLICY_EXCERPT_MAX_BYTES`]. A group channel is no actor;
+    /// its section matches by its exact ID.
     #[must_use]
-    pub fn for_actor(&self, actor: &str, aliases: &[String]) -> String {
+    pub fn for_actor(&self, actor: &str, keys: &dyn peko_subject::ActorKeys) -> String {
+        let subject = actor.parse::<peko_subject::ActorRef>().ok();
         let mut text = self.defaults.clone();
         for (address, rules) in &self.sections {
-            if address == actor || aliases.iter().any(|alias| alias == address) {
+            let same = address == actor
+                || subject.as_ref().is_some_and(|subject| {
+                    address
+                        .parse::<peko_subject::ActorRef>()
+                        .is_ok_and(|section| keys.same_actor(&section, subject))
+                });
+            if same {
                 text.push_str("\n\n");
                 text.push_str(rules);
             }
@@ -225,12 +234,23 @@ mod tests {
     #[test]
     fn an_actor_sees_defaults_and_only_its_own_sections() {
         let policy = Policy::parse(SAMPLE);
-        let alice = policy.for_actor("user:hub:alice", &[]);
+        let keys = peko_subject::CanonicalKeys;
+        let alice = policy.for_actor("user:hub:alice", &keys);
         assert!(alice.contains("Public projects only.") && alice.contains("acme"));
         assert!(!alice.contains("Free/busy"));
-        let stranger = policy.for_actor("user:hub:zed", &[]);
+        let stranger = policy.for_actor("user:hub:zed", &keys);
         assert!(!stranger.contains("acme"));
-        let alias = policy.for_actor("principal:local:prin_b", &["principal:hub:bob".into()]);
+        struct Bob;
+        impl peko_subject::ActorKeys for Bob {
+            fn key_of(&self, subject: &peko_subject::ActorRef) -> peko_subject::ActorKey {
+                let address = subject.canonical_address();
+                peko_subject::ActorKey(match address.as_str() {
+                    "principal:local:prin_b" | "principal:hub:bob" => "bob".into(),
+                    _ => address,
+                })
+            }
+        }
+        let alias = policy.for_actor("principal:local:prin_b", &Bob);
         assert!(alias.contains("Free/busy"));
     }
 

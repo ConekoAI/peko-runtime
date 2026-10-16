@@ -107,14 +107,15 @@ fn write_principal_with_perm(
         toml::from_str(&raw).expect("parse principal.toml");
 
     cfg.exposure = peko_auth::Exposure::Private;
-    cfg.owner = peko_auth::Subject::User("local".into());
+    cfg.owner = peko_auth::ActorRef::User("local".into());
 
     if let Some(uid) = permitted_user_id {
         cfg.permissions.push(peko_auth::PermissionGrant {
-            subject: peko_auth::Subject::User(uid.to_string()),
+            // Hub accounts keep their Hub scope in grants (ADR-077/081).
+            subject: peko_auth::ActorRef::User(peko_subject::Route::hub(uid)),
             permission: peko_auth::Permission::Chat,
             granted_at: "2026-01-01T00:00:00Z".to_string(),
-            granted_by: peko_auth::Subject::User("system".into()),
+            granted_by: peko_auth::ActorRef::User("system".into()),
         });
     }
 
@@ -150,9 +151,6 @@ fn write_pekohub_credential(
         &SecretString::new(cli.vault_passphrase().into()),
     )
     .expect("load test vault for tunnel credential");
-    vault
-        .set_tunnel_private_key(did, &private_key_b64)
-        .expect("store tunnel private key in vault");
     // The runtime's host identity must match the identity authenticated by its
     // tunnel: principal registration proofs bind both signing identities.
     let key_id = format!("{did}#keys-1");
@@ -175,7 +173,6 @@ fn write_pekohub_credential(
     let cred = peko_core::tunnel::PekoHubCredential {
         url: ws_url.to_string(),
         runtime_id: did.to_string(),
-        owner_id: None,
         tls: None,
     };
     let path = cli.peko_dir().join("runtime").join("pekohub.toml");
@@ -214,7 +211,19 @@ async fn register_runtime_with_pekohub(
     );
 }
 
-/// Poll `GET /v1/instances?runtime_id=<did>` for up to 30s, waiting
+/// What `peko runtime register` records locally (ADR-081 D3): the runtime's
+/// local user gains the owning Hub account as its alias, so principals it
+/// owns have a Hub owner and may register.
+async fn link_local_user(cli: &PekoCli, runtime_did: &str, account: &str) {
+    peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+        runtime_dir: cli.peko_dir().join("runtime"),
+        shared_dir: None,
+    })
+    .link_local_user(runtime_did, account)
+    .await
+    .expect("link the local user to its Hub account");
+}
+
 /// Start Hub access explicitly; local-only principals never auto-register.
 fn register_principal(cli: &PekoCli, name: &str) {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -236,6 +245,7 @@ fn register_principal(cli: &PekoCli, name: &str) {
     }
 }
 
+/// Poll `GET /v1/instances?runtime_id=<did>` for up to 30s, waiting
 /// for the runtime's `instance_announce` to land in pekohub's DB.
 /// Returns the FIRST instance id (we only have one agent in the
 /// test, so there's only one).
@@ -381,6 +391,7 @@ async fn permit_owner_can_chat() {
     let principal_name = "s4_owner_principal";
     write_principal_with_perm(&cli, principal_name, &mock_url, &did, Some(&owner_id));
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
+    link_local_user(&cli, &did, &owner_id).await;
 
     // 5. Start the tunnel, then explicitly register this principal.
     let _daemon = DaemonGuard::spawn(&cli);
@@ -453,6 +464,7 @@ async fn no_auth_returns_401() {
     let principal_name = "s4_noauth_principal";
     write_principal_with_perm(&cli, principal_name, &mock_url, &did, None);
     write_pekohub_credential(&cli, &backend.ws_url, &did, &signing_key);
+    link_local_user(&cli, &did, &owner_id).await;
 
     let _daemon = DaemonGuard::spawn(&cli);
     register_principal(&cli, principal_name);

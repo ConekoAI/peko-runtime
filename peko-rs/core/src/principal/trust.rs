@@ -1,15 +1,12 @@
 //! The principal's side of the ADR-078 trust floor: who each actor is to
-//! this principal, read from its owner, its grants, and the account
-//! logged into this runtime's terminal.
+//! this principal, read from its owner and its grants (ADR-081 D4).
 
-use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use peko_auth::Subject;
+use peko_auth::{ActorKeys, ActorRef};
 use peko_tools_core::Trust;
 
-use crate::common::hub_login::HubLogin;
 use crate::principal::Principal;
 use crate::security::{trust_for, Stamps, TrustSource};
 
@@ -18,48 +15,34 @@ use crate::security::{trust_for, Stamps, TrustSource};
 /// next run without a restart.
 pub(crate) struct PrincipalTrust {
     principal: Weak<Principal>,
-    /// `{config_dir}` — the parent of the principals root. Holds the
-    /// terminal's Hub login (ADR-077).
-    config_dir: Option<PathBuf>,
 }
 
 impl PrincipalTrust {
     pub(crate) fn new(principal: &Arc<Principal>) -> Self {
-        // The workspace is `{config_dir}/principals/<name>`.
-        let config_dir = principal
-            .workspace_path
-            .parent()
-            .and_then(std::path::Path::parent)
-            .map(std::path::Path::to_path_buf);
         Self {
             principal: Arc::downgrade(principal),
-            config_dir,
         }
     }
 }
 
 #[async_trait]
 impl TrustSource for PrincipalTrust {
-    async fn trust_of(&self, actor: &Subject) -> Trust {
+    async fn trust_of(&self, actor: &ActorRef, keys: &(dyn ActorKeys + Sync)) -> Trust {
         let Some(principal) = self.principal.upgrade() else {
             return Trust::Untrusted;
         };
-        let login = self
-            .config_dir
-            .as_deref()
-            .and_then(HubLogin::current_subject);
         let config = principal.config.read().await;
-        trust_for(&config.owner, &config.permissions, login.as_ref(), actor)
+        trust_for(&config.owner, &config.permissions, keys, actor)
     }
 
-    async fn owner(&self) -> Subject {
+    async fn owner(&self) -> ActorRef {
         let owner = match self.principal.upgrade() {
             Some(principal) => principal.config.read().await.owner.clone(),
-            None => Subject::User(String::new()),
+            None => ActorRef::User("".into()),
         };
         // An ownerless legacy config belongs to the local operator.
         if owner.subject_id().is_empty() {
-            Subject::User("local".into())
+            ActorRef::User("local".into())
         } else {
             owner
         }
@@ -122,7 +105,15 @@ pub(crate) async fn cron_job_stamp(
     let driver = if creator.origin == Origin::Runtime {
         stamps.owner_driver().await
     } else {
-        crate::security::Driver::from(&creator)
+        // ADR-081 D8: trust is re-derived at fire time and only ever
+        // lowered, so revoking a grant or changing the owner reaches
+        // jobs that already exist. A group counterpart is no actor; the
+        // conversation's ceiling caps it below.
+        let mut driver = crate::security::Driver::from(&creator);
+        if let Ok(actor) = creator.actor.parse::<ActorRef>() {
+            driver.trust = driver.trust.min(stamps.trust_of(&actor).await);
+        }
+        driver
     };
     Ok(stamps
         .enter(

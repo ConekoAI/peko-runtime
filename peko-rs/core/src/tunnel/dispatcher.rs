@@ -22,7 +22,7 @@ const INSTANCE_ID_NAMESPACE: uuid::Uuid = uuid::uuid!("a1b2c3d4-e5f6-47a8-b9c0-d
 /// queueing work without bound.
 const MAX_CONCURRENT_DISPATCHES: usize = 64;
 
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
@@ -76,10 +76,10 @@ impl std::error::Error for BridgeCallerError {}
 /// on every proxied request. When a JWT is present and a `JwtValidator` is
 /// configured, this function validates the JWT (signature, audience,
 /// issuer, expiry) and maps the validated `(kind, sub)` claims into a
-/// typed [`Subject`] via [`Subject::from_bridge_claim`]:
+/// typed [`ActorRef`] via [`ActorRef::from_bridge_claim`]:
 ///
-/// - `kind: "user"` → `Subject::User(sub)` (a hub account id);
-/// - `kind: "visitor"` → `Subject::Visitor(sub)` (a hub-minted
+/// - `kind: "user"` → `ActorRef::User(sub)` (a hub account id);
+/// - `kind: "visitor"` → `ActorRef::Visitor(sub)` (a hub-minted
 ///   anonymous id — never a user, principal, or the reserved `local`).
 ///
 /// ADR-058 D5 made the `kind` claim mandatory (fail-closed): a
@@ -96,7 +96,7 @@ impl std::error::Error for BridgeCallerError {}
 pub(crate) async fn resolve_bridge_caller(
     bridge_payload: &serde_json::Value,
     jwt_validator: Option<&peko_auth::jwt::JwtValidator>,
-) -> Result<Subject, BridgeCallerError> {
+) -> Result<ActorRef, BridgeCallerError> {
     // ADR-057 + ADR-058 D5: the caller identity is ALWAYS a signed
     // EdDSA bridge token minted by PekoHub (typed `kind` claim + `sub`,
     // aud = this runtime's DID). A runtime with a tunnel configured
@@ -120,7 +120,7 @@ pub(crate) async fn resolve_bridge_caller(
                 );
                 return Err(BridgeCallerError::InvalidKind);
             };
-            Subject::from_bridge_claim(kind, &validated.sub).map_err(|e| {
+            ActorRef::from_bridge_claim(kind, &validated.sub).map_err(|e| {
                 warn!(
                     "validated bridge JWT failed the typed-claim gate ({}); rejecting request",
                     e
@@ -164,9 +164,6 @@ fn extract_bearer_jwt(bridge_payload: &serde_json::Value) -> Option<String> {
 pub struct InstanceState {
     /// Current exposure level
     pub exposure: InstanceExposure,
-    /// Typed allow-list (ADR-041) — `User` and `Principal` subjects
-    /// who can chat with this instance at `private` exposure.
-    pub allowed_principals: Vec<peko_auth::Subject>,
     /// Current instance status
     pub status: InstanceStatus,
 }
@@ -175,7 +172,6 @@ impl Default for InstanceState {
     fn default() -> Self {
         Self {
             exposure: InstanceExposure::Private,
-            allowed_principals: Vec::new(),
             status: InstanceStatus::Online,
         }
     }
@@ -219,6 +215,17 @@ pub struct TunnelDispatcher {
     /// [`MAX_CONCURRENT_DISPATCHES`].
     inbound_semaphore: Arc<Semaphore>,
     registration_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// A principal's Hub ID, from the actor registry (ADR-081 §3).
+async fn manager_hub_id(
+    host: &Arc<dyn TunnelHost>,
+    principal: &crate::principal::Principal,
+) -> Option<String> {
+    host.tunnel_channel_port()
+        .actor_info(&ActorRef::from(&principal.id))
+        .await
+        .hub_id
 }
 
 impl TunnelDispatcher {
@@ -315,57 +322,6 @@ impl TunnelDispatcher {
         uuid::Uuid::new_v5(&INSTANCE_ID_NAMESPACE, name.as_bytes()).to_string()
     }
 
-    /// Compute the typed `allowedPrincipals` list for a Principal.
-    ///
-    /// Filters for `Chat` permission grants where the `subject` is a
-    /// *named* caller — a `User` or another `Principal` — and normalises
-    /// the wire id (PekoHub post-#19 reads `allowedPrincipals: Vec<Subject>`
-    /// and matches on `{kind, id}` rather than on a bare id string).
-    ///
-    /// Both `User` and `Principal` subjects are retained: dropping
-    /// `Principal` grants here would silently strip agent-to-agent (A2A,
-    /// issue #29) callers from the hub's allow list, so a Principal
-    /// granted `Chat` could never reach a `Private` instance. `User` ids
-    /// have the legacy `user:` prefix stripped; `Principal` ids are DIDs
-    /// and travel verbatim.
-    ///
-    /// `Public` is not a named caller and is dropped — the principal-tier
-    /// allow list only authorises identified subjects.
-    ///
-    /// Returns `Some(vec)` even when empty so re-announcing an
-    /// instance clears PekoHub's allow list when the last grant is
-    /// revoked.
-    fn compute_allowed_principals(
-        config: &crate::principal::PrincipalConfig,
-    ) -> Option<Vec<peko_auth::Subject>> {
-        use peko_auth::Subject;
-        let principals: Vec<Subject> = config
-            .permissions
-            .iter()
-            .filter(|g| g.permission.covers(&Permission::Chat))
-            .filter_map(|g| match &g.subject {
-                Subject::User(id) => {
-                    // Strip the `user:` prefix if present; the wire
-                    // subject-id form is the bare id.
-                    let bare = id
-                        .strip_prefix("user:")
-                        .map(String::from)
-                        .unwrap_or_else(|| id.clone());
-                    Some(Subject::User(bare))
-                }
-                // Named A2A caller — the id is a DID, used verbatim.
-                Subject::Principal(did) => Some(Subject::Principal(did.clone())),
-                // ADR-058 D5: a named visitor allow-list entry passes
-                // through verbatim — the Private-exposure ACL matches
-                // kind-aware, so only that exact visitor id is admitted.
-                Subject::Visitor(id) => Some(Subject::Visitor(id.clone())),
-                // Unauthenticated; never a named allow-list entry.
-                Subject::Public => None,
-            })
-            .collect();
-        Some(principals)
-    }
-
     /// ADR-058 D4: mint the `principalPop` proof-of-possession for an
     /// `instance_announce` — a compact JWS (EdDSA) over
     /// `{"runtimeId":..,"principalDid":..,"iat":..,"exp":..}` with
@@ -402,16 +358,12 @@ impl TunnelDispatcher {
         let principals = principal_manager.list_all().await;
 
         for principal in principals {
-            if principal.config.read().await.hub_id.is_none() {
+            if manager_hub_id(&self.host, &principal).await.is_none() {
                 continue;
             }
             let name = principal.name().await;
             let did = principal.did().await;
             let exposure: InstanceExposure = principal.exposure().await.into();
-            let allowed_principals = {
-                let config = principal.config.read().await;
-                Self::compute_allowed_principals(&config)
-            };
             let instance_id = self.instance_id(&name);
             let payload = InstanceAnnouncePayload {
                 registration_id: None,
@@ -419,7 +371,7 @@ impl TunnelDispatcher {
                 identity_key: self
                     .host
                     .tunnel_channel_port()
-                    .actor_info(&Subject::from(&principal.id))
+                    .actor_info(&ActorRef::from(&principal.id))
                     .await
                     .identity_key,
                 id: instance_id.clone(),
@@ -428,11 +380,11 @@ impl TunnelDispatcher {
                 agent_did: None,
                 principal_did: Some(did.0.clone()),
                 principal_pop: self.principal_pop(&did.0).await,
+                owner: self.hub_owner(&principal).await,
                 bundle_ref: None,
                 runtime_display_name: Some(self.runtime_display_name.clone()),
                 status: InstanceStatus::Online,
                 exposure: exposure.clone(),
-                allowed_principals: allowed_principals.clone(),
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -445,7 +397,6 @@ impl TunnelDispatcher {
                 instance_id,
                 InstanceState {
                     exposure,
-                    allowed_principals: allowed_principals.clone().unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
             );
@@ -464,6 +415,21 @@ impl TunnelDispatcher {
     /// Announce a single Principal instance through the tunnel.
     ///
     /// Used when a new Principal is created after the tunnel is already connected.
+    /// The principal's owner as a Hub account, when it has one (ADR-081
+    /// D4). Hub's wire form is the bare account UUID.
+    async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<ActorRef> {
+        let mut owner = principal.config.read().await.owner.clone();
+        // An ownerless config belongs to the local operator (as in trust).
+        if owner.subject_id().is_empty() {
+            owner = ActorRef::User("local".into());
+        }
+        let info = self.host.tunnel_channel_port().actor_info(&owner).await;
+        match (info.kind.as_str(), info.hub_id) {
+            ("user", Some(account)) => Some(ActorRef::User(account.into())),
+            _ => None,
+        }
+    }
+
     pub async fn announce_single_instance(&self, principal_name: &str) -> anyhow::Result<()> {
         self.announce_registration(principal_name, None).await
     }
@@ -499,16 +465,12 @@ impl TunnelDispatcher {
             }
         };
 
-        if registration_id.is_none() && principal.config.read().await.hub_id.is_none() {
+        if registration_id.is_none() && manager_hub_id(&self.host, &principal).await.is_none() {
             return Ok(());
         }
         let name = principal.name().await;
         let did = principal.did().await;
         let exposure: InstanceExposure = principal.exposure().await.into();
-        let allowed_principals = {
-            let config = principal.config.read().await;
-            Self::compute_allowed_principals(&config)
-        };
         let instance_id = self.instance_id(&name);
         let payload = InstanceAnnouncePayload {
             registration_id,
@@ -516,7 +478,7 @@ impl TunnelDispatcher {
             identity_key: self
                 .host
                 .tunnel_channel_port()
-                .actor_info(&Subject::from(&principal.id))
+                .actor_info(&ActorRef::from(&principal.id))
                 .await
                 .identity_key,
             id: instance_id.clone(),
@@ -525,11 +487,11 @@ impl TunnelDispatcher {
             agent_did: None,
             principal_did: Some(did.0.clone()),
             principal_pop: self.principal_pop(&did.0).await,
+            owner: self.hub_owner(&principal).await,
             bundle_ref: None,
             runtime_display_name: Some(self.runtime_display_name.clone()),
             status: InstanceStatus::Online,
             exposure: exposure.clone(),
-            allowed_principals: allowed_principals.clone(),
             capabilities: None,
             metadata: None,
             // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -541,7 +503,6 @@ impl TunnelDispatcher {
             instance_id,
             InstanceState {
                 exposure,
-                allowed_principals: allowed_principals.clone().unwrap_or_default(),
                 status: InstanceStatus::Online,
             },
         );
@@ -615,6 +576,9 @@ impl TunnelDispatcher {
                     .registration_receipts
                     .insert(registration_id, Err(message));
             }
+            TunnelMessage::PrincipalUnlinked { local_id, hub_id } => {
+                self.unlink_principal(&local_id, &hub_id).await?;
+            }
             TunnelMessage::PrincipalRegistered {
                 registration_id,
                 local_id,
@@ -633,7 +597,7 @@ impl TunnelDispatcher {
                     "registration receipt signing identity mismatch"
                 );
                 let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
-                let existing = port.actor_info(&Subject::from(&principal.id)).await;
+                let existing = port.actor_info(&ActorRef::from(&principal.id)).await;
                 // Keep receipt validation and durable identity commit in one nonce lifecycle.
                 let mut state = self.state.write().await;
                 let pending = state.pending_registrations.get(&principal.id.0);
@@ -646,27 +610,19 @@ impl TunnelDispatcher {
                 );
                 let config = principal.config.read().await;
                 port.register_actor(
-                    &Subject::from(&principal.id),
+                    &ActorRef::from(&principal.id),
                     Some(&hub_id),
                     config.did.as_ref().map(|d| d.0.as_str()),
                     config.actor_key.as_deref(),
                     Some(&config.name),
                     if config.exposure == peko_auth::Exposure::Public {
-                        "public"
+                        peko_channel::Registration::Public
                     } else {
-                        "private"
+                        peko_channel::Registration::Private
                     },
                 )
                 .await?;
-                let name = config.name.clone();
                 drop(config);
-                if let Err(error) = manager
-                    .update_config(&name, |config| config.hub_id = Some(hub_id.clone()))
-                    .await
-                {
-                    // actors.json is the authority; principal.toml is its projection.
-                    warn!(%error, "Hub identity committed; config projection will be repaired on load");
-                }
                 if acknowledged {
                     state
                         .registration_receipts
@@ -799,7 +755,7 @@ impl TunnelDispatcher {
 
         // ADR-057 transport audit: resolve the caller FIRST, then run
         // the exposure ACL against the *resolved* identity. ADR-058 D5:
-        // the resolved identity is a typed `Subject` mapped from the
+        // the resolved identity is a typed `ActorRef` mapped from the
         // bridge token's `(kind, sub)` claims — `user:<hub account>`
         // or `visitor:<hub-minted id>`, never a principal subject and
         // never the reserved `local` id.
@@ -826,7 +782,7 @@ impl TunnelDispatcher {
         // field (column name kept for the Drizzle migration tracking
         // issue). The principal name is the runtime's view of the
         // same identifier — pass it through; downstream audit
-        // consumers can re-key on the `caller` Subject kind.
+        // consumers can re-key on the `caller` ActorRef kind.
         self.host
             .observability()
             .audit_with_caller(
@@ -1083,6 +1039,62 @@ impl TunnelDispatcher {
             .unwrap_or(InstanceStatus::Online)
     }
 
+    /// ADR-081 D7: Hub moved the principal's online link to another
+    /// runtime. This copy keeps its local identity and history but goes
+    /// offline-only: no Hub route, local-only exposure. A notice that does
+    /// not match the principal's current Hub link is ignored.
+    async fn unlink_principal(&self, local_id: &str, hub_id: &str) -> anyhow::Result<()> {
+        let manager = self.host.principal_manager();
+        let Some(principal) = manager
+            .get(peko_subject::PrincipalId(local_id.into()))
+            .await
+        else {
+            return Ok(());
+        };
+        let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+        let me = port.actor_info(&ActorRef::from(&principal.id)).await;
+        if me.hub_id.as_deref() != Some(hub_id) {
+            warn!(
+                local_id,
+                hub_id, "Ignoring an unlink notice that does not match this principal's Hub link"
+            );
+            return Ok(());
+        }
+        let config = principal.config.read().await;
+        let name = config.name.clone();
+        port.register_actor(
+            &ActorRef::from(&principal.id),
+            None,
+            config.did.as_ref().map(|did| did.0.as_str()),
+            config.actor_key.as_deref(),
+            Some(&name),
+            peko_channel::Registration::LocalOnly,
+        )
+        .await?;
+        drop(config);
+        manager
+            .update_config(&name, |c| {
+                c.exposure = peko_auth::Exposure::LocalOnly;
+            })
+            .await?;
+        self.state
+            .write()
+            .await
+            .instance_state
+            .remove(&self.instance_id(&name));
+        let _ = self
+            .host
+            .observability()
+            .audit_security(
+                "principal.online_link_moved",
+                Some(local_id),
+                serde_json::json!({ "hub_id": hub_id }),
+            )
+            .await;
+        warn!(principal = %name, hub_id, "Principal is now online on another runtime; this copy is offline-only");
+        Ok(())
+    }
+
     pub async fn register_principal(
         &self,
         name: &str,
@@ -1105,18 +1117,17 @@ impl TunnelDispatcher {
             let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
             let config = principal.config.read().await;
             port.register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 None,
                 config.did.as_ref().map(|did| did.0.as_str()),
                 config.actor_key.as_deref(),
                 Some(name),
-                "local_only",
+                peko_channel::Registration::LocalOnly,
             )
             .await?;
             drop(config);
             manager
                 .update_config(name, |c| {
-                    c.hub_id = None;
                     c.exposure = peko_auth::Exposure::LocalOnly;
                 })
                 .await?;
@@ -1124,6 +1135,13 @@ impl TunnelDispatcher {
             anyhow::ensure!(
                 self.state.read().await.ready,
                 "Hub registration requires a connected, authenticated tunnel"
+            );
+            // ADR-081 D4: only a principal with a Hub owner goes online.
+            anyhow::ensure!(
+                self.hub_owner(&principal).await.is_some(),
+                "An online principal needs a Hub owner: register this runtime \
+                 (peko runtime register) so its local user has a Hub account, \
+                 or transfer the principal to a Hub user"
             );
             let old = principal.config.read().await.exposure;
             let id = uuid::Uuid::new_v4().to_string();
@@ -1180,8 +1198,7 @@ impl TunnelDispatcher {
         }
         let port: std::sync::Arc<dyn peko_channel::ChannelPort> = self.host.tunnel_channel_port();
         manager.register_actor_identity(&principal, &port).await?;
-        let hub_id = principal.config.read().await.hub_id.clone();
-        Ok(hub_id)
+        Ok(manager_hub_id(&self.host, &principal).await)
     }
 
     /// Set the exposure of an instance and send an exposure_update message to the hub.
@@ -1211,85 +1228,15 @@ impl TunnelDispatcher {
         self.send_exposure_update(agent_name, exposure).await
     }
 
-    /// Re-push the current allow-list for a Principal instance to PekoHub by
-    /// re-announcing the instance. The `allowed_principals` list is freshly
-    /// derived from the Principal's `permissions`. Used by the
-    /// permit/revoke IPC paths so that PekoHub's `canChat` ACL and the
-    /// runtime's defense-in-depth `instance_state.allowed_principals` cache
-    /// are kept in sync with the local config without requiring a daemon
-    /// restart.
-    ///
-    /// No-ops if:
-    /// - the Principal has no cached `instance_state` (tunnel not yet
-    ///   connected, or instance never announced). The next
-    ///   `announce_instances` after `TunnelReady` will pick up the
-    ///   latest config.
-    /// - the current exposure is not `Private` (Public/Unexposed
-    ///   Principals don't carry an `allowed_principals` list, and we must not
-    ///   silently flip the exposure as a side effect of a permit call).
-    pub async fn refresh_instance_allowed_principals(
-        &self,
-        principal_name: &str,
-    ) -> anyhow::Result<()> {
-        let instance_id = self.instance_id(principal_name);
-        let exposure = {
-            let state = self.state.read().await;
-            state
-                .instance_state
-                .get(&instance_id)
-                .map(|s| s.exposure.clone())
-        };
-        match exposure {
-            Some(e) if e == InstanceExposure::Private => {}
-            Some(e) => {
-                debug!(
-                    "Skipping allowed_principals refresh for {}: exposure is {:?}, not Private",
-                    principal_name, e
-                );
-                return Ok(());
-            }
-            None => {
-                debug!(
-                    "Skipping allowed_principals refresh for {}: no cached instance state \
-                     (tunnel not yet connected or instance not announced)",
-                    principal_name
-                );
-                return Ok(());
-            }
-        };
-        self.announce_single_instance(principal_name).await
-    }
-
-    /// Build and send an `ExposureUpdate` for the given Principal, with
-    /// `allowed_principals` re-derived from the live Principal config.
-    /// The caller is responsible for ensuring the current exposure is
-    /// meaningful (i.e. `Private`) and that local `instance_state`
-    /// reflects the desired exposure before invoking.
+    /// Build and send an `ExposureUpdate` for the given Principal. Chat
+    /// access stays the runtime's decision (ADR-081 D8); Hub learns only
+    /// the exposure.
     async fn send_exposure_update(
         &self,
         principal_name: &str,
         exposure: InstanceExposure,
     ) -> anyhow::Result<()> {
         let instance_id = self.instance_id(principal_name);
-        let allowed_principals = if exposure == InstanceExposure::Private {
-            let principal_manager = self.host.principal_manager();
-            match principal_manager.get_by_name(principal_name).await {
-                Some(principal) => {
-                    let config = principal.config.read().await;
-                    Self::compute_allowed_principals(&config)
-                }
-                None => {
-                    warn!(
-                        "Principal {} not found; cannot compute allowed principals",
-                        principal_name
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         let handle = {
             let state = self.state.read().await;
             state.tunnel_handle.clone()
@@ -1299,7 +1246,6 @@ impl TunnelDispatcher {
             let payload = ExposureUpdatePayload {
                 instance_id: instance_id.clone(),
                 exposure: exposure.clone(),
-                allowed_principals: allowed_principals.clone(),
             };
             if let Err(e) = handle.send(TunnelMessage::ExposureUpdate { payload }) {
                 warn!(
@@ -1333,13 +1279,11 @@ impl TunnelDispatcher {
         let mut state = self.state.write().await;
         if let Some(entry) = state.instance_state.get_mut(&payload.instance_id) {
             entry.exposure = payload.exposure.clone();
-            entry.allowed_principals = payload.allowed_principals.clone().unwrap_or_default();
         } else {
             state.instance_state.insert(
                 payload.instance_id.clone(),
                 InstanceState {
                     exposure: payload.exposure.clone(),
-                    allowed_principals: payload.allowed_principals.clone().unwrap_or_default(),
                     status: InstanceStatus::Online,
                 },
             );
@@ -1369,7 +1313,7 @@ impl TunnelDispatcher {
                         identity_key: self
                             .host
                             .tunnel_channel_port()
-                            .actor_info(&Subject::from(&principal.id))
+                            .actor_info(&ActorRef::from(&principal.id))
                             .await
                             .identity_key,
                         id: instance_id,
@@ -1378,11 +1322,11 @@ impl TunnelDispatcher {
                         agent_did: None,
                         principal_did: Some(did.0),
                         principal_pop,
+                        owner: self.hub_owner(&principal).await,
                         bundle_ref: None,
                         runtime_display_name: Some(self.runtime_display_name.clone()),
                         status,
                         exposure: payload.exposure.clone(),
-                        allowed_principals: payload.allowed_principals.clone(),
                         capabilities: None,
                         metadata: None,
                         // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -1625,6 +1569,18 @@ impl TunnelDispatcher {
                 .await
             {
                 Ok(true) => {}
+                // ADR-081 D7: a member whose online link moved here keeps
+                // its membership once the directory confirms the link.
+                Ok(false)
+                    if self
+                        .host
+                        .tunnel_channel_port()
+                        .follow_link(
+                            &channel_id_typed,
+                            &source_runtime_id,
+                            &payload.source_principal_did,
+                        )
+                        .await => {}
                 Ok(false) => {
                     warn!(
                         "inbound TunnelChannelEvent: dropping envelope from did:key author who is not a remote member of the mirror (request_id={request_id}, channel_id={channel_id}, author={})",
@@ -1640,13 +1596,11 @@ impl TunnelDispatcher {
                 }
             }
         } else {
-            let human = payload.source_principal_did.parse::<Subject>();
+            let human = payload.source_principal_did.parse::<ActorRef>();
             let Ok(human) = human else {
                 return Ok(());
             };
-            if !matches!(human, Subject::User(_) | Subject::Visitor(_))
-                || !human.subject_id().starts_with("hub:")
-            {
+            if !matches!(human, ActorRef::User(_) | ActorRef::Visitor(_)) || !human.is_hub_route() {
                 warn!(
                     request_id,
                     "Channel author must be a registered principal or a Hub human actor"
@@ -1674,9 +1628,9 @@ impl TunnelDispatcher {
         if let Some(author) = claimed_actor {
             let source_subject = payload
                 .source_principal_did
-                .parse::<Subject>()
+                .parse::<ActorRef>()
                 .unwrap_or_else(|_| {
-                    Subject::Principal(payload.source_principal_did.clone().into())
+                    ActorRef::Principal(payload.source_principal_did.clone().into())
                 });
             let port = self.host.tunnel_channel_port();
             let source_actor = port.actor_info(&source_subject).await;
@@ -2002,7 +1956,7 @@ impl TunnelDispatcher {
         &self,
         agent_name: &str,
         bridge_payload: &serde_json::Value,
-        caller: &peko_auth::Subject,
+        caller: &peko_auth::ActorRef,
     ) -> anyhow::Result<()> {
         let principal = self
             .host
@@ -2013,7 +1967,7 @@ impl TunnelDispatcher {
         let actor = self
             .host
             .tunnel_channel_port()
-            .actor_info(&Subject::from(&principal.id))
+            .actor_info(&ActorRef::from(&principal.id))
             .await;
         anyhow::ensure!(
             actor.hub_id.is_some() && principal.exposure().await != peko_auth::Exposure::LocalOnly,
@@ -2099,7 +2053,7 @@ impl TunnelDispatcher {
             }
             InstanceExposure::Private => {
                 // The caller identity was resolved before this ACL ran
-                // (see `handle_proxied_request`) — a typed `Subject`
+                // (see `handle_proxied_request`) — a typed `ActorRef`
                 // mapped from the validated bridge token's `(kind,
                 // sub)` claims (ADR-058 D5). Membership is a
                 // kind-aware equality check: a visitor subject only
@@ -2113,17 +2067,24 @@ impl TunnelDispatcher {
                     anyhow::bail!("Authentication required")
                 }
 
-                if instance_state
-                    .allowed_principals
-                    .iter()
-                    .any(|s| s.normalized_for_auth() == caller.normalized_for_auth())
+                // The runtime's own grants decide (ADR-081 D8): the owner
+                // and every grant are matched through the actor registry.
+                let config = principal.config.read().await;
+                let port = self.host.tunnel_channel_port();
+                if peko_auth::ownership::check_permission(
+                    &peko_auth::ownership::principal_resource(&*config),
+                    Permission::Chat,
+                    caller,
+                    &peko_channel::PortKeys(port.as_ref()),
+                )
+                .is_ok()
                 {
                     Ok(())
                 } else {
                     warn!(
                         agent_name,
                         caller = %caller,
-                        "Private instance request denied: caller not in allowed_principals"
+                        "Private instance request denied: caller has no chat grant"
                     );
                     anyhow::bail!("Forbidden")
                 }
@@ -2142,7 +2103,7 @@ mod tests {
         PrincipalRoutingConfig,
     };
     use crate::tunnel::protocol::InstanceExposure;
-    use peko_auth::{Permission, PermissionGrant, Subject};
+    use peko_auth::{ActorRef, Permission, PermissionGrant};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -2171,7 +2132,7 @@ mod tests {
         let principal = manager
             .create(test_principal_config(
                 name,
-                Subject::User("local".into()),
+                ActorRef::User("local".into()),
                 vec![],
                 peko_auth::Exposure::Public,
             ))
@@ -2183,89 +2144,50 @@ mod tests {
             .host
             .tunnel_channel_port()
             .register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 Some(&hub_id),
                 config.did.as_ref().map(|d| d.0.as_str()),
                 config.actor_key.as_deref(),
                 Some(name),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
         drop(config);
-        principal.config.write().await.hub_id = Some(hub_id);
     }
     fn mock_tunnel_handle() -> (TunnelHandle, mpsc::Receiver<TunnelMessage>) {
         let (tx, rx) = mpsc::channel(crate::tunnel::client::TUNNEL_OUTBOUND_BUFFER_SIZE);
         (TunnelHandle::new(tx), rx)
     }
 
-    fn chat_grant(subject: Subject) -> PermissionGrant {
+    fn chat_grant(subject: ActorRef) -> PermissionGrant {
         PermissionGrant {
             subject,
             permission: Permission::Chat,
             granted_at: "2026-06-30T00:00:00Z".to_string(),
-            granted_by: Subject::User("user:owner".to_string()),
+            granted_by: ActorRef::User("user:owner".into()),
         }
     }
 
-    /// `compute_allowed_principals` keeps both `User` and `Principal`
-    /// Chat grants (A2A callers must survive), strips the legacy `user:`
-    /// prefix from user ids, drops `Public`, and drops non-`Chat` grants.
-    #[test]
-    fn compute_allowed_principals_keeps_users_and_principals() {
-        let config = test_principal_config(
-            "p",
-            Subject::User("user:owner".to_string()),
-            vec![
-                chat_grant(Subject::User("user:alice".to_string())),
-                chat_grant(Subject::Principal("did:peko:agent:bob".to_string().into())),
-                chat_grant(Subject::Public),
-                // Non-Chat grant must be ignored entirely.
-                PermissionGrant {
-                    subject: Subject::User("user:carol".to_string()),
-                    permission: Permission::ViewSettings,
-                    granted_at: "2026-06-30T00:00:00Z".to_string(),
-                    granted_by: Subject::User("user:owner".to_string()),
-                },
-            ],
-            peko_auth::Exposure::Private,
-        );
-
-        let allowed = TunnelDispatcher::compute_allowed_principals(&config).expect("always Some");
-
-        // Alice survives with the `user:` prefix stripped.
-        assert!(
-            allowed.contains(&Subject::User("alice".to_string())),
-            "user grant must survive prefix-stripped; got {allowed:?}"
-        );
-        // Bob (A2A principal) must survive verbatim — this is the #1 fix.
-        assert!(
-            allowed.contains(&Subject::Principal("did:peko:agent:bob".to_string().into())),
-            "principal grant must survive; got {allowed:?}"
-        );
-        // Public is never a named allow-list entry.
-        assert!(
-            !allowed.iter().any(|s| matches!(s, Subject::Public)),
-            "public must be dropped; got {allowed:?}"
-        );
-        // Carol's ViewSettings grant must not leak in.
-        assert!(
-            !allowed.iter().any(|s| s.subject_id() == "carol"),
-            "non-Chat grant must be dropped; got {allowed:?}"
-        );
-        assert_eq!(allowed.len(), 2, "exactly alice + bob; got {allowed:?}");
+    /// Grant `Chat` on `name` to each subject (the runtime's ACL).
+    async fn grant_chat(dispatcher: &TunnelDispatcher, name: &str, subjects: &[ActorRef]) {
+        let grants: Vec<_> = subjects.iter().cloned().map(chat_grant).collect();
+        dispatcher
+            .host
+            .principal_manager()
+            .update_config(name, |config| config.permissions.extend(grants))
+            .await
+            .unwrap();
     }
 
     /// Build a minimal `PrincipalConfig` for dispatcher tests.
     fn test_principal_config(
         name: &str,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: peko_auth::Exposure,
     ) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
@@ -2294,7 +2216,7 @@ mod tests {
     async fn create_test_principal(
         app_state: &AppState,
         name: &str,
-        owner: Subject,
+        owner: ActorRef,
         permissions: Vec<PermissionGrant>,
         exposure: peko_auth::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
@@ -2414,7 +2336,7 @@ mod tests {
 
     /// When PekoHub sends an `Authorization: Bearer <jwt>` and a
     /// `JwtValidator` is configured, the validated `(kind, sub)` claims
-    /// map to a typed caller `Subject` (issue #17 + ADR-058 D5).
+    /// map to a typed caller `ActorRef` (issue #17 + ADR-058 D5).
     #[tokio::test]
     async fn resolve_bridge_caller_uses_validated_jwt_sub() {
         let (validator, signing_key) = ed25519_validator();
@@ -2427,11 +2349,11 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("hub:user-jwt".to_string())
+            ActorRef::User("hub:user-jwt".into())
         );
     }
 
-    /// ADR-058 D5: `kind: "visitor"` maps to a `Subject::Visitor` —
+    /// ADR-058 D5: `kind: "visitor"` maps to a `ActorRef::Visitor` —
     /// a distinct namespace that can never alias a user or principal.
     #[tokio::test]
     async fn resolve_bridge_caller_maps_visitor_kind_to_visitor_subject() {
@@ -2445,7 +2367,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::Visitor("hub:vis_abc123".to_string())
+            ActorRef::Visitor("hub:vis_abc123".into())
         );
     }
 
@@ -2590,7 +2512,7 @@ mod tests {
             resolve_bridge_caller(&payload, Some(&validator))
                 .await
                 .unwrap(),
-            Subject::User("hub:user-jwt".to_string())
+            ActorRef::User("hub:user-jwt".into())
         );
     }
 
@@ -2604,7 +2526,7 @@ mod tests {
         let principal = create_test_principal(
             &app_state,
             "pop-agent",
-            Subject::User("local".to_string()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -2757,7 +2679,6 @@ mod tests {
         let payload = ExposureUpdatePayload {
             instance_id: instance_id.clone(),
             exposure: InstanceExposure::Public,
-            allowed_principals: Some(vec![peko_auth::Subject::User("user-1".to_string())]),
         };
 
         dispatcher.handle_exposure_update(payload).await.unwrap();
@@ -2769,10 +2690,6 @@ mod tests {
             .get(&instance_id)
             .expect("Instance state should exist");
         assert_eq!(entry.exposure, InstanceExposure::Public);
-        assert_eq!(
-            entry.allowed_principals,
-            vec![peko_auth::Subject::User("user-1".to_string())]
-        );
     }
 
     #[tokio::test]
@@ -2830,7 +2747,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Public,
-                    allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2841,7 +2757,7 @@ mod tests {
             .check_request_allowed(
                 "public-agent",
                 &bridge_payload,
-                &Subject::User("any-user".to_string()),
+                &ActorRef::User("any-user".into()),
             )
             .await;
         assert!(result.is_ok());
@@ -2860,7 +2776,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::LocalOnly,
-                    allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2871,7 +2786,7 @@ mod tests {
             .check_request_allowed(
                 "unexposed-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_err());
@@ -2885,6 +2800,12 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         seed_registered(&dispatcher, "private-agent").await;
+        grant_chat(
+            &dispatcher,
+            "private-agent",
+            &[ActorRef::User("user-123".into())],
+        )
+        .await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2892,7 +2813,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2903,7 +2823,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_ok());
@@ -2915,6 +2835,12 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         seed_registered(&dispatcher, "private-agent").await;
+        grant_chat(
+            &dispatcher,
+            "private-agent",
+            &[ActorRef::User("user-123".into())],
+        )
+        .await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2922,7 +2848,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2930,7 +2855,7 @@ mod tests {
 
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("private-agent", &bridge_payload, &Subject::Public)
+            .check_request_allowed("private-agent", &bridge_payload, &ActorRef::Public)
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2943,6 +2868,12 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         seed_registered(&dispatcher, "private-agent").await;
+        grant_chat(
+            &dispatcher,
+            "private-agent",
+            &[ActorRef::User("user-123".into())],
+        )
+        .await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2950,7 +2881,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![peko_auth::Subject::User("user-123".to_string())],
                     status: InstanceStatus::Online,
                 },
             );
@@ -2961,7 +2891,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("user-999".to_string()),
+                &ActorRef::User("user-999".into()),
             )
             .await;
         assert!(result.is_err());
@@ -2978,6 +2908,15 @@ mod tests {
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
 
         seed_registered(&dispatcher, "private-agent").await;
+        grant_chat(
+            &dispatcher,
+            "private-agent",
+            &[
+                ActorRef::User("peer-1".into()),
+                ActorRef::Visitor("vis-2".into()),
+            ],
+        )
+        .await;
         let instance_id = dispatcher.instance_id("private-agent");
         {
             let mut state = dispatcher.state.write().await;
@@ -2985,10 +2924,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Private,
-                    allowed_principals: vec![
-                        peko_auth::Subject::User("peer-1".to_string()),
-                        peko_auth::Subject::Visitor("vis-2".to_string()),
-                    ],
                     status: InstanceStatus::Online,
                 },
             );
@@ -3000,7 +2935,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("peer-1".to_string()),
+                &ActorRef::User("peer-1".into()),
             )
             .await
             .is_ok());
@@ -3008,7 +2943,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::Visitor("vis-2".to_string()),
+                &ActorRef::Visitor("vis-2".into()),
             )
             .await
             .is_ok());
@@ -3017,7 +2952,7 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::Visitor("peer-1".to_string()),
+                &ActorRef::Visitor("peer-1".into()),
             )
             .await
             .is_err());
@@ -3025,10 +2960,124 @@ mod tests {
             .check_request_allowed(
                 "private-agent",
                 &bridge_payload,
-                &Subject::User("vis-2".to_string()),
+                &ActorRef::User("vis-2".into()),
             )
             .await
             .is_err());
+    }
+
+    /// ADR-081 D8: the owner reaches a private instance without a grant,
+    /// and a registered principal's Hub alias matches its local grant.
+    #[tokio::test]
+    async fn test_check_request_allowed_private_admits_owner_and_aliases() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+
+        seed_registered(&dispatcher, "private-agent").await;
+        let owner = ActorRef::User("hub:owner".into());
+        dispatcher
+            .host
+            .principal_manager()
+            .update_config("private-agent", |config| config.owner = owner.clone())
+            .await
+            .unwrap();
+        // A second registered principal, granted by its local ID.
+        seed_registered(&dispatcher, "peer-agent").await;
+        let peer = dispatcher
+            .host
+            .principal_manager()
+            .get_by_name("peer-agent")
+            .await
+            .unwrap();
+        let peer_local = ActorRef::from(&peer.id);
+        let peer_hub = ActorRef::Principal(
+            format!(
+                "hub:{}",
+                dispatcher
+                    .host
+                    .tunnel_channel_port()
+                    .actor_info(&peer_local)
+                    .await
+                    .hub_id
+                    .unwrap()
+            )
+            .into(),
+        );
+        grant_chat(&dispatcher, "private-agent", &[peer_local]).await;
+        let instance_id = dispatcher.instance_id("private-agent");
+        dispatcher.state.write().await.instance_state.insert(
+            instance_id,
+            InstanceState {
+                exposure: InstanceExposure::Private,
+                status: InstanceStatus::Online,
+            },
+        );
+
+        let bridge_payload = serde_json::json!({"headers": {}});
+        for caller in [owner, peer_hub] {
+            assert!(dispatcher
+                .check_request_allowed("private-agent", &bridge_payload, &caller)
+                .await
+                .is_ok());
+        }
+        assert!(dispatcher
+            .check_request_allowed(
+                "private-agent",
+                &bridge_payload,
+                &ActorRef::User("hub:stranger".into())
+            )
+            .await
+            .is_err());
+    }
+
+    /// ADR-081 D7: when Hub moves the online link elsewhere, this copy goes
+    /// offline-only; a notice naming another Hub link is ignored, and no
+    /// directory claim can give the copy its Hub route back.
+    #[tokio::test]
+    async fn an_unlinked_copy_goes_offline_only() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        seed_registered(&dispatcher, "mover").await;
+        let principal = dispatcher
+            .host
+            .principal_manager()
+            .get_by_name("mover")
+            .await
+            .unwrap();
+        let port = dispatcher.host.tunnel_channel_port();
+        let me = ActorRef::from(&principal.id);
+        let hub = port.actor_info(&me).await.hub_id.unwrap();
+
+        dispatcher
+            .unlink_principal(&principal.id.0, "some-other-hub-id")
+            .await
+            .unwrap();
+        assert_eq!(
+            port.actor_info(&me).await.hub_id.as_deref(),
+            Some(hub.as_str())
+        );
+
+        dispatcher
+            .unlink_principal(&principal.id.0, &hub)
+            .await
+            .unwrap();
+        assert!(port.actor_info(&me).await.hub_id.is_none());
+        let config = principal.config.read().await.clone();
+        assert_eq!(config.exposure, peko_auth::Exposure::LocalOnly);
+
+        // A directory answer for the moved link cannot re-attach it here.
+        assert!(port
+            .register_actor(
+                &ActorRef::Principal(peko_subject::Route::hub(hub.clone())),
+                Some(&hub),
+                config.did.as_ref().map(|d| d.0.as_str()),
+                config.actor_key.as_deref(),
+                None,
+                peko_channel::Registration::Public,
+            )
+            .await
+            .is_err());
+        assert!(port.actor_info(&me).await.hub_id.is_none());
     }
 
     #[tokio::test]
@@ -3041,7 +3090,7 @@ mod tests {
             .check_request_allowed(
                 "unknown-agent",
                 &bridge_payload,
-                &Subject::User("user-123".to_string()),
+                &ActorRef::User("user-123".into()),
             )
             .await;
         assert!(result.is_err());
@@ -3065,7 +3114,6 @@ mod tests {
                 instance_id,
                 InstanceState {
                     exposure: InstanceExposure::Public,
-                    allowed_principals: vec![],
                     status: InstanceStatus::Online,
                 },
             );
@@ -3075,7 +3123,7 @@ mod tests {
         // public chat reaching the runtime through the hub.
         let bridge_payload = serde_json::json!({"headers": {}});
         let result = dispatcher
-            .check_request_allowed("unlisted-agent", &bridge_payload, &Subject::Public)
+            .check_request_allowed("unlisted-agent", &bridge_payload, &ActorRef::Public)
             .await;
         assert!(result.is_ok());
     }
@@ -3119,7 +3167,7 @@ mod tests {
         let principal = create_test_principal(
             &app_state,
             "announce-me",
-            Subject::User("local".into()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3137,7 +3185,7 @@ mod tests {
             .dispatch(receipt.clone(), handle.clone())
             .await
             .is_err());
-        assert!(principal.config.read().await.hub_id.is_none());
+        assert!(manager_hub_id(&dispatcher.host, &principal).await.is_none());
         dispatcher
             .state
             .write()
@@ -3180,7 +3228,7 @@ mod tests {
         create_test_principal(
             &app_state,
             "web-bound",
-            Subject::User("user:test-user".to_string()),
+            ActorRef::User("user:test-user".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3515,14 +3563,14 @@ mod tests {
 
         let author_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         port.register_actor(
-            &Subject::from(&creator),
+            &ActorRef::from(&creator),
             Some("hub-creator"),
             Some(&crate::tunnel::verifying_key_to_did_key(
                 &author_key.verifying_key(),
             )),
             None,
             None,
-            "public",
+            peko_channel::Registration::Public,
         )
         .await
         .unwrap();
@@ -3545,12 +3593,12 @@ mod tests {
         let kp = peko_identity::keys::KeyPair::generate();
         let source = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);
         port.register_actor(
-            &Subject::User("hub:bob".into()),
+            &ActorRef::User("hub:bob".into()),
             Some("bob"),
             None,
             None,
             None,
-            "registered",
+            peko_channel::Registration::Registered,
         )
         .await
         .unwrap();
@@ -3620,7 +3668,7 @@ mod tests {
             .unwrap();
         port.post(
             &channel,
-            &peko_subject::Subject::from(&creator),
+            &peko_subject::ActorRef::from(&creator),
             peko_channel::PostMsg::root("ours").with_msg_id("msg_ours"),
         )
         .await
@@ -3747,12 +3795,12 @@ mod tests {
             .host
             .tunnel_channel_port()
             .register_actor(
-                &Subject::Principal("hub:author-hub".into()),
+                &ActorRef::Principal("hub:author-hub".into()),
                 Some("author-hub"),
                 Some(&author_did),
                 Some("author-key"),
                 Some("Author"),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -3929,7 +3977,7 @@ mod tests {
         let principal = create_test_principal(
             &app,
             "invitee",
-            Subject::User("local".into()),
+            ActorRef::User("local".into()),
             vec![],
             peko_auth::Exposure::Public,
         )
@@ -3939,18 +3987,17 @@ mod tests {
         let config = principal.config.read().await;
         app.tunnel_channel_port()
             .register_actor(
-                &Subject::from(&principal.id),
+                &ActorRef::from(&principal.id),
                 Some(&target_hub),
                 config.did.as_ref().map(|d| d.0.as_str()),
                 config.actor_key.as_deref(),
                 Some("invitee"),
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
         let target_key = config.actor_key.clone().unwrap();
         drop(config);
-        principal.config.write().await.hub_id = Some(target_hub.clone());
         let runtime = peko_identity::keys::KeyPair::generate();
         let signer = peko_identity::keys::KeyPair::generate();
         let source_runtime = crate::tunnel::verifying_key_to_did_key(&runtime.verifying_key);
@@ -3967,7 +4014,7 @@ mod tests {
                 runtime_id: source_runtime.clone(),
                 instance_id: "source-instance".into(),
                 agent_did: source_did.clone(),
-                owner_principal: Subject::Public,
+                owner_principal: ActorRef::Public,
                 exposure: ResolvedExposure::Public,
             },
         );

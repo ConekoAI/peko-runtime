@@ -12,8 +12,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use peko_auth::Subject;
-
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -84,26 +82,6 @@ pub struct AgentConfig {
     pub acting_for: Option<peko_tools_core::ActingFor>,
 }
 
-impl AgentConfig {
-    /// Wire-side identifier for this agent (issue #28).
-    ///
-    /// Returns the local `name` as the within-runtime wire id.
-    /// Cross-runtime references (`principal_send`, `PermissionGrant.subject`,
-    /// PekoHub instance row) are resolved through `Agent::identity.did`
-    /// — `KeyStorage` is the authoritative identity source, not this
-    /// config struct.
-    ///
-    /// Sprint 9 Commit 1: this was previously a thin shim over
-    /// `Subject::principal_wire_id(self.agent_did.as_deref(), &self.name)`.
-    /// The `agent_did` field was dropped (its only TOML writer was
-    /// `StatelessAgentService::load_config_fresh`, retired in commit 4);
-    /// cross-runtime callers now read `Agent::identity.did` directly.
-    #[must_use]
-    pub fn wire_agent_id(&self) -> String {
-        Subject::principal_wire_id(None, &self.name)
-    }
-}
-
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -142,18 +120,6 @@ mod tests {
         // F35 — opt-in deferred-tool discovery stub defaults off.
         // Phase 2 — `ModelList` defaults on so the parent agent can
         // discover the catalog before picking a child model.
-    }
-
-    /// Sprint 9 Commit 1: `wire_agent_id` is now a single-arg shim over
-    /// `Subject::principal_wire_id(None, &self.name)` — the `agent_did`
-    /// field was dropped (issue #28's per-runtime DID is now read from
-    /// `Agent::identity.did` via `KeyStorage`, not from this config).
-    /// Within-runtime wire compatibility is preserved (returns `name`).
-    #[test]
-    fn test_wire_agent_id_returns_name() {
-        let mut config = super::AgentConfig::default();
-        config.name = "helper".to_string();
-        assert_eq!(config.wire_agent_id(), "helper");
     }
 
     /// Phase 2: `AgentConfig::default()` returns the back-compat inert

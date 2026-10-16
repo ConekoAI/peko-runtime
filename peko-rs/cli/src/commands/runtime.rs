@@ -16,15 +16,71 @@ pub enum RuntimeCommands {
     Id,
     /// Show runtime metadata
     Info,
+    /// Register this runtime and its local user with PekoHub (ADR-081).
+    /// Required before any principal can go online.
+    Register {
+        /// PekoHub origin (default: https://pekohub.org)
+        #[arg(long, default_value = "https://pekohub.org")]
+        hub: String,
+        /// API key of the Hub account to register under
+        #[arg(long, env = "PEKOHUB_API_KEY")]
+        api_key: String,
+    },
+    /// Remove this runtime's PekoHub registration
+    Unregister {
+        /// API key of the Hub account the runtime is registered under
+        #[arg(long, env = "PEKOHUB_API_KEY")]
+        api_key: String,
+    },
 }
 
 /// Handle runtime commands
 pub async fn handle_runtime(
     cmd: RuntimeCommands,
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
+        RuntimeCommands::Register { hub, api_key } => {
+            let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
+                paths.resolver().vault(),
+            )?);
+            let registered = peko_core::tunnel::registration::register_runtime(
+                paths.resolver(),
+                vault,
+                &hub,
+                &api_key,
+            )
+            .await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "hub": registered.origin,
+                        "runtime_did": registered.runtime_did,
+                        "account": registered.account,
+                    })
+                );
+            } else {
+                println!("✓ Registered with {}", registered.origin);
+                println!("  Runtime:    {}", registered.runtime_did);
+                println!(
+                    "  Local user: user:local:local = user:hub:{}",
+                    registered.account
+                );
+                println!("  Restart the daemon to connect: peko daemon restart");
+            }
+            Ok(())
+        }
+        RuntimeCommands::Unregister { api_key } => {
+            let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
+                paths.resolver().vault(),
+            )?);
+            peko_core::tunnel::registration::unregister_runtime(paths.resolver(), vault, &api_key)
+                .await?;
+            println!("✓ Runtime unregistered; the local user is offline-only.");
+            Ok(())
+        }
         RuntimeCommands::Id => {
             let client = peko_core::ipc::DaemonClient::connect().await?;
             let packet = peko_core::ipc::RequestPacket::RuntimeId { request_id: 1 };

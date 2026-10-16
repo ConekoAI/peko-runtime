@@ -1759,7 +1759,7 @@ contract.
 Both directory and file names are full BLAKE3 hashes so the layout
 is self-validating (any mismatch between the hashed path and the
 shard's header record is treated as corruption) and so the layout
-is safe under arbitrary `Subject` and DID strings.
+is safe under arbitrary `ActorRef` and DID strings.
 
 **Per-shard header:** the first line of every shard is a
 self-describing record so the file can be validated without
@@ -1788,7 +1788,7 @@ single line:
   "kind":"message",
   "schemaVersion":1,
   "id":"chat_<uuid-simple>",
-  "sender":<Subject>,
+  "sender":<ActorRef>,
   "timestamp":"2026-07-20T12:34:56.789Z",
   "text":"…",
   "correlationId":null|"<id>"
@@ -1801,7 +1801,7 @@ Fields:
 |-------|------|-------|
 | `schemaVersion` | u8 | Currently `1`. Bumping it forces a migration. |
 | `id` | string | `chat_` prefix + UUID simple-hex. Stable per shard. Used for paging dedupe on the desktop. |
-| `sender` | `Subject` | `{kind:user,id:…}`, `{kind:principal,id:<did>}`, or `{kind:public}`. Determines direction. |
+| `sender` | `ActorRef` | `{kind:user,id:…}`, `{kind:principal,id:<did>}`, or `{kind:public}`. Determines direction. |
 | `timestamp` | RFC 3339 | UTC. |
 | `text` | string | Plain text. The runtime never persists markdown, tool output, or thinking blocks here. |
 | `correlationId` | string? | Pairs request/response lines for principal-to-principal exchanges. |
@@ -1828,9 +1828,9 @@ way:
 ### 5½.4 Sender Constraints
 
 `ChatLogStore::append_message` rejects senders that aren't one of
-the two participants of the thread (`Subject::Principal(key.principal)`
+the two participants of the thread (`ActorRef::Principal(key.principal)`
 or `key.peer`) with `ChatLogError::InvalidSender`. The constraint
-is in place so a runtime bug can't sneak an unrelated Subject
+is in place so a runtime bug can't sneak an unrelated ActorRef
 into a peer's thread and break the privacy contract — every
 line in a shard is provably between the two parties the shard
 is named after.
@@ -1902,6 +1902,9 @@ channels.
 <runtime_dir>/channels/<channel_id>/
   meta.json       # channel metadata (schema below)
   members.json    # { members: [String], remote_members: [RemoteMember] }
+                  # members rows are canonical addresses (`principal:local:prin_x`,
+                  # `user:hub:<id>`); rows from before ADR-081 (bare principal IDs,
+                  # `kind:<id>`) still read as the same member.
   events.jsonl    # current page: one EventLine per line, append-only (see below)
   events.<n>.jsonl # rotated pages, 1 = oldest (present only after rotation)
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
@@ -3045,14 +3048,9 @@ persisted session, task, cron, or workflow fields.
 `hub_id`, `kind`, `registration`, `name`, `mention`), an immutable `identity_key`,
 and optional private `signing_did`. Private `historical_aliases` preserve address
 resolution for past authors and memberships after promotion/unlinking; they are
-not accepted by public `resolve_actor` routing. An optional `known_by` array records the local
-principal IDs that explicitly learned this contact; absent arrays default to empty.
-Current channel participants are discovered from membership, without adding them
-to `known_by`. Actor profile updates retain the learned relationships. Contact
-discovery combines the caller's own actor, current channel rosters, and its
-`known_by` entries; it never enumerates the runtime registry. Legacy registry rows
-do not automatically become every principal's contacts.
-The identity key, signing DID, and `known_by` are omitted
+not accepted by public `resolve_actor` routing. The registry is a routing index:
+which principals learned which contacts lives in each principal's contact book
+(below), not here. The identity key and signing DID are omitted
 from tool profiles. Under ADR-077, `local_id` and `hub_id` are optional, with at
 least one present. Local-only actors have a local ID, registered local principals
 have both, and remote principals/accounts/visitors have only a Hub ID (`local_id:
@@ -3062,21 +3060,20 @@ Registry writes use a file lock and atomic replacement. Aliases and immutable
 keys cannot belong to distinct actors. Startup reconciles legacy proxies against
 the complete hosted-principal inventory, preserving real hosted IDs and recording
 retired proxy aliases privately. Failed principal loads skip reconciliation. Local
-and Hub scopes remain distinct in authorization checks. Existing bare proxy
-user/visitor grants normalize to scoped Hub subjects; explicitly scoped local
-grants do not.
+and Hub scopes remain distinct in authorization checks; every check compares the
+registry's immutable keys (ADR-081 D1).
 
-`principal.toml` stores `id`, `actor_key`, optional `hub_id`, signing `did`, and
-`exposure` (`local_only`, `private`, `public`). The registry is authoritative for the
-Hub link; loading or editing a workspace cannot manufacture a verified Hub alias.
-New principals are local-only until an explicit registration receipt. Signing keys
-are vault-backed independently of Hub login.
+`principal.toml` stores `id`, `actor_key`, signing `did`, `owner`, and `exposure`
+(`local_only`, `private`, `public`). It holds no Hub ID: the registry is the only
+source of a principal's Hub link, written only by its registration receipt. New
+principals are local-only until an explicit registration receipt. Signing keys
+are vault-backed.
 
-`runtime/hub-login.json` stores `{user_id, hub_url}` for the current authenticated
-human. API credentials stay in the vault. Tunnel `pekohub.toml.owner_id` identifies
-the runtime registrar and does not select the local caller. The default user's
-local ID is `local`; authenticated accounts/visitors use Hub-only identities,
-with kind preserved. Login state is reread per request and remains cached when offline.
+`runtime/pekohub.toml` stores only the Hub tunnel `url` and optional `tls`; the
+runtime is known to Hub by its identity DID (`runtime/identity.toml`). There is no
+terminal login file: the terminal is the local user, whose registry record carries
+the fixed key `local@<runtime DID>` and, once the runtime is registered, the account
+as its Hub alias.
 
 Conversation `SessionEntry.channel_id` is the sole binding. Binding clears
 `peer_type`/`peer_id`, and index backfill does not restore actor stamps onto a
@@ -3108,3 +3105,31 @@ key unless keys are rotated. An already hosted actor retains its destination
 local ID. A remote contact gains a fresh local ID on import, retaining its
 immutable actor key, learned relationships, and verified Hub link when installed
 by the principal manager. DM pair IDs do not change on promotion.
+
+
+## ADR-081 portable identity
+
+Local routes name the runtime that issued them. Outside that runtime they are
+written `kind:local:<id>@<runtime DID>` and match no local actor; on it they read
+as `kind:local:<id>`.
+
+`<data>/principals/<name>/local/contacts.json` — the principal's contact book:
+`[{kind, local?: {runtime, id}, hub_id?, identity_key, signing_did?, name?,
+registration}]`, keyed by `identity_key`, written under a file lock with atomic
+replacement. A contact is reachable when this runtime's registry routes one of its
+routes to the same key; otherwise Contacts lists it with `reachable: false`.
+
+`local/channels.json` (written into snapshots, restored on import) —
+`[{channel, participants: [{address, hub_id?, kind, identity_key}], binding}]`.
+
+Snapshots (`peko-snapshot-v1`) add `manifest.source_runtime`, `POLICY.md`,
+`workflows/`, `plugins/`, `local/contacts.json`, and `local/channels.json`. The
+owner, grant subjects and granters, `POLICY.md` `## <actor>` headings, and cron
+`created_by.actor` are written by Hub route when the actor has one, else as a
+source-qualified local route. Import localizes routes of the destination runtime,
+replaces a source-local owner with `user:local` everywhere, rebinds that owner's DM
+session to the new pair ID, reuses a former local ID by actor key (never the
+snapshot's), and refuses a key already hosted here unless keys are rotated.
+
+Cron `created_by` trust is re-derived from the creator's current trust when a job
+fires and only lowered.

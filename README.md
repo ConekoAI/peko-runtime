@@ -1,8 +1,9 @@
 # Peko 🐱
 
 Actors have runtime-local IDs and optional Hub IDs. Local operation needs no Hub
-login or principal registration. Use `peko login --api-key KEY` for a human account
-and `peko register NAME [--public]` for online principal access. Agent references
+registration. Use `peko runtime register --api-key KEY` to link this runtime and its
+local user to a PekoHub account, then `peko register NAME [--public]` to put a
+principal online (one online copy per principal; ADR-081). Agent references
 are `principal:local:<id>` / `principal:hub:<UUID>` (and equivalent user/visitor
 scopes); Contacts exposes both. Conversation sessions bind to channels. See
 [ADR-073](docs/architecture/adr/ADR-073-actor-addresses-and-conversation-bindings.md).
@@ -175,9 +176,9 @@ peko model compare my-model my-local
 peko credential list --namespace llm
 peko model test my-model
 
-# PekoHub login (separate flow)
-peko login --api-key ph_xxx --hub https://hub.example.com
-peko logout
+# PekoHub registration (optional)
+peko runtime register --api-key ph_xxx --hub https://hub.example.com
+peko runtime unregister --api-key ph_xxx
 ```
 
 #### Extension Management

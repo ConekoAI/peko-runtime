@@ -1,8 +1,8 @@
 //! Invite tokens — PR #11's "share with one friend" primitive.
 //!
 //! An invite token is a short-lived, signed `auth` envelope that lets
-//! one specific peer (a `Subject::User("fooid")` or
-//! `Subject::Principal("did:...")`) chat with a principal whose
+//! one specific peer (a `ActorRef::User("fooid")` or
+//! `ActorRef::Principal("did:...")`) chat with a principal whose
 //! exposure is `Unexposed` or `Private`. The runtime mints the token
 //! with its own `runtime_signing_key` (the same key that signs
 //! [`super::a2a_signature`] envelopes), and the runtime's
@@ -58,7 +58,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use peko_auth::ownership::Permission;
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 
 use super::a2a_signature::{build_pre_image, sign_pre_image, verify_pre_image};
 
@@ -103,10 +103,10 @@ pub struct InviteClaims {
     pub principal_did: String,
     /// The principal name, also used as the dispatcher match key.
     pub principal_name: String,
-    /// Subject this token is restricted to. The dispatcher's
+    /// ActorRef this token is restricted to. The dispatcher's
     /// `x-pekohub-user-id` header (or the resolved JWT `sub`) MUST
     /// equal this value for the token to be accepted.
-    pub owner_subject: Subject,
+    pub owner_subject: ActorRef,
     /// Permissions the token grants. The dispatcher currently only
     /// enforces `Chat` (the only operation that crosses the tunnel),
     /// but other permissions are recorded so the token can later be
@@ -325,19 +325,19 @@ impl InviteRevocationSet {
     }
 }
 
-/// Encode a `Subject` to a stable byte sequence for the pre-image.
+/// Encode a `ActorRef` to a stable byte sequence for the pre-image.
 /// The verifier MUST build the same bytes — any drift here means
 /// minted tokens fails to verify on the daemon side.
-fn encode_subject(subject: &Subject) -> Vec<u8> {
+fn encode_subject(subject: &ActorRef) -> Vec<u8> {
     match subject {
         // Stable wire form: `kind:id` (lowercase kind). The
-        // `Subject::Display` impl already produces this; we rebuild
+        // `ActorRef::Display` impl already produces this; we rebuild
         // it explicitly so the verifier doesn't depend on a
         // Display format that may evolve.
-        Subject::User(id) => format!("user:{id}").into_bytes(),
-        Subject::Principal(id) => format!("principal:{id}").into_bytes(),
-        Subject::Visitor(id) => format!("visitor:{id}").into_bytes(),
-        Subject::Public => b"public".to_vec(),
+        ActorRef::User(id) => format!("user:{id}").into_bytes(),
+        ActorRef::Principal(id) => format!("principal:{id}").into_bytes(),
+        ActorRef::Visitor(id) => format!("visitor:{id}").into_bytes(),
+        ActorRef::Public => b"public".to_vec(),
     }
 }
 
@@ -359,10 +359,6 @@ fn permission_name(p: &Permission) -> String {
         Permission::Chat => "Chat".to_string(),
         Permission::ViewSettings => "ViewSettings".to_string(),
         Permission::ManageSettings => "ManageSettings".to_string(),
-        Permission::ManageExtensions => "ManageExtensions".to_string(),
-        Permission::ManageMembers => "ManageMembers".to_string(),
-        Permission::Expose => "Expose".to_string(),
-        Permission::Delete => "Delete".to_string(),
         Permission::Trusted => "Trusted".to_string(),
     }
 }
@@ -391,7 +387,7 @@ mod tests {
         InviteClaims {
             principal_did: "did:peko:agent:target-hash".to_string(),
             principal_name: "coding-assistant".to_string(),
-            owner_subject: Subject::User("alice@example.com".to_string()),
+            owner_subject: ActorRef::User("alice@example.com".into()),
             scope: vec![Permission::Chat],
             exp: Utc::now() + chrono::Duration::seconds(exp_offset_secs),
             jti: Uuid::new_v4(),
@@ -489,7 +485,7 @@ mod tests {
     fn test_tampering_with_scope_invalidates_signature() {
         let kp = KeyPair::generate();
         let mut claims = sample_claims(3600);
-        claims.scope = vec![Permission::Delete, Permission::Chat];
+        claims.scope = vec![Permission::ManageSettings, Permission::Chat];
         let minted = mint_token(&kp.signing_key, &claims);
         // Strip the scope and re-mint to a "blank" claims shape;
         // the verifier's pre-image build will produce a different

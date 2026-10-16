@@ -2667,7 +2667,7 @@ mod tests {
     // Empty by design.
     //
     // The agentic_loop's test suite references root-only fixture types
-    // (`Agent`, `ToolingRuntime`, `Subject`, `SessionManager`, `Provider`,
+    // (`Agent`, `ToolingRuntime`, `ActorRef`, `SessionManager`, `Provider`,
     // `MockAdapter`, `ToolingRuntime`, `LlmResolver`, etc.) that cannot
     // lift into `peko-engine` without violating `check_workspace_deps.py`
     // forbidden-edge rules.

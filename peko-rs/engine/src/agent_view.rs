@@ -5,7 +5,7 @@
 //! the methods/fields the loop actually reads — the full `Agent` type is
 //! root-only (2524 lines + 16 root-only imports) and lifting it would
 //! drag `ToolingRuntime`, `KeyStorage`, `Identity`, `LlmResolver`,
-//! `Subject`, etc. into the engine crate, all of which depend on root-only
+//! `ActorRef`, etc. into the engine crate, all of which depend on root-only
 //! types.
 //!
 //! This follows the same transient-scaffolding pattern as

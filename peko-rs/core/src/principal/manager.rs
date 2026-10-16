@@ -17,7 +17,7 @@ use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
 use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_observability::Observability;
 use peko_providers::LlmResolver;
 use peko_session::InboxRegistry;
@@ -108,6 +108,9 @@ pub struct PrincipalManager {
     /// The manager's own `Arc`, once [`Self::install_policy_gate`] binds
     /// it: owner approval commands replay calls through it.
     self_ref: std::sync::OnceLock<std::sync::Weak<PrincipalManager>>,
+    /// This runtime's identity DID (ADR-081 D2): the runtime every local
+    /// route of this manager's principals and contacts belongs to.
+    runtime_did: std::sync::OnceLock<String>,
     tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     principals: RwLock<HashMap<PrincipalId, Arc<Principal>>>,
     principals_by_name: RwLock<HashMap<String, PrincipalId>>,
@@ -198,6 +201,7 @@ impl PrincipalManager {
         );
         Self {
             self_ref: std::sync::OnceLock::new(),
+            runtime_did: std::sync::OnceLock::new(),
             tooling: crate::tools::runtime::ToolingRuntime::standalone(),
             principals: RwLock::new(HashMap::new()),
             principals_by_name: RwLock::new(HashMap::new()),
@@ -319,6 +323,26 @@ impl PrincipalManager {
     /// child session. `None` (the default) disables provisioning —
     /// the right choice for tests / non-daemon contexts.
     #[must_use]
+    /// The principal's Hub ID, from the actor registry — the only source
+    /// (ADR-081 §3). `None` while local-only or without a registry.
+    pub async fn hub_id_of(&self, principal: &Principal) -> Option<String> {
+        let port = self.channel_port()?;
+        port.actor_info(&ActorRef::from(&principal.id)).await.hub_id
+    }
+
+    /// Bind this runtime's identity DID (ADR-081 D2).
+    pub fn with_runtime_did(self, runtime_did: impl Into<String>) -> Self {
+        let _ = self.runtime_did.set(runtime_did.into());
+        self
+    }
+
+    /// This runtime's identity DID; `"local"` for managers outside a daemon
+    /// (tests and offline CLI paths), whose routes never leave the process.
+    #[must_use]
+    pub fn runtime_did(&self) -> &str {
+        self.runtime_did.get().map_or("local", String::as_str)
+    }
+
     pub fn with_channel_port(mut self, channel_port: Arc<dyn peko_channel::ChannelPort>) -> Self {
         self.channel_port = Some(channel_port);
         self
@@ -383,7 +407,6 @@ impl PrincipalManager {
         let mut config = config;
         let did = self.generate_identity(&name).await?;
         config.did = Some(PrincipalDID(did));
-        config.hub_id = None;
         config.actor_key = Some(uuid::Uuid::new_v4().to_string());
         // Persist the generated id so daemon restarts load the same
         // principal identity (peer DM channels are keyed by it).
@@ -669,7 +692,7 @@ impl PrincipalManager {
         }
         if let Some(hub) = name.strip_prefix("principal:hub:") {
             for principal in self.list_all().await {
-                if principal.config.read().await.hub_id.as_deref() == Some(hub) {
+                if self.hub_id_of(&principal).await.as_deref() == Some(hub) {
                     return Some(principal);
                 }
             }
@@ -751,16 +774,15 @@ impl PrincipalManager {
         let key = config.actor_key.clone();
         let name = config.name.clone();
         let registration = if hub_id.is_none() {
-            "local_only"
+            peko_channel::Registration::LocalOnly
         } else if config.exposure == peko_auth::Exposure::Public {
-            "public"
+            peko_channel::Registration::Public
         } else {
-            "private"
+            peko_channel::Registration::Private
         };
         drop(config);
-        principal.config.write().await.hub_id = hub_id.clone();
         port.register_actor(
-            &Subject::from(&principal.id),
+            &ActorRef::from(&principal.id),
             hub_id.as_deref(),
             did.as_deref(),
             key.as_deref(),
@@ -1102,7 +1124,7 @@ impl PrincipalManager {
     pub(crate) async fn ensure_peer_child_ingress(
         &self,
         principal: &Arc<Principal>,
-        peer: &Subject,
+        peer: &ActorRef,
     ) -> Result<PeerChildIngress, PrincipalManagerError> {
         let turns = self.peer_child_turns_for(principal).await?;
         turns.ensure_child_ingress(peer).await.map_err(|e| {
@@ -1125,7 +1147,7 @@ impl PrincipalManager {
     pub(crate) async fn drive_principal_ingress(
         &self,
         principal: &Arc<Principal>,
-        peer: &Subject,
+        peer: &ActorRef,
         message: &str,
         mode: IngressMode,
     ) -> Result<IngressOutcome, IngressError> {
@@ -1215,7 +1237,7 @@ impl PrincipalManager {
     pub async fn build_router_context(
         &self,
         principal: &Arc<Principal>,
-        peer: Subject,
+        peer: ActorRef,
         message: String,
         channel: ChannelContext,
         // Per-message configured model override (`peko send --model`).
@@ -1244,8 +1266,8 @@ impl PrincipalManager {
     pub async fn build_router_context_as(
         &self,
         principal: &Arc<Principal>,
-        peer: Subject,
-        authority: Subject,
+        peer: ActorRef,
+        authority: ActorRef,
         message: String,
         channel: ChannelContext,
         override_model: Option<String>,
@@ -1260,7 +1282,9 @@ impl PrincipalManager {
                 exposure: config.exposure.clone(),
             }
         };
-        if let Err(denied) = check_permission(&resource, Permission::Chat, &authority) {
+        let port = self.channel_port();
+        let keys = crate::security::actor_keys(port.as_deref());
+        if let Err(denied) = check_permission(&resource, Permission::Chat, &authority, &*keys) {
             return Err(PrincipalManagerError::PermissionDenied(denied.to_string()));
         }
 
@@ -1368,7 +1392,7 @@ impl PrincipalManager {
     pub async fn receive_streaming(
         &self,
         principal_id: PrincipalId,
-        peer: Subject,
+        peer: ActorRef,
         message: String,
         channel: ChannelContext,
         on_event: Box<dyn Fn(peko_engine::AgenticEvent) + Send + Sync>,
@@ -1614,7 +1638,7 @@ impl PrincipalManager {
     pub(crate) async fn record_peer_recall(
         &self,
         principal: &Arc<Principal>,
-        peer: &Subject,
+        peer: &ActorRef,
         child_session_id: &str,
         summary: &str,
     ) {
@@ -1676,7 +1700,7 @@ async fn discover_role_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peko_auth::{Permission, PermissionGrant, Subject};
+    use peko_auth::{ActorRef, Permission, PermissionGrant};
 
     use crate::engine::tool_runtime::ToolRuntime;
 
@@ -1784,7 +1808,7 @@ mod tests {
         manager: &PrincipalManager,
         store: &peko_channel::ChannelStore,
         principal: &Arc<Principal>,
-        peer: &Subject,
+        peer: &ActorRef,
     ) -> Vec<(String, String)> {
         use peko_channel::ChannelPort as _;
         let mut session_manager = peko_session::manager::SessionManager::new()
@@ -1868,12 +1892,11 @@ mod tests {
 
     fn test_config(name: &str) -> PrincipalConfig {
         PrincipalConfig {
-            hub_id: None,
             actor_key: None,
             name: name.to_string(),
             id: None,
             did: None,
-            owner: Subject::User("test-owner".to_string()),
+            owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig {
                 display_name: Some(name.to_string()),
                 description: Some(format!("The {name} Principal")),
@@ -1886,10 +1909,10 @@ mod tests {
             status: None,
             boot_state: None,
             permissions: vec![PermissionGrant {
-                subject: Subject::Public,
+                subject: ActorRef::Public,
                 permission: Permission::Chat,
                 granted_at: chrono::Utc::now().to_rfc3339(),
-                granted_by: Subject::User("test-owner".to_string()),
+                granted_by: ActorRef::User("test-owner".into()),
             }],
             preferred_model_id: Some("mock".to_string()),
             quota: None,
@@ -1913,7 +1936,7 @@ mod tests {
             adapter.queue_text(format!("reply {i}"));
         }
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         for i in 0..turns {
             let response = manager
                 .receive_streaming(
@@ -1957,7 +1980,7 @@ mod tests {
         }
 
         for i in 0..peers {
-            let peer = Subject::User(format!("peer-{i}"));
+            let peer = ActorRef::User(format!("peer-{i}").into());
             let response = manager
                 .receive_streaming(
                     id.clone(),
@@ -1999,7 +2022,7 @@ mod tests {
             let manager = Arc::clone(&manager);
             let id = id.clone();
             let handle = tokio::spawn(async move {
-                let peer = Subject::User(format!("concurrent-{i}"));
+                let peer = ActorRef::User(format!("concurrent-{i}").into());
                 // M7 fix: `SessionManager::create_session` now holds the
                 // `metadata_controller` write lock for the full
                 // create-metadata + create-for-peer + save-index sequence,
@@ -2066,7 +2089,7 @@ mod tests {
         let messages = 5;
         adapter.queue_text("same-peer final".to_string());
 
-        let peer = Subject::User("same-peer".to_string());
+        let peer = ActorRef::User("same-peer".into());
         let principal = manager
             .get(id.clone())
             .await
@@ -2276,7 +2299,7 @@ mod tests {
         assert!(vault
             .get_principal_identity_private_key(&format!("{}#keys-1", did.0))
             .is_some());
-        assert!(principal.config.read().await.hub_id.is_none());
+        assert!(manager.hub_id_of(&principal).await.is_none());
     }
 
     /// ADR-058 D1: a manager wired with `with_identity_vault` (the
@@ -2410,12 +2433,12 @@ mod tests {
         let config = principal.config.read().await;
         let did = config.did.clone().unwrap();
         port.register_actor(
-            &Subject::from(&id),
+            &ActorRef::from(&id),
             Some("promoted-hub"),
             Some(&did.0),
             config.actor_key.as_deref(),
             Some("stressy"),
-            "private",
+            peko_channel::Registration::Private,
         )
         .await
         .unwrap();
@@ -2448,7 +2471,7 @@ mod tests {
             .unwrap();
         assert_eq!(actor.local_id.as_deref(), Some(id.0.as_str()));
         assert_eq!(actor.hub_id.as_deref(), Some("promoted-hub"));
-        assert_eq!(principal.config.read().await.hub_id, actor.hub_id);
+        assert_eq!(manager.hub_id_of(&principal).await, actor.hub_id);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2463,12 +2486,12 @@ mod tests {
         let port = manager.channel_port().unwrap();
         let config = principal.config.read().await;
         port.register_actor(
-            &Subject::from(&id),
+            &ActorRef::from(&id),
             Some("removed-hub"),
             config.did.as_ref().map(|did| did.0.as_str()),
             config.actor_key.as_deref(),
             Some("stressy"),
-            "private",
+            peko_channel::Registration::Private,
         )
         .await
         .unwrap();
@@ -2688,6 +2711,70 @@ mod tests {
         assert!(policy.contains("finances/q3.md"), "{policy}");
     }
 
+    /// ADR-081 D8: a cron job's trust is re-derived when it fires and only
+    /// lowered, so revoking a grant reaches jobs that already exist.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn cron_trust_drops_when_its_grant_is_revoked() {
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let alice = ActorRef::User("hub:alice".into());
+        manager
+            .update_config("stressy", |config| {
+                config.permissions.push(PermissionGrant {
+                    subject: alice.clone(),
+                    permission: Permission::Trusted,
+                    granted_at: String::new(),
+                    granted_by: ActorRef::User("local".into()),
+                });
+            })
+            .await
+            .unwrap();
+        let job = peko_cron::CronJob {
+            id: "job".into(),
+            name: "job".into(),
+            principal_id: id.clone(),
+            schedule: peko_cron::ScheduleKind::Every {
+                every_ms: 3_600_000,
+            },
+            action: peko_cron::CronJobAction::Send {
+                message: "ping".into(),
+                target: None,
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            next_run: chrono::Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor {
+                actor: "user:hub:alice".into(),
+                name: None,
+                trust: peko_tools_core::Trust::Trusted,
+                compartment: peko_tools_core::Compartment::Internal,
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+            }),
+        };
+        let session = uuid::Uuid::new_v4().to_string();
+        let stamp = crate::principal::trust::cron_job_stamp(&principal, None, &job, &session)
+            .await
+            .unwrap();
+        assert_eq!(stamp.trust, peko_tools_core::Trust::Trusted);
+
+        manager
+            .update_config("stressy", |config| config.permissions.clear())
+            .await
+            .unwrap();
+        let stamp = crate::principal::trust::cron_job_stamp(&principal, None, &job, &session)
+            .await
+            .unwrap();
+        assert_eq!(stamp.trust, peko_tools_core::Trust::Untrusted);
+    }
+
     /// ADR-078 D2: the trunk acts only for the owner. A non-owner stamp
     /// is refused before any turn starts, whatever its trust.
     #[tokio::test(flavor = "multi_thread")]
@@ -2734,7 +2821,7 @@ mod tests {
             })
             .await
             .expect("update_config should succeed");
-        let stranger = Subject::User("stranger".to_string());
+        let stranger = ActorRef::User("stranger".into());
         let result = manager
             .receive_streaming(
                 id,
@@ -2758,7 +2845,7 @@ mod tests {
         adapter.queue_text("owner reply".to_string());
 
         // Owner always passes.
-        let owner = Subject::User("test-owner".to_string());
+        let owner = ActorRef::User("test-owner".into());
         let response = manager
             .receive_streaming(
                 id.clone(),
@@ -2776,7 +2863,7 @@ mod tests {
         manager
             .update_config("stressy", |config| {
                 config.permissions.push(PermissionGrant {
-                    subject: Subject::User("friend".to_string()),
+                    subject: ActorRef::User("friend".into()),
                     permission: Permission::Chat,
                     granted_at: chrono::Utc::now().to_rfc3339(),
                     granted_by: config.owner.clone(),
@@ -2786,7 +2873,7 @@ mod tests {
             .unwrap();
 
         adapter.queue_text("friend reply".to_string());
-        let friend = Subject::User("friend".to_string());
+        let friend = ActorRef::User("friend".into());
         let response = manager
             .receive_streaming(
                 id,
@@ -2820,7 +2907,7 @@ mod tests {
         let ctx = manager
             .build_router_context(
                 &principal,
-                Subject::User("test-owner".to_string()),
+                ActorRef::User("test-owner".into()),
                 "hello".to_string(),
                 cli_channel(),
                 None,
@@ -2853,7 +2940,7 @@ mod tests {
         let ctx = manager
             .build_router_context(
                 &principal,
-                Subject::User("test-owner".to_string()),
+                ActorRef::User("test-owner".into()),
                 "hello".to_string(),
                 cli_channel(),
                 Some("openai-gpt-4o".to_string()),
@@ -2876,7 +2963,7 @@ mod tests {
         let ctx = manager
             .build_router_context(
                 &principal,
-                Subject::User("test-owner".to_string()),
+                ActorRef::User("test-owner".into()),
                 "hello".to_string(),
                 cli_channel(),
                 None,
@@ -2901,7 +2988,7 @@ mod tests {
         let messages = 4;
         adapter.queue_text("streaming final".to_string());
 
-        let peer = Subject::User("streaming-peer".to_string());
+        let peer = ActorRef::User("streaming-peer".into());
         let principal = manager
             .get(id.clone())
             .await
@@ -3007,7 +3094,7 @@ mod tests {
         // Mimic the Phase 11 steer handler: one ingress call resolves
         // the child + DM channel, then the steered text is posted
         // inbound (peer-attributed).
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let steered_text = "wait, do this instead";
         let ingress = manager
             .ensure_peer_child_ingress(&principal, &peer)
@@ -3056,7 +3143,7 @@ mod tests {
         adapter.queue_text("hello alice".to_string());
         let principal = manager.get(id.clone()).await.expect("principal");
 
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let response = manager
             .receive_streaming(
                 id,
@@ -3071,7 +3158,7 @@ mod tests {
         assert!(response.content.contains("hello alice"));
 
         // Both directions land on the DM channel: inbound attributed
-        // to the peer (Subject wire form), reply authored by the
+        // to the peer (ActorRef wire form), reply authored by the
         // principal's raw id.
         let rows = dm_posted_rows(&manager, &store, &principal, &peer).await;
         assert_eq!(
@@ -3121,7 +3208,7 @@ mod tests {
     async fn queued_messages_post_inbound_once_and_no_notice_row() {
         let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
         let principal = manager.get(id.clone()).await.expect("principal");
-        let peer = Subject::User("queued-peer".to_string());
+        let peer = ActorRef::User("queued-peer".into());
 
         // Hold the child run permit so every receive takes the
         // steering-queue branch (mirrors
@@ -3200,12 +3287,12 @@ mod tests {
         // (`user:local`), so its child is the privileged one.
         manager
             .update_config("stressy", |config| {
-                config.owner = Subject::User("local".to_string());
+                config.owner = ActorRef::User("local".into());
             })
             .await
             .expect("update_config should succeed");
 
-        let peer = Subject::User("local".to_string());
+        let peer = ActorRef::User("local".into());
         let response = manager
             .receive_streaming(
                 id.clone(),
@@ -3261,7 +3348,7 @@ mod tests {
         let (_temp, manager, adapter, id) = setup().await;
         adapter.queue_text("a2a reply".to_string());
 
-        let peer = Subject::Principal("hub:a2a-peer".into());
+        let peer = ActorRef::Principal("hub:a2a-peer".into());
         manager
             .channel_port()
             .unwrap()
@@ -3271,7 +3358,7 @@ mod tests {
                 Some("did:key:z6MkA2aPeerExample"),
                 Some("a2a-peer-key"),
                 None,
-                "public",
+                peko_channel::Registration::Public,
             )
             .await
             .unwrap();
@@ -3333,7 +3420,7 @@ mod tests {
 
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let events_sink = Arc::clone(&events);
-        let peer = Subject::User("alice".to_string());
+        let peer = ActorRef::User("alice".into());
         let response = manager
             .receive_streaming(
                 id.clone(),

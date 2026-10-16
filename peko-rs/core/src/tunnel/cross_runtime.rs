@@ -70,11 +70,11 @@ impl CrossRuntimeA2aCtx {
     pub(crate) async fn actor_subject(
         &self,
         resolved: &super::hub_directory::AgentResolution,
-    ) -> anyhow::Result<peko_subject::Subject> {
+    ) -> anyhow::Result<peko_subject::ActorRef> {
         if resolved.runtime_id != self.caller_runtime_id {
-            return Ok(peko_subject::Subject::Principal(
-                format!("hub:{}", resolved.hub_id).into(),
-            ));
+            return Ok(peko_subject::ActorRef::Principal(peko_subject::Route::hub(
+                resolved.hub_id.clone(),
+            )));
         }
         let principal = self
             .principal_manager
@@ -87,7 +87,7 @@ impl CrossRuntimeA2aCtx {
                 && config.actor_key.as_deref() == Some(resolved.identity_key.as_str()),
             "Directory local identity does not match the hosted principal"
         );
-        Ok(peko_subject::Subject::from(&principal.id))
+        Ok(peko_subject::ActorRef::from(&principal.id))
     }
 }
 

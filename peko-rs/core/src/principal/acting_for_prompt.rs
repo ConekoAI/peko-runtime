@@ -36,17 +36,11 @@ impl crate::tools::prompt_sections::PromptSectionProvider for ActingForPromptHan
             .acting_for
             .clone()
             .unwrap_or_else(ActingFor::unattributed);
-        let mut aliases = Vec::new();
-        if let Some(port) = &input.channel_port {
-            if let Ok(info) = port.resolve_actor(&stamp.actor).await {
-                aliases.push(info.address.clone());
-                aliases.extend(info.hub_address());
-            }
-        }
+        let keys = crate::security::actor_keys(input.channel_port.as_deref());
         let workspace = (!input.workspace.as_os_str().is_empty()).then_some(&input.workspace);
         let policy = workspace.and_then(|w| policy::load(w));
         let pending = workspace.map_or(0, |w| proposals::pending(w));
-        Some(render(&stamp, policy.as_ref(), &aliases, pending))
+        Some(render(&stamp, policy.as_ref(), &*keys, pending))
     }
 }
 
@@ -81,7 +75,7 @@ fn origin_line(origin: &Origin) -> String {
 pub fn render(
     stamp: &ActingFor,
     policy: Option<&policy::Policy>,
-    aliases: &[String],
+    keys: &dyn peko_subject::ActorKeys,
     pending_proposals: usize,
 ) -> String {
     let who = match &stamp.name {
@@ -101,7 +95,7 @@ pub fn render(
             ));
         }
     } else if let Some(policy) = policy {
-        let rules = policy.for_actor(&stamp.actor, aliases);
+        let rules = policy.for_actor(&stamp.actor, keys);
         if !rules.trim().is_empty() {
             out.push_str("Rules for this actor (POLICY.md):\n");
             out.push_str(rules.trim());
@@ -139,7 +133,12 @@ mod tests {
         let policy = policy::Policy::parse(
             "# Defaults\n- Public only.\n\n## user:hub:alice\n- acme files.\n\n## user:hub:bob\n- bob only.\n",
         );
-        let text = render(&stamp(Trust::Untrusted), Some(&policy), &[], 3);
+        let text = render(
+            &stamp(Trust::Untrusted),
+            Some(&policy),
+            &peko_subject::CanonicalKeys,
+            3,
+        );
         assert!(text.starts_with("<acting-for>\n"));
         assert!(text.contains("user:hub:alice (\"Alice\")"));
         assert!(text.contains("untrusted"));
@@ -155,7 +154,12 @@ mod tests {
     #[test]
     fn the_owner_sees_pending_proposals_not_guest_rules() {
         let policy = policy::Policy::parse("# Defaults\n- Public only.\n");
-        let text = render(&ActingFor::runtime(), Some(&policy), &[], 2);
+        let text = render(
+            &ActingFor::runtime(),
+            Some(&policy),
+            &peko_subject::CanonicalKeys,
+            2,
+        );
         assert!(text.contains("the owner of this peko"));
         assert!(text.contains("2 proposed change(s)"));
         assert!(!text.contains("Public only."));

@@ -33,9 +33,9 @@ pub use permissions::{check_permission, Action, AuthError, Resource};
 pub use rate_limit::{RateLimitEntry, RateLimiter};
 pub use types::{ApiKeyEntry, ApiKeyScope, ApiKeysFile, AuthConfigFile, RateLimitConfigFile};
 
-// Re-export `Subject` from `peko-subject` so downstream callers can
-// keep using `peko_auth::Subject` (the historical `crate::auth::Subject`
-// path was a re-export of `peko_subject::Subject`).
+// Re-export `ActorRef` from `peko-subject` so downstream callers can
+// keep using `peko_auth::ActorRef` (the historical `crate::auth::ActorRef`
+// path was a re-export of `peko_subject::ActorRef`).
 pub use peko_subject::{
-    subject_from_string_with_default_user, Subject, SubjectKind, SubjectParseError,
+    ActorKey, ActorKeys, ActorKind, ActorRef, ActorRefParseError, CanonicalKeys,
 };

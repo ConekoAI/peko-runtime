@@ -17,6 +17,7 @@ pub mod hub_directory;
 pub mod invite_token;
 pub mod local_directory;
 pub mod protocol;
+pub mod registration;
 pub mod tls;
 pub mod tunnel_channel_audit;
 pub mod tunnel_channel_port;
@@ -28,7 +29,7 @@ pub use client::{
     TunnelClient, TunnelHandle, TunnelStatusUpdate, DEFAULT_MAX_RECONNECT_ATTEMPTS,
     TUNNEL_OUTBOUND_BUFFER_SIZE,
 };
-pub use credential::{hub_origin, load_pekohub_credential, HubLogin, PekoHubCredential};
+pub use credential::{hub_origin, load_pekohub_credential, PekoHubCredential};
 pub use cross_runtime::CrossRuntimeA2aCtx;
 pub use cross_runtime_channel::CrossRuntimeChannelCtx;
 pub use did_key::{did_key_to_verifying_key, verifying_key_to_did_key};

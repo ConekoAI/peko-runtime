@@ -1,10 +1,10 @@
-//! PekoHub Credential Management
+//! PekoHub registration metadata.
 //!
-//! Loads and stores the runtime's PekoHub credentials from disk.
-//!
-//! The credential file (`pekohub.toml`) only stores public metadata: the
-//! tunnel URL and the runtime DID. The private signing key lives in the
-//! encrypted vault under the key `tunnel:{runtime_id}`.
+//! `pekohub.toml` records only where this runtime is registered: the tunnel
+//! URL and optional TLS settings. The runtime is known to Hub by its one
+//! identity (ADR-081 D2) — the vault-held `did:key` in
+//! `runtime/identity.toml` — which signs the tunnel handshake, registration,
+//! and every cross-runtime envelope. There is no separate tunnel key.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,8 +12,6 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::common::paths::PathResolver;
-use crate::common::vault::Vault;
-use secrecy::ExposeSecret;
 
 /// Optional TLS configuration for the PekoHub WebSocket tunnel.
 ///
@@ -34,20 +32,16 @@ pub struct TunnelTlsConfig {
     pub pinned_cert_sha256: Option<String>,
 }
 
-/// On-disk PekoHub credential format
+/// Where this runtime is registered with PekoHub.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PekoHubCredential {
     /// WebSocket tunnel URL
     pub url: String,
-    /// Runtime DID (did:key format)
+    /// The runtime identity DID (ADR-081 D2). Never stored here: callers
+    /// set it from `RuntimeIdentity` when loading.
+    #[serde(skip)]
     pub runtime_id: String,
-    /// ADR-057: the pekohub user id that owns this runtime's
-    /// registration (captured from the register endpoint's response
-    /// during `peko tunnel setup`). Current human login lives separately
-    /// in `HubLogin`; changing it does not transfer this runtime's ownership.
-    #[serde(default)]
-    pub owner_id: Option<String>,
     /// Optional TLS configuration for the tunnel connection.
     #[serde(default)]
     pub tls: Option<TunnelTlsConfig>,
@@ -61,8 +55,13 @@ impl PekoHubCredential {
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read PekoHub credential: {path:?}"))?;
-        let cred: Self = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse PekoHub credential: {path:?}"))?;
+        let cred: Self = toml::from_str(&content).with_context(|| {
+            format!(
+                "Failed to parse PekoHub credential {path:?}; a credential from \
+                 before the single runtime identity (ADR-081) must be replaced: \
+                 run `peko runtime unregister` then `peko runtime register`"
+            )
+        })?;
         Ok(cred)
     }
 
@@ -90,33 +89,6 @@ impl PekoHubCredential {
         }
 
         Ok(())
-    }
-
-    /// Resolve the private key for this credential from the given vault.
-    ///
-    /// Returns the base64-encoded private key.
-    pub fn resolve_private_key(&self, vault: &Vault) -> Result<String> {
-        vault
-            .get_tunnel_private_key(&self.runtime_id)
-            .map(|s| s.expose_secret().to_string())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No tunnel private key found in vault for {}. \
-                     Run `peko tunnel setup` to reconfigure.",
-                    self.runtime_id
-                )
-            })
-    }
-
-    /// Convenience: resolve the private key by loading the vault from the
-    /// default config directory.
-    ///
-    /// Prefer the explicit `resolve_private_key(vault)` when the vault path is
-    /// known (e.g. in the daemon with custom `--config-dir`).
-    pub fn resolve_private_key_default(&self) -> Result<String> {
-        let vault = Vault::load(crate::common::paths::default_config_dir().join("vault.enc"))
-            .with_context(|| "failed to load vault to resolve tunnel private key")?;
-        self.resolve_private_key(&vault)
     }
 
     /// Get the default credential file path
@@ -159,10 +131,14 @@ pub fn hub_origin(tunnel_url: &str) -> Option<String> {
     Some(format!("{scheme}{authority}"))
 }
 
-/// Load PekoHub credential from the default location or a custom path.
+/// Load the PekoHub registration for the runtime identified by
+/// `runtime_did`, from the default location or a custom path.
 ///
-/// Returns `None` if no credential file exists.
-pub fn load_pekohub_credential(custom_path: Option<&Path>) -> Result<Option<PekoHubCredential>> {
+/// Returns `None` if this runtime is not registered.
+pub fn load_pekohub_credential(
+    custom_path: Option<&Path>,
+    runtime_did: &str,
+) -> Result<Option<PekoHubCredential>> {
     let path = custom_path.map_or_else(PekoHubCredential::default_path, PathBuf::from);
 
     if !path.exists() {
@@ -170,8 +146,12 @@ pub fn load_pekohub_credential(custom_path: Option<&Path>) -> Result<Option<Peko
         return Ok(None);
     }
 
-    let cred = PekoHubCredential::from_file(&path)?;
-    info!("Loaded PekoHub credential for runtime: {}", cred.runtime_id);
+    let mut cred = PekoHubCredential::from_file(&path)?;
+    cred.runtime_id = runtime_did.to_string();
+    info!(
+        "Loaded PekoHub registration for runtime: {}",
+        cred.runtime_id
+    );
     Ok(Some(cred))
 }
 
@@ -208,20 +188,21 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: None,
         };
 
         cred.save_to_file(&path).unwrap();
-        let loaded = PekoHubCredential::from_file(&path).unwrap();
+        let loaded = load_pekohub_credential(Some(&path), "did:key:z6MkRuntime")
+            .unwrap()
+            .unwrap();
 
         assert_eq!(loaded.url, cred.url);
-        assert_eq!(loaded.runtime_id, cred.runtime_id);
-
-        // Verify the TOML does not contain private_key
+        // ADR-081 D2: the runtime is known by its identity, never by a
+        // stored tunnel DID.
+        assert_eq!(loaded.runtime_id, "did:key:z6MkRuntime");
         let toml_content = std::fs::read_to_string(&path).unwrap();
+        assert!(!toml_content.contains("did:key"));
         assert!(!toml_content.contains("private_key"));
-        assert!(!toml_content.contains("keyring_entry"));
     }
 
     #[test]
@@ -229,7 +210,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("nonexistent.toml");
 
-        let result = load_pekohub_credential(Some(&path));
+        let result = load_pekohub_credential(Some(&path), "did:key:z6MkRuntime");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
@@ -242,7 +223,6 @@ mod tests {
         let cred = PekoHubCredential {
             url: "wss://pekohub.org/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
             tls: Some(TunnelTlsConfig {
                 ca_path: Some(std::path::PathBuf::from("/etc/peko/ca.pem")),
                 cert_path: Some(std::path::PathBuf::from("/etc/peko/client.crt")),
@@ -255,7 +235,6 @@ mod tests {
         let loaded = PekoHubCredential::from_file(&path).unwrap();
 
         assert_eq!(loaded.url, cred.url);
-        assert_eq!(loaded.runtime_id, cred.runtime_id);
         let tls = loaded.tls.expect("TLS config should be present");
         assert_eq!(
             tls.ca_path,
@@ -272,69 +251,18 @@ mod tests {
         assert_eq!(tls.pinned_cert_sha256, Some("abc123".to_string()));
     }
 
+    /// A credential carrying the retired tunnel DID is refused with the
+    /// way out, not silently reused.
     #[test]
-    fn test_resolve_private_key_with_vault() {
+    fn legacy_tunnel_credentials_are_refused() {
         let temp = TempDir::new().unwrap();
-        let vault = Vault::for_test(temp.path(), "tunnel-test");
-        let cred = PekoHubCredential {
-            url: "wss://pekohub.org/v1/tunnel".to_string(),
-            runtime_id: "did:key:z6MkTest".to_string(),
-            owner_id: None,
-            tls: None,
-        };
-
-        cred.resolve_private_key(&vault).unwrap_err();
-
-        vault
-            .set_tunnel_private_key(&cred.runtime_id, "dHVubmVsLWtleQ==")
-            .unwrap();
-        let key = cred.resolve_private_key(&vault).unwrap();
-        assert_eq!(key, "dHVubmVsLWtleQ==");
-    }
-}
-
-pub use crate::common::hub_login::HubLogin;
-
-#[cfg(test)]
-mod login_tests {
-    use super::*;
-    #[test]
-    fn account_switch_and_logout_do_not_change_runtime_tunnel_ownership() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path();
-        let owner = uuid::Uuid::new_v4().to_string();
-        let other = uuid::Uuid::new_v4().to_string();
-        let credential = PekoHubCredential {
-            url: "wss://hub/v1/tunnel".into(),
-            runtime_id: "did:key:runtime".into(),
-            owner_id: Some(owner.clone()),
-            tls: None,
-        };
-        credential
-            .save_to_file(&PekoHubCredential::path_for_config_dir(config))
-            .unwrap();
-        assert!(HubLogin::load(config).unwrap().is_none());
-        HubLogin {
-            user_id: owner.clone(),
-            hub_url: "https://hub".into(),
-        }
-        .save(config)
+        let path = temp.path().join("pekohub.toml");
+        std::fs::write(
+            &path,
+            "url = \"wss://hub/v1/tunnel\"\nruntime_id = \"did:key:zTunnel\"\n",
+        )
         .unwrap();
-        assert_eq!(HubLogin::load(config).unwrap().unwrap().user_id, owner);
-        HubLogin {
-            user_id: other.clone(),
-            hub_url: "https://hub".into(),
-        }
-        .save(config)
-        .unwrap();
-        assert_eq!(HubLogin::load(config).unwrap().unwrap().user_id, other);
-        HubLogin::logout(config).unwrap();
-        assert!(HubLogin::load(config).unwrap().is_none());
-        assert_eq!(
-            PekoHubCredential::from_file(&PekoHubCredential::path_for_config_dir(config))
-                .unwrap()
-                .owner_id,
-            Some(owner)
-        );
+        let err = format!("{:#}", PekoHubCredential::from_file(&path).unwrap_err());
+        assert!(err.contains("peko runtime register"), "{err}");
     }
 }

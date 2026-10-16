@@ -52,7 +52,7 @@ use peko_auth::caller::CallerContext;
 use peko_auth::ownership::{
     check_permission, principal_resource, Permission, PermissionGrant, Resource,
 };
-use peko_auth::Subject;
+use peko_auth::ActorRef;
 use peko_channel::{ChannelId, ChannelPort};
 use peko_engine::AgenticEvent;
 use peko_protocol::channel::ChannelEvent;
@@ -99,7 +99,7 @@ enum PrincipalLogError {
 #[derive(Debug)]
 struct PrincipalLogResponse {
     name: String,
-    peer: Subject,
+    peer: ActorRef,
     messages: Vec<PrincipalLogMessage>,
     next_cursor: Option<String>,
     has_more: bool,
@@ -231,7 +231,7 @@ pub(crate) trait PrincipalHost: Send + Sync {
     /// constructs the authority from the caller's subject via
     /// `RuntimeAuthority::for_caller`; production hosts inherit this
     /// default because `for_caller` already accepts any verified
-    /// `Subject`. ADR-066 D9: the authority also carries the host's
+    /// `ActorRef`. ADR-066 D9: the authority also carries the host's
     /// audit sink so ownership denials emit a `Security` event.
     fn authority_for(&self, caller: &CallerContext) -> crate::common::authority::RuntimeAuthority {
         crate::common::authority::RuntimeAuthority::for_caller(
@@ -243,6 +243,11 @@ pub(crate) trait PrincipalHost: Send + Sync {
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────
+
+/// This runtime's identity comparison (ADR-081 D1).
+fn host_keys(host: &dyn PrincipalHost) -> Box<dyn peko_subject::ActorKeys> {
+    crate::security::shared_actor_keys(host.principal_manager().channel_port())
+}
 
 /// `principal` domain request handler. Constructed with an
 /// `Arc<dyn PrincipalHost>` (typically `Arc::new(app_state.clone())`
@@ -278,6 +283,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalImport { .. }
                 | RequestPacket::PrincipalGrantPermission { .. }
                 | RequestPacket::PrincipalRevokePermission { .. }
+                | RequestPacket::PrincipalTransfer { .. }
                 | RequestPacket::PrincipalPermissions { .. }
                 | RequestPacket::PrincipalSetStatus { .. }
                 | RequestPacket::PrincipalRegister { .. }
@@ -303,7 +309,7 @@ impl RequestHandler for PrincipalHandler {
         // `AuthenticatedRequest::resolved_subject` before the owned
         // `request` value is destructured by the match. Capture it
         // here while `request` is still accessible.
-        let pre_resolved_subject: Option<Subject> = match &request {
+        let pre_resolved_subject: Option<ActorRef> = match &request {
             RequestPacket::PrincipalGrantPermission { .. }
             | RequestPacket::PrincipalRevokePermission { .. } => Some(request.resolved_subject()),
             _ => None,
@@ -314,7 +320,7 @@ impl RequestHandler for PrincipalHandler {
             let Some(s) = pre_resolved_subject.clone() else {
                 unreachable!("take_resolved_subject called for a non-grant/revoke variant")
             };
-            async move { Ok::<Subject, ()>(s) }
+            async move { Ok::<ActorRef, ()>(s) }
         };
 
         match request {
@@ -322,7 +328,7 @@ impl RequestHandler for PrincipalHandler {
                 let principal_manager = host.principal_manager();
                 let mut principals = Vec::new();
                 for p in principal_manager.list_all().await {
-                    principals.push(p.summary().await);
+                    principals.push(p.summary_in(principal_manager).await);
                 }
                 let response = ResponsePacket::PrincipalList {
                     request_id,
@@ -334,7 +340,7 @@ impl RequestHandler for PrincipalHandler {
             RequestPacket::PrincipalGet { request_id, name } => {
                 let principal_manager = host.principal_manager();
                 let principal = match principal_manager.get_by_name(&name).await {
-                    Some(p) => Some(p.summary().await),
+                    Some(p) => Some(p.summary_in(principal_manager).await),
                     None => None,
                 };
                 let response = ResponsePacket::PrincipalGet {
@@ -615,6 +621,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalGrantPermission denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -627,14 +634,12 @@ impl RequestHandler for PrincipalHandler {
                 // ADR-078: `trusted` is the owner's own consent for one
                 // named actor; a settings delegate cannot extend it.
                 if permission == Permission::Trusted {
-                    let owner = resource.owner().normalized_for_auth();
-                    let refusal = if subject == peko_auth::Subject::Public {
+                    let refusal = if subject == peko_auth::ActorRef::Public {
                         Some("`trusted` must name an actor; it cannot be granted to `public`")
-                    } else if caller
-                        .permission_subject(resource.owner())
-                        .normalized_for_auth()
-                        != owner
-                    {
+                    } else if !host_keys(host).same_actor(
+                        &caller.permission_subject(resource.owner()),
+                        resource.owner(),
+                    ) {
                         Some("only the owner can grant `trusted`")
                     } else {
                         None
@@ -681,16 +686,6 @@ impl RequestHandler for PrincipalHandler {
                     .await
                 {
                     Ok(_) => {
-                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_principals(&name).await
-                            {
-                                warn!(
-                                    principal = %name,
-                                    "Failed to refresh allowed_users after principal grant: {e}"
-                                );
-                            }
-                        }
                         let response = ResponsePacket::PrincipalPermissionGranted {
                             request_id,
                             name,
@@ -707,6 +702,25 @@ impl RequestHandler for PrincipalHandler {
                         send_response(sink, response).await?;
                     }
                 }
+            }
+
+            RequestPacket::PrincipalTransfer {
+                request_id,
+                name,
+                owner,
+            } => {
+                let response = match transfer_principal(host, caller, &name, owner).await {
+                    Ok(owner) => ResponsePacket::PrincipalOwnerTransferred {
+                        request_id,
+                        name,
+                        owner,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: e.to_string(),
+                    },
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalRevokePermission {
@@ -750,6 +764,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRevokePermission denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -771,16 +786,6 @@ impl RequestHandler for PrincipalHandler {
                     .await
                 {
                     Ok(_) => {
-                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
-                            if let Err(e) =
-                                dispatcher.refresh_instance_allowed_principals(&name).await
-                            {
-                                warn!(
-                                    principal = %name,
-                                    "Failed to refresh allowed_users after principal revoke: {e}"
-                                );
-                            }
-                        }
                         let response = ResponsePacket::PrincipalPermissionRevoked {
                             request_id,
                             name,
@@ -831,6 +836,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ViewSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalPermissions denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1007,7 +1013,7 @@ impl RequestHandler for PrincipalHandler {
                             .principal_manager()
                             .channel_port()
                             .expect("actor registry")
-                            .actor_info(&Subject::from(&principal.id))
+                            .actor_info(&ActorRef::from(&principal.id))
                             .await;
                         if profile.hub_id.is_some() {
                             Err(anyhow::anyhow!(
@@ -1089,6 +1095,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalMintInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1208,6 +1215,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRevokeInvite denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1327,14 +1335,13 @@ impl RequestHandler for PrincipalHandler {
                 }
 
                 // 3. Build the config inline. Ownership is the
-                //    *caller*, not a hardcoded `Subject::User("default")`
+                //    *caller*, not a hardcoded `ActorRef::User("default")`
                 //    — the CLI's hardcoded owner was a deliberate
                 //    choice for an interactive terminal where every
                 //    local user is the same identity; for an IPC call
                 //    we honour the request's subject.
                 let description = description.unwrap_or_else(|| format!("The {name} Principal"));
                 let config = PrincipalConfig {
-                    hub_id: None,
                     actor_key: None,
                     name: name.clone(),
                     id: None,
@@ -1359,7 +1366,7 @@ impl RequestHandler for PrincipalHandler {
 
                 match host.principal_manager().create(config).await {
                     Ok(principal) => {
-                        let summary = principal.summary().await;
+                        let summary = principal.summary_in(host.principal_manager()).await;
                         let response = ResponsePacket::PrincipalCreated {
                             request_id,
                             principal: summary,
@@ -1422,6 +1429,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalUpdate denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1525,7 +1533,7 @@ impl RequestHandler for PrincipalHandler {
                         }
                         let response = ResponsePacket::PrincipalUpdated {
                             request_id,
-                            principal: principal.summary().await,
+                            principal: principal.summary_in(host.principal_manager()).await,
                         };
                         send_response(sink, response).await?;
                     }
@@ -1599,6 +1607,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalReload denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1662,6 +1671,7 @@ impl RequestHandler for PrincipalHandler {
                     &resource,
                     Permission::ManageSettings,
                     &caller.permission_subject(resource.owner()),
+                    &*host_keys(host),
                 ) {
                     warn!("PrincipalRemove denied: {}", denied);
                     let response = ResponsePacket::Error {
@@ -1731,7 +1741,7 @@ impl RequestHandler for PrincipalHandler {
 async fn handle_principal_stop(
     request_id: u64,
     name: &str,
-    peer: Option<Subject>,
+    peer: Option<ActorRef>,
     caller: &CallerContext,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
@@ -1762,6 +1772,7 @@ async fn handle_principal_stop(
         &resource,
         Permission::Chat,
         &caller.permission_subject(resource.owner()),
+        &*host_keys(host),
     )
     .is_err()
     {
@@ -2006,7 +2017,9 @@ async fn run_principal_send(
     // owner's behalf.
     let stamps =
         crate::principal::trust::stamps_for(&principal, host.principal_manager().channel_port());
-    if stamps.driver(&peer, &permission_subject).await.trust == peko_tools_core::Trust::Owner {
+    // ADR-081 D4: the operator is admitted to chat (above), but chats at
+    // the trust of whom it is — the local user.
+    if stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner {
         if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
             host.principal_manager(),
             &principal,
@@ -2042,7 +2055,7 @@ async fn run_principal_send(
     //
     // Phase 11: `ensure_child_ingress` also returns the peer's DM
     // channel; the inbound message is posted there (attributed to the
-    // peer's Subject wire form) before the permit is acquired, so the
+    // peer's ActorRef wire form) before the permit is acquired, so the
     // conversation's durable home is written exactly once regardless
     // of which branch (drive / queue) runs below. A post failure
     // rejects the ingress with the same error shape the pre-Phase-11
@@ -2210,7 +2223,7 @@ async fn run_principal_send(
     let override_model_for_task = override_model.clone();
     // ADR-078: the run acts for the peer who spoke, at the trust their
     // permission subject earns.
-    let driver = turns.driver(&peer, &permission_subject).await;
+    let driver = turns.driver(&peer, &peer).await;
     let acting_for = turns
         .root_stamp(
             Some(&driver),
@@ -2699,8 +2712,8 @@ async fn run_steering_successor(
     principal: &Arc<Principal>,
     turns: Arc<crate::principal::child_turns::PeerChildTurns>,
     child_id: &str,
-    peer: Subject,
-    authority: Subject,
+    peer: ActorRef,
+    authority: ActorRef,
     steering: SteeringMessage,
     override_model: Option<String>,
     channel_port: Option<Arc<dyn ChannelPort>>,
@@ -2796,7 +2809,7 @@ async fn run_steering_successor(
         };
         // ADR-078: the successor acts for the same peer, re-derived so
         // a grant change between turns applies.
-        let driver = turns.driver(&peer, &authority).await;
+        let driver = turns.driver(&peer, &peer).await;
         let acting_for = turns
             .root_stamp(
                 Some(&driver),
@@ -2978,12 +2991,149 @@ async fn build_principal_packager(
         "Principal signing key does not match its identity"
     );
 
+    let portable = portable_export(host, &principal, &layout).await?;
     Ok(
         crate::registry::packaging::PrincipalPackager::new(config.clone(), identity)
             .with_roles_dir(&layout.shared.roles_dir)
             .with_sessions_dir(&layout.local.sessions_dir)
             .with_workspace_dir(&layout.shared.root)
-            .with_local_root(&layout.local.root),
+            .with_local_root(&layout.local.root)
+            .with_portable(portable),
+    )
+}
+
+/// Transfer `name` to `owner` (ADR-081 D4). Only the current owner may
+/// transfer — the terminal is the local user, so the operator transfers
+/// exactly the principals the local user owns. An online principal's new
+/// owner must be a Hub actor, and Hub learns it from the re-announce.
+/// Grants and policy sections are unchanged. Audited at Security severity.
+async fn transfer_principal(
+    host: &dyn PrincipalHost,
+    caller: &CallerContext,
+    name: &str,
+    owner: ActorRef,
+) -> anyhow::Result<ActorRef> {
+    use crate::common::identifiers::validate_agent_name;
+    validate_agent_name(name)
+        .map_err(|e| anyhow::anyhow!("[unsafe_name] invalid principal name: {e}"))?;
+    anyhow::ensure!(
+        owner.is_session_peer() && owner.route_runtime().is_none(),
+        "The new owner must be a user, visitor, or principal of this runtime or Hub"
+    );
+    let manager = host.principal_manager();
+    let principal = load_principal(host, name)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Principal '{name}' not found"))?;
+    let keys = host_keys(host);
+    let previous = principal.config.read().await.owner.clone();
+    anyhow::ensure!(
+        keys.same_actor(&caller.subject(), &previous),
+        "[permission_denied] only the principal's owner can transfer it"
+    );
+    let port = manager.channel_port();
+    if let Some(port) = &port {
+        let me = port.actor_info(&ActorRef::from(&principal.id)).await;
+        if me.hub_id.is_some() {
+            anyhow::ensure!(
+                port.actor_info(&owner).await.hub_id.is_some(),
+                "An online principal's owner must be a Hub actor"
+            );
+        }
+    }
+    host.authority_for(caller)
+        .shared_config_write_for_name(name)
+        .await
+        .map_err(|e| anyhow::anyhow!("[permission_denied] {e}"))?;
+    manager
+        .update_config(name, |config| config.owner = owner.clone())
+        .await?;
+    if let Some(audit) = host.observability() {
+        audit
+            .audit_security_with_caller(
+                Some(&caller.subject()),
+                "principal.owner_transfer",
+                Some(&principal.id.0),
+                serde_json::json!({
+                    "from": previous.canonical_address(),
+                    "to": owner.canonical_address(),
+                }),
+            )
+            .await?;
+    }
+    if let Some(dispatcher) = host.tunnel_dispatcher().await {
+        if let Err(e) = dispatcher.announce_single_instance(name).await {
+            warn!(principal = %name, "owner transfer not yet announced to Hub: {e}");
+        }
+    }
+    Ok(owner)
+}
+
+/// What leaves with the snapshot (ADR-081 D6): the Hub routes of the
+/// actors its state references, and its channel memberships.
+async fn portable_export(
+    host: &dyn PrincipalHost,
+    principal: &crate::principal::Principal,
+    layout: &crate::common::paths::PrincipalLayout,
+) -> anyhow::Result<crate::registry::packaging::principal_packager::PortableExport> {
+    use crate::registry::packaging::portable::referenced_actors;
+    let manager = host.principal_manager();
+    let source_runtime = manager.runtime_did().to_string();
+    let Some(port) = manager.channel_port() else {
+        return Ok(
+            crate::registry::packaging::principal_packager::PortableExport {
+                source_runtime,
+                ..Default::default()
+            },
+        );
+    };
+    let config = principal.config.read().await.clone();
+    let policy = tokio::fs::read_to_string(
+        layout
+            .shared
+            .root
+            .join(crate::security::policy::POLICY_FILE),
+    )
+    .await
+    .ok();
+    let cron = tokio::fs::read(layout.local.cron_dir.join("schedule.toml"))
+        .await
+        .ok();
+    let mut hub_routes = std::collections::HashMap::new();
+    for subject in referenced_actors(&config, policy.as_deref(), cron.as_deref()) {
+        let actor = port.actor_info(&subject).await;
+        if let Some(hub) = &actor.hub_id {
+            if let Ok(route) = format!("{}:hub:{hub}", actor.kind).parse() {
+                hub_routes.insert(subject.canonical_address(), route);
+            }
+        }
+    }
+    let mut channels = Vec::new();
+    for channel in port.list_for_principal(&principal.id).await? {
+        let participants: Vec<_> = port
+            .participants(&channel)
+            .await?
+            .into_iter()
+            .map(|actor| {
+                serde_json::json!({
+                    "address": actor.address,
+                    "hub_id": actor.hub_id,
+                    "kind": actor.kind,
+                    "identity_key": actor.identity_key,
+                })
+            })
+            .collect();
+        channels.push(serde_json::json!({
+            "channel": channel,
+            "participants": participants,
+            "binding": port.binding_for(&channel, &principal.id).await?,
+        }));
+    }
+    Ok(
+        crate::registry::packaging::principal_packager::PortableExport {
+            source_runtime,
+            hub_routes,
+            channels: Some(serde_json::to_vec_pretty(&channels)?),
+        },
     )
 }
 
@@ -3152,7 +3302,7 @@ async fn import_principal_package(
 /// provisioned channel).
 struct ResolvedLogThread {
     principal: Arc<Principal>,
-    target_peer: Subject,
+    target_peer: ActorRef,
     port: Option<Arc<dyn ChannelPort>>,
     channel: Option<ChannelId>,
 }
@@ -3160,8 +3310,8 @@ struct ResolvedLogThread {
 async fn resolve_log_thread(
     host: &dyn PrincipalHost,
     name: &str,
-    peer: Option<Subject>,
-    caller: &Subject,
+    peer: Option<ActorRef>,
+    caller: &ActorRef,
     operator: bool,
 ) -> Result<ResolvedLogThread, PrincipalLogError> {
     // ── Resolve the principal ─────────────────────────────────────
@@ -3184,7 +3334,9 @@ async fn resolve_log_thread(
     };
 
     // ── Chat permission ───────────────────────────────────────────
-    if !operator && check_permission(&resource, Permission::Chat, caller).is_err() {
+    if !operator
+        && check_permission(&resource, Permission::Chat, caller, &*host_keys(host)).is_err()
+    {
         return Err(PrincipalLogError::Forbidden(format!(
             "caller '{caller}' lacks Chat permission on principal '{name}'"
         )));
@@ -3264,8 +3416,8 @@ async fn resolve_log_thread(
 
 /// Map a `Posted` channel event onto the `PrincipalLogMessage` chat
 /// shape: the principal's raw-id author becomes
-/// `Subject::Principal(did)`, anything else parses as a Subject wire
-/// form with a `Subject::User` fallback (mirrored `x@runtime` authors).
+/// `ActorRef::Principal(did)`, anything else parses as a ActorRef wire
+/// form with a `ActorRef::User` fallback (mirrored `x@runtime` authors).
 /// Unparseable timestamps surface as "now".
 fn map_posted_to_log_message(
     id: String,
@@ -3273,7 +3425,7 @@ fn map_posted_to_log_message(
     at: &str,
     text: String,
     principal_author: &str,
-    principal_subject: &Subject,
+    principal_subject: &ActorRef,
 ) -> PrincipalLogMessage {
     let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
         .map(|dt| dt.with_timezone(&Utc))
@@ -3281,7 +3433,7 @@ fn map_posted_to_log_message(
     let sender = if author == principal_author {
         principal_subject.clone()
     } else {
-        Subject::from_str(author).unwrap_or(Subject::User(author.to_string()))
+        ActorRef::from_str(author).unwrap_or(ActorRef::User(author.into()))
     };
     PrincipalLogMessage {
         schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
@@ -3296,13 +3448,13 @@ fn map_posted_to_log_message(
 async fn read_principal_log(
     host: &dyn PrincipalHost,
     name: &str,
-    peer: Option<Subject>,
+    peer: Option<ActorRef>,
     limit: Option<usize>,
     since_secs: Option<u64>,
     cursor: Option<String>,
     query: Option<String>,
     author: Option<String>,
-    caller: Subject,
+    caller: ActorRef,
     operator: bool,
 ) -> Result<PrincipalLogResponse, PrincipalLogError> {
     let resolved = resolve_log_thread(host, name, peer, &caller, operator).await?;
@@ -3350,7 +3502,7 @@ async fn read_principal_log(
     // walks further back until the page is full or the log is
     // exhausted (bounded, so a hostile filter can't pin the daemon).
     let principal_author = principal.id.to_string();
-    let principal_subject = Subject::Principal(principal.did().await);
+    let principal_subject = ActorRef::Principal((principal.did().await).into());
     // Optional search predicates: case-insensitive text substring +
     // exact raw-author match. Both apply while paging, so a filtered
     // read keeps walking older pages until the page fills or the log
@@ -3472,7 +3624,7 @@ async fn read_principal_log(
 async fn handle_principal_log_watch(
     request_id: u64,
     name: &str,
-    peer: Option<Subject>,
+    peer: Option<ActorRef>,
     since_cursor: Option<String>,
     caller: &CallerContext,
     host: &dyn PrincipalHost,
@@ -3582,7 +3734,7 @@ async fn run_principal_log_watch(
         }
     };
     let principal_author = principal.id.to_string();
-    let principal_subject = Subject::Principal(principal.did().await);
+    let principal_subject = ActorRef::Principal((principal.did().await).into());
     let mut replayed: Vec<(String, String, String)> = Vec::new();
     for (line, event) in events {
         let ChannelEvent::Posted {
@@ -3714,6 +3866,118 @@ mod tests {
         assert_eq!(names, vec!["primary"]);
     }
 
+    /// ADR-081 D4: only the current owner transfers a principal, and the
+    /// change is the owner's to make — not the operator's by position.
+    mod transfer {
+        use super::*;
+
+        struct Host {
+            manager: Arc<PrincipalManager>,
+            resolver: PathResolver,
+        }
+
+        #[async_trait]
+        impl PrincipalHost for Host {
+            fn principal_manager(&self) -> &Arc<PrincipalManager> {
+                &self.manager
+            }
+            fn streaming_runs(&self) -> Arc<Mutex<HashMap<String, StreamingRunHandle>>> {
+                unimplemented!()
+            }
+            fn inbox_registry(&self) -> &Arc<peko_session::InboxRegistry> {
+                unimplemented!()
+            }
+            fn config_dir(&self) -> std::path::PathBuf {
+                self.resolver.config_dir().to_path_buf()
+            }
+            fn path_resolver(&self) -> PathResolver {
+                self.resolver.clone()
+            }
+            fn data_dir(&self) -> std::path::PathBuf {
+                unimplemented!()
+            }
+            fn cache_dir(&self) -> std::path::PathBuf {
+                unimplemented!()
+            }
+            async fn tunnel_dispatcher(&self) -> Option<TunnelDispatcher> {
+                None
+            }
+            fn runtime_signing_key(&self) -> Arc<ed25519_dalek::SigningKey> {
+                unimplemented!()
+            }
+            fn invite_revocation_set(&self) -> Arc<crate::tunnel::InviteRevocationSet> {
+                unimplemented!()
+            }
+            fn pekohub_base_url(&self) -> String {
+                unimplemented!()
+            }
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn only_the_owner_transfers() {
+            let temp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("PEKO_HOME", temp.path());
+            peko_identity::init_test_env();
+            let resolver = PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let manager = Arc::new(PrincipalManager::with_path_resolver(
+                resolver.clone(),
+                Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+                Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            ));
+            manager
+                .create(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "mine", "preferred_model_id": "mock",
+                        "owner": {"kind": "user", "id": "local"}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let host = Host {
+                manager: manager.clone(),
+                resolver,
+            };
+            let alice = ActorRef::User("hub:alice".into());
+
+            let moved = transfer_principal(&host, &CallerContext::local(), "mine", alice.clone())
+                .await
+                .unwrap();
+            assert_eq!(moved, alice);
+            // The terminal no longer owns it, so it cannot take it back.
+            let err = transfer_principal(
+                &host,
+                &CallerContext::local(),
+                "mine",
+                ActorRef::User("local".into()),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("only the principal's owner"),
+                "{err}"
+            );
+            // Foreign-qualified routes are never owners.
+            let err = transfer_principal(
+                &host,
+                &CallerContext::from_jwt("alice".into()),
+                "mine",
+                ActorRef::User("local:local@did:key:zElsewhere".into()),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.to_string().contains("new owner"), "{err}");
+            let principal = manager.get_by_name("mine").await.unwrap();
+            assert_eq!(principal.config.read().await.owner, alice);
+        }
+    }
+
     // ─── Phase 11: read_principal_log reads the peer DM channel ──────
     //
     // The fixture provisions a real principal + peer child + DM
@@ -3782,18 +4046,17 @@ mod tests {
             principal: Arc<Principal>,
             channel: ChannelId,
             store: Arc<peko_channel::ChannelStore>,
-            owner: Subject,
-            peer: Subject,
+            owner: ActorRef,
+            peer: ActorRef,
         }
 
         fn test_principal_config(name: &str) -> crate::principal::PrincipalConfig {
             crate::principal::PrincipalConfig {
-                hub_id: None,
                 actor_key: None,
                 name: name.to_string(),
                 id: None,
                 did: None,
-                owner: Subject::User("test-owner".to_string()),
+                owner: ActorRef::User("test-owner".into()),
                 identity: PrincipalIdentityConfig::default(),
                 intent: PrincipalIntentConfig::default(),
                 governance: PrincipalGovernanceConfig::default(),
@@ -3846,8 +4109,8 @@ mod tests {
 
             // Provision the peer child + DM channel directly (the
             // read path only needs them to exist).
-            let owner = Subject::User("test-owner".to_string());
-            let peer = Subject::User("alice".to_string());
+            let owner = ActorRef::User("test-owner".into());
+            let peer = ActorRef::User("alice".into());
             let session_manager = Arc::new(tokio::sync::RwLock::new(
                 peko_session::manager::SessionManager::new()
                     .with_sessions_dir_internal(principal.memory.sessions_dir()),
@@ -3886,7 +4149,7 @@ mod tests {
             for i in 0..n {
                 port.post_attributed(
                     &fx.channel,
-                    &Subject::from(&fx.principal.id),
+                    &ActorRef::from(&fx.principal.id),
                     &fx.peer.to_string(),
                     PostMsg::root(format!("question {i}")),
                 )
@@ -3894,7 +4157,7 @@ mod tests {
                 .expect("inbound post");
                 port.post(
                     &fx.channel,
-                    &Subject::from(&fx.principal.id),
+                    &ActorRef::from(&fx.principal.id),
                     PostMsg::root(format!("answer {i}")),
                 )
                 .await
@@ -3933,13 +4196,16 @@ mod tests {
             assert_eq!(page.messages.len(), 2);
             assert!(!page.has_more);
             assert_eq!(page.next_cursor, None);
-            assert_eq!(page.messages[0].sender, Subject::User("local:alice".into()));
+            assert_eq!(
+                page.messages[0].sender,
+                ActorRef::User("local:alice".into())
+            );
             assert_eq!(page.messages[0].text, "question 0");
             assert_eq!(page.messages[0].id, "chan_1");
             assert_eq!(
                 page.messages[1].sender,
-                Subject::Principal(format!("local:{}", fx.principal.id.0).into()),
-                "the principal's raw-id author maps to Subject::Principal"
+                ActorRef::Principal(peko_subject::Route::local(fx.principal.id.0.clone())),
+                "the principal's raw-id author maps to ActorRef::Principal"
             );
             assert_eq!(page.messages[1].text, "answer 0");
             assert_eq!(
@@ -4033,7 +4299,7 @@ mod tests {
         async fn unparseable_author_falls_back_to_user_subject() {
             let fx = fixture(true).await;
             // A remote-mirrored author form (`prin_bob@runtime-B`)
-            // doesn't parse as a Subject wire form.
+            // doesn't parse as a ActorRef wire form.
             let mirrored = ChannelEvent::Posted {
                 channel: fx.channel.clone(),
                 author: "prin_bob@runtime-B".to_string(),
@@ -4053,7 +4319,7 @@ mod tests {
             assert_eq!(page.messages.len(), 1);
             assert_eq!(
                 page.messages[0].sender,
-                Subject::User("prin_bob@runtime-B".to_string())
+                ActorRef::User("prin_bob@runtime-B".into())
             );
         }
 
@@ -4082,7 +4348,7 @@ mod tests {
             assert_eq!(texts, vec!["question 0", "question 1", "question 2"]);
 
             // Author filter matches the raw channel author — the peer's
-            // Subject wire form for inbound posts.
+            // ActorRef wire form for inbound posts.
             let page = read_principal_log(
                 &fx.host,
                 "loggable",
@@ -4126,7 +4392,7 @@ mod tests {
             post_turns(&fx, 1).await;
 
             // A peer with no child session: empty page.
-            let stranger = Subject::User("stranger".to_string());
+            let stranger = ActorRef::User("stranger".into());
             let page = read_principal_log(
                 &fx.host,
                 "loggable",
@@ -4233,7 +4499,7 @@ mod tests {
             let port: Arc<dyn ChannelPort> = fx.store.clone();
             port.post(
                 &fx.channel,
-                &Subject::from(&fx.principal.id),
+                &ActorRef::from(&fx.principal.id),
                 PostMsg::root("live answer"),
             )
             .await
@@ -4259,10 +4525,10 @@ mod tests {
                 "replay (rows newer than the cursor) then the live row, in order"
             );
             // Sender mapping on the live row: the principal's raw-id
-            // author maps to Subject::Principal.
+            // author maps to ActorRef::Principal.
             assert_eq!(
                 appended[2].sender,
-                Subject::Principal(format!("local:{}", fx.principal.id.0).into())
+                ActorRef::Principal(peko_subject::Route::local(fx.principal.id.0.clone()))
             );
             assert!(
                 observed
@@ -4317,7 +4583,7 @@ mod tests {
                 .await
                 .permissions
                 .push(PermissionGrant {
-                    subject: Subject::User("local".to_string()),
+                    subject: ActorRef::User("local".into()),
                     permission: Permission::Chat,
                     granted_at: Utc::now().to_rfc3339(),
                     granted_by: fx.owner.clone(),
@@ -4326,7 +4592,7 @@ mod tests {
             handle_principal_log_watch(
                 7,
                 "loggable",
-                Some(Subject::User("local".to_string())),
+                Some(ActorRef::User("local".into())),
                 None,
                 &CallerContext::local(),
                 &fx.host,

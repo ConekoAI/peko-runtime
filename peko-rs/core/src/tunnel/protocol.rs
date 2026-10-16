@@ -115,19 +115,17 @@ pub struct InstanceAnnouncePayload {
     /// hub policy, not runtime).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub principal_pop: Option<String>,
+    /// The principal's owner as a Hub account (ADR-081 D4): an online
+    /// principal always has a Hub owner, and Hub records it as the
+    /// instance owner and the authority for moving it between runtimes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<peko_auth::ActorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_display_name: Option<String>,
     pub status: InstanceStatus,
     pub exposure: InstanceExposure,
-    /// Typed allow-list per ADR-041. PekoHub's post-#19 reader ignores
-    /// the legacy `allowedUsers` string-array field; the runtime now
-    /// emits `allowedPrincipals: Vec<Subject>` instead. The wire token
-    /// is `allowedPrincipals` (camelCase) and the entries are
-    /// `{kind, id}` objects.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -159,11 +157,6 @@ pub struct InstanceHeartbeatPayload {
 pub struct ExposureUpdatePayload {
     pub instance_id: String,
     pub exposure: InstanceExposure,
-    /// Typed allow-list per ADR-041. Replaces the legacy
-    /// `allowedUserIds: Vec<String>` field that PekoHub post-#19
-    /// no longer reads.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_principals: Option<Vec<peko_auth::Subject>>,
 }
 
 /// Payload for `status_update` messages.
@@ -292,6 +285,15 @@ pub enum TunnelMessage {
         hub_id: String,
         #[serde(rename = "signingDid")]
         signing_did: String,
+    },
+    /// ADR-081 D7: the principal's online link moved to another runtime;
+    /// this runtime's copy is now offline-only.
+    #[serde(rename = "principal_unlinked")]
+    PrincipalUnlinked {
+        #[serde(rename = "localId")]
+        local_id: String,
+        #[serde(rename = "hubId")]
+        hub_id: String,
     },
     #[serde(rename = "instance_deregister")]
     InstanceDeregister { payload: InstanceDeregisterPayload },
@@ -643,10 +645,10 @@ mod tests {
                 bundle_ref: Some("ref".to_string()),
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: Some("Test".to_string()),
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
                 // B5: `runtime_direct_endpoint` and `transport_preference`
@@ -666,8 +668,8 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedPrincipals\""),
-            "Expected camelCase, got: {}",
+            !json.contains("allowedPrincipals"),
+            "retired allowedPrincipals must not be emitted, got: {}",
             json
         );
         assert!(
@@ -700,10 +702,10 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -743,10 +745,10 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -786,10 +788,10 @@ mod tests {
                 bundle_ref: None,
                 principal_did: Some("did:key:z6MkTestPrincipal".to_string()),
                 principal_pop: Some("header.payload.sig".to_string()),
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -821,10 +823,10 @@ mod tests {
                 bundle_ref: None,
                 principal_did: Some("did:peko:public:legacy:abc".to_string()),
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Public,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
             },
@@ -855,10 +857,10 @@ mod tests {
                 bundle_ref: None,
                 principal_did: None,
                 principal_pop: None,
+                owner: None,
                 runtime_display_name: None,
                 status: InstanceStatus::Online,
                 exposure: InstanceExposure::Private,
-                allowed_principals: None,
                 capabilities: None,
                 metadata: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
@@ -932,7 +934,6 @@ mod tests {
             payload: ExposureUpdatePayload {
                 instance_id: "inst-1".to_string(),
                 exposure: InstanceExposure::Public,
-                allowed_principals: Some(vec![peko_auth::Subject::User("u1".to_string())]),
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -943,8 +944,8 @@ mod tests {
             json
         );
         assert!(
-            json.contains("\"allowedPrincipals\""),
-            "Expected camelCase, got: {}",
+            !json.contains("allowedPrincipals"),
+            "retired allowedPrincipals must not be emitted, got: {}",
             json
         );
 

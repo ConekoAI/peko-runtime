@@ -4,7 +4,7 @@
 //! This is the daemon's composition root — all services are initialized here.
 
 use peko_channel::ChannelPort;
-use peko_subject::Subject;
+use peko_subject::ActorRef;
 
 use crate::agents::lifecycle::LifecycleManager;
 use crate::async_exec::inbox::SessionInbox;
@@ -188,7 +188,7 @@ pub(crate) struct AppState {
     /// JWT validator (ADR-034) for PekoHub bridge tokens (ADR-057).
     ///
     /// Interior-mutable because the credential it derives from may not
-    /// exist when the daemon boots: `peko tunnel setup` can run later,
+    /// exist when the daemon boots: `peko runtime register` can run later,
     /// and the tunnel start path refreshes this from the credential it
     /// just loaded. Without the refresh, a daemon that booted before
     /// login would reject every bridge request as an invalid JWT until
@@ -264,10 +264,10 @@ pub(crate) struct StreamingRunHandle {
     /// Principal name — diagnostic only.
     pub principal_name: String,
     /// Peer subject whose thread this run belongs to — diagnostic
-    /// only (cheap, `Subject` is small). `None` for channel-responder
+    /// only (cheap, `ActorRef` is small). `None` for channel-responder
     /// turns, which may run in a session without a single peer (a
     /// group channel's child).
-    pub peer: Option<peko_auth::Subject>,
+    pub peer: Option<peko_auth::ActorRef>,
     /// Cancellation token for soft-interrupt. Setting this signals
     /// the agentic loop to finish the current step and exit cleanly.
     /// Cloned into both the agentic loop and the IPC handler.
@@ -704,6 +704,7 @@ impl AppState {
             // Sprint 3 Phase 10: peer ingress auto-provisions the
             // peer's DM channel through the daemon-global port.
             .with_channel_port(channel_port.clone())
+            .with_runtime_did(runtime_identity.runtime_did.clone())
             // Human-started turns record activity for `Idle` schedules.
             .with_idle_detector(Arc::clone(&idle_detector));
 
@@ -742,6 +743,26 @@ impl AppState {
                     .await?;
             } else {
                 tracing::warn!("Skipping actor locality reconciliation: hosted principal inventory is incomplete");
+            }
+            // ADR-081 D3: the runtime's one local user, with its fixed key.
+            if let Err(e) = tunnel_channel_port
+                .as_ref()
+                .expect("channel port initialized")
+                .local()
+                .ensure_local_user(&runtime_identity.runtime_did)
+                .await
+            {
+                tracing::warn!("Could not record the local user's identity: {e}");
+            }
+            // ADR-081 D5: learned contacts move into each principal's book.
+            if let Err(e) = crate::principal::contacts::migrate_known_by(
+                &path_resolver.runtime_dir(),
+                &runtime_identity.runtime_did,
+                &manager.list_all().await,
+            )
+            .await
+            {
+                tracing::warn!("Could not move learned contacts into contact books: {e}");
             }
             manager
         };
@@ -824,7 +845,11 @@ impl AppState {
         // the JWKS endpoint lives on that origin. No credential = no
         // tunnel = no bridge traffic, so no validator.
         let jwt_validator = std::sync::Arc::new(std::sync::RwLock::new(
-            Self::bridge_validator_from_credential_file(&config_dir, &auth_config),
+            Self::bridge_validator_from_credential_file(
+                &config_dir,
+                &runtime_identity.runtime_did,
+                &auth_config,
+            ),
         ));
         let rate_limiter = if auth_config.has_any_remote_auth_method() {
             Some(peko_auth::rate_limit::RateLimiter::new(
@@ -1124,12 +1149,10 @@ impl AppState {
     /// runtime validates tokens minted by the hub it is actually
     /// connected to.
     ///
-    /// The expected audience is the credential's **tunnel** DID, not the
-    /// workspace runtime identity: `peko tunnel setup` mints a separate
-    /// tunnel keypair, so the hub knows this runtime by the tunnel DID
-    /// (`conn.runtimeId`, and therefore `instance.runtimeId` — the value
-    /// it puts in `aud`). The tunnel DID is transport identity; the
-    /// token's `sub` still carries the actor.
+    /// The expected audience is the runtime identity DID — the one
+    /// identity Hub knows this runtime by (ADR-081 D2), and therefore
+    /// `instance.runtimeId`, the value it puts in `aud`. The token's `sub`
+    /// carries the actor.
     fn bridge_validator_for(
         cred: &crate::tunnel::PekoHubCredential,
     ) -> Option<peko_auth::jwt::JwtValidator> {
@@ -1143,14 +1166,8 @@ impl AppState {
     }
 
     /// The `(issuer, audience)` a bridge token must carry for this
-    /// credential: the hub origin, and the credential's **tunnel** DID.
-    ///
-    /// The audience is the tunnel DID because that is what PekoHub knows
-    /// this runtime as — `peko tunnel setup` mints a dedicated tunnel
-    /// keypair, the hub records `conn.runtimeId` from the handshake, and
-    /// every proxied request's `instance.runtimeId` (hence the token's
-    /// `aud`) is that value. Using the workspace runtime identity here
-    /// wrongly rejects every bridge request with `Invalid JWT audience`.
+    /// registration: the hub origin, and the runtime identity DID — the
+    /// one identity Hub knows this runtime by (ADR-081 D2).
     fn bridge_token_target(cred: &crate::tunnel::PekoHubCredential) -> Option<(String, String)> {
         let issuer = crate::tunnel::hub_origin(&cred.url)?;
         if cred.runtime_id.is_empty() {
@@ -1160,16 +1177,19 @@ impl AppState {
     }
 
     /// Boot-time attempt: read the credential file (usually present on
-    /// a runtime that has already run `peko tunnel setup`).
+    /// a runtime that has already run `peko runtime register`).
     fn bridge_validator_from_credential_file(
         config_dir: &std::path::Path,
+        runtime_did: &str,
         auth_config: &peko_auth::config::AuthConfig,
     ) -> Option<peko_auth::jwt::JwtValidator> {
         if !auth_config.enable_pekohub_jwt() {
             return None;
         }
         let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(config_dir);
-        let cred = crate::tunnel::PekoHubCredential::from_file(&cred_path).ok()?;
+        let cred = crate::tunnel::load_pekohub_credential(Some(&cred_path), runtime_did)
+            .ok()
+            .flatten()?;
         Self::bridge_validator_for(&cred)
     }
 
@@ -1177,17 +1197,6 @@ impl AppState {
     #[must_use]
     pub fn rate_limiter(&self) -> Option<peko_auth::rate_limit::RateLimiter> {
         self.rate_limiter.clone()
-    }
-
-    /// ADR-057: the pekohub owner id bound to this runtime, when the
-    /// runtime is logged into pekohub. The auth layer folds this into
-    /// local callers' attribution identity.
-    #[must_use]
-    pub fn hub_user_id(&self) -> Option<String> {
-        crate::tunnel::HubLogin::load(self.path_resolver.config_dir())
-            .ok()
-            .flatten()
-            .map(|login| login.user_id)
     }
 
     /// Get the runtime identity (ADR-032)
@@ -1225,25 +1234,17 @@ impl AppState {
         use crate::tunnel::{load_pekohub_credential, TunnelClient, TunnelDispatcher};
         use tracing::{info, warn};
 
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            self.config_dir.clone(),
-            self.data_dir.clone(),
-            self.cache_dir.clone(),
-        );
-        let vault = crate::common::vault::Vault::load(path_resolver.vault())
-            .map_err(|e| anyhow::anyhow!("Failed to load credential vault for tunnel: {e}"))?;
-        let vault = std::sync::Arc::new(vault);
-
         let cred_path = crate::tunnel::PekoHubCredential::path_for_config_dir(&self.config_dir);
-        let cred = match load_pekohub_credential(Some(&cred_path))? {
-            Some(c) => c,
-            None => return Ok(false),
-        };
+        let cred =
+            match load_pekohub_credential(Some(&cred_path), &self.runtime_identity.runtime_did)? {
+                Some(c) => c,
+                None => return Ok(false),
+            };
 
         // ADR-057: (re)build the bridge-token validator now that the
         // credential is in hand. The boot-time attempt in
         // `with_data_dir` misses the common ordering where the daemon
-        // starts before `peko tunnel setup` writes this file — without
+        // starts before `peko runtime register` writes this file — without
         // this refresh such a daemon rejects every bridge request as an
         // invalid JWT until it restarts.
         if let Ok(mut guard) = self.jwt_validator.write() {
@@ -1269,7 +1270,7 @@ impl AppState {
         // a warning and skip the registration — the local a2a path
         // still works, and the operator can debug the directory
         // config without losing tunnel connectivity.
-        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred, &vault).await {
+        if let Err(e) = self.install_cross_runtime_a2a_ctx(&cred).await {
             warn!(
                 "Could not install cross-runtime a2a ctx (peko-runtime#29); \
                  cross-runtime a2a will be unavailable until this is fixed. \
@@ -1280,7 +1281,7 @@ impl AppState {
         // channel ctx (same signing key + directory as the a2a
         // install). Local-only channels still work without this;
         // this just unlocks outbound fan-out to remote members.
-        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred, &vault).await {
+        if let Err(e) = self.install_cross_runtime_channel_ctx(&cred).await {
             warn!(
                 "Could not install cross-runtime channel ctx (peko-channel PR-B); \
                  cross-runtime channel fan-out will be unavailable until this is fixed. \
@@ -1294,7 +1295,11 @@ impl AppState {
 
         let dispatcher_for_handler = dispatcher;
 
-        let mut client = TunnelClient::new_with(cred, max_reconnect_attempts).with_vault(vault);
+        let mut client = TunnelClient::new_with(
+            cred,
+            Arc::clone(&self.runtime_signing_key),
+            max_reconnect_attempts,
+        );
         client.on_request(move |msg, handle| {
             let dispatcher = dispatcher_for_handler.clone();
             async move {
@@ -1434,7 +1439,6 @@ impl AppState {
     async fn install_cross_runtime_a2a_ctx(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::CrossRuntimeA2aCtx;
 
@@ -1446,7 +1450,7 @@ impl AppState {
         // nothing (the channel envelopes it triggers are signed
         // inside `TunnelChannelPort`).
         let (directory, _signing_key, caller_runtime_id) =
-            self.build_cross_runtime_ctx_parts(cred, vault)?;
+            self.build_cross_runtime_ctx_parts(cred)?;
 
         let ctx = Arc::new(CrossRuntimeA2aCtx {
             directory,
@@ -1501,16 +1505,11 @@ impl AppState {
     fn build_cross_runtime_ctx_parts(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<(
         Arc<dyn crate::tunnel::AgentDirectory>,
         Arc<ed25519_dalek::SigningKey>,
         String,
     )> {
-        use base64::engine::general_purpose::STANDARD as BASE64;
-        use base64::Engine as _;
-        use ed25519_dalek::SigningKey;
-
         // Directory: hub HTTP client + local-first wrap so
         // same-runtime principals resolve without the hub.
         let hub_directory = crate::tunnel::HubAgentDirectoryClient::from_credential(cred)
@@ -1527,21 +1526,8 @@ impl AppState {
                 Arc::new(hub_directory),
             ));
 
-        // Signing key: 32 raw bytes decoded from the credential's
-        // base64-encoded private key in the vault.
-        let privkey_b64 = cred.resolve_private_key(vault)?;
-        let privkey_bytes = BASE64.decode(privkey_b64.trim()).map_err(|e| {
-            anyhow::anyhow!("PekoHubCredential private key is not valid base64: {e}")
-        })?;
-        if privkey_bytes.len() != 32 {
-            anyhow::bail!(
-                "PekoHubCredential private key is {} bytes; expected 32",
-                privkey_bytes.len()
-            );
-        }
-        let mut key_arr = [0u8; 32];
-        key_arr.copy_from_slice(&privkey_bytes);
-        let signing_key = Arc::new(SigningKey::from_bytes(&key_arr));
+        // ADR-081 D2: the runtime identity key signs everything.
+        let signing_key = Arc::clone(&self.runtime_signing_key);
 
         Ok((directory, signing_key, cred.runtime_id.clone()))
     }
@@ -1561,12 +1547,11 @@ impl AppState {
     async fn install_cross_runtime_channel_ctx(
         &self,
         cred: &crate::tunnel::PekoHubCredential,
-        vault: &crate::common::vault::Vault,
     ) -> anyhow::Result<()> {
         use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 
         let (directory, signing_key, caller_runtime_id) =
-            self.build_cross_runtime_ctx_parts(cred, vault)?;
+            self.build_cross_runtime_ctx_parts(cred)?;
 
         // ADR-058 D2: outbound envelopes carry an author signature
         // from the authoring principal's own vault-backed key when
@@ -1691,7 +1676,7 @@ pub(crate) enum TunnelHealth {
         last_error: Option<String>,
     },
     /// The reconnect-attempt cap was hit; the tunnel client has stopped
-    /// retrying. Operator must restart with `peko tunnel start` to retry.
+    /// retrying. Operator must restart the daemon to retry.
     Degraded { attempts: u32, last_error: String },
 }
 
@@ -1766,7 +1751,7 @@ struct VaultPrincipalSigningKeys {
 #[async_trait::async_trait]
 impl crate::tunnel::cross_runtime_channel::PrincipalSigningKeys for VaultPrincipalSigningKeys {
     async fn did_for_principal(&self, principal: &peko_subject::PrincipalId) -> Option<String> {
-        // `Subject::Principal` / `PrincipalId` carry EITHER the
+        // `ActorRef::Principal` / `PrincipalId` carry EITHER the
         // principal's id (`prin_<uuid>` — the `principals` map key)
         // or its DID (`did:key:…` — e.g. DID-keyed DM paths), so
         // resolve by id first and fall back to the DID scan; a miss
@@ -1960,7 +1945,7 @@ impl crate::tunnel::TunnelHost for AppState {
 
         let target_actor = self
             .tunnel_channel_port
-            .actor_info(&Subject::from(&principal.id))
+            .actor_info(&ActorRef::from(&principal.id))
             .await;
         let addressed = invite
             .initial_members
@@ -1997,15 +1982,15 @@ impl crate::tunnel::TunnelHost for AppState {
         let source_actor = self
             .tunnel_channel_port
             .register_actor(
-                &Subject::Principal(format!("hub:{creator_hub}").into()),
+                &ActorRef::Principal(peko_subject::Route::hub(creator_hub)),
                 Some(creator_hub),
                 Some(&source.agent_did),
                 Some(&source.identity_key),
                 None,
                 if source.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public {
-                    "public"
+                    peko_channel::Registration::Public
                 } else {
-                    "private"
+                    peko_channel::Registration::Private
                 },
             )
             .await?;
@@ -2037,18 +2022,22 @@ impl crate::tunnel::TunnelHost for AppState {
                         if resolved.exposure
                             == crate::tunnel::hub_directory::ResolvedExposure::Public
                         {
-                            "public"
+                            peko_channel::Registration::Public
                         } else {
-                            "private"
+                            peko_channel::Registration::Private
                         },
                     )
                     .await?;
-            } else if let Ok(subject) = member.principal_did.parse::<Subject>() {
-                if matches!(subject, Subject::User(_) | Subject::Visitor(_)) {
-                    let hub = subject.subject_id().strip_prefix("hub:").ok_or_else(|| {
-                        anyhow::anyhow!("Remote human membership requires a Hub reference")
-                    })?;
-                    let remote = format!("{}:hub:{hub}", subject.kind()).parse::<Subject>()?;
+            } else if let Ok(subject) = member.principal_did.parse::<ActorRef>() {
+                if matches!(subject, ActorRef::User(_) | ActorRef::Visitor(_)) {
+                    let hub = subject
+                        .route()
+                        .filter(|r| r.is_hub())
+                        .map(|r| r.id())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Remote human membership requires a Hub reference")
+                        })?;
+                    let remote = subject.clone();
                     self.tunnel_channel_port
                         .register_actor(
                             &remote,
@@ -2056,7 +2045,7 @@ impl crate::tunnel::TunnelHost for AppState {
                             None,
                             None,
                             member.name.as_deref(),
-                            "registered",
+                            peko_channel::Registration::Registered,
                         )
                         .await?;
                 }
@@ -2065,7 +2054,7 @@ impl crate::tunnel::TunnelHost for AppState {
         if invite.channel_id.starts_with("dm_") {
             let me = self
                 .tunnel_channel_port
-                .actor_info(&Subject::from(&principal.id))
+                .actor_info(&ActorRef::from(&principal.id))
                 .await;
             let expected =
                 peko_channel::dm_channel_id(&me.identity_key, &source_actor.identity_key);
@@ -2075,9 +2064,15 @@ impl crate::tunnel::TunnelHost for AppState {
             );
         }
         // Registration gates every remote channel, including group invitations.
+        let registered = self
+            .tunnel_channel_port
+            .actor_info(&ActorRef::from(&principal.id))
+            .await
+            .hub_id
+            .is_some();
         let config = principal.config.read().await;
         anyhow::ensure!(
-            config.hub_id.is_some() && config.exposure != peko_auth::Exposure::LocalOnly,
+            registered && config.exposure != peko_auth::Exposure::LocalOnly,
             "Channel target is local-only"
         );
         let already_member = self
@@ -2090,18 +2085,11 @@ impl crate::tunnel::TunnelHost for AppState {
             .await
             .unwrap_or(false);
         if config.exposure == peko_auth::Exposure::Private && !already_member {
-            let mut resource_config = config.clone();
-            for grant in &mut resource_config.permissions {
-                grant.subject = self
-                    .tunnel_channel_port
-                    .actor_info(&grant.subject)
-                    .await
-                    .subject();
-            }
             peko_auth::ownership::check_permission(
-                &peko_auth::ownership::principal_resource(&resource_config),
+                &peko_auth::ownership::principal_resource(&*config),
                 peko_auth::ownership::Permission::Chat,
                 &source_actor.subject(),
+                &peko_channel::PortKeys(self.tunnel_channel_port.as_ref()),
             )
             .map_err(|e| anyhow::anyhow!("Channel invite denied: {e}"))?;
         }
@@ -3085,11 +3073,10 @@ mod tests {
     /// bridge request with `Invalid JWT audience` (caught by the docker
     /// e2e, not by unit tests).
     #[test]
-    fn bridge_token_target_uses_the_tunnel_did_and_hub_origin() {
+    fn bridge_token_target_uses_the_runtime_did_and_hub_origin() {
         let cred = crate::tunnel::PekoHubCredential {
             url: "wss://pekohub.example/v1/tunnel".to_string(),
             runtime_id: "did:key:zTunnelIdentity".to_string(),
-            owner_id: Some("hub-user-1".to_string()),
             tls: None,
         };
         let (issuer, audience) =

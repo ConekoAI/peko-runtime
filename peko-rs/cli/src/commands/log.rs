@@ -8,7 +8,7 @@
 //! Privacy contract (ADR-042):
 //! - The owner can read any peer's thread.
 //! - A non-owner peer can only read their own thread (matched by an
-//!   exact `Subject`).
+//!   exact `ActorRef`).
 //! - There is no `peko session` command and there will never be one.
 //!   This is the only user-facing way to inspect a principal's
 //!   consumer-visible conversation without running a turn.
@@ -73,7 +73,7 @@ pub struct LogCommand {
     #[arg(long, value_name = "TEXT")]
     pub search: Option<String>,
 
-    /// Exact author filter (the channel-log author: a peer Subject
+    /// Exact author filter (the channel-log author: a peer ActorRef
     /// like `user:alice`, or the principal's id). Ignored with
     /// `--watch`.
     #[arg(long, value_name = "AUTHOR")]
@@ -171,7 +171,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 
     let mut cursor = cursor.filter(|c| !c.is_empty());
     let mut accumulated: Vec<PrincipalLogMessage> = Vec::new();
-    let mut resolved_peer: Option<peko_auth::Subject> = None;
+    let mut resolved_peer: Option<peko_auth::ActorRef> = None;
     // Without `--all` exactly one page is read (`--limit` is a hard
     // cap on it). With `--all`, pages drain until `has_more` is false.
     const MAX_PAGES: usize = 25;
@@ -257,7 +257,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 async fn watch_principal_log(
     client: &DaemonClient,
     principal: &str,
-    peer: Option<peko_auth::Subject>,
+    peer: Option<peko_auth::ActorRef>,
     cursor: Option<String>,
     use_json: bool,
 ) -> Result<()> {
@@ -308,7 +308,7 @@ async fn watch_principal_log(
 ///
 /// Only `Posted` rows render, as `[<ts>] <author>: <text>` with the
 /// author verbatim — group authors are raw ids (principal ids or
-/// Subject wire forms), not thread peers, so no Subject mapping.
+/// ActorRef wire forms), not thread peers, so no ActorRef mapping.
 async fn handle_group_log(
     client: &DaemonClient,
     slug: &str,
@@ -547,10 +547,10 @@ fn group_row_json(id: &str, at: &str, author: &str, text: &str) -> serde_json::V
     serde_json::json!({ "id": id, "at": at, "author": author, "text": text })
 }
 
-/// Parse a `--peer` value into a `Subject`. Accepts the wire format
+/// Parse a `--peer` value into a `ActorRef`. Accepts the wire format
 /// `user:<id>`, `principal:<did>`, or `public`.
-fn parse_subject(value: &str) -> Result<peko_auth::Subject> {
-    peko_auth::Subject::from_str(value)
+fn parse_subject(value: &str) -> Result<peko_auth::ActorRef> {
+    peko_auth::ActorRef::from_str(value)
         .map_err(|e| anyhow::anyhow!("invalid --peer value '{value}': {e}"))
 }
 
