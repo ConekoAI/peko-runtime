@@ -88,6 +88,7 @@ mod tests {
             blocked_reason: None,
             created_at: now,
             updated_at: now,
+            check_at: None,
         };
         port.create(p1.clone(), "p1a".into(), vec![mk("a")])
             .await

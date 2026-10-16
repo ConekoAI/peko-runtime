@@ -62,6 +62,7 @@ This document defines the public API surface for Peko, including the new Unified
 | `SectionSlot::Plans` / `## Open plans` tail section | `peko_engine::prompt::renderer` | ✅ New | Change-detected built-in slot with update/retraction notices |
 | `BUILTIN_PROMPT_SECTIONS` | `peko_engine` (from `prompt::renderer`) | ⚠️ Changed | Now public and gains `plans`; the tooling runtime dispatches this list instead of keeping its own copy |
 | `PlanPort::current_focus`, `PlanStorage::current_focus` | `peko_plan` | ❌ Removed | No callers |
+| `PlanNode::check_at`, `PlanPort::set_node_check_at`, `PlanRecord::{due_check_ins, active_nodes}` | `peko_plan` | ✅ New | ADR-084 check-ins: snooze a step until a time; due check-ins lead the plans section and wake an attention-gated heartbeat once |
 | `ContextInjectionKind::{Memory, File, Todo, Plan}` | `principal::router` | ❌ Removed | Never constructed (`Plan` was the trunk-only plan injection, replaced by the `plans` section); `Session` remains |
 
 ## Idle schedules

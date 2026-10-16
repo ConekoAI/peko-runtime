@@ -34,11 +34,15 @@ needs to be tracked across turns, or benefits from being resumable.
 Parameters:
 - title: string (required) — short imperative plan title
 - nodes: array (required) — at least one node, each shaped:
-    { nodeId: string?, step: string, dependsOn: array<string>?, status: string? }
+    { nodeId: string?, step: string, dependsOn: array<string>?, status: string?, checkAt: string? }
   - nodeId is auto-assigned if omitted (recommended)
   - dependsOn lists nodeIds of other nodes in this plan; give those
     nodes an explicit nodeId (node_<8 chars a-z0-9>) to reference them
   - status defaults to 'pending'; valid values: pending|in_progress|completed|blocked|failed
+  - checkAt: when to come back to the step — an RFC 3339 time or a
+    duration from now ('90m', '2d'). Until then a ready step is snoozed;
+    after it the check-in is due and your heartbeat runs for it. Use it
+    for follow-ups, waiting on people, and work for later.
 
 Returns the created plan record including its planId and every
 auto-assigned node id."
@@ -77,6 +81,10 @@ auto-assigned node id."
                                 "type": "string",
                                 "enum": ["pending","in_progress","completed","blocked","failed"],
                                 "description": "Optional. Defaults to 'pending'."
+                            },
+                            "checkAt": {
+                                "type": "string",
+                                "description": "When to come back to this step: RFC 3339 time or a duration from now (\"90m\", \"2d\"). Until then a ready or in-progress step is snoozed; once it passes the check-in is due and your heartbeat runs for it."
                             }
                         },
                         "required": ["step"]
@@ -116,7 +124,7 @@ auto-assigned node id."
 }
 
 fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
-    use crate::tools::builtin::plan::{parse_depends_on, parse_status_param};
+    use crate::tools::builtin::plan::{parse_check_at, parse_depends_on, parse_status_param};
     use chrono::Utc;
     arr.iter()
         .map(|n| {
@@ -131,6 +139,7 @@ fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
                 Some(s) => parse_status_param(s)?,
                 None => PlanNodeStatus::Pending,
             };
+            let check_at = parse_check_at(n.get("checkAt"))?.time();
             let now = Utc::now();
             Ok(PlanNode {
                 node_id,
@@ -141,6 +150,7 @@ fn parse_nodes(arr: &[serde_json::Value]) -> anyhow::Result<Vec<PlanNode>> {
                 blocked_reason: None,
                 created_at: now,
                 updated_at: now,
+                check_at,
             })
         })
         .collect()

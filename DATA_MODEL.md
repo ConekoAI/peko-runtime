@@ -248,6 +248,12 @@ under 4 hours old, up to 12 hours past its due time (the schedule's next slot
 after `last_run`, else after `created_at`). A held fire is recorded the same
 way as a quiet tick, with `next_run` set to when it may run.
 
+**Plan check-ins (ADR-084).** A plan node (`plans/<plan_id>.jsonl`) may carry
+`checkAt`, an RFC 3339 UTC time, omitted when unset. Records without it read
+unchanged. Completing a node clears it. A ready or in-progress node with a future
+`checkAt` does not count as waiting for an `attention` fire; a node whose
+`checkAt` passed after the job's `last_run` does, once.
+
 **Idle schedules.** `Idle` jobs read principal activity from
 `<runtime_dir>/idle_activity.json`, a map of runtime `PrincipalId` to the
 RFC 3339 time someone last talked to the principal: an ingress turn starting

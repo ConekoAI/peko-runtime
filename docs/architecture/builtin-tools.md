@@ -493,7 +493,7 @@ At least one of status or owner is required, in addition to taskId.
 
 Required `action`: `create`, `list`, `get`, `add_step`, `mark_step`, `record_evidence`, `close`. Each action accepts only its documented fields.
 
-Open plans also reach every owner run without a call: the `## Open plans` tail section lists up to five unfinished plans (most recently active first) with their in-progress, ready, and blocked or failed steps, and re-injects when a plan changes.
+Open plans also reach every owner run without a call: the `## Open plans` tail section lists up to five unfinished plans (most recently active first) with their due check-ins first, then in-progress, ready, and blocked or failed steps, and re-injects when a plan changes. A step's `checkAt` (ADR-084) says when to come back to it: until then a ready or in-progress step is snoozed and shows `check at <time>`; after it the check-in is due. An attention-gated heartbeat (ADR-083) runs for unsnoozed ready or in-progress steps, and once for each check-in that came due since its last turn.
 
 **Owner runs only (ADR-078).** Plans are the principal's internal work and
 carry no compartment: every action reaches every plan the principal holds. The
@@ -516,7 +516,7 @@ Create a principal-owned durable plan with dependency nodes.
 | `title` | string | yes | — |
 | `nodes` | object[] | yes | at least 1 item |
 
-nodes contains at least one object: {step, nodeId?, dependsOn?: string[], status?}. nodeId is auto-assigned when omitted; status defaults to pending. Plans belong to the principal and persist across sessions.
+nodes contains at least one object: {step, nodeId?, dependsOn?: string[], status?, checkAt?}. nodeId is auto-assigned when omitted; status defaults to pending. checkAt is an RFC 3339 time or a duration from now (90m, 2d). Plans belong to the principal and persist across sessions.
 
 #### list
 
@@ -551,8 +551,9 @@ Append a node to an open plan.
 | `nodeId` | string | no | — |
 | `dependsOn` | string[] | no | — |
 | `status` | pending \| in_progress \| completed \| blocked \| failed | no | — |
+| `checkAt` | string | no | — |
 
-nodeId is auto-assigned when omitted; status defaults to pending. Closed plans refuse new nodes.
+nodeId is auto-assigned when omitted; status defaults to pending. checkAt is an RFC 3339 time or a duration from now (90m, 2d). Closed plans refuse new nodes.
 
 #### mark_step
 
@@ -566,8 +567,9 @@ Change a plan node’s status.
 | `nodeId` | string | yes | — |
 | `status` | pending \| in_progress \| completed \| blocked \| failed | yes | — |
 | `reason` | string | no | — |
+| `checkAt` | string | no | — |
 
-reason applies to blocked/failed states. Statuses: pending, in_progress, completed, blocked, failed.
+reason applies to blocked/failed states. checkAt sets the step's check-in (RFC 3339 or a duration from now); an empty string clears it, and completing the step clears it. Statuses: pending, in_progress, completed, blocked, failed.
 
 #### record_evidence
 
