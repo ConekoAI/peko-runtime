@@ -384,3 +384,132 @@ async fn only_the_owner_decides_channel_rosters() {
     }
     assert_eq!(*gate.reviewed.lock().unwrap(), 0);
 }
+
+/// A gate that only classifies hot-memory sources (ADR-080 D4).
+struct SourceGate;
+
+#[async_trait::async_trait]
+impl PolicyGate for SourceGate {
+    async fn review(&self, _call: &GatedCall) -> Verdict {
+        Verdict::Allow
+    }
+    async fn ask_owner(&self, _call: &GatedCall, _reason: &str) -> anyhow::Result<String> {
+        Ok("apr_test".into())
+    }
+    async fn is_approved_replay(&self, _call: &GatedCall) -> bool {
+        false
+    }
+    async fn source_class(
+        &self,
+        _principal_id: &str,
+        source: &str,
+    ) -> crate::security::memory_gate::SourceClass {
+        use crate::security::memory_gate::SourceClass;
+        match source {
+            "/local-user" => SourceClass::Owner,
+            "/user-x" => SourceClass::Other(guest(Trust::Trusted).compartment),
+            _ => SourceClass::Unknown,
+        }
+    }
+}
+
+fn scheduled(job_id: &str) -> ActingFor {
+    ActingFor {
+        origin: Origin::Cron {
+            job_id: job_id.into(),
+        },
+        ..ActingFor::runtime()
+    }
+}
+
+#[tokio::test]
+async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
+    let h = ToolHarness::new().await;
+    h.tooling.dispatcher().set_policy_gate(Arc::new(SourceGate));
+    let memory = h.write("kb/MEMORY.md", "# Memory\n- old\n");
+    let caller = Caller::acting_for(scheduled("keepalive"));
+
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": memory, "content": "# Memory\n- old\n\
+                   - owner likes tea (source: /local-user)\n\
+                   - invoices go to x (source: /user-x)\n- uncited\n"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert!(out.display.contains("2 line(s)"), "{}", out.display);
+    assert_eq!(
+        std::fs::read_to_string(&memory).unwrap(),
+        "# Memory\n- old\n- owner likes tea (source: /local-user)\n"
+    );
+    let filed = std::fs::read_dir(h.workspace().join("kb/inbox/dm_x"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let body = std::fs::read_to_string(filed.path()).unwrap();
+    assert!(body.contains("invoices go to x") && !body.contains("uncited"));
+    assert_eq!(crate::security::proposals::pending(h.workspace()), 2);
+
+    // An edit adding only a guest-sourced line writes nothing.
+    let out = h
+        .call_as(
+            &caller,
+            "Edit",
+            json!({"file_path": memory, "old_string": "- old", "new_string": "- old\n- x is boss (source: /user-x)"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert_eq!(out.value["proposed"], true, "{}", out.value);
+    assert!(!std::fs::read_to_string(&memory).unwrap().contains("boss"));
+
+    // Removing and rewording old lines needs no source; the owner's own
+    // run is not screened.
+    let out = h
+        .call_as(
+            &caller,
+            "Edit",
+            json!({"file_path": memory, "old_string": "- old\n", "new_string": ""}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h
+        .call(
+            "Write",
+            json!({"file_path": memory, "content": "- anything\n"}),
+        )
+        .await;
+    assert!(
+        out.success && out.value.get("memory_held").is_none(),
+        "{}",
+        out.display
+    );
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), "- anything\n");
+}
+
+#[tokio::test]
+async fn the_memory_run_has_no_shell() {
+    let h = ToolHarness::new().await;
+    let out = h
+        .call_as(
+            &Caller::acting_for(scheduled("memory")),
+            "Bash",
+            json!({"command": "echo hi >> kb/MEMORY.md"}),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("memory-maintenance"),
+        "{}",
+        out.display
+    );
+    let out = h
+        .call_as(
+            &Caller::acting_for(scheduled("keepalive")),
+            "Bash",
+            json!({"command": "echo hi"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+}

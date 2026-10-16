@@ -683,6 +683,7 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | Parameter | Type | Required | Schema default / bounds |
 |---|---|---|---|
 | `message` | string | no | nonempty |
+| `model` | string | no | nonempty |
 | `tool` | string | no | nonempty |
 | `params` | object | no | — |
 | `wake_on_completion` | boolean | no | — |
@@ -696,11 +697,11 @@ Schedule an instruction-driven agent turn or a fixed tool invocation.
 | `timezone` | string | no | — |
 | `idle_ms` | integer | no | — |
 
-Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults to the machine's IANA zone (recorded on the job; UTC if it cannot be determined). idle_ms rounds down to whole minutes, with a one-minute minimum; the job fires once per quiet stretch — when nobody has talked to the principal for that long (cron turns, completion wakes, and other principals' posts are not activity) — and again only after new activity. Activity persists across daemon restarts. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
+Requires exactly one nonempty message or tool, plus a schedule. message starts an agent turn in the creating session (trunk fallback); tool invokes fixed parameters and may itself use an LLM. model (message jobs only) names the configured model each fire's turn runs on instead of the principal's pinned one; the runtime refuses a model it cannot resolve. params defaults to {}; wake_on_completion defaults false and timeout_secs is an optional per-run limit (omitted means no limit). delay is a positive relative duration (90s, 5m, 1h, 1d, or bare milliseconds) and cannot be combined with another schedule. Explicit fields resolve by precedence at > interval_ms > cron > idle_ms. timezone applies to cron and defaults to the machine's IANA zone (recorded on the job; UTC if it cannot be determined). idle_ms rounds down to whole minutes, with a one-minute minimum; the job fires once per quiet stretch — when nobody has talked to the principal for that long (cron turns, completion wakes, and other principals' posts are not activity) — and again only after new activity. Activity persists across daemon restarts. one_shot=true deletes after the first fire; at/delay jobs are always one-shot. Same-job runs do not overlap, and overdue interval slots are skipped. message jobs on interval_ms require at least 60000 ms.
 
 #### list
 
-List the calling principal’s scheduled jobs. Each entry reports its schedule in create's fields (`at`, `interval_ms`, `cron` + `timezone`, or `idle_ms`) and its `message` or `tool` + `params`.
+List the calling principal’s scheduled jobs. Each entry reports its schedule in create's fields (`at`, `interval_ms`, `cron` + `timezone`, or `idle_ms`) and its `message` (with `model` when set) or `tool` + `params`.
 
 [Implementation](../../peko-rs/cron/src/tools/list.rs)
 
@@ -723,7 +724,7 @@ Supply exactly one of id or label.
 
 #### update
 
-Pause/resume a job or change completion wake behavior.
+Pause/resume a job, change completion wake behavior, or change a message job's model.
 
 [Implementation](../../peko-rs/cron/src/tools/update.rs)
 
@@ -733,8 +734,9 @@ Pause/resume a job or change completion wake behavior.
 | `label` | string | no | — |
 | `enabled` | boolean | no | — |
 | `wake_on_completion` | boolean | no | — |
+| `model` | string | no | — |
 
-Requires id or label and at least one of enabled/wake_on_completion. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
+Requires id or label and at least one of enabled/wake_on_completion/model. model applies to message jobs; an empty string returns the job to the pinned model. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
 
 #### trigger
 

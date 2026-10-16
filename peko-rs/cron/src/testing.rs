@@ -133,16 +133,11 @@ impl CronRuntime for FileCronRuntime {
         Ok(self.jobs())
     }
 
-    async fn update_job(
-        &self,
-        job_id: &str,
-        enabled: Option<bool>,
-        wake_on_completion: Option<bool>,
-    ) -> Result<()> {
+    async fn update_job(&self, job_id: &str, patch: &crate::JobPatch) -> Result<()> {
         let (_, path) = self
             .owner(job_id)?
             .ok_or_else(|| anyhow!("Job {job_id} not found"))?;
-        if !CronScheduler::new(&path)?.update_job_fields(job_id, enabled, wake_on_completion)? {
+        if !CronScheduler::new(&path)?.update_job_fields(job_id, patch)? {
             return Err(anyhow!("Job {job_id} not found"));
         }
         Ok(())

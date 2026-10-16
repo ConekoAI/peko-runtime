@@ -33,6 +33,17 @@ use crate::extensions::workspace_io::HookInput;
 use crate::security::ledger::{self, redact::Redactor, Ledger, Outcome};
 use crate::tools::catalog::ToolCatalog;
 
+/// What [`ToolDispatcher::screen_hot_memory`] decided.
+enum MemoryScreen {
+    /// Nothing held back.
+    Pass,
+    /// Some lines held back; the rest is written, and the note is added
+    /// to the result.
+    Partly(String),
+    /// Nothing left to write, or filing failed: the call's result.
+    Done(Dispatched),
+}
+
 /// The single tool-execution point. Cheap to clone (every field is an
 /// `Arc`).
 #[derive(Clone)]
@@ -708,6 +719,9 @@ impl ToolDispatcher {
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
         let workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
+        // ADR-080 D4: lines a scheduled owner run adds to hot memory
+        // without an owner-only source, held back and filed.
+        let mut memory_note = None;
         if stamp.is_untrusted() {
             // The file tools default to a runtime-wide directory; an
             // untrusted run's relative paths are its workspace's instead.
@@ -766,6 +780,25 @@ impl ToolDispatcher {
                             Dispatched::refused(text, Outcome::Error)
                         }
                     });
+                }
+            }
+            if write && crate::security::memory_gate::is_scheduled_owner(&stamp) {
+                if let Some(workspace) = workspace.as_deref() {
+                    match self
+                        .screen_hot_memory(
+                            &principal_id,
+                            workspace,
+                            &target,
+                            &stamp,
+                            &tool_name,
+                            &mut params,
+                        )
+                        .await
+                    {
+                        MemoryScreen::Pass => {}
+                        MemoryScreen::Partly(note) => memory_note = Some(note),
+                        MemoryScreen::Done(dispatched) => return Ok(dispatched),
+                    }
                 }
             }
         }
@@ -898,7 +931,13 @@ impl ToolDispatcher {
                 outcome: Outcome::Cancelled,
             });
         }
-        let (text, json, success) = settle(&tool_name, &metadata.source, &result);
+        let (mut text, mut json, success) = settle(&tool_name, &metadata.source, &result);
+        if let Some(note) = memory_note {
+            text = format!("{text}\n\n{note}");
+            if let Some(object) = json.as_object_mut() {
+                object.insert("memory_held".into(), Value::String(note));
+            }
+        }
         let outcome =
             if call.background_progress.is_none() && ledger::detached_task_id(&json).is_some() {
                 Outcome::Detached
@@ -911,6 +950,93 @@ impl ToolDispatcher {
             success,
             outcome,
         })
+    }
+
+    /// ADR-080 D4: screen a scheduled owner run's `Write` / `Edit` of
+    /// `kb/MEMORY.md`. Added lines whose sources are not all owner-only
+    /// are removed from `params` and filed for the owner; the rest is
+    /// written. When nothing is left to write, the call ends here.
+    async fn screen_hot_memory(
+        &self,
+        principal_id: &peko_subject::PrincipalId,
+        workspace: &std::path::Path,
+        target: &std::path::Path,
+        stamp: &peko_tools_core::ActingFor,
+        tool_name: &str,
+        params: &mut Value,
+    ) -> MemoryScreen {
+        use crate::security::memory_gate::{self, SourceClass, HOT_MEMORY};
+        let workspace = crate::security::floor::resolve(workspace);
+        let target = crate::security::floor::resolve(target);
+        let is_hot = crate::security::floor::protected_relative(&workspace, &target)
+            .is_some_and(|relative| relative == HOT_MEMORY);
+        let key = match tool_name {
+            "Write" => "content",
+            "Edit" => "new_string",
+            _ => return MemoryScreen::Pass,
+        };
+        let Some(candidate) = params[key].as_str().filter(|_| is_hot).map(str::to_string) else {
+            return MemoryScreen::Pass;
+        };
+        let existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
+        let gate = self.policy_gate();
+        let mut classes = std::collections::HashMap::new();
+        for source in memory_gate::cited(&existing, &candidate) {
+            let class = match &gate {
+                Some(gate) => gate.source_class(&principal_id.0, &source).await,
+                None => SourceClass::Unknown,
+            };
+            classes.insert(source, class);
+        }
+        let (kept, held) = memory_gate::screen(&existing, &candidate, &classes);
+        if held.is_empty() {
+            return MemoryScreen::Pass;
+        }
+        let filed =
+            match crate::security::proposals::file_held(&workspace, stamp, HOT_MEMORY, &held).await
+            {
+                Ok(paths) => paths,
+                Err(e) => {
+                    let text = format!("Error: could not file the held-back lines: {e:#}");
+                    return MemoryScreen::Done(Dispatched::refused(text, Outcome::Error));
+                }
+            };
+        let mut reasons = String::new();
+        for h in &held {
+            reasons.push_str(&format!("\n- {} — {}", h.line.trim(), h.describe()));
+        }
+        let note = format!(
+            "{} line(s) were not written to `{HOT_MEMORY}` and were filed for the owner ({}). \
+             A scheduled run adds a line there only when it ends with `(source: …)` naming \
+             sessions or channels that only the owner speaks in. Keep facts about other \
+             people in `kb/people/` notes instead.{reasons}",
+            held.len(),
+            filed
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let unchanged = match tool_name {
+            "Write" => kept == existing,
+            _ => params["old_string"].as_str() == Some(kept.as_str()),
+        };
+        if unchanged {
+            let json = serde_json::json!({
+                "proposed": true,
+                "target": HOT_MEMORY,
+                "proposals": filed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                "message": note,
+            });
+            return MemoryScreen::Done(Dispatched {
+                text: note,
+                json,
+                success: true,
+                outcome: Outcome::Proposed,
+            });
+        }
+        params[key] = Value::String(kept);
+        MemoryScreen::Partly(note)
     }
 
     /// Fire an observe-only hook point for the call (PreToolUse /

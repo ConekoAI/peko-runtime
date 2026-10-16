@@ -690,6 +690,11 @@ impl CronEngine {
         let origin = self
             .resolve_origin_session(&principal, job, &trunk_key)
             .await;
+        let model = match &job.action {
+            CronJobAction::Send { model, .. } => model.clone(),
+            _ => None,
+        };
+        let message = crate::principal::genesis::fire_message(job, &*principal.config.read().await);
         // ADR-078 D5: the job fires as its creator, re-entered into the
         // session it lands in.
         let channels = self
@@ -726,10 +731,10 @@ impl CronEngine {
                     let outcome = turns
                         .drive_turn_streaming(
                             &origin,
-                            &job.task_description(),
+                            &message,
                             sink,
                             None,
-                            None,
+                            model.clone(),
                             acting_for.clone(),
                         )
                         .await;
@@ -773,12 +778,7 @@ impl CronEngine {
         }
 
         match pm
-            .receive_trunk(
-                principal.id.clone(),
-                job.task_description(),
-                None,
-                acting_for,
-            )
+            .receive_trunk(principal.id.clone(), message, model, acting_for)
             .await
         {
             Ok(response) => Ok(("success".to_string(), Some(response.content))),
@@ -1283,6 +1283,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "check commitments".into(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -1843,6 +1844,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Hello from cron".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -1928,6 +1930,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Anything to follow up on?".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -2334,6 +2337,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "cron tick payload".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -2524,6 +2528,7 @@ mod tests {
         job.action = CronJobAction::Send {
             message: "work".into(),
             target: Some("trunk".into()),
+            model: None,
         };
         scheduler.add_job(&job).unwrap();
         engine.execute_job(job.clone()).await.unwrap();
@@ -2630,6 +2635,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "organize your memory".to_string(),
                 target: Some("trunk".to_string()),
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -3414,6 +3420,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "fast fire".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,

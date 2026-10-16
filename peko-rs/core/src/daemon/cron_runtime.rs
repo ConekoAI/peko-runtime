@@ -74,6 +74,27 @@ impl DaemonCronAdapter {
         names
     }
 
+    /// Refuse a job model the runtime cannot resolve now, so a typo
+    /// fails at `create`/`update` rather than on every fire. Skipped
+    /// when no resolver is bound (tests).
+    async fn check_model(&self, model: &str) -> Result<()> {
+        let Some(resolver) = self.principal_manager.llm_resolver() else {
+            return Ok(());
+        };
+        resolver
+            .resolve(peko_providers::resolver::ResolveRequest {
+                override_model: Some(model),
+                ..Default::default()
+            })
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "model '{model}' is not usable: {e}; `ModelList` shows the configured models"
+                )
+            })
+    }
+
     /// Resolve the loaded principal that owns `job_id`, returning its
     /// name and schedule file path. Falls back to run-history lookup
     /// for one-shot (`delete_after_run=true`) jobs that fire once and
@@ -120,6 +141,12 @@ impl CronRuntime for DaemonCronAdapter {
                 job.principal_id.0
             ));
         };
+        if let peko_cron::CronJobAction::Send {
+            model: Some(model), ..
+        } = &job.action
+        {
+            self.check_model(model).await?;
+        }
         let principal_name = p.name().await;
         let path = self.path_resolver.cron_schedule(&principal_name);
         let scheduler =
@@ -146,20 +173,18 @@ impl CronRuntime for DaemonCronAdapter {
         Ok(())
     }
 
-    async fn update_job(
-        &self,
-        job_id: &str,
-        enabled: Option<bool>,
-        wake_on_completion: Option<bool>,
-    ) -> Result<()> {
+    async fn update_job(&self, job_id: &str, patch: &peko_cron::JobPatch) -> Result<()> {
         let (_name, path) = self
             .resolve_owner(job_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
+        if let Some(Some(model)) = &patch.model {
+            self.check_model(model).await?;
+        }
         let scheduler =
             CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
         let updated = scheduler
-            .update_job_fields(job_id, enabled, wake_on_completion)
+            .update_job_fields(job_id, patch)
             .map_err(|e| anyhow::anyhow!("Failed to update job: {e}"))?;
         if !updated {
             return Err(anyhow::anyhow!("Job {job_id} not found"));

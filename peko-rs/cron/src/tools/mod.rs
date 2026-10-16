@@ -182,6 +182,11 @@ pub enum CronJobAction {
             deserialize_with = "deserialize_send_target"
         )]
         target: Option<String>,
+        /// Configured model id the turn runs on instead of the
+        /// principal's pinned model (`None` keeps the pinned one). Lets a
+        /// routine job such as the daily memory pass use a cheaper model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// Schedule an async tool run attributed to the Principal's root.
     SpawnTool {
@@ -352,6 +357,28 @@ impl CronJob {
 
 // ─── CronRuntime port trait ────────────────────────────────────────
 
+/// The mutable fields of a job, as one patch. `None` leaves a field as
+/// it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobPatch {
+    /// Pause or resume the job.
+    pub enabled: Option<bool>,
+    /// `SpawnTool` jobs only: steer each fire's result back into the
+    /// creating session.
+    pub wake_on_completion: Option<bool>,
+    /// `Send` jobs only: `Some(Some(id))` runs the turn on that
+    /// configured model, `Some(None)` returns it to the pinned model.
+    pub model: Option<Option<String>>,
+}
+
+impl JobPatch {
+    /// Whether the patch changes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.wake_on_completion.is_none() && self.model.is_none()
+    }
+}
+
 /// Runtime port the cron tools use to talk to the daemon.
 ///
 /// The daemon implements this (see `src/cron/daemon_adapter.rs`).
@@ -371,15 +398,10 @@ pub trait CronRuntime: Send + Sync {
     /// by `principal_name` if needed).
     async fn list_jobs(&self) -> Result<Vec<CronJob>>;
 
-    /// Patch mutable job fields (`enabled`, `wake_on_completion`).
-    /// `None` fields are left untouched. Returns an error when the job
-    /// does not exist.
-    async fn update_job(
-        &self,
-        job_id: &str,
-        enabled: Option<bool>,
-        wake_on_completion: Option<bool>,
-    ) -> Result<()>;
+    /// Patch a job's mutable fields; `None` fields in `patch` are left
+    /// untouched. Returns an error when the job does not exist or the
+    /// patch does not fit its action.
+    async fn update_job(&self, job_id: &str, patch: &JobPatch) -> Result<()>;
 
     /// Fire a job immediately, out of schedule. Returns the run id;
     /// coalesces with an in-flight run of the same job (returns the
@@ -614,13 +636,20 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
             });
             let map = obj.as_object_mut().expect("object literal above");
             match &j.action {
-                CronJobAction::Send { message, target } => {
+                CronJobAction::Send {
+                    message,
+                    target,
+                    model,
+                } => {
                     map.insert(
                         "message".to_string(),
                         serde_json::Value::String(message.clone()),
                     );
                     if let Some(t) = target {
                         map.insert("target".to_string(), serde_json::Value::String(t.clone()));
+                    }
+                    if let Some(m) = model {
+                        map.insert("model".to_string(), serde_json::Value::String(m.clone()));
                     }
                 }
                 CronJobAction::SpawnTool {
@@ -744,6 +773,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "ping".into(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -955,6 +985,7 @@ mod tests {
         let send = |message: &str| CronJobAction::Send {
             message: message.into(),
             target: None,
+            model: None,
         };
         assert_eq!(
             job(send("check the queue")).task_description(),
@@ -1084,7 +1115,10 @@ mod tests {
     fn send_target_defaults_to_none_on_legacy_json() {
         let legacy = serde_json::json!({"kind": "send", "message": "hello"});
         let action: CronJobAction = serde_json::from_value(legacy).unwrap();
-        let CronJobAction::Send { message, target } = action else {
+        let CronJobAction::Send {
+            message, target, ..
+        } = action
+        else {
             panic!("expected Send action");
         };
         assert_eq!(message, "hello");
@@ -1095,6 +1129,7 @@ mod tests {
         let json = serde_json::to_value(&CronJobAction::Send {
             message: "hello".into(),
             target: None,
+            model: None,
         })
         .unwrap();
         assert_eq!(

@@ -174,7 +174,7 @@ async fn create_message_job_records_owner_session_and_send_action() {
     ));
     assert!(matches!(
         job.action,
-        CronJobAction::Send { ref message, target: None } if message == "stand-up"
+        CronJobAction::Send { ref message, target: None, model: None } if message == "stand-up"
     ));
 }
 
@@ -442,6 +442,56 @@ async fn update_toggles_enabled_resets_failures_and_sets_wake() {
         error.contains("enabled") || error.contains("wake"),
         "{error}"
     );
+}
+
+/// A message job can carry its own model: set at create, changed or
+/// cleared by update. A tool job runs no turn, so it takes none.
+#[tokio::test]
+async fn message_jobs_carry_their_own_model() {
+    let fx = Fixture::new();
+    let model_of = |job: crate::CronJob| match job.action {
+        CronJobAction::Send { model, .. } => model,
+        other => panic!("expected Send, got {other:?}"),
+    };
+    let id = fx
+        .create(
+            ALICE,
+            json!({"message":"tidy memory", "interval_ms":86_400_000, "model":"cheap"}),
+        )
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)).as_deref(), Some("cheap"));
+    let listed = fx.ok(ALICE, json!({"action":"list"})).await;
+    assert!(listed.to_string().contains("cheap"), "{listed}");
+
+    fx.ok(ALICE, json!({"action":"update", "id": id, "model":"other"}))
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)).as_deref(), Some("other"));
+    assert!(fx.job(ALICE, &id).enabled, "a model change leaves the rest");
+
+    fx.ok(ALICE, json!({"action":"update", "id": id, "model":""}))
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)), None, "empty clears");
+
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "tool":"Bash", "interval_ms":60000, "model":"cheap"}),
+        )
+        .await;
+    assert!(
+        error.contains("`model` applies to `message` jobs"),
+        "{error}"
+    );
+    let tool_job = fx
+        .create(ALICE, json!({"tool":"Bash", "interval_ms":60000}))
+        .await;
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"update", "id": tool_job, "model":"cheap"}),
+        )
+        .await;
+    assert!(error.contains("message jobs only"), "{error}");
 }
 
 #[tokio::test]

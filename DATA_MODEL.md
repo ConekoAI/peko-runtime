@@ -43,7 +43,10 @@ This document defines every on-disk and in-memory data format used by the Peko r
   actor's section.
 - `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner
   run's write to a protected file, with the proposer's stamp and the change.
-  Runtime-written only; at most 50 per compartment.
+  The same directory holds the `kb/MEMORY.md` lines a scheduled owner run could
+  not source to the owner (ADR-080 D4): a list of held lines with their
+  reasons, filed under the conversation each one cites (uncited lines under
+  `internal`). Runtime-written only; at most 50 per compartment.
 - `<local>/approvals/apr_<12 hex>.json`: an owner-approval request
   (`call`, `reason`, `created_at`, `expires_at` (24 h), `status`:
   `pending`|`approved`|`denied`, `digest` of tool + arguments).
@@ -216,7 +219,16 @@ time the boot pass sees it, whatever its boot state. The ids the runtime has
 seeded live beside the schedule in `local/cron/seeded_jobs.json`
 (`{"jobs": ["memory"]}`); a recorded id is never seeded again, so a principal
 that deletes or replaces the job keeps it that way. A job the principal already
-named `memory` is kept and only recorded.
+named `memory` is kept and only recorded. The seeded job stores a fixed marker
+message, not the brief; the cron engine writes the current brief into the turn
+when the job fires, so brief changes reach existing principals. A `memory` job
+still carrying the full brief text an earlier build stored is read the same
+way; any other message is the principal's own and is sent as written.
+
+**Per-job model.** A `Send` action may carry `model` (a configured model id,
+omitted when unset); each fire's turn runs on it instead of the principal's
+pinned model. `SpawnTool` actions have no model. Older schedules read
+unchanged.
 
 **Idle schedules.** `Idle` jobs read principal activity from
 `<runtime_dir>/idle_activity.json`, a map of runtime `PrincipalId` to the

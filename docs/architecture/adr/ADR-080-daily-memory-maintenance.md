@@ -1,7 +1,7 @@
 # ADR-080: Daily Memory Maintenance
 
 **Status:** Accepted
-**Date:** 2026-10-15
+**Date:** 2026-10-15 (rev 2 2026-10-16: D4–D6)
 **Amends:**
 - [ADR-054](ADR-054-principal-genesis-pipeline.md) D4 (the runtime never touches an `organized` principal's schedule) and D5 (memory is a convention, not machinery).
 
@@ -84,6 +84,58 @@ The boot pass guarantees a recurring trunk `Send` exists for principals that are
 not yet organized (ADR-054 D3). A once-a-day job does not satisfy that
 guarantee, so `has_recurring_trunk_send` ignores the `memory` job.
 
+### D4 — A scheduled run writes hot memory only from the owner's conversations
+
+A cron turn acts for the owner (ADR-078 D5), yet it reads everyone's
+conversations: the memory pass reviews every channel, and the keepalive checks
+them. Without a check, a guest's words reach `kb/MEMORY.md`, and from there every
+agent's prompt, as the owner's own memory. ADR-078 sends non-owner writes to the
+inbox, but these writes come from an owner run.
+
+- When an owner run started by a cron job (`Origin::Cron`, any job) writes
+  `kb/MEMORY.md` with `Write` or `Edit`, the dispatcher compares the new text
+  with the file. Each added line, meaning not already in the file (compared
+  trimmed) and not blank, a heading, a rule or a fence, must end with
+  `(source: a, b)`. A source is a session path or id, or
+  `<channel id>#<event id>`.
+- A source passes when it exists and its compartment's ceiling is owner: the
+  principal's internal tree, or a conversation where only the owner speaks
+  besides the principal. A line passes when it cites at least one source and
+  all of them pass.
+- Lines that do not pass are removed from the write and filed in `kb/inbox/`,
+  under the conversation they cite (uncited or unknown ones go under the run's
+  own compartment). The rest is written, and the tool result lists what was
+  held back. If nothing is left to write, the call ends as a proposal.
+- The memory run (`Origin::Cron { job_id: "memory" }`, and agents it spawns)
+  gets no `Bash`, so the file tools are its only way to the file. Other cron
+  turns keep `Bash`: fixed-tool jobs (`tool: "Bash"`) run under the same stamp.
+
+What this does not cover:
+- A line citing an owner source it did not come from, such as a reader agent's
+  internal session. Internal sessions count as the owner's own work. Checking
+  claims against their sources is the deferred reviewer.
+- `kb/CONVENTIONS.md` and the other hot files.
+- `Bash` in other cron turns, and MCP servers that write files.
+
+### D5 — The brief is supplied when the job fires
+
+The seeded job stores a fixed marker message, not the brief. The cron engine
+writes the current `memory_maintenance_brief` into the turn when a job carrying
+the marker fires, so a runtime upgrade that improves the brief reaches every
+principal without touching its schedule, and the brief names the principal by
+its current display name. A principal that replaces the message keeps its own.
+A `memory` job still carrying the full brief stored by the first build is read
+like the marker.
+
+### D6 — A message job can run on its own model
+
+A cron `Send` action may carry `model`, a configured model id. Each fire's
+turn runs on it instead of the principal's pinned model, in the trunk or in
+the creating session. `Cron` `create` takes `model` with `message`, and
+`update` sets it, or clears it with an empty string. The runtime refuses a
+model it cannot resolve when the job is created or updated. The seeded memory
+job has no model; the principal may give it a cheaper one.
+
 ## 3. Alternatives considered
 
 - **Fold maintenance into the keepalive tick.** The tick already says "tend your
@@ -106,6 +158,10 @@ guarantee, so `has_recurring_trunk_send` ignores the `memory` job.
 - `MEMORY.md` gets a regular chance to stay within its budget and free of
   contradictions, and new entries carry their sources.
 - Upgraded runtimes seed the job into existing principals on their next boot.
+- Hot memory written by scheduled turns carries checkable sources, and what
+  others said reaches it only through the owner. Lines without owner sources pile
+  up in `kb/inbox/` until the owner reviews them.
+- The memory run cannot use `Bash`.
 
 ## 5. Deferred
 
@@ -113,5 +169,5 @@ guarantee, so `has_recurring_trunk_send` ignores the `memory` job.
   touched) for the review to start from.
 - A second-model check of proposed memory edits against their sources, and
   compare-and-swap writes to the hot kb files.
-- A cheaper model for the maintenance turn: cron `Send` has no per-job model
-  override yet.
+- The same source rule for `kb/CONVENTIONS.md`, and for owner runs other than
+  cron turns that read other conversations.

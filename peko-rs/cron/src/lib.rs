@@ -44,7 +44,7 @@ pub use std::str::FromStr;
 pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
     render_job_list, resolve_schedule_kind, set_global_runtime, CronJob, CronJobAction,
-    CronRuntime, CronTool, ScheduleKind, DEFAULT_MAX_RETRIES,
+    CronRuntime, CronTool, JobPatch, ScheduleKind, DEFAULT_MAX_RETRIES,
 };
 
 pub use idle::IdleDetector;
@@ -169,7 +169,9 @@ impl CronScheduler {
         // anti-pattern (Phase 3b). Validation happens here so a
         // malformed job never reaches the on-disk DB.
         match &job.action {
-            CronJobAction::Send { message, target } => {
+            CronJobAction::Send {
+                message, target, ..
+            } => {
                 if message.trim().is_empty() {
                     anyhow::bail!(
                         "CronJob {} action requires a non-empty 'message'",
@@ -339,37 +341,41 @@ impl CronScheduler {
     ///
     /// `enabled` flips the schedule gate; `wake_on_completion` toggles
     /// result subscription on `SpawnTool` jobs (a no-op on `Send` jobs,
-    /// whose turn outcome already lands in the trunk session). When
-    /// re-enabling a job the consecutive-failure counter resets — the
-    /// operator/agent re-enabled it deliberately, so the retry budget
-    /// starts fresh instead of re-disabling on the next failure.
-    pub fn update_job_fields(
-        &self,
-        job_id: &str,
-        enabled: Option<bool>,
-        wake_on_completion: Option<bool>,
-    ) -> Result<bool> {
+    /// whose turn outcome already lands in the trunk session); `model`
+    /// sets or clears a `Send` job's model and is refused on a
+    /// `SpawnTool` job, which runs no turn of its own. When re-enabling
+    /// a job the consecutive-failure counter resets — the operator/agent
+    /// re-enabled it deliberately, so the retry budget starts fresh
+    /// instead of re-disabling on the next failure.
+    pub fn update_job_fields(&self, job_id: &str, patch: &tools::JobPatch) -> Result<bool> {
         let mut db = self.read_db()?;
-        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
-            if let Some(e) = enabled {
-                job.enabled = e;
-                if e {
-                    job.consecutive_failures = 0;
-                }
-            }
-            if let Some(wake) = wake_on_completion {
-                if let crate::CronJobAction::SpawnTool {
-                    wake_on_completion, ..
-                } = &mut job.action
-                {
-                    *wake_on_completion = Some(wake);
-                }
-            }
-            self.write_db(&db)?;
-            Ok(true)
-        } else {
-            Ok(false)
+        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+            return Ok(false);
+        };
+        if let Some(model) = &patch.model {
+            let CronJobAction::Send { model: slot, .. } = &mut job.action else {
+                anyhow::bail!(
+                    "`model` applies to message jobs only; job {job_id} runs a fixed tool call"
+                );
+            };
+            *slot = model.clone().filter(|m| !m.trim().is_empty());
         }
+        if let Some(e) = patch.enabled {
+            job.enabled = e;
+            if e {
+                job.consecutive_failures = 0;
+            }
+        }
+        if let Some(wake) = patch.wake_on_completion {
+            if let CronJobAction::SpawnTool {
+                wake_on_completion, ..
+            } = &mut job.action
+            {
+                *wake_on_completion = Some(wake);
+            }
+        }
+        self.write_db(&db)?;
+        Ok(true)
     }
 
     /// Record a job run
@@ -490,6 +496,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Test message".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -532,6 +539,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Test".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: true,
             enabled: true,
@@ -658,6 +666,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Test".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -680,6 +689,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Test".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -736,6 +746,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "x".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -847,6 +858,7 @@ mod tests {
         job.action = CronJobAction::Send {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
+            model: None,
         };
 
         // Every{30s} + trunk → refused with the floor in the message.
@@ -871,6 +883,7 @@ mod tests {
         at.action = CronJobAction::Send {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
+            model: None,
         };
         at.schedule = ScheduleKind::At {
             at: (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
@@ -881,6 +894,7 @@ mod tests {
         cron.action = CronJobAction::Send {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
+            model: None,
         };
         cron.schedule = ScheduleKind::Cron {
             expr: "* * * * *".to_string(),
@@ -905,6 +919,7 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Test".to_string(),
                 target: None,
+                model: None,
             },
             delete_after_run: true,
             enabled: true,
@@ -959,6 +974,7 @@ mod tests {
                 action: CronJobAction::Send {
                     message: "Hello".to_string(),
                     target: None,
+                    model: None,
                 },
                 delete_after_run: false,
                 enabled: true,
