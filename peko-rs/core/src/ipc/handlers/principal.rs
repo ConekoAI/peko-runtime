@@ -3147,7 +3147,8 @@ async fn portable_export(
         channels.push(serde_json::json!({
             "channel": channel,
             "participants": participants,
-            "binding": port.binding_for(&channel, &principal.id).await?,
+            "kind": port.conversation_kind(&channel).await?,
+            "binding": port.binding_for(&channel, &principal.id).await?.map(|b| b.session),
         }));
     }
     Ok(

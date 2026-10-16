@@ -49,11 +49,10 @@ pub struct DmChannelInviteBootstrap {
     /// The source runtime's `did:key` (signature already verified by
     /// the dispatcher before this is called).
     pub source_runtime_id: String,
-    /// DM marker. `Some(_)` means the channel is DM-tier on the
-    /// source; the VALUE is ignored (the receiver derives its own
-    /// binding from its own session tree — slug suffixes are
-    /// runtime-local).
-    pub passive_binding: Option<String>,
+    /// The signed channel kind (ADR-082 D1). For a DM the receiver
+    /// binds its mirror to its own peer child; bindings never cross
+    /// runtimes.
+    pub kind: peko_protocol::channel::ConversationKind,
 }
 
 /// Narrow host interface the tunnel dispatcher uses to reach daemon services.
@@ -125,7 +124,7 @@ pub trait TunnelHost: Send + Sync {
     ///
     /// - WHICH local principal was invited (the invitee row's DID →
     ///   the principal registry);
-    /// - for DM invites (`passive_binding: Some`), the receiver-local
+    /// - for DM invites (`kind: dm`), the receiver-local
     ///   peer child for `principal:<creator_did>` (child-only ensure
     ///   — no local-only DM channel) and the `/​<slug>` binding
     ///   derived from that child's real slug;
@@ -133,10 +132,9 @@ pub trait TunnelHost: Send + Sync {
     ///   kickoff, so the mirror's subscriber starts immediately
     ///   (closing the Phase 10 live-hook gap).
     ///
-    /// Non-DM invites (`passive_binding: None`) bootstrap an unbound
-    /// mirror and still get the subscriber (the meter-only `Noop`
-    /// responder), matching the boot sweep's treatment of unbound
-    /// channels. An invite whose invitee DID matches no loaded
+    /// Group invites bootstrap a mirror with no binding yet and still
+    /// get the subscriber, matching the boot sweep's treatment of
+    /// groups. An invite whose invitee DID matches no loaded
     /// principal is logged and skipped (Ok) — invites are push-only.
     async fn dm_channel_mirror_bootstrap(
         &self,

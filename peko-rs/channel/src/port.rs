@@ -14,7 +14,9 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, MemberProvenance};
+use peko_protocol::channel::{
+    ChannelEvent, ChannelId, ChannelMembership, ConversationKind, MemberProvenance,
+};
 use peko_subject::{ActorKey, ActorKeys, ActorRef, PrincipalId, Route};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -95,13 +97,52 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(out)
     }
 
-    /// A DM can bind independently to each locally hosted participant's session.
+    /// What the channel is (ADR-082 D1). The default is for adapters
+    /// without stored metadata (`NoopChannelPort`, in-memory tests).
+    async fn conversation_kind(&self, channel: &ChannelId) -> Result<ConversationKind> {
+        let _ = channel;
+        Ok(ConversationKind::Group)
+    }
+
+    /// `principal`'s binding on `channel` (ADR-082 D2): the session that
+    /// handles its posts and the wake policy. `None` until the runtime
+    /// provisions the principal's conversation session there.
     async fn binding_for(
         &self,
         channel: &ChannelId,
-        _principal: &PrincipalId,
-    ) -> Result<Option<String>> {
-        self.passive_binding(channel).await
+        principal: &PrincipalId,
+    ) -> Result<Option<Binding>> {
+        let _ = (channel, principal);
+        Ok(None)
+    }
+
+    /// Record that `session` handles `principal`'s posts on `channel`.
+    /// Only the runtime calls this, right after creating that session in
+    /// the channel's compartment. An existing binding keeps its wake
+    /// policy; a new one starts at the kind's default.
+    async fn bind(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        session: &str,
+    ) -> Result<Binding> {
+        let _ = principal;
+        let kind = self.conversation_kind(channel).await?;
+        Ok(Binding::new(session, WakePolicy::default_for(kind)))
+    }
+
+    /// Set `principal`'s wake policy on a group it is bound to. A DM's
+    /// policy is always [`WakePolicy::Human`].
+    async fn set_wake(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        wake: WakePolicy,
+    ) -> Result<Binding> {
+        let _ = (channel, principal, wake);
+        Err(ChannelError::Adapter(
+            "this channel port does not store bindings".into(),
+        ))
     }
 
     /// Ensure an opaque pair DM and its principal-local session binding.
@@ -119,11 +160,12 @@ pub trait ChannelPort: Send + Sync + 'static {
                 principal,
                 CreateOpts::runtime("direct conversation")
                     .with_id(id.clone())
-                    .with_passive_binding(binding),
+                    .with_kind(ConversationKind::Dm),
             )
             .await?;
         }
         self.invite(&id, principal, &other.subject()).await?;
+        self.bind(&id, principal, binding).await?;
         Ok(id)
     }
 
@@ -414,18 +456,6 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// clear message.
     async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf>;
 
-    /// Phase 4 (agent-session paradigm sprint): the channel's passive
-    /// binding — a session id or `/path` declared at create time
-    /// (`CreateOpts::passive_binding`), persisted in `meta.json`.
-    /// `None` means the channel is unbound and behaves exactly as
-    /// before (active polling via the `channel read` tool only). The
-    /// default impl returns `None` so adapters without binding support
-    /// (`NoopChannelPort`, in-memory tests) don't need to override.
-    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
-        let _ = channel;
-        Ok(None)
-    }
-
     /// Per-session digest read position: the highest line-number
     /// [`TaskId`] `session_key` has observed on `channel`. Keyed by
     /// session-id string in the channel's `read_marks.json` — a
@@ -686,6 +716,69 @@ pub fn short_name_unambiguous(roster: &[ActorInfo], name: &str, address: &str) -
             == 1
 }
 
+/// What starts a turn for a bound principal (ADR-082 D3). Whatever the
+/// policy, a principal-authored post or a reply never does (ADR-072).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakePolicy {
+    /// Every human (user or visitor) root post. A DM's fixed policy.
+    Human,
+    /// A human root post mentioning `@<name>`. A group's default.
+    Mention,
+    /// Nothing; posts wait for `ChannelRead` or the unread summary.
+    Off,
+}
+
+impl WakePolicy {
+    /// The policy a new binding starts with.
+    pub const fn default_for(kind: ConversationKind) -> Self {
+        match kind {
+            ConversationKind::Dm => Self::Human,
+            ConversationKind::Group => Self::Mention,
+        }
+    }
+
+    /// The tool / wire form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Mention => "mention",
+            Self::Off => "off",
+        }
+    }
+
+    /// Parse the tool / wire form.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "human" => Some(Self::Human),
+            "mention" => Some(Self::Mention),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// A principal's link to a channel (ADR-082 D2), runtime-local and
+/// never on the wire. Persisted in `meta.json` under `bindings`, keyed
+/// by local principal id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Binding {
+    /// The principal's conversation session for this channel (an id or
+    /// a bare `/slug` path).
+    pub session: String,
+    /// What starts a turn in that session.
+    pub wake: WakePolicy,
+}
+
+impl Binding {
+    pub fn new(session: impl Into<String>, wake: WakePolicy) -> Self {
+        Self {
+            session: session.into(),
+            wake,
+        }
+    }
+}
+
 /// Pair identity is order-independent and includes both complete addresses.
 pub fn dm_channel_id(a: &str, b: &str) -> ChannelId {
     use sha2::{Digest, Sha256};
@@ -778,14 +871,9 @@ pub struct CreateOpts {
     /// idempotency check at `ChannelStore::join_remote`). The default
     /// `None` preserves the pre-PR `ChannelId::generate()` behavior.
     pub id: Option<ChannelId>,
-    /// Phase 4 (agent-session paradigm sprint): optional **passive
-    /// binding** — a session id or `/path` in the creator principal's
-    /// session tree. When set, the channel is a DM: its conversation
-    /// session is the bound one, and posts never wake a run from the
-    /// subscriber (ADR-072 — ingress drives user DMs). `None` makes it a
-    /// group channel, where a user's mention wakes a member principal. Persisted to `meta.json`;
-    /// immutable after create.
-    pub passive_binding: Option<String>,
+    /// What the channel is (ADR-082 D1); immutable after create. A
+    /// [`ConversationKind::Dm`] requires a pair id ([`dm_channel_id`]).
+    pub kind: ConversationKind,
 }
 
 impl CreateOpts {
@@ -795,7 +883,7 @@ impl CreateOpts {
             name: name.into(),
             tier: Tier::Runtime,
             id: None,
-            passive_binding: None,
+            kind: ConversationKind::Group,
         }
     }
 
@@ -807,14 +895,13 @@ impl CreateOpts {
             name: name.into(),
             tier: Tier::Shared,
             id: None,
-            passive_binding: None,
+            kind: ConversationKind::Group,
         }
     }
 
-    /// Attach a passive binding (session id or `/path`). See
-    /// [`Self::passive_binding`].
-    pub fn with_passive_binding(mut self, binding: impl Into<String>) -> Self {
-        self.passive_binding = Some(binding.into());
+    /// Set the channel's kind. See [`Self::kind`].
+    pub fn with_kind(mut self, kind: ConversationKind) -> Self {
+        self.kind = kind;
         self
     }
 

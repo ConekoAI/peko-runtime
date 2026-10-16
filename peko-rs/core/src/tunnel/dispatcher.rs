@@ -739,7 +739,7 @@ impl TunnelDispatcher {
                 creator,
                 creator_did,
                 name,
-                passive_binding,
+                kind,
                 initial_members,
                 signature,
                 author_signature,
@@ -753,7 +753,7 @@ impl TunnelDispatcher {
                     creator,
                     creator_did,
                     name,
-                    passive_binding,
+                    kind,
                     initial_members,
                     signature,
                     author_signature,
@@ -1913,7 +1913,7 @@ impl TunnelDispatcher {
         creator: String,
         creator_did: String,
         name: String,
-        passive_binding: Option<String>,
+        kind: peko_protocol::channel::ConversationKind,
         initial_members: Vec<peko_protocol::channel::InitialMember>,
         signature: String,
         author_signature: String,
@@ -1955,8 +1955,7 @@ impl TunnelDispatcher {
         };
 
         // 2b. The signed payload must agree with the envelope it
-        // rides. `passive_binding` signs as the empty string when the
-        // envelope carries `None`.
+        // rides.
         if payload.request_id != request_id
             || payload.source_runtime_id != source_runtime_id
             || payload.recipient_runtime_id != recipient_runtime_id
@@ -1965,7 +1964,7 @@ impl TunnelDispatcher {
             || payload.creator != creator
             || payload.creator_did != creator_did
             || payload.name != name
-            || payload.passive_binding != passive_binding.as_deref().unwrap_or("")
+            || payload.kind != kind.as_str()
         {
             warn!(
                 "inbound TunnelChannelInvite: dropping envelope whose fields disagree with the signed payload (request_id={request_id})"
@@ -2071,7 +2070,7 @@ impl TunnelDispatcher {
                 name: name.clone(),
                 initial_members: initial_members.clone(),
                 source_runtime_id: source_runtime_id.clone(),
-                passive_binding,
+                kind,
             })
             .await
         {
@@ -4210,7 +4209,7 @@ mod tests {
         creator: &str,
         creator_did: &str,
         name: &str,
-        passive_binding: Option<&str>,
+        kind: peko_channel::ConversationKind,
         initial_members: &[peko_protocol::channel::InitialMember],
     ) -> (String, Vec<peko_protocol::channel::InitialMember>) {
         let initial_members_bytes =
@@ -4224,7 +4223,7 @@ mod tests {
             creator,
             creator_did,
             name,
-            passive_binding: passive_binding.unwrap_or(""),
+            kind: kind.as_str(),
             initial_members_bytes: &initial_members_bytes,
         };
         let iat = chrono::Utc::now().timestamp();
@@ -4323,7 +4322,11 @@ mod tests {
             },
         ];
         let bytes = serde_json::to_vec(&members).unwrap();
-        let binding = dm.then_some("/source-side-path");
+        let kind = if dm {
+            peko_channel::ConversationKind::Dm
+        } else {
+            peko_channel::ConversationKind::Group
+        };
         let now = chrono::Utc::now().timestamp();
         let fields = crate::tunnel::ChannelInviteSignedFields {
             request_id: "registered-invite",
@@ -4334,7 +4337,7 @@ mod tests {
             creator: &creator,
             creator_did: &source_did,
             name: "registered conversation",
-            passive_binding: binding.unwrap_or(""),
+            kind: kind.as_str(),
             initial_members_bytes: &bytes,
         };
         let (signature, author_signature) = crate::tunnel::sign_channel_invite(
@@ -4355,7 +4358,7 @@ mod tests {
                 creator.clone(),
                 source_did.clone(),
                 "registered conversation".into(),
-                binding.map(str::to_owned),
+                kind,
                 members,
                 signature,
                 author_signature,
@@ -4383,7 +4386,8 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_ne!(receiver_binding, "/source-side-path");
+            assert!(receiver_binding.session.starts_with('/'));
+            assert_eq!(receiver_binding.wake, peko_channel::WakePolicy::Human);
             let metas = peko_session::manager::SessionManager::new()
                 .with_sessions_dir_internal(principal.memory.sessions_dir())
                 .list_all_sessions(false)
@@ -4460,13 +4464,6 @@ mod tests {
         registered_invite_roundtrip(true).await;
     }
 
-    /// Phase 12a: an inbound DM invite (`passive_binding: Some`)
-    /// drives the full host bootstrap — the receiver's peer child for
-    /// `principal:<creator_did>` is ensured (CHILD-ONLY: no local-only
-    /// DM channel is provisioned), the mirror's `meta.json` carries
-    /// the receiver-LOCAL derived binding (`/<child slug>`, NOT the
-    /// wire value), and the mirror gets a live subscriber without
-    /// waiting for the next boot sweep.
     /// An invite whose invitee row matches NO loaded principal is
     /// logged and skipped (no mirror, no error) — invites are
     /// push-only and the receiver may simply not host the addressee.
@@ -4497,7 +4494,7 @@ mod tests {
             "prin_alice",
             "did:peko:principal:alice",
             "team-chat",
-            None,
+            peko_channel::ConversationKind::Group,
             &initial_members,
         );
 
@@ -4511,7 +4508,7 @@ mod tests {
                 "prin_alice".to_string(),
                 "did:peko:principal:alice".to_string(),
                 "team-chat".to_string(),
-                None,
+                peko_channel::ConversationKind::Group,
                 initial_members,
                 signature,
                 String::new(),

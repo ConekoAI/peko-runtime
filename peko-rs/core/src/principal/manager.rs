@@ -368,6 +368,65 @@ impl PrincipalManager {
             .expect("dm_subscriber_hook lock poisoned") = Some(hook);
     }
 
+    /// Start the live subscriber for a channel `principal` created or
+    /// joined after boot (the hook the daemon installs; a no-op without
+    /// one).
+    pub(crate) fn ensure_channel_subscriber(
+        &self,
+        principal: &PrincipalId,
+        channel: &peko_channel::ChannelId,
+    ) {
+        let hook = self
+            .dm_subscriber_hook
+            .read()
+            .expect("dm_subscriber_hook lock poisoned")
+            .clone();
+        if let Some(hook) = hook {
+            hook(principal.clone(), channel.clone());
+        }
+    }
+
+    /// ADR-082 D2: `principal`'s group session for `channel`, created in
+    /// the channel's compartment, with its binding recorded. Uses the
+    /// session manager the group wake uses whenever turns can be built.
+    pub(crate) async fn ensure_group_binding(
+        &self,
+        principal: &Arc<Principal>,
+        channel: &peko_channel::ChannelId,
+    ) -> anyhow::Result<String> {
+        let port = self
+            .channel_port()
+            .ok_or_else(|| anyhow::anyhow!("no channel port is attached"))?;
+        let (agent_name, sessions) = match self.peer_child_turns_for(principal).await {
+            Ok(turns) => (
+                turns.agent_name().to_string(),
+                Arc::clone(turns.session_manager()),
+            ),
+            Err(_) => {
+                let config = principal.config.read().await;
+                let agent_name = crate::principal::child_turns::peer_child_agent_config(
+                    &config,
+                    &principal.workspace_path,
+                )
+                .name;
+                let sessions = crate::principal::child_turns::peer_child_session_manager(
+                    principal,
+                    &agent_name,
+                    &config.owner,
+                );
+                (agent_name, sessions)
+            }
+        };
+        crate::principal::peer_children::ensure_group_binding(
+            &port,
+            &principal.id,
+            &agent_name,
+            channel,
+            &sessions,
+        )
+        .await
+    }
+
     /// Create a new Principal from config, generate a real identity, and load
     /// its agent prompts.
     ///

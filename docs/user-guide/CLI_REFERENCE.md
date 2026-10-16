@@ -528,7 +528,7 @@ peko channel <SUBCOMMAND>
 
 | Subcommand | Description |
 |-----------|-------------|
-| `create <CREATOR> <NAME> [--bind PATH] [--id CHANNEL_ID]` | Create a channel owned by `creator`. `--bind` sets a passive binding (DM-tier channel); `--id` pins an explicit id such as `group:<slug>` (omit to mint a fresh `chan_<8 base36>`). |
+| `create <CREATOR> <NAME> [--id CHANNEL_ID]` | Create a group channel owned by `creator` (DMs are opened by `ChannelSend`). `--id` pins an explicit id such as `group:<slug>` (omit to mint a fresh `chan_<8 base36>`). |
 | `invite <CHANNEL> <INVITER> <INVITEE>` | Add `invitee` to `channel` (inviter must already be a member). `invitee` is a peko name or a `user:<id>` wire form. |
 | `post <CHANNEL> <SENDER> <TEXT>` | Post a message (optional `--parent` for replies). `sender` is a peko name or a `user:<id>` wire form (must be a member). |
 | `peek <CHANNEL> [--since CURSOR]` | Read events from the log (JSON). Membership-gated against your `-U` user identity (ADR-049 D6). |

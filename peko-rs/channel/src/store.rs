@@ -7,7 +7,7 @@
 //! <runtime_dir>/
 //!   channels/
 //!     <chan_id>/
-//!       meta.json          # { creator, name, created_at, tier, passive_binding? }
+//!       meta.json          # { creator, name, created_at, tier, kind, bindings?, participants? }
 //!       members.json       # { members: [String], remote_members: [RemoteMember] }
 //!       events.jsonl       # current page: one ChannelEvent per line, append-only
 //!       events.<n>.jsonl   # rotated pages, 1 = oldest (mirrors peko-session paging)
@@ -53,7 +53,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 use peko_fs_persistence::{append_bytes_durable, FileLock};
-use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, ConversationKind};
 use peko_subject::{ActorRef, PrincipalDID, PrincipalId};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -61,8 +61,9 @@ use tokio::sync::broadcast;
 
 use crate::fs::channel_dir_name;
 use crate::port::{
-    dm_channel_id, query_matches, ActorInfo, ChannelError, ChannelPort, ChannelQuery, Checkpoint,
-    CreateOpts, PostMsg, Registration, RemoteMember, Result, SearchPage, TailPage, TaskId, Tier,
+    dm_channel_id, query_matches, ActorInfo, Binding, ChannelError, ChannelPort, ChannelQuery,
+    Checkpoint, CreateOpts, PostMsg, Registration, RemoteMember, Result, SearchPage, TailPage,
+    TaskId, Tier, WakePolicy,
 };
 
 // ---------------------------------------------------------------------------
@@ -329,9 +330,11 @@ impl ChannelConfig {
 
 /// On-disk metadata for a single channel. Stored at `<chan_dir>/meta.json`.
 ///
-/// Membership is *not* tracked here — it lives in `members.json`. This
-/// split keeps `meta.json` write-light (only on create).
+/// Membership is *not* tracked here — it lives in `members.json`.
+/// `bindings` changes when a principal's conversation session is bound,
+/// its wake policy set, or it leaves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "MetaJsonOnDisk")]
 pub struct MetaJson {
     pub creator: String,
     pub name: String,
@@ -340,18 +343,71 @@ pub struct MetaJson {
     /// Snapshotted at create-time so subsequent ops don't have to
     /// probe both Runtime and Shared roots.
     pub tier: Tier,
-    /// Phase 4 (agent-session paradigm sprint): optional passive
-    /// binding — a session id or `/path` in the creator's session
-    /// tree. `#[serde(default)]` so pre-Phase-4 `meta.json` files
-    /// deserialize as `None` without a migration; skipped on write
-    /// when `None` so unbound channels keep the legacy file shape
-    /// byte-for-byte.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub passive_binding: Option<String>,
+    /// ADR-082 D1: what the channel is; immutable.
+    pub kind: ConversationKind,
+    /// ADR-082 D2: local principal id → its binding.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub bindings: HashMap<String, String>,
+    pub bindings: HashMap<String, Binding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<String>,
+}
+
+/// `meta.json` as read. Files written before ADR-082 have no `kind`
+/// (a `passive_binding` marked a DM) and string-valued bindings; they
+/// are read in the new shape and written that way on the next save.
+#[derive(Deserialize)]
+struct MetaJsonOnDisk {
+    creator: String,
+    name: String,
+    created_at: chrono::DateTime<Utc>,
+    tier: Tier,
+    #[serde(default)]
+    kind: Option<ConversationKind>,
+    #[serde(default)]
+    passive_binding: Option<String>,
+    #[serde(default)]
+    bindings: HashMap<String, BindingOnDisk>,
+    #[serde(default)]
+    participants: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BindingOnDisk {
+    Record(Binding),
+    Session(String),
+}
+
+impl From<MetaJsonOnDisk> for MetaJson {
+    fn from(raw: MetaJsonOnDisk) -> Self {
+        let kind = raw.kind.unwrap_or(if raw.passive_binding.is_some() {
+            ConversationKind::Dm
+        } else {
+            ConversationKind::Group
+        });
+        let bindings = raw
+            .bindings
+            .into_iter()
+            .map(|(principal, binding)| {
+                let binding = match binding {
+                    BindingOnDisk::Record(binding) => binding,
+                    BindingOnDisk::Session(session) => {
+                        Binding::new(session, WakePolicy::default_for(kind))
+                    }
+                };
+                (principal, binding)
+            })
+            .collect();
+        Self {
+            creator: raw.creator,
+            name: raw.name,
+            created_at: raw.created_at,
+            tier: raw.tier,
+            kind,
+            bindings,
+            participants: raw.participants,
+        }
+    }
 }
 
 impl MetaJson {
@@ -913,9 +969,8 @@ impl ChannelStore {
     // -----------------------------------------------------------------
 
     /// Resolve the channel's on-disk directory for read-mark
-    /// persistence, probing the Runtime tier first then Shared —
-    /// mirrors the `passive_binding` probe so a pinned-to-shared
-    /// channel's marks live beside its events.
+    /// persistence, probing the Runtime tier first then Shared, so a
+    /// pinned-to-shared channel's marks live beside its events.
     async fn channel_dir_for_marks(&self, channel: &ChannelId) -> Result<PathBuf> {
         let runtime_dir = self.cfg.channel_dir(channel);
         match MetaJson::load(&runtime_dir, channel).await {
@@ -1719,14 +1774,11 @@ impl ChannelStore {
     /// writes:
     ///
     /// - `meta.json` — `{ creator, name, created_at: now, tier: Runtime,
-    ///   passive_binding? }`. `creator` is the SOURCE-runtime-local
-    ///   creator string (display only); `passive_binding` is the
-    ///   receiver-LOCAL binding the caller derived from its own
-    ///   session tree (sprint 3 Phase 12a — the wire value is only a
-    ///   "this is a DM channel" marker: each side's binding names its
-    ///   OWN child for the other principal, and `-N` slug-collision
-    ///   suffixes are runtime-local, so the source's value can never
-    ///   be adopted verbatim).
+    ///   kind, bindings? }`. `creator` is the SOURCE-runtime-local
+    ///   creator string (display only); `kind` comes from the signed
+    ///   invite (ADR-082 D1); `binding` is the receiver-LOCAL session
+    ///   the caller derived from its own session tree — bindings never
+    ///   cross runtimes.
     /// - `members.json` — re-partitioned from the source's view to the
     ///   receiver's (see below).
     /// - `events.jsonl` — pre-seeded with a synthetic
@@ -1785,8 +1837,14 @@ impl ChannelStore {
         initial_members: &[peko_protocol::channel::InitialMember],
         self_principal: &PrincipalId,
         source_runtime_id: &str,
-        passive_binding: Option<String>,
+        kind: ConversationKind,
+        binding: Option<String>,
     ) -> Result<()> {
+        if kind == ConversationKind::Dm && !channel.is_pair_id() {
+            return Err(ChannelError::Adapter(format!(
+                "a DM must have a pair id, not {channel}"
+            )));
+        }
         let _dm_guard = self.dm_lock.lock().await;
         let _provision_guard = self.lock_dm(channel).await?;
         let chan_dir = self.cfg.channel_dir(channel);
@@ -1798,10 +1856,20 @@ impl ChannelStore {
         if meta_path.exists() {
             let _members_guard = self.lock_members(&chan_dir).await?;
             let mut meta = MetaJson::load(&chan_dir, channel).await?;
+            if meta.kind != kind {
+                return Err(ChannelError::Adapter(format!(
+                    "invite kind {} conflicts with stored {} channel {channel}",
+                    kind.as_str(),
+                    meta.kind.as_str()
+                )));
+            }
             let mut meta_changed = false;
-            if let Some(binding) = passive_binding {
+            if let Some(session) = binding {
                 if !meta.bindings.contains_key(&self_principal.0) {
-                    meta.bindings.insert(self_principal.0.clone(), binding);
+                    meta.bindings.insert(
+                        self_principal.0.clone(),
+                        Binding::new(session, WakePolicy::default_for(kind)),
+                    );
                     meta_changed = true;
                 }
             }
@@ -1883,11 +1951,15 @@ impl ChannelStore {
             name: name.to_string(),
             created_at: now,
             tier: Tier::Runtime,
-            // Sprint 3 Phase 12a: the receiver-LOCAL binding derived by
-            // the caller (the wire marker's value is never adopted
-            // verbatim — see the doc comment).
-            passive_binding,
-            bindings: HashMap::new(),
+            kind,
+            bindings: binding
+                .map(|session| {
+                    HashMap::from([(
+                        self_principal.0.clone(),
+                        Binding::new(session, WakePolicy::default_for(kind)),
+                    )])
+                })
+                .unwrap_or_default(),
             participants: {
                 let mut addresses = initial_members
                     .iter()
@@ -1898,10 +1970,6 @@ impl ChannelStore {
                 addresses
             },
         };
-        let mut meta = meta;
-        if let Some(binding) = meta.passive_binding.clone() {
-            meta.bindings.insert(self_principal.0.clone(), binding);
-        }
         meta.save(&chan_dir).await?;
 
         // Append the synthetic Created event. `append_event` uses the
@@ -2265,11 +2333,70 @@ impl ChannelPort for ChannelStore {
         &self,
         channel: &ChannelId,
         principal: &PrincipalId,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<Binding>> {
         let tier = self.resolve_tier(channel).await?;
         let dir = self.channel_dir_for_tier(tier, channel);
         let meta = MetaJson::load(&dir, channel).await?;
         Ok(meta.bindings.get(&principal.0).cloned())
+    }
+
+    async fn conversation_kind(&self, channel: &ChannelId) -> Result<ConversationKind> {
+        let tier = self.resolve_tier(channel).await?;
+        let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
+        Ok(meta.kind)
+    }
+
+    async fn bind(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        session: &str,
+    ) -> Result<Binding> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&dir).await?;
+        let members = MembersJson::load(&dir).await?;
+        if !self.has_member(&members, &ActorRef::from(principal)) {
+            return Err(ChannelError::NotMember);
+        }
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        let wake = meta
+            .bindings
+            .get(&principal.0)
+            .map(|b| b.wake)
+            .unwrap_or(WakePolicy::default_for(meta.kind));
+        let binding = Binding::new(session, wake);
+        if meta.bindings.get(&principal.0) != Some(&binding) {
+            meta.bindings.insert(principal.0.clone(), binding.clone());
+            meta.save(&dir).await?;
+        }
+        Ok(binding)
+    }
+
+    async fn set_wake(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        wake: WakePolicy,
+    ) -> Result<Binding> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if meta.kind == ConversationKind::Dm {
+            return Err(ChannelError::Adapter(
+                "a DM always wakes on human posts; its wake policy cannot change".into(),
+            ));
+        }
+        let Some(binding) = meta.bindings.get_mut(&principal.0) else {
+            return Err(ChannelError::Adapter(format!(
+                "{principal} has no conversation session on {channel}"
+            )));
+        };
+        binding.wake = wake;
+        let binding = binding.clone();
+        meta.save(&dir).await?;
+        Ok(binding)
     }
 
     async fn ensure_dm(
@@ -2307,7 +2434,7 @@ impl ChannelPort for ChannelStore {
                 principal,
                 CreateOpts::runtime(format!("dm-{}", binding.trim_start_matches('/')))
                     .with_id(channel.clone())
-                    .with_passive_binding(binding),
+                    .with_kind(ConversationKind::Dm),
             )
             .await?;
         }
@@ -2328,8 +2455,10 @@ impl ChannelPort for ChannelStore {
                 "DM participant identity conflicts with stored channel".into(),
             ));
         }
-        meta.bindings
-            .insert(principal.0.clone(), binding.to_string());
+        meta.bindings.insert(
+            principal.0.clone(),
+            Binding::new(binding, WakePolicy::Human),
+        );
         meta.participants = expected;
         meta.save(&dir).await?;
         let mut members = MembersJson::load(&dir).await?;
@@ -2352,7 +2481,7 @@ impl ChannelPort for ChannelStore {
                 .into_iter()
                 .map(|m| member_subject(&m.principal_id)),
         );
-        if meta.passive_binding.is_some() {
+        if meta.kind == ConversationKind::Dm {
             // A human DM peer has no membership row. Group rosters come only
             // from current membership, never from an old invitation snapshot.
             subjects.extend(meta.participants.iter().filter_map(|s| s.parse().ok()));
@@ -2386,6 +2515,11 @@ impl ChannelPort for ChannelStore {
         // as before. Both paths converge through the same
         // `fs::create_dir_all` + collision check.
         let channel = opts.id.clone().unwrap_or_else(ChannelId::generate);
+        if opts.kind == ConversationKind::Dm && !channel.is_pair_id() {
+            return Err(ChannelError::Adapter(format!(
+                "a DM must have a pair id, not {channel}"
+            )));
+        }
         let chan_dir = self.cfg.channel_dir_for(opts.tier, &channel)?;
         // Collision guard: if the resolved on-disk dir already exists
         // (a previous create with the same id), refuse rather than
@@ -2407,12 +2541,8 @@ impl ChannelPort for ChannelStore {
             name: opts.name.clone(),
             created_at: now,
             tier: opts.tier,
-            passive_binding: opts.passive_binding.clone(),
-            bindings: opts
-                .passive_binding
-                .as_ref()
-                .map(|b| HashMap::from([(creator.0.clone(), b.clone())]))
-                .unwrap_or_default(),
+            kind: opts.kind,
+            bindings: HashMap::new(),
             participants: Vec::new(),
         };
         meta.save(&chan_dir).await?;
@@ -2464,6 +2594,17 @@ impl ChannelPort for ChannelStore {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
+        let meta = MetaJson::load(&chan_dir, channel).await?;
+        if meta.kind == ConversationKind::Dm
+            && !meta
+                .participants
+                .iter()
+                .any(|p| self.canonical_address(p) == info.address)
+        {
+            return Err(ChannelError::Adapter(
+                "a DM keeps its two members; create a group to add someone".into(),
+            ));
+        }
         let mut members = MembersJson::load(&chan_dir).await?;
         let inviter_subject = ActorRef::from(inviter);
         if !members.members.iter().any(|m| {
@@ -2590,26 +2731,6 @@ impl ChannelPort for ChannelStore {
         ChannelStore::members_with_attribution(self, channel).await
     }
 
-    /// Phase 4: read `meta.json`'s `passive_binding`. Probes the
-    /// Runtime-tier dir first (the common case), then the Shared dir
-    /// when configured — mirroring `resolve_tier`'s fallback so a
-    /// pinned-to-shared channel still reports its binding.
-    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
-        let runtime_dir = self.cfg.channel_dir(channel);
-        match MetaJson::load(&runtime_dir, channel).await {
-            Ok(meta) => Ok(meta.passive_binding),
-            Err(ChannelError::NotFound(_)) => match self.cfg.shared_channels_dir() {
-                Some(shared) => {
-                    let meta =
-                        MetaJson::load(&shared.join(channel_dir_name(channel)), channel).await?;
-                    Ok(meta.passive_binding)
-                }
-                None => Err(ChannelError::NotFound(channel.clone())),
-            },
-            Err(e) => Err(e),
-        }
-    }
-
     /// Per-session digest read position — delegates to the inherent
     /// method (see `read_mark` above the trait impl). Overridden so
     /// the trait default (`Ok(None)`, "never observed") doesn't
@@ -2650,6 +2771,15 @@ impl ChannelPort for ChannelStore {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
+        let mut meta = MetaJson::load(&chan_dir, channel).await?;
+        if meta.kind == ConversationKind::Dm {
+            return Err(ChannelError::Adapter(
+                "a DM keeps its two members; it cannot be left".into(),
+            ));
+        }
+        if meta.bindings.remove(&principal.0).is_some() {
+            meta.save(&chan_dir).await?;
+        }
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
         let principal_subject = ActorRef::from(principal);
@@ -3692,75 +3822,171 @@ mod tests {
             .expect("principal:-prefixed row must pass membership");
     }
 
-    // -- passive_binding (Phase 4, agent-session paradigm sprint) ------
+    // -- ADR-082: kind, bindings, wake policy -------------------------
 
-    /// `CreateOpts::passive_binding` persists into `meta.json` and is
-    /// readable back through the `ChannelPort::passive_binding`
-    /// accessor. This is the DM marker the daemon reads at
-    /// subscriber-spawn time.
-    #[tokio::test]
-    async fn passive_binding_persists_through_create() {
-        let cfg = tmp_cfg("passive-binding");
-        let store = ChannelStore::new(cfg);
-        let creator = pid("prin_alice");
-        let opts = CreateOpts::runtime("dm-user-a").with_passive_binding("/user-a");
-        let channel = store.create(&creator, opts).await.unwrap();
-
-        assert_eq!(
-            store.passive_binding(&channel).await.unwrap(),
-            Some("/user-a".to_string())
-        );
+    async fn dm_with_user(store: &ChannelStore, principal: &PrincipalId) -> ChannelId {
+        store
+            .ensure_dm(principal, &ActorRef::User("bob".into()), "/user-bob")
+            .await
+            .unwrap()
     }
 
-    /// A channel created WITHOUT a binding reports `None` and its
-    /// `meta.json` omits the field entirely (`skip_serializing_if`),
-    /// so unbound channels keep the pre-Phase-4 file shape
-    /// byte-for-byte.
     #[tokio::test]
-    async fn no_binding_leaves_meta_unchanged() {
-        let cfg = tmp_cfg("no-binding");
-        let store = ChannelStore::new(cfg.clone());
+    async fn create_records_kind_and_refuses_a_dm_without_a_pair_id() {
+        let store = ChannelStore::new(tmp_cfg("kind-create"));
         let creator = pid("prin_alice");
-        let channel = store
-            .create(&creator, CreateOpts::runtime("group"))
+        let group = store
+            .create(&creator, CreateOpts::runtime("team"))
             .await
             .unwrap();
+        assert_eq!(
+            store.conversation_kind(&group).await.unwrap(),
+            ConversationKind::Group
+        );
+        assert_eq!(store.binding_for(&group, &creator).await.unwrap(), None);
+        assert!(store
+            .create(
+                &creator,
+                CreateOpts::runtime("dm").with_kind(ConversationKind::Dm)
+            )
+            .await
+            .is_err());
+    }
 
-        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
-        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
+    #[tokio::test]
+    async fn ensure_dm_binds_with_the_fixed_human_policy() {
+        let store = ChannelStore::new(tmp_cfg("kind-dm"));
+        let alice = pid("prin_alice");
+        let dm = dm_with_user(&store, &alice).await;
+        assert!(dm.is_pair_id());
+        assert_eq!(
+            store.conversation_kind(&dm).await.unwrap(),
+            ConversationKind::Dm
+        );
+        assert_eq!(
+            store.binding_for(&dm, &alice).await.unwrap(),
+            Some(Binding::new("/user-bob", WakePolicy::Human))
+        );
         assert!(
-            !raw.contains("passive_binding"),
-            "unbound meta.json must not carry the field; got {raw}"
+            store.set_wake(&dm, &alice, WakePolicy::Off).await.is_err(),
+            "a DM's policy is fixed"
         );
     }
 
-    /// A pre-Phase-4 `meta.json` (no `passive_binding` key) loads as
-    /// `None` — the `#[serde(default)]` back-compat invariant.
-    #[test]
-    fn meta_json_deserializes_legacy_files_without_binding() {
-        let legacy = r#"{"creator":"prin_alice","name":"team","created_at":"2026-08-05T12:00:00Z","tier":"Runtime"}"#;
-        let parsed: MetaJson = serde_json::from_str(legacy).expect("legacy must parse");
-        assert_eq!(parsed.passive_binding, None);
+    #[tokio::test]
+    async fn a_dm_keeps_its_two_members() {
+        let store = ChannelStore::new(tmp_cfg("kind-dm-roster"));
+        let alice = pid("prin_alice");
+        let dm = dm_with_user(&store, &alice).await;
+        assert!(store
+            .invite(&dm, &alice, &ActorRef::User("carol".into()))
+            .await
+            .is_err());
+        store
+            .invite(&dm, &alice, &ActorRef::User("bob".into()))
+            .await
+            .expect("re-inviting a participant is idempotent");
+        assert!(store.leave(&dm, &alice).await.is_err());
+        assert_eq!(store.list_members(&dm).await.unwrap().len(), 2);
     }
 
-    /// Full `MetaJson` round-trip with a binding set.
+    #[tokio::test]
+    async fn group_bindings_start_at_mention_and_keep_their_wake() {
+        let store = ChannelStore::new(tmp_cfg("bind-group"));
+        let alice = pid("prin_alice");
+        let group = store
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .set_wake(&group, &alice, WakePolicy::Off)
+                .await
+                .is_err(),
+            "no binding yet"
+        );
+        assert_eq!(
+            store.bind(&group, &alice, "/group-team").await.unwrap(),
+            Binding::new("/group-team", WakePolicy::Mention)
+        );
+        store
+            .set_wake(&group, &alice, WakePolicy::Human)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.bind(&group, &alice, "/group-team-2").await.unwrap(),
+            Binding::new("/group-team-2", WakePolicy::Human),
+            "rebinding keeps the wake policy"
+        );
+        assert_eq!(
+            store
+                .bind(&group, &pid("prin_stranger"), "/x")
+                .await
+                .unwrap_err()
+                .to_string(),
+            ChannelError::NotMember.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_a_group_drops_the_binding() {
+        let store = ChannelStore::new(tmp_cfg("leave-binding"));
+        let alice = pid("prin_alice");
+        let bob = pid("prin_bob");
+        let group = store
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        store
+            .invite(&group, &alice, &ActorRef::from(&bob))
+            .await
+            .unwrap();
+        store.bind(&group, &bob, "/group-team").await.unwrap();
+        store.leave(&group, &bob).await.unwrap();
+        assert_eq!(store.binding_for(&group, &bob).await.unwrap(), None);
+        assert_eq!(store.list_members(&group).await.unwrap().len(), 1);
+    }
+
+    /// `meta.json` written before ADR-082: a `passive_binding` marked a
+    /// DM, and bindings were bare session strings.
     #[test]
-    fn meta_json_round_trips_with_binding() {
+    fn meta_json_reads_files_written_before_kinds() {
+        let dm = r#"{"creator":"prin_alice","name":"dm","created_at":"2026-08-05T12:00:00Z","tier":"Runtime","passive_binding":"/user-a","bindings":{"prin_alice":"/user-a"}}"#;
+        let parsed: MetaJson = serde_json::from_str(dm).unwrap();
+        assert_eq!(parsed.kind, ConversationKind::Dm);
+        assert_eq!(
+            parsed.bindings.get("prin_alice"),
+            Some(&Binding::new("/user-a", WakePolicy::Human))
+        );
+        let rewritten = serde_json::to_string(&parsed).unwrap();
+        assert!(!rewritten.contains("passive_binding"), "{rewritten}");
+
+        let group = r#"{"creator":"prin_alice","name":"team","created_at":"2026-08-05T12:00:00Z","tier":"Runtime"}"#;
+        let parsed: MetaJson = serde_json::from_str(group).unwrap();
+        assert_eq!(parsed.kind, ConversationKind::Group);
+        assert!(parsed.bindings.is_empty());
+    }
+
+    #[test]
+    fn meta_json_round_trips_kind_and_bindings() {
         let m = MetaJson {
             creator: "prin_alice".into(),
-            name: "dm".into(),
+            name: "team".into(),
             created_at: Utc::now(),
             tier: Tier::Runtime,
-            passive_binding: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            bindings: HashMap::new(),
+            kind: ConversationKind::Group,
+            bindings: HashMap::from([(
+                "prin_alice".to_string(),
+                Binding::new("/group-team", WakePolicy::Off),
+            )]),
             participants: Vec::new(),
         };
-        let bytes = serde_json::to_vec(&m).unwrap();
-        let parsed: MetaJson = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            parsed.passive_binding.as_deref(),
-            Some("550e8400-e29b-41d4-a716-446655440000")
-        );
+        let raw = serde_json::to_string(&m).unwrap();
+        assert!(raw.contains(r#""kind":"group""#), "{raw}");
+        assert!(raw.contains(r#""wake":"off""#), "{raw}");
+        let parsed: MetaJson = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.kind, ConversationKind::Group);
+        assert_eq!(parsed.bindings, m.bindings);
     }
 
     // -- list_remote_members / is_remote_member -------------------------
@@ -4439,7 +4665,7 @@ mod tests {
         use peko_protocol::channel::InitialMember;
         let cfg = tmp_cfg("join-remote-new");
         let store = ChannelStore::new(cfg.clone());
-        let channel = ChannelId::generate();
+        let channel = dm_channel_id("a", "b");
         let receiver = pid("prin_self_local");
         let initial_members = vec![
             // The source's own row — filed as remote on the mirror.
@@ -4468,6 +4694,7 @@ mod tests {
                 &initial_members,
                 &receiver,
                 "did:key:zRuntimeA",
+                ConversationKind::Dm,
                 Some("/principal-alice".to_string()),
             )
             .await
@@ -4491,11 +4718,15 @@ mod tests {
         assert_eq!(meta.creator, "prin_alice");
         assert_eq!(meta.name, "team-chat");
         assert_eq!(meta.tier, Tier::Runtime);
-        assert_eq!(meta.passive_binding.as_deref(), Some("/principal-alice"));
+        assert_eq!(meta.kind, ConversationKind::Dm);
         assert_eq!(
-            store.passive_binding(&channel).await.unwrap().as_deref(),
-            Some("/principal-alice"),
-            "the binding must read back through the port accessor"
+            store
+                .binding_for(&channel, &receiver)
+                .await
+                .unwrap()
+                .map(|b| (b.session, b.wake)),
+            Some(("/principal-alice".to_string(), WakePolicy::Human)),
+            "the receiver-local binding must read back through the port"
         );
 
         // members.json: the receiver's local id is the ONLY local
@@ -4545,9 +4776,7 @@ mod tests {
         }
     }
 
-    /// A non-DM invite (`passive_binding: None`) bootstraps an
-    /// unbound mirror: `meta.json` omits the field entirely (the
-    /// `skip_serializing_if` shape unbound channels have always had).
+    /// A group invite bootstraps a group mirror with no binding yet.
     #[tokio::test]
     async fn join_remote_without_binding_bootstraps_unbound_mirror() {
         let cfg = tmp_cfg("join-remote-unbound");
@@ -4561,16 +4790,22 @@ mod tests {
                 &[],
                 &pid("prin_self_local"),
                 "did:key:zRuntimeA",
+                ConversationKind::Group,
                 None,
             )
             .await
             .expect("join_remote must succeed");
 
-        assert_eq!(store.passive_binding(&channel).await.unwrap(), None);
-        let raw = std::fs::read_to_string(cfg.channel_dir(&channel).join("meta.json")).unwrap();
-        assert!(
-            !raw.contains("passive_binding"),
-            "unbound mirror meta.json must not carry the field; got {raw}"
+        assert_eq!(
+            store.conversation_kind(&channel).await.unwrap(),
+            ConversationKind::Group
+        );
+        assert_eq!(
+            store
+                .binding_for(&channel, &pid("prin_self_local"))
+                .await
+                .unwrap(),
+            None
         );
         // Even with an empty snapshot, the creator row is filed as
         // remote so the receiver's posts fan back out.
@@ -4588,7 +4823,7 @@ mod tests {
         use peko_protocol::channel::InitialMember;
         let cfg = tmp_cfg("join-remote-idem");
         let store = ChannelStore::new(cfg.clone());
-        let channel = ChannelId::generate();
+        let channel = dm_channel_id("a", "b");
         let receiver = pid("prin_self_local");
         let initial_members = vec![InitialMember {
             hub_id: None,
@@ -4606,6 +4841,7 @@ mod tests {
                 &initial_members,
                 &receiver,
                 "did:key:zRuntimeA",
+                ConversationKind::Dm,
                 Some("/principal-alice".to_string()),
             )
             .await
@@ -4637,6 +4873,7 @@ mod tests {
                 &initial_members,
                 &receiver,
                 "did:key:zRuntimeA",
+                ConversationKind::Dm,
                 Some("/other-binding".to_string()),
             )
             .await
@@ -4666,9 +4903,61 @@ mod tests {
             .unwrap();
         assert_eq!(meta.name, "team-chat", "original name must survive");
         assert_eq!(
-            meta.passive_binding.as_deref(),
+            meta.bindings.get(&receiver.0).map(|b| b.session.as_str()),
             Some("/principal-alice"),
             "original binding must survive"
+        );
+    }
+
+    /// The signed invite's kind must agree with a mirror that exists.
+    #[tokio::test]
+    async fn join_remote_refuses_a_conflicting_kind() {
+        let cfg = tmp_cfg("join-remote-kind");
+        let store = ChannelStore::new(cfg);
+        let channel = dm_channel_id("a", "b");
+        let receiver = pid("prin_self_local");
+        store
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "dm",
+                &[],
+                &receiver,
+                "did:key:zA",
+                ConversationKind::Dm,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .join_remote(
+                &channel,
+                "prin_alice",
+                "dm",
+                &[],
+                &receiver,
+                "did:key:zA",
+                ConversationKind::Group,
+                None
+            )
+            .await
+            .is_err());
+        let group = ChannelId::generate();
+        assert!(
+            store
+                .join_remote(
+                    &group,
+                    "prin_alice",
+                    "g",
+                    &[],
+                    &receiver,
+                    "did:key:zA",
+                    ConversationKind::Dm,
+                    None
+                )
+                .await
+                .is_err(),
+            "a DM invite must carry a pair id"
         );
     }
 
@@ -4795,7 +5084,7 @@ mod tests {
         );
     }
 
-    /// `passive_binding` reports the wire form on `NotFound` rather
+    /// `conversation_kind` reports the wire form on `NotFound` rather
     /// than the on-disk-normalized form. The previous impl used
     /// `chan_dir.file_name()`, which for a typed channel produced
     /// `principal.3A.did.3A...` and surfaced as confusing debug
@@ -4805,7 +5094,7 @@ mod tests {
         let cfg = tmp_cfg("not-found-wire");
         let store = ChannelStore::new(cfg);
         let bogus = ChannelId::for_principal("did:key:zMissing");
-        let result = store.passive_binding(&bogus).await;
+        let result = store.conversation_kind(&bogus).await;
         match result {
             Err(ChannelError::NotFound(id)) => {
                 assert_eq!(id, bogus, "NotFound must carry the wire-form id; got {id}");

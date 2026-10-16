@@ -121,6 +121,27 @@ pub async fn ensure_group_child(
     )
     .await
 }
+/// The principal's group session for `channel`, find-or-created inside
+/// the channel's compartment, with its binding recorded (ADR-082 D2).
+/// The session side is authoritative: a missing or stale binding is
+/// rewritten to name it.
+pub async fn ensure_group_binding(
+    port: &Arc<dyn peko_channel::ChannelPort>,
+    principal: &peko_subject::PrincipalId,
+    agent_name: &str,
+    channel: &peko_channel::ChannelId,
+    session_manager: &Arc<RwLock<SessionManager>>,
+) -> Result<String> {
+    let session = ensure_group_child(agent_name, channel.as_str(), session_manager).await?;
+    if port
+        .binding_for(channel, principal)
+        .await?
+        .is_none_or(|b| b.session != session)
+    {
+        port.bind(channel, principal, &session).await?;
+    }
+    Ok(session)
+}
 pub async fn ensure_channel_child(
     agent_name: &str,
     channel: &str,

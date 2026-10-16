@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use peko_channel::port::TaskId;
-use peko_channel::{ChannelError, ChannelEvent, ChannelId, ChannelPort, Checkpoint};
+use peko_channel::{ChannelError, ChannelEvent, ChannelId, ChannelPort, Checkpoint, WakePolicy};
 use peko_tools_core::{Tool, ToolContext};
 use serde_json::json;
 
@@ -54,7 +54,16 @@ impl ChannelReadTool {
         let mut broadcast_live = true;
         let mut abort = ctx.abort_signal();
         let mut abort_live = true;
-        let is_dm = self.port.passive_binding(channel).await?.is_some();
+        // What starts a turn on its own here (ADR-082 D3): every human
+        // root post on a DM, and per the binding's policy in a group.
+        let wake = match self.port.conversation_kind(channel).await? {
+            peko_channel::ConversationKind::Dm => WakePolicy::Human,
+            peko_channel::ConversationKind::Group => self
+                .port
+                .binding_for(channel, &filter.principal)
+                .await?
+                .map_or(WakePolicy::Mention, |b| b.wake),
+        };
 
         let mut cursor = match since {
             Some(s) => Some(s),
@@ -83,7 +92,7 @@ impl ChannelReadTool {
             let observed = after.last().map(|(id, _)| id.clone());
             let hits: Vec<_> = after
                 .into_iter()
-                .filter(|(_, ev)| filter.matches(ev, is_dm))
+                .filter(|(_, ev)| filter.matches(ev, wake))
                 .collect();
             if !hits.is_empty() {
                 let has_more = hits.len() > limit;
@@ -123,7 +132,9 @@ const WATCH_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Which posts end a watch.
 struct WatchFilter {
-    /// The watching principal's id; its own posts never count.
+    /// The watching principal's local id, for its binding.
+    principal: peko_subject::PrincipalId,
+    /// The watching principal's address; its own posts never count.
     me: String,
     hub: Option<String>,
     /// The watching principal's name, for group `@<name>` mentions.
@@ -138,11 +149,12 @@ struct WatchFilter {
 
 impl WatchFilter {
     /// A post by someone else that matches every filter and does not
-    /// start a turn on its own: a user's root post on a DM (it drives the
-    /// session bound to that DM) or a user's root post mentioning
-    /// `@<name>` in a group (it wakes the group's session). Reporting
-    /// those here too would hand the same message to two sessions.
-    fn matches(&self, ev: &ChannelEvent, is_dm: bool) -> bool {
+    /// start a turn on its own under `wake`: a user's root post on a DM
+    /// (it drives the session bound to that DM) or, in a group, a user's
+    /// root post the binding's policy wakes on (it wakes the group's
+    /// session). Reporting those here too would hand the same message to
+    /// two sessions.
+    fn matches(&self, ev: &ChannelEvent, wake: WakePolicy) -> bool {
         let ChannelEvent::Posted {
             author,
             text,
@@ -157,13 +169,18 @@ impl WatchFilter {
         }
         if (author.starts_with("user:") || author.starts_with("visitor:"))
             && parent.is_none()
-            && (is_dm
-                || peko_channel::mentions(text, &self.name)
-                || peko_channel::mentions(text, &self.me)
-                || self
-                    .hub
-                    .as_ref()
-                    .is_some_and(|h| peko_channel::mentions(text, h)))
+            && match wake {
+                WakePolicy::Human => true,
+                WakePolicy::Off => false,
+                WakePolicy::Mention => {
+                    peko_channel::mentions(text, &self.name)
+                        || peko_channel::mentions(text, &self.me)
+                        || self
+                            .hub
+                            .as_ref()
+                            .is_some_and(|h| peko_channel::mentions(text, h))
+                }
+            }
         {
             return false;
         }
@@ -395,6 +412,7 @@ impl Tool for ChannelReadTool {
         // events, parsed at the store without decoding the whole log.
         let (events, has_more, next_cursor) = if watch {
             let filter = WatchFilter {
+                principal: peko_subject::PrincipalId(principal_str.clone()),
                 hub: self
                     .port
                     .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
@@ -539,11 +557,17 @@ impl Tool for ChannelReadTool {
             }
         }
 
+        let binding = self
+            .port
+            .binding_for(&channel_id, &peko_subject::PrincipalId(principal_str))
+            .await?;
         Ok(json!({
             "channel": channel_id.as_str(),
+            "kind": self.port.conversation_kind(&channel_id).await?,
             "events": events,
             "participants": self.port.participants(&channel_id).await?,
-            "binding": self.port.binding_for(&channel_id, &peko_subject::PrincipalId(principal_str)).await?,
+            "binding": binding.as_ref().map(|b| &b.session),
+            "wake": binding.map(|b| b.wake),
             "has_more": has_more,
             "next_cursor": next_cursor,
         }))
@@ -974,23 +998,14 @@ mod tests {
     }
 
     /// On a DM a user's root post drives the bound session, so a watch
-    /// there skips it; a principal's post still ends the watch.
+    /// there skips it; a reply (which starts nothing) ends the watch.
     #[tokio::test]
     async fn watch_on_a_dm_skips_user_messages() {
         let fx = Fixture::new().await;
+        let bob = ActorRef::User("bob".into());
         let dm = fx
             .store
-            .create(
-                &fx.alice,
-                CreateOpts::runtime("dm-bob").with_passive_binding("/user-bob"),
-            )
-            .await
-            .unwrap();
-        let bob = ActorRef::User("bob".into());
-        fx.store.invite(&dm, &fx.alice, &bob).await.unwrap();
-        let other = PrincipalId::generate();
-        fx.store
-            .invite(&dm, &fx.alice, &ActorRef::from(&other))
+            .ensure_dm(&fx.alice, &bob, "/user-bob")
             .await
             .unwrap();
 
@@ -1000,16 +1015,16 @@ mod tests {
                 &fx.ctx(None),
             ),
             async {
-                fx.store.post(&dm, &bob, PostMsg::root("hi")).await.unwrap();
+                let root = fx.store.post(&dm, &bob, PostMsg::root("hi")).await.unwrap();
                 fx.store
-                    .post(&dm, &ActorRef::from(&other), PostMsg::root("from a peer"))
+                    .post(&dm, &bob, PostMsg::reply(root, "a follow-up"))
                     .await
                     .unwrap();
             },
         )
         .await
         .unwrap();
-        assert_eq!(texts(&page), ["from a peer"]);
+        assert_eq!(texts(&page), ["a follow-up"]);
     }
 
     /// Aborting the call ends the watch with an error.

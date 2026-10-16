@@ -47,6 +47,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("Workflow", false),
         ("ChannelSend", false),
         ("ChannelRead", true),
+        ("Channel", false),
         ("Contacts", true),
         ("Task", false),
         ("Plan", false),
@@ -83,7 +84,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 22);
+    assert_eq!(actual.len(), 23);
     for retired in [
         "TaskCreate",
         "TaskGet",
@@ -309,6 +310,31 @@ fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
     let tools = tools();
     let cases = [
         ("Contacts", json!({"action":"list"}), "reference"),
+        (
+            "Channel",
+            json!({"action":"create", "name":"launch"}),
+            "channel",
+        ),
+        (
+            "Channel",
+            json!({"action":"invite", "channel":"group:launch", "actor":"user:local:local"}),
+            "policy",
+        ),
+        (
+            "Channel",
+            json!({"action":"leave", "channel":"group:launch"}),
+            "name",
+        ),
+        (
+            "Channel",
+            json!({"action":"wake", "channel":"group:launch", "policy":"off"}),
+            "actor",
+        ),
+        (
+            "Channel",
+            json!({"action":"info", "channel":"group:launch"}),
+            "policy",
+        ),
         (
             "Contacts",
             json!({"action":"resolve", "reference":"principal:hub:target"}),

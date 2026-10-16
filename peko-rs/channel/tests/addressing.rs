@@ -193,11 +193,19 @@ async fn concurrent_pair_provisioning_keeps_independent_channel_bindings() {
     let channel = ab.unwrap();
     assert_eq!(channel, ba.unwrap());
     assert_eq!(
-        a.binding_for(&channel, &aid).await.unwrap().as_deref(),
+        a.binding_for(&channel, &aid)
+            .await
+            .unwrap()
+            .map(|b| b.session)
+            .as_deref(),
         Some("/bob")
     );
     assert_eq!(
-        b.binding_for(&channel, &bid).await.unwrap().as_deref(),
+        b.binding_for(&channel, &bid)
+            .await
+            .unwrap()
+            .map(|b| b.session)
+            .as_deref(),
         Some("/alice")
     );
     assert_eq!(

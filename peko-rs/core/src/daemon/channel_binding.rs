@@ -6,17 +6,19 @@
 //! principals must never wake each other into a loop (ADR-072): **only
 //! humans and cron start runs.**
 //!
-//! - **DM channels** (a `passive_binding` in `meta.json`) get
+//! - **DM channels** (`kind: dm` in `meta.json`) get
 //!   [`NoopChannelResponder`]. A user's DM is driven by the ingress path
 //!   that posted it (`peko send`, Hub, A2A, IPC steer —
 //!   `PeerChildTurns::drive_turn_streaming`). A post by another principal
 //!   starts nothing: the principal reads it with ChannelRead (its turn
 //!   context lists unread posts) or waits for one with ChannelRead
 //!   `watch`.
-//! - **Group channels** (unbound — every `group:<slug>` and bare `chan_*`
-//!   group) get a [`GroupWakeResponder`] when the principal has a
-//!   resolvable model. A `user:*`-authored ROOT post that mentions the
-//!   principal (`@<name>`, case-insensitive, whole word) wakes it.
+//! - **Group channels** (`kind: group` — every `group:<slug>` and bare
+//!   `chan_*` group) get a [`GroupWakeResponder`] when the principal has
+//!   a resolvable model. What wakes it is the binding's policy (ADR-082
+//!   D3), read per post: `mention` (the default) — a human ROOT post
+//!   that mentions the principal (`@<name>`, case-insensitive, whole
+//!   word); `human` — every human root post; `off` — nothing.
 //!   Principal-authored posts never wake anyone — the responder's own
 //!   reply is one of them — and replies (`parent: Some`) never wake.
 //!   Everything else is read, not pushed.
@@ -65,7 +67,8 @@ use tracing::{debug, warn};
 
 use peko_channel::{
     ChannelCursors, ChannelEvent, ChannelId, ChannelMeter, ChannelPort, ChannelResponder,
-    ChannelSubscriber, NoopChannelResponder, PostMsg, RespondCtx, SubscriptionConfig,
+    ChannelSubscriber, ConversationKind, NoopChannelResponder, PostMsg, RespondCtx,
+    SubscriptionConfig, WakePolicy,
 };
 use peko_observability::Observability;
 use peko_session::manager::SessionManager;
@@ -487,20 +490,27 @@ impl GroupWakeResponder {
     /// The input is `{author}: {text}` so the woken session can tell
     /// speakers apart in a multi-party channel (see module docs).
     fn response_trigger(name: &str, event: &ChannelEvent) -> Option<String> {
+        Self::human_root_post(event)
+            .filter(|(_, text)| peko_channel::mentions(text, name))
+            .map(|(author, text)| format!("{author}: {text}"))
+    }
+
+    /// A human-authored (user or visitor) root post — what a
+    /// [`WakePolicy::Human`] binding wakes on. Principal posts and
+    /// replies never qualify, whatever the policy (ADR-072).
+    fn human_root_post(event: &ChannelEvent) -> Option<(&str, &str)> {
         match event {
             ChannelEvent::Posted {
                 author,
                 text,
-                parent,
+                parent: None,
                 ..
-            } if parent.is_none()
-                && matches!(
-                    ActorRef::from_str(author),
-                    Ok(ActorRef::User(_) | ActorRef::Visitor(_))
-                )
-                && peko_channel::mentions(text, name) =>
+            } if matches!(
+                ActorRef::from_str(author),
+                Ok(ActorRef::User(_) | ActorRef::Visitor(_))
+            ) =>
             {
-                Some(format!("{author}: {text}"))
+                Some((author.as_str(), text.as_str()))
             }
             _ => None,
         }
@@ -510,6 +520,25 @@ impl GroupWakeResponder {
 #[async_trait]
 impl ChannelResponder for GroupWakeResponder {
     async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        // ADR-082 D3: read the policy per post, so `Channel wake` takes
+        // effect without respawning the subscriber.
+        let wake = self
+            .inner
+            .port
+            .binding_for(&self.inner.channel, &self.inner.principal)
+            .await?
+            .map_or(WakePolicy::Mention, |b| b.wake);
+        match wake {
+            WakePolicy::Off => return Ok(()),
+            WakePolicy::Human => {
+                if let Some((author, text)) = Self::human_root_post(&ctx.event) {
+                    let input = format!("{author}: {text}");
+                    spawn_turn(Arc::clone(&self.inner), ctx, input);
+                }
+                return Ok(());
+            }
+            WakePolicy::Mention => {}
+        }
         let me = self
             .inner
             .port
@@ -545,19 +574,28 @@ impl ChannelResponder for GroupWakeResponder {
 /// Production [`BindingResolver`] for the group wake: the "binding" is
 /// the channel's wire id and resolution find-or-creates the
 /// principal's per-(principal, channel) standing child session
-/// (`/group-<slug>`) via
-/// [`crate::principal::peer_children::ensure_group_child`]. Idempotent
+/// (`/group-<slug>`) and its binding record via
+/// [`crate::principal::peer_children::ensure_group_binding`]. Idempotent
 /// per channel — the responder's `OnceCell` caches the first
 /// successful resolution, so provisioning happens at most once per
 /// (principal, channel) per daemon lifetime.
 pub(crate) struct GroupChildResolver {
+    port: Arc<dyn ChannelPort>,
+    principal: PrincipalId,
     agent_name: String,
     session_manager: Arc<RwLock<SessionManager>>,
 }
 
 impl GroupChildResolver {
-    pub(crate) fn new(agent_name: String, session_manager: Arc<RwLock<SessionManager>>) -> Self {
+    pub(crate) fn new(
+        port: Arc<dyn ChannelPort>,
+        principal: PrincipalId,
+        agent_name: String,
+        session_manager: Arc<RwLock<SessionManager>>,
+    ) -> Self {
         Self {
+            port,
+            principal,
             agent_name,
             session_manager,
         }
@@ -567,9 +605,13 @@ impl GroupChildResolver {
 #[async_trait]
 impl BindingResolver for GroupChildResolver {
     async fn resolve(&self, binding: &str) -> anyhow::Result<String> {
-        crate::principal::peer_children::ensure_group_child(
+        let channel = ChannelId::parse(binding)
+            .ok_or_else(|| anyhow::anyhow!("not a channel id: {binding}"))?;
+        crate::principal::peer_children::ensure_group_binding(
+            &self.port,
+            &self.principal,
             &self.agent_name,
-            binding,
+            &channel,
             &self.session_manager,
         )
         .await
@@ -732,24 +774,24 @@ pub(crate) struct ResponderDrivers {
 /// shared by the boot path and the post-boot hooks, and unit-tested
 /// here:
 ///
-/// - a bound (DM) channel gets [`NoopChannelResponder`]: a user's DM is
+/// - a DM gets [`NoopChannelResponder`]: a user's DM is
 ///   driven by the ingress path that posted it, and a post by another
 ///   principal never starts a run (ADR-072) — the principal reads it
 ///   with ChannelRead;
-/// - an unbound channel with a driver bundle yields a
-///   [`GroupWakeResponder`] (ADR-049 Phase 3 — bare `chan_*` and
-///   `group:<slug>` channels alike), which wakes on user mentions;
+/// - a group with a driver bundle yields a [`GroupWakeResponder`]
+///   (ADR-049 Phase 3 — bare `chan_*` and `group:<slug>` channels
+///   alike), which wakes per the binding's policy (ADR-082 D3);
 /// - no driver bundle (the principal has no resolvable model) keeps
 ///   [`NoopChannelResponder`].
 pub(crate) fn select_responder(
     channel: ChannelId,
     principal: PrincipalId,
     port: Arc<dyn ChannelPort>,
-    binding: Option<String>,
+    kind: ConversationKind,
     drivers: Option<ResponderDrivers>,
 ) -> Arc<dyn ChannelResponder> {
-    match (binding, drivers) {
-        (None, Some(drivers)) => Arc::new(GroupWakeResponder::new(
+    match (kind, drivers) {
+        (ConversationKind::Group, Some(drivers)) => Arc::new(GroupWakeResponder::new(
             channel,
             principal,
             drivers.name,
@@ -934,28 +976,27 @@ impl ChannelBindingSupervisor {
         Some(sub.spawn())
     }
 
-    /// Read the channel's binding from `meta.json` and pick the
-    /// responder. Unreadable meta (or any other binding read failure)
-    /// degrades to `Noop` with a warning — the meter-only subscriber
-    /// still runs.
+    /// Read the channel's kind from `meta.json` and pick the responder.
+    /// Unreadable meta degrades to `Noop` with a warning — the
+    /// meter-only subscriber still runs.
     async fn responder_for(
         &self,
         principal: &Arc<Principal>,
         channel: &ChannelId,
     ) -> Arc<dyn ChannelResponder> {
-        let binding = match self.port.passive_binding(channel).await {
-            Ok(b) => b,
+        let kind = match self.port.conversation_kind(channel).await {
+            Ok(kind) => kind,
             Err(e) => {
                 warn!(
                     channel = %channel,
-                    "channel subscribers: passive_binding read failed; treating as unbound: {e}"
+                    "channel subscribers: kind read failed; no wake: {e}"
                 );
-                None
+                return Arc::new(NoopChannelResponder);
             }
         };
-        // A bound (DM) channel never wakes the principal from here (see
+        // A DM never wakes the principal from here (see
         // `select_responder`), so it needs no driver.
-        if binding.is_some() {
+        if kind == ConversationKind::Dm {
             return Arc::new(NoopChannelResponder);
         }
         let name = principal.config.read().await.name.clone();
@@ -971,7 +1012,7 @@ impl ChannelBindingSupervisor {
             channel.clone(),
             principal.id.clone(),
             Arc::clone(&self.port),
-            binding,
+            kind,
             drivers,
         )
     }
@@ -1046,6 +1087,8 @@ impl ChannelBindingSupervisor {
         // principal's session manager; provisioning is keyed by the
         // channel at resolve time.
         let group_resolver = Arc::new(GroupChildResolver::new(
+            Arc::clone(&self.port),
+            principal.id.clone(),
             turns.agent_name().to_string(),
             Arc::clone(turns.session_manager()),
         ));
@@ -1690,7 +1733,7 @@ mod tests {
             channel.clone(),
             principal.clone(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
-            None,
+            ConversationKind::Group,
             Some(stub_drivers(driver, "session-1")),
         );
         // A principal-authored root post must NOT fire (D4 loop safety).
@@ -1735,10 +1778,7 @@ mod tests {
         let (store, _tmp) = test_store("select-nodriver");
         let principal = pid("prin_self");
         let channel = store
-            .create(
-                &principal,
-                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
-            )
+            .ensure_dm(&principal, &ActorRef::User("a".into()), "/user-a")
             .await
             .unwrap();
 
@@ -1748,7 +1788,7 @@ mod tests {
             channel.clone(),
             principal.clone(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
-            Some("/user-a".to_string()),
+            ConversationKind::Dm,
             None,
         );
         responder
@@ -1771,10 +1811,7 @@ mod tests {
         let (store, _tmp) = test_store("select-bound");
         let principal = pid("prin_self");
         let channel = store
-            .create(
-                &principal,
-                CreateOpts::runtime("dm").with_passive_binding("/user-a"),
-            )
+            .ensure_dm(&principal, &ActorRef::User("a".into()), "/user-a")
             .await
             .unwrap();
 
@@ -1783,7 +1820,7 @@ mod tests {
             channel.clone(),
             principal.clone(),
             Arc::clone(&store) as Arc<dyn ChannelPort>,
-            Some("/user-a".to_string()),
+            ConversationKind::Dm,
             Some(stub_drivers(driver, "session-1")),
         );
         for (line, author) in [("1", "prin_other"), ("2", "user:alice")] {
@@ -2100,9 +2137,24 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn group_child_resolver_keys_sessions_per_channel() {
         let tmp = tempfile::tempdir().unwrap();
+        let (store, _store_tmp) = test_store("group-resolver");
+        let principal = pid("prin_self");
+        for id in ["group:eng-standup", "group:ops"] {
+            store
+                .create(
+                    &principal,
+                    CreateOpts::runtime(id).with_id(ChannelId::parse(id).unwrap()),
+                )
+                .await
+                .unwrap();
+        }
         let manager = SessionManager::new().with_sessions_dir_internal(tmp.path().join("sessions"));
-        let resolver =
-            GroupChildResolver::new("test-agent".to_string(), Arc::new(RwLock::new(manager)));
+        let resolver = GroupChildResolver::new(
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            principal.clone(),
+            "test-agent".to_string(),
+            Arc::new(RwLock::new(manager)),
+        );
 
         let eng = resolver.resolve("group:eng-standup").await.unwrap();
         assert_eq!(
@@ -2112,6 +2164,79 @@ mod tests {
         );
         let ops = resolver.resolve("group:ops").await.unwrap();
         assert_ne!(eng, ops, "distinct channels must get distinct sessions");
+        // ADR-082 D2: provisioning records the binding at the default policy.
+        let binding = store
+            .binding_for(&ChannelId::parse("group:eng-standup").unwrap(), &principal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.session, eng);
+        assert_eq!(binding.wake, WakePolicy::Mention);
+    }
+
+    /// ADR-082 D3: the group wake reads the binding's policy per post.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_wake_follows_the_binding_policy() {
+        let (store, _tmp) = test_store("wake-policy");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store.bind(&channel, &principal, "session-1").await.unwrap();
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            ConversationKind::Group,
+            Some(stub_drivers(driver, "session-1")),
+        );
+
+        store
+            .set_wake(&channel, &principal, WakePolicy::Off)
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "1",
+                posted("user:local:alice", "@self are you there"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(calls.lock().unwrap().is_empty(), "off wakes nothing");
+
+        store
+            .set_wake(&channel, &principal, WakePolicy::Human)
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "2",
+                posted("prin_other", "a principal speaking"),
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "principal posts never wake, whatever the policy"
+        );
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "3",
+                posted("user:local:alice", "no mention needed"),
+            ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
     }
 
     // -- real session store ---------------------------------------------------

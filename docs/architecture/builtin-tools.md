@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **22 built-in tool names**, all in PascalCase. Task, Plan, Cron, and Async each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **23 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -316,7 +316,8 @@ Reach follows the run's acting-for stamp (ADR-078 D4). An owner run sees every
 channel and every learned contact. Any other run sees its own actor and the
 participants of its own conversation only; `resolve` searches the same scope, and
 learning a new contact (local or Hub) is refused. An unstamped call sees no
-conversation.
+conversation. Each listed channel carries its `kind` (`dm` / `group`), the
+caller's session `binding`, and its `wake` policy (ADR-082).
 
 ### ChannelSend
 
@@ -339,8 +340,8 @@ is canonical; `@name` works only with a complete, unambiguous principal roster.
 ### ChannelRead
 
 Accepts real conversation IDs including `dm_<hash>`. Each result includes current
-`participants` (canonical address, known name, mention token) and the caller's
-session `binding`. New and legacy histories remain readable; raw legacy local
+`participants` (canonical address, known name, mention token), the channel's
+`kind`, and the caller's session `binding` and `wake` policy (ADR-082). New and legacy histories remain readable; raw legacy local
 authors are normalized when their principal identity is known. Watches and unread
 summaries use the same human/group mention rules as turn admission.
 
@@ -362,7 +363,28 @@ Read or search channel events with backward/forward pagination, or wait for the 
 
 Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults to 50, capped at 1000 for reads and 200 for searches. Nonempty query or author activates search mode. since overrides before for reads and is ignored in search mode. Returns events oldest-to-newest with has_more and next_cursor.
 
-`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel, a user's root `@<name>` mention in a group) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
+`watch: true` waits until someone else posts after `since` (default: the newest event at call time) and returns those posts in the same shape; `author`, `query`, and `reply_to` (an event id the post must be threaded onto) narrow which posts count. The caller's own posts never end a watch, nor do posts that start turns by themselves (a user's root post on a DM channel; in a group, a user's root post the caller's wake policy wakes on — an `@<name>` mention by default, every one under `human`, none under `off`) — they already reach a session as a turn. There is no time limit: past the 10-minute foreground cap the call moves to the background and its result arrives as a completion. Reads and watches advance the calling session's read mark, which the session context's unread summary uses, and clear the returned posts from the session's waiting list (other principals' posts the summary keeps listing until answered — ADR-072 D4a).
+
+### Channel
+
+A principal manages its groups (ADR-082). Requires `action`.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_tool.rs)
+
+| Action | Parameters | Effect |
+|---|---|---|
+| `create` | `name`; optional `slug`, `members` | Creates a group (`group:<slug>`, else `chan_*`) with the caller as creator and first member, provisions its group session and binding (`wake: mention`), and invites each member as `invite` does. Returns `channel` and the `invited` addresses. |
+| `invite` | `channel`, `actor` | Adds one actor to a group the caller belongs to: the caller's owner, or a principal in its contact book (`Contacts resolve` first). Any other human is refused — the owner adds them with `peko channel invite`. Remote members receive the signed roster snapshot. |
+| `leave` | `channel` | Removes the caller from a group and deletes its binding; the session stays as history. |
+| `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |
+| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, and — for owner runs — `session`). |
+
+DMs are opened by `ChannelSend` and never change: every action except `info`
+refuses one. Authority follows the run's stamp (ADR-082 D6): an owner run may
+use every action on its channels; any other run reaches only its own
+conversation's channel. The floor refuses `create` and `invite` to untrusted
+runs, and a trusted run's `create` / `invite` skips the policy reviewer and
+waits for the owner's `approve <id>`. Calls run alone (not parallel).
 
 ## Inference and workflows
 
@@ -806,7 +828,7 @@ observe the behavior.
 | Harness | [`ToolHarness`](../../peko-rs/core/src/tools/builtin/test_harness.rs) | `cargo test --lib` | Dispatch semantics (validation, workspace injection, audit), multi-tool flows, caller/principal scoping |
 | Daemon | [`cli_tools.rs`](../../peko-rs/core/tests/cli_tools.rs) | `make test-cli-tools` (mock LLM) | Daemon wiring only: workspace resolution, process spawning, result persistence |
 
-`ToolHarness::new()` registers all 22 tools behind the production dispatcher,
+`ToolHarness::new()` registers all 23 tools behind the production dispatcher,
 with the harness principal's tool ledger bound,
 backed by tempdir storage where it is cheap (workspace files, ChannelStore,
 CronScheduler, ModelCatalog, AsyncExecutor) and fakes where the real backend

@@ -327,3 +327,60 @@ async fn plans_are_the_owners_alone() {
         out.display
     );
 }
+
+/// ADR-082 D6: an untrusted run never changes a roster; a trusted run's
+/// `create` / `invite` goes to the owner, never to the reviewer; and the
+/// conversation-scoped actions skip review.
+#[tokio::test]
+async fn only_the_owner_decides_channel_rosters() {
+    let h = ToolHarness::new().await;
+    // A reviewer that would allow anything: the floor and the owner rule
+    // decide first.
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    let create = json!({"action": "create", "name": "launch"});
+
+    let out = h
+        .call_as(
+            &Caller::acting_for(guest(Trust::Untrusted)),
+            "Channel",
+            create.clone(),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("untrusted"),
+        "{}",
+        out.display
+    );
+
+    let out = h
+        .call_as(
+            &Caller::acting_for(guest(Trust::Trusted)),
+            "Channel",
+            create.clone(),
+        )
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.display);
+    assert_eq!(
+        *gate.reviewed.lock().unwrap(),
+        0,
+        "the reviewer never sees it"
+    );
+    assert_eq!(gate.asked.lock().unwrap()[0].0.tool_name, "Channel");
+
+    for trust in [Trust::Untrusted, Trust::Trusted] {
+        let out = h
+            .call_as(
+                &Caller::acting_for(guest(trust)),
+                "Channel",
+                json!({"action": "info", "channel": "dm_x"}),
+            )
+            .await;
+        assert!(
+            out.value.get("pending_approval").is_none(),
+            "{}",
+            out.display
+        );
+    }
+    assert_eq!(*gate.reviewed.lock().unwrap(), 0);
+}

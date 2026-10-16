@@ -85,6 +85,39 @@ impl ChannelKind {
     }
 }
 
+/// What a channel is (ADR-082 D1): a two-member pair conversation or a
+/// group with a mutable roster. Set at creation, never changed, and
+/// carried on the signed cross-runtime invite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationKind {
+    /// A pair DM: id `dm_<SHA-256>` of its two members' keys; the
+    /// roster never changes.
+    Dm,
+    /// A `group:<slug>` / `chan_*` channel with a mutable roster.
+    #[default]
+    Group,
+}
+
+impl ConversationKind {
+    /// The wire / signing form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dm => "dm",
+            Self::Group => "group",
+        }
+    }
+
+    /// Parse the wire / signing form.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "dm" => Some(Self::Dm),
+            "group" => Some(Self::Group),
+            _ => None,
+        }
+    }
+}
+
 impl ChannelId {
     /// Prefix for randomly-generated bare channel ids. Mirrors
     /// `peko_plan::NodeId::PREFIX`.
@@ -212,6 +245,12 @@ impl ChannelId {
     /// Borrow the inner string.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether this is a pair-DM id (`dm_<64 lowercase hex>`), the only
+    /// id a [`ConversationKind::Dm`] channel may have.
+    pub fn is_pair_id(&self) -> bool {
+        self.0.starts_with("dm_") && Self::parse(&self.0).is_some()
     }
 }
 

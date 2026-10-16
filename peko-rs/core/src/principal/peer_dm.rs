@@ -11,12 +11,11 @@
 //! - display name: `dm-<peer_child_slug>` for all peer kinds (display
 //!   convention, not routing — kept for `peko log` continuity and the
 //!   `dm-…` prefix tests pin);
-//! - `passive_binding`: the peer child's `/`-path (`/<slug>`, legacy
-//!   bare form — the `sess:` scheme prefix is a display-side concern
-//!   added by `compute_path` and the attribution stamps, never stored
-//!   here, so existing channels keep matching across upgrades). The
-//!   binding marks the channel as a DM and names its conversation
-//!   session; the path form stays human-readable in `meta.json`;
+//! - `kind: dm` (ADR-082 D1) and the principal's binding: the peer
+//!   child's `/`-path (`/<slug>`, bare form — the `sess:` scheme prefix
+//!   is a display-side concern added by `compute_path` and the
+//!   attribution stamps, never stored) with the fixed `human` wake
+//!   policy;
 //! - membership: the principal itself (the channel creator is
 //!   auto-added as first member by `ChannelStore::create` — the
 //!   responder's reply post and the `ChannelSend` tool both post with
@@ -182,7 +181,7 @@ pub(crate) async fn find_peer_dm_channel(
     candidates.sort_by_key(|c| !c.as_str().starts_with("dm_"));
     for candidate in candidates {
         match port.binding_for(&candidate, principal).await {
-            Ok(Some(existing)) if existing == binding => {
+            Ok(Some(existing)) if existing.session == binding => {
                 return Ok(Some(candidate));
             }
             Ok(_) => {}
@@ -229,7 +228,7 @@ pub(crate) const RUN_FAILED_PREFIX: &str = "⚠ Run failed: ";
 /// (plain `post` — author = `principal.id`, e.g. `prin_<uuid>`).
 ///
 /// `via` attribution: the reply projects the bound peer-child
-/// session's own output, and the channel's passive binding IS that
+/// session's own output, and the channel's binding names that
 /// session's `/slug` path (`ensure_peer_dm_channel`), so it is
 /// stamped here with the display-side `sess:` scheme prefix added
 /// (matching `compute_path` output). Best-effort: a binding read
@@ -256,8 +255,9 @@ pub(crate) async fn post_peer_dm_reply(
         .await
         .ok()
         .flatten()
-        .filter(|b| b.starts_with('/'))
-        .map(|b| format!("{}{}", peko_session::path::SCHEME_PREFIX, b));
+        .map(|b| b.session)
+        .filter(|session| session.starts_with('/'))
+        .map(|session| format!("{}{}", peko_session::path::SCHEME_PREFIX, session));
     let mut msg = PostMsg::root(text);
     msg.via = via;
     if let Err(e) = port.post(channel, &ActorRef::from(principal), msg).await {
@@ -318,7 +318,11 @@ mod tests {
         assert!(provision.created);
 
         // Name + binding track the peer child.
-        let binding = store.passive_binding(&provision.channel).await.unwrap();
+        let binding = store
+            .binding_for(&provision.channel, &principal_id())
+            .await
+            .unwrap()
+            .map(|b| b.session);
         assert_eq!(binding.as_deref(), Some("/user-alice"));
         let membership = store.membership(&provision.channel).await.unwrap();
         assert_eq!(membership.name, "dm-user-alice");
@@ -346,11 +350,21 @@ mod tests {
             .unwrap();
         assert_ne!(a.channel, b.channel);
         assert_eq!(
-            store.passive_binding(&a.channel).await.unwrap().as_deref(),
+            store
+                .binding_for(&a.channel, &principal_id())
+                .await
+                .unwrap()
+                .map(|b| b.session)
+                .as_deref(),
             Some("/user-foo-bar")
         );
         assert_eq!(
-            store.passive_binding(&b.channel).await.unwrap().as_deref(),
+            store
+                .binding_for(&b.channel, &principal_id())
+                .await
+                .unwrap()
+                .map(|b| b.session)
+                .as_deref(),
             Some("/user-foo-bar-2")
         );
         assert_eq!(
@@ -443,9 +457,10 @@ mod tests {
         assert!(provision.created);
         assert_eq!(
             store
-                .passive_binding(&provision.channel)
+                .binding_for(&provision.channel, &principal_id())
                 .await
                 .unwrap()
+                .map(|b| b.session)
                 .as_deref(),
             Some("/local-user")
         );

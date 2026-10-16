@@ -963,13 +963,16 @@ impl TunnelChannelPort {
         #[derive(serde::Deserialize)]
         struct MetaSnapshot {
             name: String,
-            // Phase 12a: the DM marker. Absent on unbound channels
-            // (`skip_serializing_if` on the store's write side).
-            passive_binding: Option<String>,
         }
         let meta: MetaSnapshot = serde_json::from_slice(&meta_bytes).map_err(|e| {
             format!(
                 "decode meta.json for invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+        let kind = self.local.conversation_kind(channel).await.map_err(|e| {
+            format!(
+                "read channel kind for invite envelope (channel={}): {e}",
                 channel.as_str()
             )
         })?;
@@ -1117,7 +1120,7 @@ impl TunnelChannelPort {
             creator: &creator_address,
             creator_did,
             name: &meta.name,
-            passive_binding: meta.passive_binding.as_deref().unwrap_or(""),
+            kind: kind.as_str(),
             initial_members_bytes: &initial_members_bytes,
         };
         // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
@@ -1152,7 +1155,7 @@ impl TunnelChannelPort {
             creator: creator_address,
             creator_did: creator_did.to_string(),
             name: meta.name.clone(),
-            passive_binding: meta.passive_binding.clone(),
+            kind,
             initial_members,
             signature,
             author_signature,
@@ -1188,7 +1191,8 @@ impl TunnelChannelPort {
         initial_members: &[peko_protocol::channel::InitialMember],
         self_principal: &PrincipalId,
         source_runtime_id: &str,
-        passive_binding: Option<String>,
+        kind: peko_channel::ConversationKind,
+        binding: Option<String>,
     ) -> Result<()> {
         self.local
             .join_remote(
@@ -1198,7 +1202,8 @@ impl TunnelChannelPort {
                 initial_members,
                 self_principal,
                 source_runtime_id,
-                passive_binding,
+                kind,
+                binding,
             )
             .await
     }
@@ -1257,8 +1262,30 @@ impl ChannelPort for TunnelChannelPort {
         &self,
         channel: &ChannelId,
         principal: &PrincipalId,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<peko_channel::Binding>> {
         self.local.binding_for(channel, principal).await
+    }
+    async fn conversation_kind(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<peko_channel::ConversationKind> {
+        self.local.conversation_kind(channel).await
+    }
+    async fn bind(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        session: &str,
+    ) -> Result<peko_channel::Binding> {
+        self.local.bind(channel, principal, session).await
+    }
+    async fn set_wake(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        wake: peko_channel::WakePolicy,
+    ) -> Result<peko_channel::Binding> {
+        self.local.set_wake(channel, principal, wake).await
     }
     async fn ensure_dm(
         &self,
@@ -1528,17 +1555,8 @@ impl ChannelPort for TunnelChannelPort {
         self.local.membership(channel).await
     }
 
-    /// Phase 4 (agent-session paradigm sprint): delegate the
-    /// `meta.json` passive-binding read to the local store — the
-    /// wrapper's `ChannelPort` impl overrides every other method, so
-    /// without this the trait's `None` default would silently shadow
-    /// the store's real answer and bound channels would look unbound.
-    async fn passive_binding(&self, channel: &ChannelId) -> Result<Option<String>> {
-        self.local.passive_binding(channel).await
-    }
-
     /// Per-session digest read positions: delegate to the local
-    /// store, same as `passive_binding` above — read marks are a
+    /// store — read marks are a
     /// local-persistence concern (the digest handler runs where the
     /// session's bound channel log lives), so there is no
     /// cross-runtime fan-out.
@@ -2763,7 +2781,7 @@ mod tests {
             source_principal_did,
             recipient_runtime_id,
             initial_members,
-            passive_binding,
+            kind,
             signature,
             author_signature,
             ..
@@ -2775,7 +2793,7 @@ mod tests {
         assert_eq!(creator_did, signer);
         assert_eq!(source_principal_did, signer);
         assert_eq!(recipient_runtime_id, "did:key:zRuntimeB");
-        assert_eq!(passive_binding.is_some(), dm);
+        assert_eq!(kind == peko_channel::ConversationKind::Dm, dm);
         assert!(initial_members
             .iter()
             .all(|m| m.hub_id.is_some() && m.identity_key.is_some()));
@@ -2802,10 +2820,6 @@ mod tests {
         registered_outbound_invite(true).await;
     }
 
-    /// The DM entry point: a bound channel invited via
-    /// `fanout_dm_invite` with the creator's real DID emits an
-    /// envelope whose `creator_did` + `passive_binding` DM marker
-    /// sign and verify.
     /// Mirror-side fan-back (Phase 12a): after `join_remote` with the
     /// new parameters, the receiver's own principal is a local member
     /// (its post passes the membership check) and the creator's
@@ -2824,7 +2838,7 @@ mod tests {
         let (ctx, mut rx) = build_test_ctx(&port, "did:key:zRuntimeB").await;
         port.set_ctx(ctx).await;
 
-        let channel = ChannelId("chan_mirror01".to_string());
+        let channel = peko_channel::dm_channel_id("alice", "bob");
         let initial_members = vec![
             peko_protocol::channel::InitialMember {
                 hub_id: None,
@@ -2848,6 +2862,7 @@ mod tests {
             &initial_members,
             &PrincipalId("prin_bob_local".into()),
             "did:key:zRuntimeA",
+            peko_channel::ConversationKind::Dm,
             Some("/principal-alice".to_string()),
         )
         .await

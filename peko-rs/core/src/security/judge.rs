@@ -89,10 +89,28 @@ pub trait PolicyGate: Send + Sync {
     }
 }
 
+/// Why the owner, not the reviewer, decides this call, if they do: a
+/// non-owner run's `Channel create` / `invite` (ADR-082 D6). It runs only
+/// as an approved replay.
+#[must_use]
+pub fn owner_decides(
+    stamp: &ActingFor,
+    tool_name: &str,
+    params: &serde_json::Value,
+) -> Option<&'static str> {
+    (!stamp.is_owner() && crate::security::floor::is_channel_roster_change(tool_name, params))
+        .then_some("only the owner decides who joins the principal's groups")
+}
+
 /// Whether a call by `stamp` goes to the reviewer.
 #[must_use]
 pub fn needs_review(stamp: &ActingFor, tool_name: &str, params: &serde_json::Value) -> bool {
     if stamp.is_owner() || EXEMPT_TOOLS.contains(&tool_name) {
+        return false;
+    }
+    // `Channel info` / `wake` / `leave` stay inside the run's own
+    // conversation (the tool enforces it); roster changes go to the owner.
+    if tool_name == "Channel" {
         return false;
     }
     // A reply on the run's own conversation is the conversation itself.

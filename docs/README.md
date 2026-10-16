@@ -125,6 +125,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-066](architecture/adr/ADR-066-pure-workspace-tooling.md) | Pure workspace tooling: extension framework, capability gate, and registry client retired; principal gets all tools under trust-and-audit; packaging = runtime-local tar snapshot |
 | [ADR-080](architecture/adr/ADR-080-daily-memory-maintenance.md) | Daily memory maintenance: a `memory` job seeded once per principal turns each day's sessions into its `kb/` |
 | [ADR-081](architecture/adr/ADR-081-actor-identity-ownership-and-single-online-copy.md) | Actor identity: immutable keys with runtime-qualified local and Hub routes, one owner, principal-owned contacts surviving snapshots, one online copy per principal |
+| [ADR-082](architecture/adr/ADR-082-explicit-channel-bindings-and-principal-group-management.md) | Explicit channel kind, runtime-written bindings with a per-binding wake policy; a `Channel` tool lets principals create, invite, leave, mute, and inspect groups under owner-only authority |
 
 ---
 

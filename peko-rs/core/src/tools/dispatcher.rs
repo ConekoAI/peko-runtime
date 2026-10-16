@@ -607,7 +607,9 @@ impl ToolDispatcher {
             crate::tools::metadata::ToolSource::BuiltIn => None,
         };
         if let Some(reason) =
-            crate::security::floor::tool_refusal(&stamp, &tool_name, mcp_untrusted_ok)
+            crate::security::floor::tool_refusal(&stamp, &tool_name, mcp_untrusted_ok).or_else(
+                || crate::security::floor::action_refusal(&stamp, &tool_name, &call.params),
+            )
         {
             self.emit_floor_denial(call, &stamp, &reason).await;
             let text = format!("Error: {reason}");
@@ -770,7 +772,10 @@ impl ToolDispatcher {
 
         // ADR-078 D7: a non-owner run's sensitive call goes to the
         // policy reviewer, which never sees the conversation behind it.
-        if crate::security::judge::needs_review(&stamp, &tool_name, &params) {
+        let owner_decides = crate::security::judge::owner_decides(&stamp, &tool_name, &params);
+        if owner_decides.is_some()
+            || crate::security::judge::needs_review(&stamp, &tool_name, &params)
+        {
             use crate::security::judge::{GatedCall, Verdict};
             let gated = GatedCall {
                 principal_id: principal_id.0.clone(),
@@ -783,7 +788,14 @@ impl ToolDispatcher {
                 params: params.clone(),
                 call_id: Some(call_id.to_string()),
             };
-            match self.review(&gated).await {
+            let verdict = match owner_decides {
+                Some(reason) => match self.policy_gate() {
+                    Some(gate) if gate.is_approved_replay(&gated).await => Verdict::Allow,
+                    _ => Verdict::AskOwner(reason.to_string()),
+                },
+                None => self.review(&gated).await,
+            };
+            match verdict {
                 Verdict::Allow => {}
                 Verdict::Deny(reason) => {
                     let reason = format!("not allowed by the owner's policy: {reason}");

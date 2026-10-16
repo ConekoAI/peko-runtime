@@ -112,8 +112,11 @@ impl ContactsTool {
             for actor in &participants {
                 actors.insert(actor.address.clone(), json!(actor));
             }
+            let binding = self.port.binding_for(&channel, id).await?;
             channels.push(json!({"channel":channel,"participants":participants,
-                "binding":self.port.binding_for(&channel,id).await?}));
+                "kind":self.port.conversation_kind(&channel).await?,
+                "binding":binding.as_ref().map(|b| &b.session),
+                "wake":binding.map(|b| b.wake)}));
         }
         Ok((actors, channels))
     }

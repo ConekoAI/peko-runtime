@@ -315,11 +315,11 @@ is already consumed by the desktop UI stream
 (`ipc/handlers/channel.rs:561-632`). The `ChannelResponder::
 consider_response` trait (`channel/src/responder.rs:36-40`) is the
 "should I respond?" seam; the daemon selects per channel:
-`PassiveBindingResponder` for bound (DM-tier) channels (Phase 4, below),
-`GroupWakeResponder` for unbound (group-tier) channels (ADR-049 Phase 3 —
-`user:*` root posts wake the member principal; principal posts never
-wake), `NoopChannelResponder` only when the principal has no resolvable
-model.
+`NoopChannelResponder` for DMs (their ingress drives the turn, ADR-072),
+`GroupWakeResponder` for groups (ADR-049 Phase 3 — human root posts wake
+the member principal per its binding's wake policy, ADR-082; principal
+posts never wake), and `NoopChannelResponder` when the principal has no
+resolvable model.
 
 **(implemented — Phase 7, sprint 2)** Passive DM pickup exists on BOTH
 paths, and both land in children now: an inbound A2A/tunnel or CLI/Hub
@@ -328,6 +328,11 @@ message spawns-or-continues the per-peer standing child (`/user-x`,
 (`principal/manager.rs::receive`, `tunnel/dispatcher.rs`); a bound
 channel message wakes its bound child (Phase 4, below). The sync-RPC
 reply semantics of the tunnel are preserved.
+
+> **Superseded by [ADR-082](adr/ADR-082-explicit-channel-bindings-and-principal-group-management.md):**
+> `passive_binding`, `--bind`, and the passive responder are gone. A
+> channel's `kind` is explicit, and `bindings[principal] = { session, wake }`
+> is written only by the runtime. The paragraph below records Phase 4.
 
 **(implemented — Phase 4 of the paradigm sprint, 2026-08-15)** Channel →
 session passive binding exists (`peko-rs/core/src/daemon/
@@ -473,8 +478,8 @@ audit measured the current tool surface against that need:
 | Standing named children (`/memory`, `/about-user`, …) | ♻️ removed 2026-09-12 | `[children]` is ignored on load; sessions are spawned on demand; standing nodes are the per-peer conversation children plus `/tmp` and `/trash` (§2.2) |
 | Session `move` (reparent) | ✅ implemented (Phase 1a) | `session/session_runtime_impl.rs` `move_session`, `peko-rs/session/src/manager.rs`; cycle guard `err_move_cycle` (§2.4) |
 | Path addressing (`/user-a/task-b`) | ✅ implemented (Phase 1b) | `peko-rs/session/src/path.rs` resolver; `slug` on metadata; resolved at tool-runtime boundary before guards (§2.4) |
-| Channel → auto-spawned/bound child (`/user-a`, `/channel-a`) | ✅ implemented (Phase 4) | `daemon/channel_binding.rs` `PassiveBindingResponder`; `meta.json` `passive_binding`; `--bind` on channel create (§3.2) |
-| Passive/active as channel tier property | ✅ implemented (Phase 4) | per-channel `passive_binding` (not `Tier` — binding IS the DM marker); unbound channels stay active-only |
+| Channel → auto-spawned/bound child (`/user-a`, `/group-a`) | ✅ implemented (Phase 4; ADR-082) | `meta.json` `bindings[principal] = { session, wake }`, written by the runtime with the session (`peer_children::ensure_group_binding`, `ChannelPort::ensure_dm`) |
+| Passive/active as channel property | ♻️ replaced (ADR-082) | explicit `kind: dm \| group` plus a per-binding wake policy (`human` / `mention` / `off`) |
 | Spawn-on-contact (external peer → auto-created child) | ✅ implemented (Phase 5+7) | `principal/peer_children.rs::ensure_peer_child`; standing + slug + real peer stamped, parented at trunk |
 | Owner child privileged (whole-store reach) | ♻️ replaced | the `privileged` flag was removed 2026-09-12; ADR-078 gives whole-store reach to owner runs, whichever session they run in |
 | Trunk unreachable from outside (cron-only) | ✅ implemented (Phase 7) | peer channels re-route to children; `RootRouter` is trunk-only; `root:{peer}`/`root:cron:*` deleted |

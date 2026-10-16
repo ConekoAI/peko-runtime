@@ -269,7 +269,6 @@ impl RequestHandler for ChannelHandler {
                 request_id,
                 creator_name,
                 name,
-                passive_binding,
                 id,
             } => {
                 if !self
@@ -304,11 +303,7 @@ impl RequestHandler for ChannelHandler {
                     },
                     None => None,
                 };
-                match self
-                    .router()
-                    .handle_create(&creator, &name, passive_binding, id)
-                    .await
-                {
+                match self.router().handle_create(&creator, &name, id).await {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelCreated {
                             request_id,
@@ -1163,7 +1158,6 @@ mod tests {
             request_id: 1,
             creator_name: "p".into(),
             name: "n".into(),
-            passive_binding: None,
             id: None,
         }));
         assert!(handler.matches(&RequestPacket::ChannelPeek {
@@ -1198,7 +1192,6 @@ mod tests {
             request_id: 7,
             creator_name: "ghost".into(),
             name: "n".into(),
-            passive_binding: None,
             id: None,
         };
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
