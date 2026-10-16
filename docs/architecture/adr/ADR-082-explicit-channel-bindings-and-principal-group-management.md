@@ -1,6 +1,6 @@
 # ADR-082: Explicit channel kind, bindings, and wake policy; principals manage their groups
 
-**Status:** Proposed
+**Status:** Accepted (runtime: `feature/adr-082-channel-bindings`)
 **Date:** 2026-10-16
 **Counterpart:** none expected — PekoHub relays signed invites verbatim and does not read the DM marker (verified: no `passive_binding` reference in `pekohub`).
 
@@ -44,11 +44,11 @@ A `group` channel has a `group:<slug>` or `chan_*` id and a mutable roster.
 
 Every site in F3 reads `kind` instead of probing the binding. The signed invite carries `kind` in place of `passive_binding` (signed as `"dm"` / `"group"`), and the receiver checks the pair id when `kind` is `dm`. No session path leaves the runtime.
 
-**Load-time conversion.** On first load, a `meta.json` without `kind` is rewritten once: `passive_binding` present → `dm`, absent → `group`. There is no wire compatibility: an old runtime's invite without `kind` is rejected, as ADR-073 did for its own replacement.
+**Load-time conversion.** A `meta.json` without `kind` is read in the new shape — `passive_binding` present → `dm`, absent → `group`; string-valued bindings get the kind's default wake — and written that way on the next save. There is no wire compatibility: an old runtime's invite without `kind` is rejected, as ADR-073 did for its own replacement.
 
 ### D2 — A binding is a record, written by the runtime
 
-`meta.bindings` becomes the single channel-side link, for every kind:
+`meta.bindings` becomes the single channel-side link, for every kind (Rust: `ConversationKind`, `Binding`, `WakePolicy` — the name `ChannelKind` was already taken twice):
 
 ```json
 "bindings": {
@@ -56,7 +56,7 @@ Every site in F3 reads `kind` instead of probing the binding. The signed invite 
 }
 ```
 
-Keys are local principal ids; bindings are runtime-local and never on the wire. `SessionMetadata.channel_id` stays as the reverse pointer. Both sides are written together under the principal's `session_creation_lock`, and every lookup (`find_dm_child`, `ensure_group_child`, the channel digest, responder selection) goes through the record. A boot sweep that finds only one side present repairs it from the session side, which is authoritative, and logs a warning.
+Keys are local principal ids; bindings are runtime-local and never on the wire. `SessionMetadata.channel_id` stays as the reverse pointer and is authoritative: whenever the runtime ensures a conversation session (`ensure_dm` on ingress, `peer_children::ensure_group_binding` on a group wake or a `Channel` action), a missing or stale binding is rewritten to name it. No separate boot sweep is needed.
 
 A binding is only ever created **together with a new session** made inside the channel's compartment (ADR-078 D3), exactly as `ensure_channel_child` does today:
 - DM: on the first human ingress or the first `ChannelSend`, as now (F6);
@@ -66,15 +66,15 @@ No tool binds an existing session to a channel, and no tool removes a DM's bindi
 
 ### D3 — The wake policy is per binding
 
-`wake` is one of:
+`wake` is one of (`off` is spelled so it cannot be confused with `Option::None`):
 
 | Policy | A turn starts for… | Allowed on |
 |---|---|---|
 | `human` | every human (user or visitor) root post | DM (fixed), group |
 | `mention` | a human root post that mentions `@<name>` (ADR-072 D2) | group (default) |
-| `none` | nothing; posts wait for `ChannelRead` or the unread summary | group |
+| `off` | nothing; posts wait for `ChannelRead` or the unread summary | group |
 
-A DM's policy is always `human` and cannot be changed: a user's message to a principal always starts a turn. DM turns are still driven by the ingress path (`PeerChildTurns::drive_turn_streaming`), not by the subscriber, so a DM keeps `NoopChannelResponder`. A group gets `GroupWakeResponder` with the binding's policy, or `Noop` for `none`.
+A DM's policy is always `human` and cannot be changed: a user's message to a principal always starts a turn. DM turns are still driven by the ingress path (`PeerChildTurns::drive_turn_streaming`), not by the subscriber, so a DM keeps `NoopChannelResponder`. A group gets `GroupWakeResponder`, which reads the binding's policy on every post, so a change takes effect without respawning the subscriber; a principal without a resolvable model gets `Noop`.
 
 Whatever the policy, a post authored by a principal and a reply (`parent: Some`) never start a turn. Those rules stay hard-coded in the responder, so no policy can reopen the principal-to-principal loop ADR-072 closed.
 
@@ -104,7 +104,7 @@ A new domain tool `Channel` (ADR-071 shape: a required `action`, a strict schema
 | `create` | `name`, optional `slug`, optional `members: [actor ref]` | Creates a `group` channel with the principal as creator and first member (`group:<slug>`, else `chan_*`). Adds each member as `invite` does. Provisions the principal's group session and binding with `wake: mention`. Returns the channel id. |
 | `invite` | `channel`, `actor` | Adds one actor to a group the principal belongs to. Remote members get the existing signed roster snapshot. |
 | `leave` | `channel` | Removes the principal from a group. Its binding is deleted; its session is kept, unbound, as history in the same compartment. The group continues while it has members. |
-| `wake` | `channel`, `policy` (`human` / `mention` / `none`) | Sets the principal's own policy on a group. |
+| `wake` | `channel`, `policy` (`human` / `mention` / `off`) | Sets the principal's own policy on a group, provisioning its group session first if needed. |
 | `info` | `channel` | D4. |
 
 Every action except `info` refuses a `dm` channel with a structured error that names the alternative (`ChannelSend` to open a DM; `create` for a group). DMs are still opened only by `ChannelSend` (F6); the deterministic pair id is what keeps one channel per pair, so `Channel` never creates DMs.
@@ -123,7 +123,7 @@ Checked by the dispatcher from the run's `ActingFor` stamp (ADR-078), before the
 | `wake`, `leave` | any group it belongs to | its own compartment's group | its own compartment's group |
 | `create`, `invite` | allowed | waits for the owner's `approve <id>` | refused |
 
-`wake` and `leave` are open to the run that lives in that group, because the people in a group can reasonably ask the principal to quieten down or go. `create` and `invite` change who can reach the principal and whom the principal can reach, so only the owner decides them. A trusted run's request goes through the ADR-078 owner-approval path. All five actions are recorded in the tool ledger (ADR-079) and emit one attributed `tool.call` event.
+`wake` and `leave` are open to the run that lives in that group, because the people in a group can reasonably ask the principal to quieten down or go. `create` and `invite` change who can reach the principal and whom the principal can reach, so only the owner decides them. A trusted run's request skips the policy reviewer and goes straight to the ADR-078 owner-approval path (`judge::owner_decides`); it runs only as an approved replay. The untrusted refusal is `floor::action_refusal`, the per-action half of the floor. All five actions are recorded in the tool ledger (ADR-079) and emit one attributed `tool.call` event.
 
 The IPC handlers keep `gate_principal_operator`; the CLI is unchanged apart from dropping `--bind` from `peko channel create`, which D2 makes meaningless.
 
@@ -149,5 +149,5 @@ The IPC handlers keep `gate_principal_operator`; the CLI is unchanged apart from
 
 1. **Data model.** `kind` on `MetaJson` / `CreateOpts` with the id check; the binding record with `session` + `wake`; the one-time load conversion; every F3 read site moved to `kind`; responder selection keyed on `(kind, wake)`; lookups through the binding record; the boot repair sweep. Delete `passive_binding` everywhere, including `peko channel create --bind`.
 2. **Wire.** The tunnel invite and its signature carry `kind`; the receiver checks the pair id for `dm`; protocol tests updated.
-3. **`Channel` tool.** The five actions, strict per-action schemas, the D6 trust table in the dispatcher, the invitee rule, ledger entries, and `ToolHarness` coverage (owner / trusted-approval / untrusted-refusal, DM refusal, leave keeping the session, `wake none` silencing a mention).
+3. **`Channel` tool.** The five actions, strict per-action schemas, the D6 trust table in the dispatcher, the invitee rule, ledger entries, and `ToolHarness` coverage (owner / trusted-approval / untrusted-refusal, DM refusal, leave keeping the session, `wake off` silencing a mention).
 4. **Docs.** `builtin-tools.md` (new `Channel` section), `DATA_MODEL.md` (`meta.json`), `API_SURFACE.md` (`ChannelPort`), AGENTS.md §6.2 and the tool count, and CHANGELOG.

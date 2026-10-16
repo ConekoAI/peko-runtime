@@ -12,6 +12,23 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## Channel kind, bindings, and group management (ADR-082)
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `ConversationKind { Dm, Group }` (`as_str`, `parse`) | `peko_protocol::channel` (re-exported from `peko_channel`) | ✅ New | What a channel is; stored in `meta.json` and signed on the invite |
+| `ChannelId::is_pair_id` | `peko_protocol::channel` | ✅ New | `dm_<64 hex>` — the only id a DM may have |
+| `WakePolicy { Human, Mention, Off }` (`default_for`, `as_str`, `parse`) / `Binding { session, wake }` | `peko_channel::port` | ✅ New | A principal's runtime-local link to a channel |
+| `ChannelPort::conversation_kind` / `bind` / `set_wake` | `peko_channel::port` | ✅ New | Read the kind; record a binding (runtime only, with a new session in the channel's compartment; keeps an existing wake); set a group binding's wake |
+| `ChannelPort::binding_for` | `peko_channel::port` | ⚠️ Changed | Returns `Option<Binding>` instead of `Option<String>` |
+| `ChannelPort::passive_binding`, `CreateOpts::{passive_binding, with_passive_binding}` | `peko_channel::port` | ❌ Removed | Replaced by `CreateOpts::{kind, with_kind}` and the binding record |
+| `ChannelStore::{create, invite, leave, join_remote}` | `peko_channel::store` | ⚠️ Changed | A `dm` needs a pair id; invite into and leave of a DM are refused; leaving a group drops the binding; `join_remote` takes `kind` + an optional receiver-local binding and refuses a conflicting kind |
+| `ChannelCliRouter::handle_create`, `RequestPacket::ChannelCreate`, `peko channel create` | `peko_channel::cli_handlers`, `ipc::packet`, CLI | ⚠️ Changed | `passive_binding` / `--bind` removed; creates groups only |
+| `TunnelMessage::TunnelChannelInvite.kind`, `ChannelInviteSignedFields.kind`, `CHANNEL_INVITE_PAYLOAD_VERSION = "peko-channel-invite/3"` | `tunnel::{protocol, tunnel_channel_signature}` | ⚠️ Changed | `kind` replaces the creator's session path (`passive_binding`) |
+| `peer_children::ensure_group_binding`, `PrincipalManager::{ensure_group_binding, ensure_channel_subscriber}` | `principal` | ✅ New | Provision a group session with its binding; start a post-boot subscriber |
+| `ChannelTool` / `CHANNEL_TOOL_NAME` (`Channel`: create / invite / leave / wake / info) | `tools::builtin::channel::channel_tool` | ✅ New | Principal group management; installed with the principal services |
+| `floor::{CHANNEL_ROSTER_ACTIONS, is_channel_roster_change, action_refusal}`, `judge::owner_decides` | `security` | ✅ New | Untrusted runs never change a roster; a trusted run's `create` / `invite` waits for the owner instead of the reviewer |
+
 ## Channel waiting lists (ADR-072 D4a)
 
 | Component | Module | Status | Purpose |
@@ -1097,9 +1114,9 @@ public items:
 |-----------|--------|--------|---------|
 | `ChannelReadMarks` | `peko_channel::read_marks` | ✅ New | `HashMap<session-id, TaskId>` persisted at `<channel_dir>/read_marks.json`; `path_in`/`load` (missing ⇒ empty)/atomic `save` (tmp + fsync + rename), mirroring `cursors.rs`. Re-exported as `peko_channel::ChannelReadMarks` |
 | `ChannelPort::read_mark` / `advance_read_mark` | `peko_channel::port` | ✅ New (defaulted) | Async, defaulted to `Ok(None)` / `Ok(())` so `NoopChannelPort` and in-memory test ports compile unchanged; store-backed impls override |
-| `ChannelStore::read_mark` / `advance_read_mark` (+ `channel_dir_for_marks`) | `peko_channel::store` | ✅ New | Inherent methods on the JSONL store; trait-impl overrides delegate to them. `advance_read_mark` is **monotonic** for numeric line ids — a backward page never rewinds the digest position. Dir resolution probes Runtime then Shared, mirroring `passive_binding` |
+| `ChannelStore::read_mark` / `advance_read_mark` (+ `channel_dir_for_marks`) | `peko_channel::store` | ✅ New | Inherent methods on the JSONL store; trait-impl overrides delegate to them. `advance_read_mark` is **monotonic** for numeric line ids — a backward page never rewinds the digest position. Dir resolution probes Runtime then Shared |
 | `TunnelChannelPort::read_mark` / `advance_read_mark` | `core::tunnel::tunnel_channel_port` | ✅ New | Delegates to the wrapped local store (local-persistence concern; no cross-runtime fan-out) |
-| `ChannelDigestSessionContextHandler` / `CHANNEL_DIGEST_HOOK_PRIORITY` | `principal::channel_digest` | ✅ New (crate-internal) | Renders `channel activity since you last read:` — per bound channel (DM via `passive_binding`, group via the session's `peer_id == <channel wire id>` stamp) a `N new message(s)` header with ≤5 previews (`[via <path>]` else `[<author>]`), an overflow line, and a 2 KiB whole-line cap. First observation adopts the tip and renders nothing; the mark then advances to the max line observed. Registered on the daemon-global core as `principal:channel-digest-context` (priority 90) |
+| `ChannelDigestSessionContextHandler` / `CHANNEL_DIGEST_HOOK_PRIORITY` | `principal::channel_digest` | ✅ New (crate-internal) | Renders `channel activity since you last read:` — per bound channel (the binding record, or the session's own channel stamp; kind from `meta.json`) a `N new message(s)` header with ≤5 previews (`[via <path>]` else `[<author>]`), an overflow line, and a 2 KiB whole-line cap. First observation adopts the tip and renders nothing; the mark then advances to the max line observed. Registered on the daemon-global core as `principal:channel-digest-context` (priority 90) |
 | `ChannelReadTool::execute_with_context` mark advance | `tools::builtin::channel::channel_read` | ⚠️ Changed | On a successful, non-empty page with `ctx.session_id` set, advances the session's read mark to the newest returned line id (best-effort; a persistence failure never fails the read) |
 
 ### ADR-058 D1/D2/D3 — origin-signed messaging (2026-09-16)

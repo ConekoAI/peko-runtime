@@ -200,6 +200,10 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
             backends.channels.clone(),
             Weak::new(),
         )),
+        Arc::new(channel::ChannelTool::new(
+            backends.channels.clone(),
+            Weak::new(),
+        )),
         Arc::new(ChannelSendTool::new_local_only(
             backends.channels.clone(),
             PRINCIPAL.into(),
@@ -505,6 +509,11 @@ mod tests {
             ("ChannelSend", json!({"to": channel, "text":"ping"}), ""),
             ("ChannelRead", json!({"channel": channel}), "ping"),
             ("Contacts", json!({"action":"list"}), "participants"),
+            (
+                "Channel",
+                json!({"action":"info", "channel": channel}),
+                "creator",
+            ),
             ("ModelList", json!({}), ""),
             ("MCP", json!({"action":"status"}), "servers"),
             (

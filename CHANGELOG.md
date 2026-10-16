@@ -4,6 +4,32 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Channel kinds, bindings, and principal group management (ADR-082, 0.1.0, 2026-10-16)
+
+- A channel's `kind` (`dm` / `group`) is stored in `meta.json` instead of being
+  inferred from `passive_binding`, which is removed (with `peko channel create
+  --bind` and the IPC field). A DM has a pair id and keeps its two members:
+  invite and leave are refused. Older `meta.json` files are read in the new
+  shape and written that way on the next save.
+- `bindings[principal] = { session, wake }` is the one channel-side link to a
+  session, written only by the runtime with a session it creates in the
+  channel's compartment. A group's binding is now recorded when its session is
+  provisioned; leaving drops it and keeps the session as history.
+- Wake policy per binding: `human` (every human root post), `mention` (a
+  group's default), or `off`. A DM is always `human`. The group wake and
+  `ChannelRead` watch read it per post; principal posts and replies never wake.
+- The signed channel invite carries `kind` (payload `peko-channel-invite/3`)
+  instead of the creator's local session path; the receiver checks that only a
+  DM, and every DM, has a pair id. Older runtimes' invites are rejected.
+- New `Channel` tool (23 built-ins): `create` a group (optionally with
+  members), `invite`, `leave`, `wake`, and `info` (kind, creator, participants,
+  your wake policy). Invitees are the principal's owner or learned principal
+  contacts. Untrusted runs cannot `create` / `invite`; a trusted run's call
+  waits for the owner's `approve <id>` without going to the policy reviewer.
+  Non-owner runs reach only their own conversation's channel.
+- `Contacts list` and `ChannelRead` results add the channel `kind` and the
+  caller's `wake` beside its session `binding`.
+
 ### ADR-081 review fixes (0.1.0, 2026-10-16)
 
 - Only the linked copy receives: a runtime leaves a channel's traffic

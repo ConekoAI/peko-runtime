@@ -1677,7 +1677,7 @@ retired 2026-09-12.) The self-safety guards — ancestor, self-mutation,
 trunk — apply to every run. The ingress re-route that sends peer traffic to these children landed in
 Phase 7 (§5.9): `PrincipalManager::receive` / `receive_streaming`, the
 IPC
-`principal_send` handler, and the channel passive-binding driver all
+`principal_send` handler, and the group-channel wake all
 drive turns in the peer's child via the shared
 `principal::child_turns::PeerChildTurns` bundle.
 
@@ -1988,58 +1988,52 @@ Bare `chan_*` ids are unchanged (no colons). `channel_dir_name` and
 
 ### 5¾.2 `meta.json` Schema
 
-### 5¾.2 `meta.json` Schema
-
 ```json
 {
   "creator": "prin_alice",
   "name": "design-sync",
   "created_at": "2026-08-05T12:00:00Z",
   "tier": "Runtime",
-  "passive_binding": "/user-a"
+  "kind": "group",
+  "bindings": {
+    "prin_alice": { "session": "0b7c…", "wake": "mention" }
+  }
 }
 ```
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `creator` | string | yes | Creator principal id. |
+| `creator` | string | yes | Creator principal id (a mirror keeps the source's creator, display only). |
 | `name` | string | yes | Free-form display name. |
 | `created_at` | RFC3339 | yes | Snapshot at create time. |
 | `tier` | `"Runtime"` \| `"Shared"` | yes | Storage locality (NOT the DM/group split). |
-| `passive_binding` | string | no | Phase 4 (agent-session paradigm sprint). Absent or omitted ⇒ unbound (active/group-tier channel; today's default). |
+| `kind` | `"dm"` \| `"group"` | yes | ADR-082 D1; immutable. A `dm` has a pair id (`dm_<sha256>`) and exactly its two members for life: invite and leave are refused. |
+| `bindings` | object | no | ADR-082 D2: local principal id → `{ session, wake }`. Runtime-local, never on the wire. Omitted when empty. |
+| `participants` | string[] | no | A DM's fixed pair (canonical addresses); groups use current membership. |
 
-`passive_binding` is written only when set (`skip_serializing_if`),
-so pre-Phase-4 files and new unbound channels share the same shape;
-legacy files without the key deserialize as absent
-(`#[serde(default)]`). The value is a session id or a `/path` in the
-creator principal's session tree (§5.8 path addressing), set at
-create time via `peko channel create --bind`. When present, the
-daemon's `PassiveBindingResponder` wakes the bound session on every
-inbound `posted` event from another member, runs one LLM turn there
-(via the subagent resume path), and posts the reply back as the
-principal. Self-authored posts are suppressed (anti-loop invariant),
-and channel-origin turns never project anywhere else — the
-channel's own `events.jsonl` is the durable record of both
-directions. See `peko-rs/core/src/daemon/channel_binding.rs`.
+A binding names the principal's conversation session for the channel
+(a session id, or the bare `/slug` path of a DM's peer child) and its
+wake policy: `human` (every human root post starts a turn — a DM's fixed
+policy), `mention` (a human root post naming `@<name>` — a group's
+default), or `off`. Principal-authored posts and replies never start a
+turn under any policy (ADR-072). Only the runtime writes a binding, when
+it creates that session inside the channel's compartment: a DM's on
+first ingress or first `ChannelSend`, a group's on first wake or on
+`Channel create` / `wake`. The session side (`SessionEntry.channel_id`)
+is authoritative; a stale binding is rewritten when the runtime next
+ensures the session. Leaving a group deletes the binding and keeps the
+session as history.
 
-**Sprint 3 Phase 10 (2026-08-18):** peer ingress auto-provisions a
-1:1 **DM channel** per peer alongside its standing child session —
-`name = "dm-<peer_child_slug>"` (e.g. `dm-local-user`, `dm-user-a`),
-`passive_binding = "/<peer_child_slug>"`, creator/member = the
-principal itself (`peko-rs/core/src/principal/peer_dm.rs`). Find is by
-binding match, so the on-disk shape is unchanged.
+Files written before ADR-082 carry no `kind`: a `passive_binding`
+marked a DM, and bindings were bare session strings. They are read in
+the new shape (`passive_binding` present → `dm`; string bindings get the
+kind's default wake) and written that way on the next save.
 
-**Sprint 3 Phase 12a (2026-08-19):** cross-runtime DM mirrors. An
-inbound `TunnelChannelInvite` bootstraps a local mirror via
-`ChannelStore::join_remote`, which now writes `passive_binding` into
-the mirror's `meta.json`. The binding is **receiver-local**: the
-envelope carries the source's binding only as a DM marker (`Some(_)`
-= DM-tier; the value is never adopted verbatim), and the receiver
-derives its own `/<slug>` from its own peer child for the creator —
-each side's binding names its OWN child for the other principal, and
-`-N` slug-collision suffixes are runtime-local. `creator` in a
-mirror's `meta.json` remains the SOURCE-runtime-local creator id
-(display only).
+Cross-runtime mirrors (`ChannelStore::join_remote`) take `kind` from the
+signed invite (`peko-channel-invite/3`, which carries `kind` instead of
+the creator's session path) and bind the receiver's own peer child for a
+DM. An invite whose kind disagrees with an existing mirror, or a `dm`
+invite without a pair id, is refused.
 
 ### 5¾.2½ `posted` event `via` attribution (2026-09-12)
 
@@ -2141,10 +2135,10 @@ b64u(payload)` — canonical by construction, so the hub's
   author has no vault-backed key (legacy runtime-vouched path).
 
 Both JWS embed one JSON payload, versioned `peko-channel-event/2` /
-`peko-channel-invite/2`, with snake_case fields: every envelope field
+`peko-channel-invite/3`, with snake_case fields: every envelope field
 (`request_id`, `source_runtime_id`, `recipient_runtime_id`,
 `source_principal_did`, `channel_id`, plus `creator`, `creator_did`,
-`name`, `passive_binding` for invites), the inner payload as
+`name`, `kind` (`dm` / `group`, ADR-082) for invites), the inner payload as
 `event_b64u` / `initial_members_b64u` (base64url-no-pad of the
 serialized `ChannelEvent` / `InitialMember[]` bytes), and `iat`/`exp`
 (Unix seconds; sender mints `exp = iat + 300`). Receivers reject

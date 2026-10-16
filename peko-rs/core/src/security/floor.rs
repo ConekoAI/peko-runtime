@@ -17,6 +17,37 @@ pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["Bash", "MCP"];
 /// owner's.
 pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan"];
 
+/// `Channel` actions that change who can reach the principal and whom it
+/// can reach (ADR-082 D6). An untrusted run never gets them; a trusted
+/// run's call waits for the owner ([`crate::security::judge::owner_decides`]).
+pub const CHANNEL_ROSTER_ACTIONS: &[&str] = &["create", "invite"];
+
+/// Whether `params` call one of the `Channel` roster actions.
+#[must_use]
+pub fn is_channel_roster_change(tool_name: &str, params: &serde_json::Value) -> bool {
+    tool_name == "Channel"
+        && params["action"]
+            .as_str()
+            .is_some_and(|a| CHANNEL_ROSTER_ACTIONS.contains(&a))
+}
+
+/// Why `stamp` may not make this particular call, if it may not: the
+/// per-action part of the floor, beside the per-tool [`tool_refusal`].
+#[must_use]
+pub fn action_refusal(
+    stamp: &ActingFor,
+    tool_name: &str,
+    params: &serde_json::Value,
+) -> Option<String> {
+    (stamp.is_untrusted() && is_channel_roster_change(tool_name, params)).then(|| {
+        format!(
+            "Creating groups and inviting people is not available while acting for {} \
+             (untrusted). Ask the owner to set it up.",
+            stamp.actor
+        )
+    })
+}
+
 /// Workspace files only an owner run may write. Everything an agent's
 /// prompt is built from, plus the policy itself.
 pub const PROTECTED_FILES: &[&str] = &[
