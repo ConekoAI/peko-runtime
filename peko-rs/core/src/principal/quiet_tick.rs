@@ -4,7 +4,9 @@
 //! The check calls no model and changes nothing. Something waits when:
 //! - the session the job fires in would see channel posts in its digest
 //!   (other principals' posts on its waiting list, or unread activity),
-//! - an owner run's open plans have steps ready or in progress, or
+//! - an owner run's open plans have steps ready or in progress that no
+//!   future `check_at` snoozes, or a check-in that came due since this
+//!   job's last turn (ADR-084), or
 //! - another of the principal's jobs failed since this job's last turn.
 //!
 //! Anything else (pending proposals and approvals, for instance) waits on
@@ -16,7 +18,6 @@
 use std::sync::Arc;
 
 use peko_cron::{CronJob, QUIET_STATUS};
-use peko_plan::PlanNodeStatus;
 
 use crate::principal::Principal;
 
@@ -40,9 +41,19 @@ pub(crate) async fn what_waits(
         }
     }
     if owner {
-        let steps = open_plan_steps(principal).await;
-        if steps > 0 {
-            waiting.push(format!("{steps} plan step(s) ready or in progress"));
+        let plans = match principal.plan_port.load_resumable(&principal.id).await {
+            Ok(plans) => plans,
+            Err(e) => {
+                tracing::debug!(principal = %principal.id, "quiet tick: plans unreadable: {e}");
+                Vec::new()
+            }
+        };
+        let (active, due) = plan_work(&plans, job.last_run, chrono::Utc::now());
+        if active > 0 {
+            waiting.push(format!("{active} plan step(s) ready or in progress"));
+        }
+        if due > 0 {
+            waiting.push(format!("{due} plan check-in(s) came due"));
         }
     }
     let failed = failed_since(job, jobs);
@@ -52,26 +63,26 @@ pub(crate) async fn what_waits(
     waiting
 }
 
-/// Steps ready to start or in progress across the principal's open plans.
-async fn open_plan_steps(principal: &Principal) -> usize {
-    let plans = match principal.plan_port.load_resumable(&principal.id).await {
-        Ok(plans) => plans,
-        Err(e) => {
-            tracing::debug!(principal = %principal.id, "quiet tick: plans unreadable: {e}");
-            return 0;
-        }
-    };
-    plans
+/// Plan work for a fire: steps ready or in progress that no future
+/// `check_at` snoozes, and check-ins that came due after `last_turn`
+/// (any due one, when the job never ran a turn). A check-in that was
+/// already due at the last turn has had its turn; it stays listed in
+/// the plans section but does not wake the principal again (ADR-084).
+fn plan_work(
+    plans: &[peko_plan::PlanRecord],
+    last_turn: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (usize, usize) {
+    let active = plans.iter().map(|p| p.active_nodes(now).len()).sum();
+    let due = plans
         .iter()
-        .map(|plan| {
-            let in_progress = plan
-                .nodes
-                .iter()
-                .filter(|n| matches!(n.status, PlanNodeStatus::InProgress))
-                .count();
-            in_progress + plan.ready_nodes().len()
+        .flat_map(|p| p.due_check_ins(now))
+        .filter(|n| match (n.check_at, last_turn) {
+            (Some(at), Some(last)) => at > last,
+            _ => true,
         })
-        .sum()
+        .count();
+    (active, due)
 }
 
 /// The names of the principal's other jobs whose last run failed after
@@ -179,6 +190,51 @@ mod tests {
         assert_eq!(failed_since(&tick, &jobs), vec!["new-fail"]);
         let fresh = job("keepalive", None, None);
         assert_eq!(failed_since(&fresh, &jobs), vec!["old-fail", "new-fail"]);
+    }
+
+    /// ADR-084: a future check-in snoozes a ready step; a check-in wakes
+    /// the heartbeat once, for the first turn after it came due.
+    #[test]
+    fn check_ins_snooze_and_wake_once() {
+        use peko_plan::{NodeId, PlanNode, PlanNodeStatus, PlanRecord};
+        let now = Utc::now();
+        let node = |status, check_at| PlanNode {
+            node_id: NodeId::generate(),
+            step: "s".into(),
+            status,
+            depends_on: vec![],
+            evidence: None,
+            blocked_reason: None,
+            check_at,
+            created_at: now,
+            updated_at: now,
+        };
+        let plan = |nodes| vec![PlanRecord::new(PrincipalId("p".into()), "t".into(), nodes)];
+        let last_turn = Some(now - Duration::minutes(10));
+
+        let ready = plan(vec![node(PlanNodeStatus::Pending, None)]);
+        assert_eq!(plan_work(&ready, last_turn, now), (1, 0));
+        let snoozed = plan(vec![node(
+            PlanNodeStatus::Pending,
+            Some(now + Duration::days(1)),
+        )]);
+        assert_eq!(plan_work(&snoozed, last_turn, now), (0, 0));
+
+        let blocked = || PlanNodeStatus::Blocked {
+            reason: "waiting on Bob".into(),
+            since: now,
+        };
+        let came_due = plan(vec![node(blocked(), Some(now - Duration::minutes(5)))]);
+        assert_eq!(plan_work(&came_due, last_turn, now), (0, 1));
+        let had_its_turn = plan(vec![node(blocked(), Some(now - Duration::hours(1)))]);
+        assert_eq!(plan_work(&had_its_turn, last_turn, now), (0, 0));
+        assert_eq!(plan_work(&had_its_turn, None, now), (0, 1));
+
+        let done = plan(vec![node(
+            PlanNodeStatus::Completed { completed_at: now },
+            Some(now - Duration::minutes(5)),
+        )]);
+        assert_eq!(plan_work(&done, last_turn, now), (0, 0));
     }
 
     #[test]

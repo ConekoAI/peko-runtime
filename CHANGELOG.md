@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Goals as plans, and check-ins (ADR-084, 0.1.0, 2026-10-16)
+
+- Plan steps take `checkAt` (`Plan` `create` nodes, `add_step`, `mark_step`):
+  an RFC 3339 time or a duration from now (`90m`, `2d`); an empty string in
+  `mark_step` clears it, and completing a step clears it. Records gain an
+  optional `checkAt` per node; older records read unchanged.
+- A future `checkAt` snoozes a ready or in-progress step: it no longer makes an
+  attention-gated heartbeat run (ADR-083 D2 amended). A check-in that came due
+  since the job's last turn makes the next tick run, once.
+- The open-plans section lists due check-ins first and shows `check at <time>`
+  on steps that come back later.
+- The genesis brief turns each `[intent].goals` entry into a plan; the nightly
+  memory brief lists the goals and keeps their plans current. The keepalive
+  tick text mentions `checkAt`.
+- `PlanPort::set_node_check_at`; `PlanRecord::{due_check_ins, active_nodes}`.
+
 ### Nightly dream (ADR-080 rev 3, 0.1.0, 2026-10-16)
 
 - The memory brief adds two steps after the bookkeeping. **Reflect** on how the

@@ -190,6 +190,25 @@ impl PlanRecord {
             .collect()
     }
 
+    /// Unfinished nodes whose `check_at` has passed at `now`: check-ins
+    /// that are due (ADR-084).
+    pub fn due_check_ins(&self, now: DateTime<Utc>) -> Vec<&PlanNode> {
+        self.nodes
+            .iter()
+            .filter(|n| !matches!(n.status, PlanNodeStatus::Completed { .. }))
+            .filter(|n| n.check_at.is_some_and(|at| at <= now))
+            .collect()
+    }
+
+    /// Ready and in-progress nodes not snoozed by a future `check_at`:
+    /// the work an attention-gated heartbeat should run for (ADR-084).
+    pub fn active_nodes(&self, now: DateTime<Utc>) -> Vec<&PlanNode> {
+        let mut active = self.current_focus_nodes();
+        active.extend(self.ready_nodes());
+        active.retain(|n| n.check_at.is_none_or(|at| at <= now));
+        active
+    }
+
     /// DFS cycle check over this record's nodes; see [`validate_nodes`].
     /// Storage does NOT call this — it's available to the runtime for
     /// callers who want strictness on `create`.
@@ -320,6 +339,12 @@ pub struct PlanNode {
     /// status. Schema-driven code should prefer `status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    /// When to come back to this step (ADR-084). Until then a ready or
+    /// in-progress step is snoozed: it does not make an attention-gated
+    /// heartbeat run. Once it passes, the check-in is due. Cleared when
+    /// the step completes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_at: Option<DateTime<Utc>>,
     /// Node creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last mutation timestamp; updated whenever status / evidence /
@@ -528,6 +553,7 @@ mod tests {
             blocked_reason: None,
             created_at: ts(1_700_000_000),
             updated_at: ts(1_700_000_000),
+            check_at: None,
         }
     }
 
@@ -610,6 +636,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
             PlanNode {
                 node_id: b_id.clone(),
@@ -620,6 +647,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
         ];
 
@@ -651,6 +679,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
             PlanNode {
                 node_id: b.clone(),
@@ -661,6 +690,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
         ];
         let result = record.validate_dag();
@@ -682,6 +712,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
             PlanNode {
                 node_id: b.clone(),
@@ -692,6 +723,7 @@ mod tests {
                 blocked_reason: None,
                 created_at: ts(1_700_000_000),
                 updated_at: ts(1_700_000_000),
+                check_at: None,
             },
         ];
         let err = record.validate_dag().expect_err("cycle must be rejected");
@@ -712,6 +744,7 @@ mod tests {
             blocked_reason: None,
             created_at: ts(1_700_000_000),
             updated_at: ts(1_700_000_000),
+            check_at: None,
         }];
         let err = record
             .validate_dag()

@@ -96,6 +96,56 @@ pub fn parse_depends_on(value: Option<&serde_json::Value>) -> AnyhowResult<Vec<N
         .collect()
 }
 
+/// What a call says about a step's `checkAt` (ADR-084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckAtParam {
+    /// Absent or null: leave it as it is.
+    Unchanged,
+    /// An empty string: clear it.
+    Clear,
+    /// Come back to the step at this time.
+    At(chrono::DateTime<chrono::Utc>),
+}
+
+impl CheckAtParam {
+    /// The time to store on a new step.
+    #[must_use]
+    pub fn time(self) -> Option<chrono::DateTime<chrono::Utc>> {
+        match self {
+            Self::At(at) => Some(at),
+            Self::Unchanged | Self::Clear => None,
+        }
+    }
+}
+
+/// Parse a step's `checkAt` (ADR-084): an RFC 3339 time, or a relative
+/// duration from now (`"90m"`, `"2d"`) so the model does no clock
+/// arithmetic. An empty string clears it; an absent or null value leaves
+/// it alone.
+pub fn parse_check_at(value: Option<&serde_json::Value>) -> AnyhowResult<CheckAtParam> {
+    let raw = match value {
+        None | Some(serde_json::Value::Null) => return Ok(CheckAtParam::Unchanged),
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("'checkAt' must be a string"))?
+            .trim(),
+    };
+    if raw.is_empty() {
+        return Ok(CheckAtParam::Clear);
+    }
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(CheckAtParam::At(at.with_timezone(&chrono::Utc)));
+    }
+    let ms = peko_cron::tools::parse_duration_ms(raw).map_err(|_| {
+        anyhow::anyhow!(
+            "'checkAt' must be an RFC 3339 time or a duration like \"90m\" or \"2d\", got {raw:?}"
+        )
+    })?;
+    Ok(CheckAtParam::At(
+        chrono::Utc::now() + chrono::Duration::milliseconds(ms as i64),
+    ))
+}
+
 /// Resolve a `NodeId` from a string the LLM supplied. User-supplied
 /// ids must round-trip through [`NodeId::parse`]; fresh ids are
 /// generated when the field is absent.
@@ -177,6 +227,15 @@ impl PlanPort for TestPlanPort {
         status: PlanNodeStatus,
     ) -> Result<PlanRecord> {
         PlanPort::mark_node_status(&self.storage, plan_id, principal_id, node_id, status).await
+    }
+    async fn set_node_check_at(
+        &self,
+        plan_id: &str,
+        principal_id: &PrincipalId,
+        node_id: &NodeId,
+        check_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<PlanRecord> {
+        PlanPort::set_node_check_at(&self.storage, plan_id, principal_id, node_id, check_at).await
     }
     async fn set_node_evidence(
         &self,

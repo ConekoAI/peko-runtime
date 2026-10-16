@@ -52,7 +52,9 @@ the job fires in (the trunk, or its creating session):
    activity. The digest's read marks and waiting lists are not touched.
    Showing and consuming them is the turn's job.
 2. **Standing work.** For an owner run, the steps of open plans that are ready
-   or in progress.
+   or in progress. *Amended by [ADR-084](ADR-084-goals-as-plans-and-check-ins.md):*
+   a future `check_at` snoozes such a step, and a check-in that came due since
+   the job's last turn also counts.
 3. **Failures.** Another of the principal's jobs whose last run failed after
    this job's last turn.
 

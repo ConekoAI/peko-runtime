@@ -127,6 +127,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-081](architecture/adr/ADR-081-actor-identity-ownership-and-single-online-copy.md) | Actor identity: immutable keys with runtime-qualified local and Hub routes, one owner, principal-owned contacts surviving snapshots, one online copy per principal |
 | [ADR-082](architecture/adr/ADR-082-explicit-channel-bindings-and-principal-group-management.md) | Explicit channel kind, runtime-written bindings with a per-binding wake policy; a `Channel` tool lets principals create, invite, leave, mute, and inspect groups under owner-only authority |
 | [ADR-083](architecture/adr/ADR-083-quiet-ticks.md) | Cron message jobs can wait for attention (`when: attention`): a due fire with nothing waiting is a quiet tick with no model call, at most an hour apart; the seeded keepalive waits for attention |
+| [ADR-084](architecture/adr/ADR-084-goals-as-plans-and-check-ins.md) | Plan steps carry `checkAt`: snoozed until then, a due check-in wakes the attention-gated heartbeat once; goals are kept as plans by the genesis and nightly briefs |
 
 ---
 

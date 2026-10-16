@@ -14,7 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use peko_plan::{PlanNodeStatus, PlanPort, PlanRecord, PlanStorage};
+use chrono::{DateTime, Utc};
+use peko_plan::{PlanNode, PlanNodeStatus, PlanPort, PlanRecord, PlanStorage};
 use peko_subject::PrincipalId;
 
 /// Most plans rendered; the rest are counted with a pointer to the
@@ -75,6 +76,7 @@ async fn render_open_plans(port: &dyn PlanPort, principal_id: &PrincipalId) -> O
     if plans.is_empty() {
         return None;
     }
+    let now = Utc::now();
     plans.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
@@ -84,7 +86,7 @@ async fn render_open_plans(port: &dyn PlanPort, principal_id: &PrincipalId) -> O
     let mut blocks: Vec<String> = plans
         .iter()
         .take(PLANS_SECTION_CAP)
-        .map(render_plan_block)
+        .map(|record| render_plan_block(record, now))
         .collect();
     if hidden > 0 {
         blocks.push(format!(
@@ -94,31 +96,56 @@ async fn render_open_plans(port: &dyn PlanPort, principal_id: &PrincipalId) -> O
     Some(blocks.join("\n"))
 }
 
-/// One plan: a header with title and id, then its in-progress steps,
-/// ready steps (dependencies done), and blocked or failed steps with
-/// their reasons. Sections without steps are omitted.
-fn render_plan_block(record: &PlanRecord) -> String {
+/// One plan: a header with title and id, then its due check-ins, its
+/// in-progress steps, ready steps (dependencies done), and blocked or
+/// failed steps with their reasons. A step with a future `check_at`
+/// shows when it comes back (ADR-084). Sections without steps are
+/// omitted.
+fn render_plan_block(record: &PlanRecord, now: DateTime<Utc>) -> String {
     let mut out = format!("Plan: {} ({})\n", record.title, record.plan_id);
+    let line = |n: &PlanNode| {
+        format!(
+            "    - [{}] {}{}\n",
+            n.node_id.as_str(),
+            n.step,
+            check_label(n, now)
+        )
+    };
 
-    let in_progress = record.current_focus_nodes();
-    if !in_progress.is_empty() {
-        out.push_str("  In progress:\n");
-        for n in &in_progress {
-            out.push_str(&format!("    - [{}] {}\n", n.node_id.as_str(), n.step));
+    let due = record.due_check_ins(now);
+    if !due.is_empty() {
+        out.push_str("  Check-ins due (act, then reschedule with checkAt or clear it):\n");
+        for n in &due {
+            out.push_str(&line(n));
         }
     }
 
-    let ready = record.ready_nodes();
+    // A due step is listed once, under the check-ins.
+    let not_due = |n: &&PlanNode| !due.iter().any(|d| d.node_id == n.node_id);
+    let in_progress: Vec<_> = record
+        .current_focus_nodes()
+        .into_iter()
+        .filter(not_due)
+        .collect();
+    if !in_progress.is_empty() {
+        out.push_str("  In progress:\n");
+        for n in &in_progress {
+            out.push_str(&line(n));
+        }
+    }
+
+    let ready: Vec<_> = record.ready_nodes().into_iter().filter(not_due).collect();
     if !ready.is_empty() {
         out.push_str("  Ready next:\n");
         for n in &ready {
-            out.push_str(&format!("    - [{}] {}\n", n.node_id.as_str(), n.step));
+            out.push_str(&line(n));
         }
     }
 
     let stuck: Vec<_> = record
         .nodes
         .iter()
+        .filter(not_due)
         .filter_map(|n| match &n.status {
             PlanNodeStatus::Blocked { reason, .. } => Some((n, "blocked", reason)),
             PlanNodeStatus::Failed { reason, .. } => Some((n, "failed", reason)),
@@ -129,20 +156,31 @@ fn render_plan_block(record: &PlanRecord) -> String {
         out.push_str("  Needs attention:\n");
         for (n, label, reason) in stuck {
             out.push_str(&format!(
-                "    - [{}] ({label}): {} ({reason})\n",
+                "    - [{}] ({label}): {} ({reason}){}\n",
                 n.node_id.as_str(),
-                n.step
+                n.step,
+                check_label(n, now)
             ));
         }
     }
     out
 }
 
+/// ` — check at <time>` for a future check-in, ` — check-in due since
+/// <time>` for a past one, else nothing.
+fn check_label(node: &PlanNode, now: DateTime<Utc>) -> String {
+    match node.check_at {
+        Some(at) if at > now => format!(" — check at {}", at.format("%Y-%m-%d %H:%M UTC")),
+        Some(at) => format!(" — check-in due since {}", at.format("%Y-%m-%d %H:%M UTC")),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::prompt_sections::{PromptSectionInput, PromptSectionProvider};
-    use peko_plan::{NodeId, PlanNode};
+    use peko_plan::NodeId;
 
     fn node(step: &str, status: PlanNodeStatus) -> PlanNode {
         let now = chrono::Utc::now();
@@ -155,6 +193,7 @@ mod tests {
             blocked_reason: None,
             created_at: now,
             updated_at: now,
+            check_at: None,
         }
     }
 
@@ -201,6 +240,29 @@ mod tests {
             stuck.contains("(blocked): Get review (needs reviewer)"),
             "{text}"
         );
+    }
+
+    /// ADR-084: a due check-in leads the plan (listed once); a future
+    /// one shows when it comes back.
+    #[tokio::test]
+    async fn renders_due_and_upcoming_check_ins() {
+        let (_dir, storage) = storage();
+        let p = PrincipalId::generate();
+        let now = chrono::Utc::now();
+        let mut due = node("Ask Bob about the contract", PlanNodeStatus::Pending);
+        due.check_at = Some(now - chrono::Duration::hours(1));
+        let mut later = node("Review Q3 numbers", PlanNodeStatus::Pending);
+        later.check_at = Some(now + chrono::Duration::days(2));
+        storage
+            .create(p.clone(), "Close the deal".into(), vec![due, later])
+            .await
+            .unwrap();
+        let text = render_open_plans(&storage, &p).await.unwrap();
+        let (check_ins, rest) = text.split_once("Ready next:").unwrap();
+        assert!(check_ins.contains("Check-ins due"), "{text}");
+        assert!(check_ins.contains("Ask Bob about the contract — check-in due since"));
+        assert!(!rest.contains("Ask Bob"), "listed once: {text}");
+        assert!(rest.contains("Review Q3 numbers — check at "), "{text}");
     }
 
     #[tokio::test]

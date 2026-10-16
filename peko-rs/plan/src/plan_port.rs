@@ -118,6 +118,17 @@ pub trait PlanPort: Send + Sync + 'static {
         status: PlanNodeStatus,
     ) -> Result<PlanRecord>;
 
+    /// Set or clear a node's `check_at` (ADR-084). Stamps the node's
+    /// `updated_at`. Returns [`PlanError::InvalidNodeId`] if the node
+    /// isn't present.
+    async fn set_node_check_at(
+        &self,
+        plan_id: &str,
+        principal_id: &PrincipalId,
+        node_id: &NodeId,
+        check_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<PlanRecord>;
+
     /// Record per-node evidence. Stamps the node's `updated_at`.
     /// Returns [`PlanError::InvalidNodeId`] if the node isn't present.
     async fn set_node_evidence(
@@ -206,6 +217,10 @@ impl PlanPort for PlanStorage {
                 })?;
             node.status = status;
             node.updated_at = Utc::now();
+            // A finished step needs no check-in (ADR-084).
+            if matches!(node.status, PlanNodeStatus::Completed { .. }) {
+                node.check_at = None;
+            }
             // Mirror Blocked into blocked_reason for UI consumers. The
             // cheap parallel field on `PlanNode` mirrors the structured
             // payload on `PlanNodeStatus::Blocked`; we keep them in
@@ -214,6 +229,33 @@ impl PlanPort for PlanStorage {
                 PlanNodeStatus::Blocked { reason, .. } => Some(reason.clone()),
                 _ => None,
             };
+            Ok(updated)
+        })
+        .await
+    }
+
+    async fn set_node_check_at(
+        &self,
+        plan_id: &str,
+        principal_id: &PrincipalId,
+        node_id: &NodeId,
+        check_at: Option<chrono::DateTime<Utc>>,
+    ) -> Result<PlanRecord> {
+        let node_id_str = node_id.as_str().to_string();
+        self.update(plan_id, principal_id, move |r| {
+            let mut updated = r.clone();
+            let node = updated
+                .nodes
+                .iter_mut()
+                .find(|n| n.node_id == *node_id)
+                .ok_or_else(|| {
+                    PlanError::InvalidNodeId(format!(
+                        "node {node_id_str} not found in plan {}",
+                        updated.plan_id
+                    ))
+                })?;
+            node.check_at = check_at;
+            node.updated_at = Utc::now();
             Ok(updated)
         })
         .await
@@ -303,6 +345,7 @@ mod tests {
             blocked_reason: None,
             created_at: now,
             updated_at: now,
+            check_at: None,
         }
     }
 
@@ -320,6 +363,52 @@ mod tests {
             .expect("mkdir");
         let port: Arc<dyn PlanPort> = Arc::new(storage);
         (tmp, port)
+    }
+
+    /// ADR-084: check_at round-trips through the port, older records
+    /// read without it, and completing a step clears it.
+    #[tokio::test]
+    async fn check_at_is_set_cleared_and_dropped_on_completion() {
+        let (_tmp, port) = port_in_tempdir().await;
+        let p = PrincipalId::generate();
+        let rec = port
+            .create(p.clone(), "t".into(), vec![sample_pending("a")])
+            .await
+            .unwrap();
+        let id = rec.nodes[0].node_id.clone();
+        let at = Utc.timestamp_opt(1_900_000_000, 0).unwrap();
+        let rec = port
+            .set_node_check_at(&rec.plan_id, &p, &id, Some(at))
+            .await
+            .unwrap();
+        assert_eq!(rec.nodes[0].check_at, Some(at));
+        let json = serde_json::to_value(&rec.nodes[0]).unwrap();
+        assert!(json.get("checkAt").is_some(), "{json}");
+        let mut legacy = json.clone();
+        legacy.as_object_mut().unwrap().remove("checkAt");
+        assert_eq!(
+            serde_json::from_value::<PlanNode>(legacy).unwrap().check_at,
+            None
+        );
+
+        assert!(rec.due_check_ins(at).len() == 1 && rec.active_nodes(at).len() == 1);
+        let before = at - chrono::Duration::seconds(1);
+        assert!(rec.due_check_ins(before).is_empty() && rec.active_nodes(before).is_empty());
+
+        let rec = port
+            .mark_node_status(
+                &rec.plan_id,
+                &p,
+                &id,
+                PlanNodeStatus::Completed { completed_at: at },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rec.nodes[0].check_at, None);
+        assert!(port
+            .set_node_check_at(&rec.plan_id, &p, &NodeId::generate(), None)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

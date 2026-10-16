@@ -108,7 +108,7 @@ Treat everything below as directional, not authoritative.
 
 ## 3. Patterns worth adapting (ranked by value ÷ cost)
 
-### P1. Make focus visible every turn: ship the Plan injection and a "focus" tail section
+### P1. Make focus visible every turn: ship the Plan injection and a "focus" tail section (shipped: open-plans section 2026-10-15; goals as plans and check-ins as ADR-084, 2026-10-16)
 
 This is Muse's Goals system and Grok's status states, mapped onto primitives Peko already has.
 
@@ -116,7 +116,7 @@ This is Muse's Goals system and Grok's status states, mapped onto primitives Pek
 - What the section contains: open plans (top N), each with its next ready step, blockers, the most recent evidence, and a "check at" time.
 - Where it renders: trunk and peer children, using the ADR-052 change-detection already in place (re-inject only when the text changes).
 - Seed it from `[intent].goals`. Genesis turns each goal into a plan, so goals stop being prose and become tracked nodes.
-- **Check-ins:** a plan node can carry `check_at`, which creates a one-shot cron `Send`. Proactive follow-ups then stay inside ADR-072's rule that only humans and cron start runs.
+- **Check-ins:** a plan node can carry `check_at`, which creates a one-shot cron `Send`. Proactive follow-ups then stay inside ADR-072's rule that only humans and cron start runs. *(ADR-084 chose to ride the attention-gated heartbeat instead of a job per check-in.)*
 
 ### P2. Separate "seen" from "handled"
 

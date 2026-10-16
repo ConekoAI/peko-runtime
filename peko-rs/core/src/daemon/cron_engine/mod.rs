@@ -2135,6 +2135,7 @@ mod tests {
                     blocked_reason: None,
                     created_at: now,
                     updated_at: now,
+                    check_at: None,
                 }],
             )
             .await
