@@ -993,7 +993,23 @@ impl ToolDispatcher {
             };
             classes.insert(source, class);
         }
-        let (kept, held) = memory_gate::screen(&existing, &candidate, &classes);
+        let (mut kept, mut held) = memory_gate::screen(&existing, &candidate, &classes);
+        // ADR-085: what survives the source check goes to a reviewer
+        // with excerpts of what it cites; unsupported or unchecked lines
+        // are held too.
+        let claims = memory_gate::claims(&existing, &kept);
+        if !claims.is_empty() {
+            let checks = match &gate {
+                Some(gate) => gate.check_claims(&principal_id.0, &claims).await,
+                None => claims
+                    .iter()
+                    .map(|_| memory_gate::ClaimCheck::Unchecked("no reviewer is configured".into()))
+                    .collect(),
+            };
+            let (reviewed, unsupported) = memory_gate::hold_unsupported(&kept, &claims, &checks);
+            kept = reviewed;
+            held.extend(unsupported);
+        }
         if held.is_empty() {
             return MemoryScreen::Pass;
         }
@@ -1017,7 +1033,8 @@ impl ToolDispatcher {
         let note = format!(
             "{} line(s) were not written to `{hot}` and were filed for the owner ({}). \
              A scheduled run adds a line there only when it ends with `(source: …)` naming \
-             sessions or channels that only the owner speaks in. {elsewhere}{reasons}",
+             sessions or channels that only the owner speaks in, and a reviewer finds the \
+             line supported by them. {elsewhere}{reasons}",
             held.len(),
             filed
                 .iter()

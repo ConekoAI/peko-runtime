@@ -411,6 +411,27 @@ impl PolicyGate for SourceGate {
             _ => SourceClass::Unknown,
         }
     }
+    /// ADR-085: a line mentioning coffee is unsupported, one mentioning
+    /// a fog is unchecked, anything else is supported.
+    async fn check_claims(
+        &self,
+        _principal_id: &str,
+        claims: &[crate::security::memory_gate::Claim],
+    ) -> Vec<crate::security::memory_gate::ClaimCheck> {
+        use crate::security::memory_gate::ClaimCheck;
+        claims
+            .iter()
+            .map(|claim| {
+                if claim.line.contains("coffee") {
+                    ClaimCheck::Unsupported("the owner talked about tea".into())
+                } else if claim.line.contains("fog") {
+                    ClaimCheck::Unchecked("the reviewer could not run".into())
+                } else {
+                    ClaimCheck::Supported
+                }
+            })
+            .collect()
+    }
 }
 
 fn scheduled(job_id: &str) -> ActingFor {
@@ -464,6 +485,31 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
     assert!(out.success, "{}", out.display);
     assert_eq!(out.value["proposed"], true, "{}", out.value);
     assert!(!std::fs::read_to_string(&memory).unwrap().contains("boss"));
+
+    // ADR-085: an owner-sourced line the reviewer finds unsupported, or
+    // could not check, is held under the run's own compartment.
+    let out = h
+        .call_as(
+            &caller,
+            "Edit",
+            json!({"file_path": memory, "old_string": "- old\n",
+                   "new_string": "- old\n- owner loves coffee (source: /local-user)\n\
+                   - owner walks in fog (source: /local-user)\n- owner reads (source: /local-user)\n"}),
+        )
+        .await;
+    assert!(out.success, "{}", out.display);
+    assert!(
+        out.display.contains("2 line(s)") && out.display.contains("the owner talked about tea"),
+        "{}",
+        out.display
+    );
+    let text = std::fs::read_to_string(&memory).unwrap();
+    assert!(text.contains("owner reads") && !text.contains("coffee") && !text.contains("fog"));
+    let internal = std::fs::read_dir(h.workspace().join("kb/inbox/internal"))
+        .unwrap()
+        .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(internal.contains("coffee") && internal.contains("could not be checked"));
 
     // Removing and rewording old lines needs no source; the owner's own
     // run is not screened.
@@ -559,6 +605,51 @@ async fn a_scheduled_run_promotes_only_owner_sourced_conventions() {
         .await;
     assert_eq!(out.value["proposed"], true, "{}", out.value);
     assert!(!planted.exists());
+}
+
+/// ADR-085: with no reviewer, a scheduled run's sourced lines are held,
+/// never written unchecked.
+#[tokio::test]
+async fn without_a_reviewer_sourced_lines_are_held() {
+    struct SourcesOnly;
+    #[async_trait::async_trait]
+    impl PolicyGate for SourcesOnly {
+        async fn review(&self, _call: &GatedCall) -> Verdict {
+            Verdict::Allow
+        }
+        async fn ask_owner(&self, _call: &GatedCall, _reason: &str) -> anyhow::Result<String> {
+            Ok("apr_test".into())
+        }
+        async fn is_approved_replay(&self, _call: &GatedCall) -> bool {
+            false
+        }
+        async fn source_class(
+            &self,
+            _principal_id: &str,
+            _source: &str,
+        ) -> crate::security::memory_gate::SourceClass {
+            crate::security::memory_gate::SourceClass::Owner
+        }
+    }
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(Arc::new(SourcesOnly));
+    let memory = h.write("kb/MEMORY.md", "- old\n");
+    let out = h
+        .call_as(
+            &Caller::acting_for(scheduled("memory")),
+            "Write",
+            json!({"file_path": memory, "content": "- old\n- likes tea (source: /local-user)\n"}),
+        )
+        .await;
+    assert_eq!(out.value["proposed"], true, "{}", out.value);
+    assert!(
+        out.display.contains("no reviewer is configured"),
+        "{}",
+        out.display
+    );
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), "- old\n");
 }
 
 #[tokio::test]

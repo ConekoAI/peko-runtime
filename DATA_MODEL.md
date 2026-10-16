@@ -44,9 +44,11 @@ This document defines every on-disk and in-memory data format used by the Peko r
 - `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner
   run's write to a protected file, with the proposer's stamp and the change.
   The same directory holds the `kb/MEMORY.md` and `kb/CONVENTIONS.md` lines a
-  scheduled owner run could not source to the owner (ADR-080 D4, D8): a list of
+  scheduled owner run could not source to the owner (ADR-080 D4, D8), or that
+  the reviewer did not find supported by their sources (ADR-085): a list of
   held lines with their reasons, filed under the conversation each one cites
-  (uncited lines under `internal`). Runtime-written only; at most 50 per
+  (uncited, unknown-source and reviewer-held lines under the run's own
+  compartment, `internal`). Runtime-written only; at most 50 per
   compartment.
 - `<workspace>/kb/dreams/YYYY-MM-DD.md` (ADR-080 D7): the nightly memory pass's
   reflections on how the principal worked, one file per night, each lesson

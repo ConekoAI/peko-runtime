@@ -3191,6 +3191,74 @@ mod tests {
         let _ = id;
     }
 
+    /// ADR-085: the reviewer's evidence for a channel source is the cited
+    /// event and its neighbours, or the posts sharing words with the claim.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_evidence_quotes_the_cited_posts() {
+        let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let ingress = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        let port = manager.channel_port().expect("port");
+        let dm = ingress.dm_channel.expect("owner DM");
+        for text in [
+            "the weather is fine",
+            "I drink green tea every morning",
+            "bye",
+        ] {
+            crate::principal::peer_dm::post_peer_dm_inbound(
+                &port,
+                &principal.id,
+                &dm,
+                &owner.to_string(),
+                text,
+            )
+            .await
+            .expect("post");
+        }
+        use peko_channel::ChannelPort as _;
+        let events = store
+            .peek_with_ids(&dm, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let tea_id = events
+            .iter()
+            .find(|(_, e)| matches!(e, peko_protocol::channel::ChannelEvent::Posted { text, .. } if text.contains("tea")))
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let claim = "- owner drinks green tea in the morning";
+        let cited = crate::principal::policy_gate::source_excerpt(
+            &principal,
+            Some(&port),
+            &format!("{}#{tea_id}", dm.0),
+            claim,
+        )
+        .await;
+        assert!(
+            cited.contains("green tea") && cited.contains("weather"),
+            "{cited}"
+        );
+        let searched =
+            crate::principal::policy_gate::source_excerpt(&principal, Some(&port), &dm.0, claim)
+                .await;
+        assert!(
+            searched.contains("green tea") && !searched.contains("weather"),
+            "{searched}"
+        );
+        assert!(crate::principal::policy_gate::source_excerpt(
+            &principal,
+            Some(&port),
+            "/no-such-session",
+            claim
+        )
+        .await
+        .is_empty());
+    }
+
     /// ADR-080 D4: a hot-memory source counts as the owner's only when
     /// nobody else speaks in it.
     #[tokio::test(flavor = "multi_thread")]
