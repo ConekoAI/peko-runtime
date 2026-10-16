@@ -14,7 +14,10 @@ All notable changes to Peko.
   with the line. The model is the policy's `judge_model`, else the principal's
   own, charged to its quota. Unsupported lines, and lines with no finding
   (including when no reviewer can run), are filed in `kb/inbox/internal/` with
-  the reason; the rest is written.
+  the reason; the rest is written. The review runs only while some
+  conversation with someone besides the owner has been active in the last week;
+  `POLICY.md` `memory_review: guests | always | off` (default `guests`) changes
+  that, and the seeded policy shows the setting.
 - `ToolLog` gains `turns`: the window's calls grouped into one row per run,
   with session, actor, trust, tool counts, failures, files written and read,
   and channels read and posted to. The nightly memory brief starts its review

@@ -3,7 +3,8 @@
 //! this file is where the owner's nuance lives. It is protected: only an
 //! owner run writes it, and *Always allow* approvals append to it.
 //!
-//! Shape: optional front matter (`judge_model`, `review_replies`), then
+//! Shape: optional front matter (`judge_model`, `review_replies`,
+//! `memory_review`), then
 //! default rules, then one `## <actor address>` section per actor. A
 //! heading whose first word is not an actor address belongs to the
 //! defaults.
@@ -18,6 +19,20 @@ pub const POLICY_EXCERPT_MAX_BYTES: usize = 8 * 1024;
 
 const SEED: &str = include_str!("../resources/POLICY.md");
 
+/// When a scheduled run's sourced hot-memory lines go to the reviewer
+/// (ADR-085 D4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MemoryReview {
+    /// Only while a conversation with someone besides the owner has been
+    /// active in the last week: then a run could carry their words.
+    #[default]
+    Guests,
+    /// Every screened write.
+    Always,
+    /// Never; the source check still applies.
+    Off,
+}
+
 /// A parsed `POLICY.md`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
@@ -26,6 +41,8 @@ pub struct Policy {
     pub judge_model: Option<String>,
     /// Also judge final replies to anyone but the owner.
     pub review_replies: bool,
+    /// When scheduled memory writes are reviewed against their sources.
+    pub memory_review: MemoryReview,
     /// Rules for everyone who is not the owner.
     pub defaults: String,
     /// `(actor address, rules)` per actor section, in file order.
@@ -54,6 +71,13 @@ impl Policy {
                             policy.judge_model = Some(value.to_string());
                         }
                         "review_replies" => policy.review_replies = value == "true",
+                        "memory_review" => {
+                            policy.memory_review = match value {
+                                "always" => MemoryReview::Always,
+                                "off" => MemoryReview::Off,
+                                _ => MemoryReview::Guests,
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -219,6 +243,25 @@ mod tests {
 ## Notes\n- Still a default.\n\n\
 ## user:hub:alice (Alice, trusted)\n- Full access to projects/acme/.\n\n\
 ## principal:hub:bob\n- Free/busy only.\n";
+
+    /// ADR-085 D4: `memory_review` defaults to `guests`; the seed says so.
+    #[test]
+    fn memory_review_is_read_from_front_matter() {
+        assert_eq!(
+            Policy::parse("# Policy\n").memory_review,
+            MemoryReview::Guests
+        );
+        for (value, want) in [
+            ("always", MemoryReview::Always),
+            ("off", MemoryReview::Off),
+            ("guests", MemoryReview::Guests),
+            ("bogus", MemoryReview::Guests),
+        ] {
+            let text = format!("---\nmemory_review: {value}  # note\n---\n# Policy\n");
+            assert_eq!(Policy::parse(&text).memory_review, want, "{value}");
+        }
+        assert_eq!(Policy::parse(SEED).memory_review, MemoryReview::Guests);
+    }
 
     #[test]
     fn parses_front_matter_defaults_and_actor_sections() {

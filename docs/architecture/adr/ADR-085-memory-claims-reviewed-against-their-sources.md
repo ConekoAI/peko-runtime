@@ -1,7 +1,7 @@
 # ADR-085: Memory Claims Reviewed Against Their Sources; Turns From the Ledger
 
 **Status:** Accepted
-**Date:** 2026-10-16
+**Date:** 2026-10-16 (D4 added the same day)
 
 **Amends:**
 - [ADR-080](ADR-080-daily-memory-maintenance.md) D4 and D8: a sourced line also
@@ -77,6 +77,26 @@ The review covers exactly the writes D4 and D8 screen: `Write` / `Edit` of
 `kb/MEMORY.md` and `kb/CONVENTIONS.md` by owner runs a cron job started. Writes
 by the owner's own conversations are not reviewed; the owner wrote them.
 
+### D4 — The review runs while others are talking to the principal
+
+The review defends against one thing: a run carrying someone else's words into
+the owner's memory under an owner citation. On a principal that only its owner
+talks to, the source check already passes every line, and the review only
+second-guesses the model's own wording. It still costs a call per write and can
+stall memory when the reviewer model is down. So `POLICY.md` front matter takes
+`memory_review`:
+
+| Value | The reviewer runs… |
+|---|---|
+| `guests` (default) | only when one of the principal's conversations with someone besides the owner has had activity in the last 7 days (a channel whose roster or log cannot be read counts as active) |
+| `always` | on every screened write |
+| `off` | never; the source check still applies |
+
+A skipped review passes the line on its sources (`ClaimCheck::Skipped`).
+Policies written before this decision read as `guests`. The window is checked on
+channels, not sessions: a group post that woke no session still sits in the log
+the memory pass reads.
+
 ## 3. Alternatives considered
 
 - **An `AfterAgent` hook writing a per-turn evidence file.** It records nothing
@@ -98,9 +118,10 @@ by the owner's own conversations are not reviewed; the owner wrote them.
 - Hot memory and conventions written by scheduled runs carry a checked source.
   What a guest said, or what the model inferred, has to survive a second reader
   before it reaches every prompt.
-- One extra completion per screened write. On a principal whose reviewer model
-  is unavailable, the nightly pass fills `kb/inbox/` instead of hot memory until
-  that is fixed.
+- One extra completion per screened write, but only while others are talking
+  to the principal (D4). In that case, if the reviewer model is unavailable,
+  the nightly pass fills `kb/inbox/` instead of hot memory until it is fixed.
+  The owner can set `memory_review: off` to trade that safety for availability.
 - The review is only as good as the excerpt: a claim drawn from a long session
   cited by path, with no shared words, gets "(nothing found)" and is held.
   Citing `<channel>#<event>` avoids this, and the brief asks the model to write

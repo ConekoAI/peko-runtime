@@ -399,6 +399,18 @@ impl PolicyGate for PrincipalPolicyGate {
         };
         let channels = manager.channel_port();
         let policy = policy::load(&principal.workspace_path).unwrap_or_default();
+        // ADR-085 D4: review only while a run could carry someone else's
+        // words, unless the owner says otherwise.
+        let skip = |reason: &str| vec![ClaimCheck::Skipped(reason.into()); claims.len()];
+        match policy.memory_review {
+            policy::MemoryReview::Off => return skip("memory_review: off"),
+            policy::MemoryReview::Guests
+                if !others_spoke_recently(&principal, channels.clone()).await =>
+            {
+                return skip("no conversation with anyone but the owner this week");
+            }
+            _ => {}
+        }
         let mut checks = Vec::with_capacity(claims.len());
         for batch in claims.chunks(memory_gate::CLAIMS_PER_REVIEW) {
             let mut items = Vec::with_capacity(batch.len());
@@ -433,6 +445,44 @@ impl PolicyGate for PrincipalPolicyGate {
         }
         checks
     }
+}
+
+/// Whether any of the principal's conversations with someone besides the
+/// owner had activity in the last
+/// [`crate::security::memory_gate::GUEST_ACTIVITY_DAYS`] days. Unknown
+/// is yes: a channel whose roster or log cannot be read counts.
+pub(crate) async fn others_spoke_recently(
+    principal: &Arc<Principal>,
+    channels: Option<Arc<dyn peko_channel::ChannelPort>>,
+) -> bool {
+    let Some(port) = channels.clone() else {
+        return false;
+    };
+    let Ok(list) = port.list_for_principal(&principal.id).await else {
+        return true;
+    };
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::days(crate::security::memory_gate::GUEST_ACTIVITY_DAYS);
+    let stamps = crate::principal::trust::stamps_for(principal, channels);
+    for channel in list {
+        let compartment = peko_tools_core::Compartment::Conversation {
+            channel: channel.0.clone(),
+        };
+        if stamps.ceiling(&compartment).await == peko_tools_core::Trust::Owner {
+            continue;
+        }
+        let Ok(tail) = port.peek_tail(&channel, 1, None).await else {
+            return true;
+        };
+        let recent = tail.events.last().is_some_and(|(_, event)| {
+            chrono::DateTime::parse_from_rfc3339(event.at())
+                .map_or(true, |at| at.with_timezone(&chrono::Utc) >= cutoff)
+        });
+        if recent {
+            return true;
+        }
+    }
+    false
 }
 
 /// The session a hot-memory source names, with the store's metadata.

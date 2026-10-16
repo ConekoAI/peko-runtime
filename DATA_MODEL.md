@@ -38,7 +38,8 @@ This document defines every on-disk and in-memory data format used by the Peko r
   Carried on tool calls, audit events (`tool.call`'s `acting_for`), run-token
   entries, and background-task dispatch; never read from a packet.
 - `<workspace>/POLICY.md` (protected, seeded create-once): optional front
-  matter (`judge_model`, `review_replies`), default rules, and
+  matter (`judge_model`, `review_replies`, `memory_review`: `guests` (default)
+  | `always` | `off`, ADR-085 D4), default rules, and
   `## <actor address>` sections. *Always allow* approvals append to the
   actor's section.
 - `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner

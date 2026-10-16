@@ -289,9 +289,9 @@ where two entries disagree, keep the one backed by newer evidence. End each new 
 changed line with `(source: …)` naming where it came from: the session path or id, or \
 `<channel id>#<event id>`, comma-separated when there are several. Cite the \
 conversation itself, not a spawned reader's session. The runtime writes a line here \
-only when every source is a conversation only your owner speaks in and a reviewer, \
-reading excerpts of those sources, finds the line supported; anything else is filed \
-in `kb/inbox/` for the owner. Write what the source says, not what you infer. It shares a 32 KiB prompt budget with the other \
+only when every source is a conversation only your owner speaks in and, while anyone \
+else has talked to you this week, a reviewer reading excerpts of those sources finds \
+the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. It shares a 32 KiB prompt budget with the other \
 hot kb files: if it carries a truncation notice, shrink it until the notice goes away.
 4. Update `kb/people/`, `kb/groups/` and `kb/roles/` notes the day touched (what you \
 learned from or about other people belongs there), and keep `kb/index.md` pointing at \

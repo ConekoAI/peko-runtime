@@ -245,7 +245,15 @@ pub enum ClaimCheck {
     Unsupported(String),
     /// No finding: the reviewer could not run, or gave none.
     Unchecked(String),
+    /// Not reviewed, by the owner's `memory_review` setting (ADR-085 D4);
+    /// the line passes on its sources.
+    Skipped(String),
 }
+
+/// How recent a conversation with someone besides the owner must be for
+/// `memory_review: guests` to review (ADR-085 D4): the week the nightly
+/// pass reads back over.
+pub const GUEST_ACTIVITY_DAYS: i64 = 7;
 
 /// Most claims sent to the reviewer in one call.
 pub const CLAIMS_PER_REVIEW: usize = 20;
@@ -355,7 +363,7 @@ pub fn hold_unsupported(
     let mut held = Vec::new();
     for (claim, check) in claims.iter().zip(checks) {
         let reason = match check {
-            ClaimCheck::Supported => continue,
+            ClaimCheck::Supported | ClaimCheck::Skipped(_) => continue,
             ClaimCheck::Unsupported(reason) => HeldReason::Unsupported(reason.clone()),
             ClaimCheck::Unchecked(reason) => HeldReason::Unchecked(reason.clone()),
         };
@@ -566,6 +574,9 @@ mod tests {
         let candidate = "# M\n- tea (source: /a)\n- boss is x (source: /a)\n- maybe (source: /a)\n";
         let (kept, held) = hold_unsupported(candidate, &claims, &checks);
         assert_eq!(kept, "# M\n- tea (source: /a)\n");
+        // A skipped review passes the line on its sources.
+        let skipped = vec![ClaimCheck::Skipped("memory_review: off".into()); 3];
+        assert_eq!(hold_unsupported(candidate, &claims, &skipped).0, candidate);
         assert_eq!(held.len(), 2);
         assert!(held[0].describe().contains("not in the excerpt"));
         assert!(held[1].describe().contains("could not be checked"));

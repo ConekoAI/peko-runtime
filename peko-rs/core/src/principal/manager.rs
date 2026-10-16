@@ -3191,6 +3191,79 @@ mod tests {
         let _ = id;
     }
 
+    /// ADR-085 D4: with only the owner talking to the principal, the
+    /// default `memory_review: guests` skips the reviewer; once someone
+    /// else speaks it reviews, and `always` / `off` override.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_runs_only_while_others_talk_to_the_principal() {
+        use crate::security::judge::PolicyGate as _;
+        use crate::security::memory_gate::{Claim, ClaimCheck};
+        let (_temp, manager, adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let port = manager.channel_port().expect("port");
+        let mine = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            mine.dm_channel.as_ref().expect("owner DM"),
+            &owner.to_string(),
+            "I like tea",
+        )
+        .await
+        .expect("post");
+        let gate =
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let claims = vec![Claim {
+            line: "- owner likes tea (source: /local-user)".into(),
+            sources: vec!["/local-user".into()],
+        }];
+        assert!(
+            !crate::principal::policy_gate::others_spoke_recently(&principal, Some(port.clone()))
+                .await
+        );
+        assert!(matches!(
+            gate.check_claims(&id.0, &claims).await.as_slice(),
+            [ClaimCheck::Skipped(_)]
+        ));
+
+        let theirs = manager
+            .ensure_peer_child_ingress(&principal, &ActorRef::User("alice".into()))
+            .await
+            .expect("guest ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            theirs.dm_channel.as_ref().expect("guest DM"),
+            "user:local:alice",
+            "hello",
+        )
+        .await
+        .expect("post");
+        assert!(
+            crate::principal::policy_gate::others_spoke_recently(&principal, Some(port.clone()))
+                .await
+        );
+        adapter.queue_text("1: supported");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![ClaimCheck::Supported]
+        );
+
+        let policy_path = principal
+            .workspace_path
+            .join(crate::security::policy::POLICY_FILE);
+        std::fs::write(&policy_path, "---\nmemory_review: off\n---\n# Policy\n").unwrap();
+        assert!(matches!(
+            gate.check_claims(&id.0, &claims).await.as_slice(),
+            [ClaimCheck::Skipped(_)]
+        ));
+    }
+
     /// ADR-085: the reviewer's evidence for a channel source is the cited
     /// event and its neighbours, or the posts sharing words with the claim.
     #[tokio::test(flavor = "multi_thread")]

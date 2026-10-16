@@ -1033,8 +1033,9 @@ impl ToolDispatcher {
         let note = format!(
             "{} line(s) were not written to `{hot}` and were filed for the owner ({}). \
              A scheduled run adds a line there only when it ends with `(source: …)` naming \
-             sessions or channels that only the owner speaks in, and a reviewer finds the \
-             line supported by them. {elsewhere}{reasons}",
+             sessions or channels that only the owner speaks in and, while others are \
+             talking to this principal, a reviewer finds the line supported by them. \
+             {elsewhere}{reasons}",
             held.len(),
             filed
                 .iter()
