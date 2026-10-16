@@ -5,6 +5,11 @@ rides in every prompt. One line per area: where it lives and what it
 holds. When you add, move, or retire a subtree, update this map in
 the same breath.
 
+Areas at creation: `people/`, `groups/`, `roles/` (notes about
+people, groups and roles), `journal/` (the daily log, append-only),
+`dreams/` (nightly reflections on how you work; cold until a lesson
+is promoted into `CONVENTIONS.md`).
+
 Revision rules for the whole tree (ADR-055):
 
 - Principal-authored files: revise in place, no append-only history.

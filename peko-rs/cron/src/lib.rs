@@ -45,7 +45,7 @@ pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
     render_job_list, resolve_schedule_kind, set_global_runtime, CronJob, CronJobAction,
     CronRuntime, CronTool, FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS,
-    DEFAULT_MAX_RETRIES, QUIET_STATUS,
+    DEFAULT_MAX_RETRIES, QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS,
 };
 
 pub use idle::IdleDetector;
@@ -176,13 +176,8 @@ impl CronScheduler {
                 when,
                 ..
             } => {
-                if *when == Some(tools::FireWhen::Attention)
-                    && matches!(job.schedule, ScheduleKind::At { .. })
-                {
-                    anyhow::bail!(
-                        "`when: \"attention\"` needs a recurring schedule; a one-shot job \
-                         always runs its turn"
-                    );
+                if let Some(refusal) = when.and_then(|w| tools::when_refusal(w, &job.schedule)) {
+                    anyhow::bail!(refusal);
                 }
                 if message.trim().is_empty() {
                     anyhow::bail!(
@@ -395,10 +390,8 @@ impl CronScheduler {
                 *model_slot = model.clone().filter(|m| !m.trim().is_empty());
             }
             if let Some(when) = patch.when {
-                if when == tools::FireWhen::Attention
-                    && matches!(job.schedule, ScheduleKind::At { .. })
-                {
-                    anyhow::bail!("`when: \"attention\"` needs a recurring schedule");
+                if let Some(refusal) = tools::when_refusal(when, &job.schedule) {
+                    anyhow::bail!(refusal);
                 }
                 *when_slot = Some(when);
             }

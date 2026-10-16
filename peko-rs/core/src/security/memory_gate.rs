@@ -1,10 +1,12 @@
-//! What a scheduled owner run may add to the hot memory file (ADR-080 D4).
+//! What a scheduled owner run may add to the sourced hot files (ADR-080
+//! D4, D8): `kb/MEMORY.md` and `kb/CONVENTIONS.md`.
 //!
 //! A cron turn acts for the owner, yet it reads other people's
-//! conversations: the daily memory pass reviews every channel, and the
+//! conversations: the nightly memory pass reviews every channel, and the
 //! keepalive checks them. Whatever it writes to `kb/MEMORY.md` reaches
-//! every agent's prompt as the owner's own memory. So when such a run
-//! writes that file through `Write` or `Edit`, each line it adds must name
+//! every agent's prompt as the owner's own memory, and whatever it writes
+//! to `kb/CONVENTIONS.md` as the owner's own rules. So when such a run
+//! writes either file through `Write` or `Edit`, each line it adds must name
 //! its source — `(source: /local-user)` or `(source: chan_x#<event>)` at
 //! the end of the line — and every source must be a conversation only the
 //! owner speaks in. Other lines are held back and filed for the owner in
@@ -22,7 +24,15 @@ use peko_tools_core::{ActingFor, Compartment, Origin};
 /// The hot memory file, relative to the workspace.
 pub const HOT_MEMORY: &str = "kb/MEMORY.md";
 
-/// Job id of the runtime-seeded daily memory pass.
+/// The hot rulebook every agent reads, relative to the workspace. The
+/// nightly pass promotes lessons from cold `kb/dreams/` into it (D7).
+pub const HOT_CONVENTIONS: &str = "kb/CONVENTIONS.md";
+
+/// The hot files whose lines a scheduled owner run must source to the
+/// owner. `kb/index.md` is a map of the tree and carries no claims.
+pub const SOURCED_HOT_FILES: &[&str] = &[HOT_MEMORY, HOT_CONVENTIONS];
+
+/// Job id of the runtime-seeded nightly memory pass.
 pub const MEMORY_JOB_ID: &str = "memory";
 
 /// Whether `stamp` is an owner run a cron job started: no person is
@@ -32,7 +42,7 @@ pub fn is_scheduled_owner(stamp: &ActingFor) -> bool {
     stamp.is_owner() && matches!(stamp.origin, Origin::Cron { .. })
 }
 
-/// Whether `stamp` is the daily memory pass, or an agent it spawned.
+/// Whether `stamp` is the nightly memory pass, or an agent it spawned.
 #[must_use]
 pub fn is_memory_run(stamp: &ActingFor) -> bool {
     stamp.is_owner() && matches!(&stamp.origin, Origin::Cron { job_id } if job_id == MEMORY_JOB_ID)

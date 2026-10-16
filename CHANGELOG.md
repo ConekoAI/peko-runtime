@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Nightly dream (ADR-080 rev 3, 0.1.0, 2026-10-16)
+
+- The memory brief adds two steps after the bookkeeping. **Reflect** on how the
+  principal worked (what went well or badly, the owner's corrections, repeated
+  mistakes, preferences about how to work) into `kb/dreams/YYYY-MM-DD.md`, with
+  sources. **Promote** a lesson into `kb/CONVENTIONS.md` only when the owner
+  stated it, or when it came up on two or more nights. `kb/dreams/` is never
+  injected into a prompt.
+- The kb scaffold seeds `kb/dreams/README.md`, and `kb/index.md` and
+  `kb/README.md` list the directory. `kb/dreams/` is a protected tree: only
+  owner runs write it.
+- The scheduled-run source rule (ADR-080 D4) now covers `kb/CONVENTIONS.md`.
+  Added lines that do not cite only owner conversations are filed in
+  `kb/inbox/`.
+- Cron message jobs take `when: quiet` (`Cron` `create` / `update`; interval or
+  cron schedules only). A due fire is held until nobody has talked to the
+  principal for 4 hours, at most 12 hours past due. A held fire moves
+  `next_run`, reads `last_status: quiet` and writes no run row. The seeded
+  `memory` job carries it. A `memory` job still carrying the runtime's marker
+  and no `when` is read the same way, without its schedule being rewritten.
+
 ### Quiet ticks (ADR-083, 0.1.0, 2026-10-16)
 
 - Cron message jobs take `when` (`always` / `attention`; `Cron` `create` /

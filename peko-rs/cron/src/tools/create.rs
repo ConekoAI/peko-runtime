@@ -52,8 +52,9 @@ pub struct CronCreateArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// `message` jobs only: `"attention"` skips a due fire's turn when
-    /// nothing waits on the principal (ADR-083); `"always"` (the
-    /// default) runs every fire.
+    /// nothing waits on the principal (ADR-083); `"quiet"` holds a due
+    /// fire until nobody has talked to the principal for a while
+    /// (ADR-080 D9); `"always"` (the default) runs every fire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub when: Option<crate::FireWhen>,
     /// Tool-call parameters for the scheduled `tool` call. Defaults to `{}`.
@@ -168,8 +169,8 @@ impl Tool for CronCreateAction {
                 },
                 "when": {
                     "type": "string",
-                    "enum": ["always", "attention"],
-                    "description": "Only with `message` on a recurring schedule. \"attention\" runs a fire's turn only when something waits on you (other principals' posts, unread channel activity, ready plan steps, a failed job) or your last turn from this job is an hour old; other fires are quiet ticks that call no model. \"always\" (default) runs every fire."
+                    "enum": ["always", "attention", "quiet"],
+                    "description": "Only with `message` on a recurring schedule. \"attention\" runs a fire's turn only when something waits on you (other principals' posts, unread channel activity, ready plan steps, a failed job) or your last turn from this job is an hour old; other fires are quiet ticks that call no model. \"quiet\" (interval or cron schedules) holds a due fire until nobody has talked to you for 4 hours, at most 12 hours past due: a stand-in for night when your owner's hours are unknown. \"always\" (default) runs every fire."
                 },
                 "tool": {
                     "type": "string",

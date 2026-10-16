@@ -413,10 +413,13 @@ impl CronEngine {
     /// is written and no model called. Returns whether the fire was
     /// quiet. Manual triggers never come here: they always run.
     async fn quiet_tick(&self, job: &CronJob) -> Result<bool> {
-        if !matches!(job.action, CronJobAction::Send { .. })
-            || crate::principal::genesis::fire_when(job) != peko_cron::FireWhen::Attention
-        {
+        if !matches!(job.action, CronJobAction::Send { .. }) {
             return Ok(false);
+        }
+        match crate::principal::genesis::fire_when(job) {
+            peko_cron::FireWhen::Always => return Ok(false),
+            peko_cron::FireWhen::Quiet => return self.hold_for_quiet(job).await,
+            peko_cron::FireWhen::Attention => {}
         }
         let now = Utc::now();
         if !crate::principal::quiet_tick::may_stay_quiet(job, now) {
@@ -489,6 +492,44 @@ impl CronEngine {
             )
             .await;
         debug!(job = %job.id, "quiet tick; next at {next_run}");
+        Ok(true)
+    }
+
+    /// ADR-080 D9: hold a due `when: quiet` fire while someone has
+    /// talked to the principal within the quiet stretch, up to the
+    /// maximum wait. A held fire moves `next_run` to when it may run and
+    /// reads `quiet`, like a quiet tick. Returns whether it was held.
+    async fn hold_for_quiet(&self, job: &CronJob) -> Result<bool> {
+        // Activity is keyed by the runtime id (see `check_idle`).
+        let principal_id = match self.principal_manager.as_ref() {
+            Some(pm) => resolve_principal(pm, &job.principal_id)
+                .await
+                .map_or_else(|| job.principal_id.0.clone(), |p| p.id.0.clone()),
+            None => job.principal_id.0.clone(),
+        };
+        let last_activity = self.idle_detector.last_activity(&principal_id).await;
+        let Some(until) = crate::principal::quiet_tick::quiet_hold(job, last_activity, Utc::now())
+        else {
+            return Ok(false);
+        };
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
+        scheduler.record_quiet(&job.id, until)?;
+        let _ = self
+            .observability
+            .audit_with_caller(
+                Some(&CallerContext::local().subject()),
+                "cron.quiet",
+                Some(&job.principal_id.0),
+                serde_json::json!({
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "scheduled_at": job.next_run,
+                    "next_run_at": until,
+                    "waiting_for": "quiet stretch",
+                }),
+            )
+            .await;
+        debug!(job = %job.id, "held for a quiet stretch until {until}");
         Ok(true)
     }
 
@@ -2099,6 +2140,65 @@ mod tests {
             .await
             .unwrap();
         assert!(!engine.quiet_tick(&recent).await.unwrap());
+    }
+
+    /// ADR-080 D9: the seeded memory job waits for a quiet stretch. A due
+    /// fire an hour after someone talked to the principal is held until
+    /// four hours after that, writing no run row; once the principal has
+    /// been quiet that long, the fire runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quiet_fires_wait_for_a_quiet_stretch() {
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let workspace = tmp.path().join("principals");
+        let principal = create_test_principal(&manager, &workspace, "sleepy").await;
+        let idle = Arc::new(IdleDetector::new());
+        let talked = Utc::now() - Duration::hours(1);
+        idle.record_activity_at(&principal.id.0, talked).await;
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = CronScheduler::new(resolver.cron_schedule("sleepy")).unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::clone(&idle),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            std::sync::Weak::new(),
+        );
+        let seeded_at = Utc::now() - Duration::days(1);
+        let mut job =
+            crate::principal::genesis::memory_job(&manager_config(&principal).await, seeded_at)
+                .unwrap();
+        job.principal_id = PrincipalId::from_did(&principal.did().await);
+        scheduler.add_job(&job).unwrap();
+
+        engine.execute_job(job.clone()).await.unwrap();
+        let held = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(held.last_status.as_deref(), Some(peko_cron::QUIET_STATUS));
+        assert_eq!(held.next_run, talked + Duration::hours(4));
+        assert!(held.last_run.is_none(), "no turn recorded");
+        assert!(scheduler.get_run_history(&job.id, 10).unwrap().is_empty());
+
+        // Quiet for five hours: the fire is not held.
+        let sleepy = Arc::new(IdleDetector::new());
+        sleepy
+            .record_activity_at(&principal.id.0, Utc::now() - Duration::hours(5))
+            .await;
+        let rested = CronEngine::new(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().to_path_buf(),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            sleepy,
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            std::sync::Weak::new(),
+        );
+        assert!(!rested.quiet_tick(&held).await.unwrap());
     }
 
     async fn manager_config(principal: &crate::principal::Principal) -> PrincipalConfig {

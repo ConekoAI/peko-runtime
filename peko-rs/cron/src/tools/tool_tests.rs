@@ -545,6 +545,36 @@ async fn message_jobs_choose_when_a_fire_runs_its_turn() {
         .await;
     assert!(error.contains("arguments"), "{error}");
 
+    // ADR-080 D9: `quiet` waits on interval and cron schedules; an idle
+    // schedule already waits for quiet, and a one-shot always runs.
+    fx.ok(ALICE, json!({"action":"update", "id": id, "when":"quiet"}))
+        .await;
+    assert_eq!(when_of(fx.job(ALICE, &id)), Some(crate::FireWhen::Quiet));
+    let nightly = fx
+        .create(
+            ALICE,
+            json!({"message":"dream", "cron":"0 3 * * *", "when":"quiet"}),
+        )
+        .await;
+    assert_eq!(
+        when_of(fx.job(ALICE, &nightly)),
+        Some(crate::FireWhen::Quiet)
+    );
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "message":"x", "idle_ms":3_600_000, "when":"quiet"}),
+        )
+        .await;
+    assert!(error.contains("idle schedule"), "{error}");
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "message":"once", "delay":"5m", "when":"quiet"}),
+        )
+        .await;
+    assert!(error.contains("recurring"), "{error}");
+
     let scheduler = fx.runtime.scheduler(&PrincipalId(ALICE.into()));
     let before = fx.job(ALICE, &id);
     let next = chrono::Utc::now() + chrono::Duration::minutes(10);

@@ -107,8 +107,9 @@ rather than a passive request handler.
   reminder set in a conversation fires there); `SpawnTool`'s
   `wake_on_completion` steers the trunk inbox. Trunk-targeted `Every`
   sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`). The runtime seeds
-  a default keepalive at genesis and a daily `memory` job once
-  (ADR-054, ADR-080).
+  a default keepalive at genesis and a nightly `memory` job once
+  (ADR-054, ADR-080); the latter waits for a quiet stretch and reflects
+  into cold `kb/dreams/`.
 - External ingress never reaches the root: CLI/A2A/Hub DMs land in
   per-peer children, bound channels in their bound child (see §O).
 - Without keepalive, the root idles, standing children become orphaned,
