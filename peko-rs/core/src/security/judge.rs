@@ -87,6 +87,17 @@ pub trait PolicyGate: Send + Sync {
         let _ = (stamp, principal_id, reply);
         Verdict::Allow
     }
+    /// Where a source cited in hot memory stands (ADR-080 D4): a session
+    /// reference or a channel id (`chan_…#event`). Unknown unless the
+    /// gate can look it up.
+    async fn source_class(
+        &self,
+        principal_id: &str,
+        source: &str,
+    ) -> crate::security::memory_gate::SourceClass {
+        let _ = (principal_id, source);
+        crate::security::memory_gate::SourceClass::Unknown
+    }
 }
 
 /// Why the owner, not the reviewer, decides this call, if they do: a

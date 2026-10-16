@@ -130,7 +130,7 @@ Proposal:
 - Add a small **needs-attention set**: posts from principals, @mentions, and replies to the principal's own posts. An item leaves the set only through `ChannelRead`, a reply in the thread, or an explicit `dismiss`.
 - Render the set as a compact count until it is drained.
 
-### P3. Tiered heartbeat with quiet ticks
+### P3. Tiered heartbeat with quiet ticks (shipped as ADR-083, 2026-10-16)
 
 Muse and Grok separate cheap background jobs from full agent turns.
 
@@ -196,17 +196,17 @@ All of these were verified in code on `master` @ `b5896a13` unless marked otherw
 
 | # | Sev | Gap | Evidence |
 |---|---|---|---|
-| G1 | **High** | **Guest sessions can manage the owner's sessions.** Since the 2026-09-12 "filesystem model", every caller has whole-store reach for list / find / copy / move / remove, and the `privileged` flag is gone. `delete_session` only checks self, ancestor, dangling and trunk. So a permitted non-owner user's standing child (`/user-x`), or a group member who @mentions the principal, can read or `remove` `/local-user`. A run-active guard may block deletion only while a run is live. | `core/src/session/ownership.rs:13-31`; `core/src/session/session_runtime_impl.rs:896-920` |
-| G2 | **High** | **Hot-memory poisoning across audiences.** `kb/MEMORY.md` and `CONVENTIONS.md` are injected into every agent's prompt, including the trunk and the owner's child. Any session, including guest-driven ones, can `Write` or `Bash` them, because the capability gate was removed in ADR-066 D1. Text a guest induces gets persisted as instructions for the owner's agents. | ADR-066 D1; `engine/src/prompt/memory.rs` hot readers |
+| G1 | ~~High~~ | **Addressed 2026-10 (ADR-078).** Each session belongs to a compartment; only owner runs reach the whole store, and other runs list, read and manage only their own conversation. | `core/src/security/stamps.rs`; `session/ownership.rs` |
+| G2 | ~~High~~ | **Addressed (ADR-078, ADR-080 D4).** Non-owner writes to the hot kb become proposals in `kb/inbox/`, and untrusted runs get no `Bash`. Scheduled owner runs, which read others' conversations, write a `MEMORY.md` line only when its cited sources are owner-only conversations. Residual: `CONVENTIONS.md` from scheduled runs, and false citations. | `core/src/security/floor.rs`; `core/src/security/memory_gate.rs` |
 | G3 | ~~Med~~ | **Addressed 2026-10-14 (ADR-055 rev 3).** The hot kb set now shares one 32 KiB budget: 4 KiB per small file, memory gets the rest (≥ 16 KiB). Caps count bytes, not chars. Previously up to 296 KiB per agent. | `engine/src/prompt/memory.rs` `HotKb::load` |
 | G4 | ~~Med~~ | **Addressed 2026-10-15 (ADR-072 D4a).** Other principals' posts go to a per-session waiting list and head the digest on every run until `ChannelRead` returns them or the principal posts on that channel after them. | `core/src/principal/channel_digest.rs`; `channel/src/attention.rs` |
 | G5 | ~~Low-Med~~ | **Addressed 2026-10-15.** Open plans ride a change-detected `## Open plans` tail section in every owner run (trunk, the owner's conversations, their spawns), replacing the trunk-only router injection. | `core/src/principal/plan_prompt.rs` |
-| G6 | Med → partly addressed | **First slice shipped 2026-10-15 (ADR-080):** a daily `memory` job, seeded once per principal, has the trunk review the day's sessions and channels, journal, and curate `MEMORY.md` with source pointers. Still missing: per-turn evidence capture, a reviewer pass, compare-and-swap writes, an agent-facing memory tool, offline compaction. | ADR-080; `core/src/principal/genesis.rs` |
+| G6 | Med → partly addressed | **First slice shipped 2026-10-15 (ADR-080):** a daily `memory` job, seeded once per principal, has the trunk review the day's sessions and channels, journal, and curate `MEMORY.md` with source pointers. **Rev 2 (2026-10-16):** scheduled runs write a hot-memory line only when its cited sources are owner-only conversations (others go to `kb/inbox/`); the memory run has no `Bash`; the brief is supplied at fire time; jobs can pick their model. Still missing: per-turn evidence capture, a reviewer pass, compare-and-swap writes, an agent-facing memory tool, offline compaction. | ADR-080 D4–D6; `core/src/security/memory_gate.rs` |
 | G7 | ~~Low-Med~~ | **Addressed 2026-10-14.** `PrincipalMemoryConfig` (and the equally unread `governance.delegations`) are deleted; legacy tables are ignored on load. | `core/src/principal/config.rs` |
 | G8 | ~~Low-Med~~ | **Addressed 2026-10-15.** Activity is recorded at the ingress turn driver (every human surface, not just `peko send`), persisted per `PrincipalId` across restarts, and cron turns no longer count; idle jobs fire once per quiet stretch. | `cron/src/idle.rs`; `principal/child_turns.rs` |
 | G9 | Low | **No forget or redaction primitive** for sessions, pages or channel logs. | grep: no hits |
 | G10 | Low | **No veto hook and no compaction hook.** There is no Sentinel-style veto point, and no pre-compaction point for flushing memory before context is dropped. | AGENTS.md §6.4 (six points, soft-fail, no vetoes) |
-| G11 | Low | **Peer messages are slow to land.** The latency ceiling is the keepalive cadence (10 min by default), and every check costs a full turn. This is a design tension rather than a bug; see P2/P3. | ADR-072 D1/D4; `genesis.rs:63` |
+| G11 | Low → partly addressed | **Quiet ticks shipped 2026-10-16 (ADR-083).** The keepalive runs a turn only when posts, ready plan steps or a failed job wait, or hourly; otherwise it calls no model. The latency ceiling for peer posts is still the keepalive cadence (10 min by default); a cheaper inter-principal wake path is still open. | ADR-083; `core/src/principal/quiet_tick.rs` |
 | G12 | ~~Doc~~ | **Addressed 2026-10-15.** PEKO.md, AGENT_SESSION_PARADIGM.md, PRINCIPAL_WORKSPACE.md, DATA_MODEL.md and ADR-055 now match the runtime (per-run reach, post-and-return `ChannelSend`, retired session flags and declared children, workspace layout). `AGENTS.md` is untracked (gitignored), so its fixes are local only. | as listed |
 
 ---

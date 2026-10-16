@@ -39,6 +39,7 @@ pub mod peer_children;
 pub(crate) mod peer_dm;
 pub(crate) mod plan_prompt;
 pub mod policy_gate;
+pub(crate) mod quiet_tick;
 pub mod router;
 pub mod routers;
 // Phase 4 of `feature/multi-model-subagents` (plan:

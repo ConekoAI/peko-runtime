@@ -171,7 +171,62 @@ async fn render_channel_digest(
     me: &Me<'_>,
     owner: bool,
 ) -> Option<String> {
-    let own_meta = metas.iter().find(|m| m.session_id == session_id)?;
+    digest_pass(port, metas, session_id, me, owner, true)
+        .await
+        .0
+}
+
+/// How many posts the digest would show `session_id` right now (waiting
+/// plus unread), without advancing a read mark or changing a waiting
+/// list. The quiet-tick check (ADR-083) asks this before a turn starts.
+pub(crate) async fn pending_posts(
+    port: &Arc<dyn ChannelPort>,
+    principal: &crate::principal::Principal,
+    session_id: &str,
+    owner: bool,
+) -> usize {
+    let Some(session_id) = peko_session::id::SessionId::parse(session_id) else {
+        return 0;
+    };
+    let workspace = principal.workspace_path.as_path();
+    let principal_id = principal.id.0.as_str();
+    let sessions_dir = principal.memory.sessions_dir();
+    let metas = peko_session::manager::SessionManager::new()
+        .with_sessions_dir_internal(sessions_dir)
+        .list_all_sessions(false)
+        .await
+        .unwrap_or_default();
+    let actor = port
+        .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
+            principal_id.to_string(),
+        )))
+        .await;
+    let hub_address = actor.hub_address();
+    let me = Me {
+        hub: hub_address.as_deref(),
+        address: &actor.address,
+        id: principal_id,
+        name: &principal_name(workspace),
+    };
+    digest_pass(port, &metas, session_id, &me, owner, false)
+        .await
+        .1
+}
+
+/// The digest itself, and how many posts it lists. With `write` false
+/// it only looks: no read mark moves and no waiting list changes.
+async fn digest_pass(
+    port: &Arc<dyn ChannelPort>,
+    metas: &[peko_session::metadata::SessionMetadata],
+    session_id: peko_session::id::SessionId,
+    me: &Me<'_>,
+    owner: bool,
+    write: bool,
+) -> (Option<String>, usize) {
+    let mut listed = 0;
+    let Some(own_meta) = metas.iter().find(|m| m.session_id == session_id) else {
+        return (None, 0);
+    };
     let own_path = peko_session::path::compute_path(metas, session_id);
     let session_key = session_id.as_str();
     // Humans and cron drive the trunk and the peer standing children;
@@ -192,7 +247,7 @@ async fn render_channel_digest(
         Ok(c) => c,
         Err(e) => {
             tracing::debug!("channel digest: list_for_principal failed: {e}");
-            return None;
+            return (None, 0);
         }
     };
 
@@ -227,7 +282,7 @@ async fn render_channel_digest(
             continue;
         }
 
-        let events = unread_events(port, &channel, &session_key, own_meta.created_at)
+        let events = unread_events(port, &channel, &session_key, own_meta.created_at, write)
             .await
             .unwrap_or_default();
         let stored = port
@@ -252,6 +307,11 @@ async fn render_channel_digest(
         };
         let (fresh, waiting_now) =
             sort_new_posts(&events, stored.clone(), &own_path, &channel_me, scope, kind);
+
+        listed += waiting_now.len() + fresh.len();
+        if !write {
+            continue;
+        }
 
         // Advance BEFORE rendering: the mark is "observed up to", so
         // filtered events are consumed too (see module doc). Posts that
@@ -308,9 +368,9 @@ async fn render_channel_digest(
         ));
     }
     if sections.is_empty() {
-        return None;
+        return (None, listed);
     }
-    Some(cap_digest(sections.join("\n")))
+    (Some(cap_digest(sections.join("\n"))), listed)
 }
 
 /// The events on `channel` this session has not observed yet,
@@ -326,6 +386,7 @@ async fn unread_events(
     channel: &peko_channel::ChannelId,
     session_key: &str,
     session_created_ms: u64,
+    write: bool,
 ) -> Option<Vec<(peko_channel::port::TaskId, ChannelEvent)>> {
     let mark = match port.read_mark(channel, session_key).await {
         Ok(m) => m,
@@ -350,7 +411,7 @@ async fn unread_events(
         if newer {
             return Some(all);
         }
-        if let Some((id, _)) = all.last() {
+        if let Some((id, _)) = all.last().filter(|_| write) {
             let _ = port
                 .advance_read_mark(channel, session_key, id.clone())
                 .await;
@@ -1005,6 +1066,32 @@ mod tests {
             .await
             .expect("the opening message must show");
         assert!(text.contains("hello, I'm new"), "{text}");
+    }
+
+    /// The quiet-tick check (ADR-083) counts what the digest would show
+    /// without consuming it: the next real render still shows the post.
+    #[tokio::test]
+    async fn a_peek_counts_posts_and_consumes_nothing() {
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-peek", "/principal-peek").await;
+        let metas = tree(None);
+        assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .is_none());
+        let peek = || async { digest_pass(&port, &metas, trunk_id(), &ME, true, false).await };
+        assert_eq!(peek().await, (None, 0));
+
+        port.post_attributed(&dm, &me_subject(), "prin_peek", PostMsg::root("ping"))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            assert_eq!(peek().await.1, 1, "a peek does not consume the post");
+        }
+        let text = render_channel_digest(&port, &metas, trunk_id(), &ME, true)
+            .await
+            .expect("the render still shows it");
+        assert!(text.contains("ping"), "{text}");
+        assert_eq!(peek().await.1, 1, "it now waits until answered");
     }
 
     /// The trunk glances past another principal's post on one keepalive

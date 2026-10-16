@@ -2799,6 +2799,8 @@ mod tests {
             action: peko_cron::CronJobAction::Send {
                 message: "ping".into(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -3187,6 +3189,57 @@ mod tests {
 
         // Sanity: the principal id round-trips.
         let _ = id;
+    }
+
+    /// ADR-080 D4: a hot-memory source counts as the owner's only when
+    /// nobody else speaks in it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_sources_are_owner_only_when_only_the_owner_speaks() {
+        use crate::security::judge::PolicyGate as _;
+        use crate::security::memory_gate::SourceClass;
+        let (_temp, manager, _adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let mine = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        let theirs = manager
+            .ensure_peer_child_ingress(&principal, &ActorRef::User("alice".into()))
+            .await
+            .expect("guest ingress");
+        let gate =
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let class = |source: String| {
+            let gate = &gate;
+            let id = id.0.clone();
+            async move { gate.source_class(&id, &source).await }
+        };
+
+        assert_eq!(class(mine.child_id.clone()).await, SourceClass::Owner);
+        let my_dm = mine.dm_channel.expect("owner DM").0;
+        assert_eq!(class(format!("{my_dm}#evt_1")).await, SourceClass::Owner);
+        let their_dm = theirs.dm_channel.expect("guest DM").0;
+        assert!(matches!(
+            class(theirs.child_id.clone()).await,
+            SourceClass::Other(peko_tools_core::Compartment::Conversation { channel }) if channel == their_dm
+        ));
+        assert!(matches!(
+            class(their_dm.clone()).await,
+            SourceClass::Other(_)
+        ));
+        for unknown in [
+            "/no-such-session",
+            "chan_nope",
+            "00000000-0000-0000-0000-000000000001",
+        ] {
+            assert_eq!(
+                class(unknown.into()).await,
+                SourceClass::Unknown,
+                "{unknown}"
+            );
+        }
     }
 
     // ===================================================================

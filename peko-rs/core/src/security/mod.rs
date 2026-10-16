@@ -4,6 +4,8 @@
 //! - [`floor`] is the fixed floor every call passes: no shell below
 //!   trusted, workspace confinement, and owner-only protected files.
 //! - [`proposals`] files a non-owner's protected write for the owner.
+//! - [`memory_gate`] holds back hot-memory lines a scheduled owner run
+//!   cannot source to the owner (ADR-080 D4).
 //! - [`policy`] reads the owner's `POLICY.md`.
 //! - [`judge`] decides which calls a separate reviewer sees, and how.
 //! - [`ledger`] is the per-principal tool ledger (ADR-079).
@@ -14,6 +16,7 @@
 pub mod floor;
 pub mod judge;
 pub mod ledger;
+pub mod memory_gate;
 pub mod policy;
 pub mod proposals;
 pub mod stamps;

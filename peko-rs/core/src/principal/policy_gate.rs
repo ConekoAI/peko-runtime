@@ -332,6 +332,54 @@ impl PolicyGate for PrincipalPolicyGate {
             Err(e) => Verdict::Deny(format!("the reviewer could not run: {e:#}")),
         }
     }
+
+    async fn source_class(
+        &self,
+        principal_id: &str,
+        source: &str,
+    ) -> crate::security::memory_gate::SourceClass {
+        use crate::security::memory_gate::{channel_of, SourceClass};
+        use peko_tools_core::{Compartment, Trust};
+        let Some((manager, principal)) = self.principal(principal_id).await else {
+            return SourceClass::Unknown;
+        };
+        let channels = manager.channel_port();
+        let compartment = if let Some(channel) = channel_of(source) {
+            let Some(port) = &channels else {
+                return SourceClass::Unknown;
+            };
+            let id = peko_channel::ChannelId(channel.to_string());
+            if port.list_members(&id).await.is_err() {
+                return SourceClass::Unknown;
+            }
+            Compartment::Conversation {
+                channel: channel.to_string(),
+            }
+        } else {
+            let mut sessions = peko_session::SessionManager::new()
+                .with_sessions_dir_internal(principal.memory.sessions_dir());
+            let metas = sessions.list_all_sessions(false).await.unwrap_or_default();
+            // Paths resolve from the trunk, like the memory run's own;
+            // a bare id needs no anchor.
+            let anchor = metas
+                .iter()
+                .find(|m| m.parent_session_id.is_none())
+                .map_or(peko_session::SessionId(uuid::Uuid::nil()), |m| m.session_id);
+            let Ok(id) = peko_session::path::resolve_reference(&metas, anchor, source) else {
+                return SourceClass::Unknown;
+            };
+            if !metas.iter().any(|m| m.session_id == id) {
+                return SourceClass::Unknown;
+            }
+            crate::security::compartment_of(&metas, id)
+        };
+        let stamps = crate::principal::trust::stamps_for(&principal, channels);
+        if stamps.ceiling(&compartment).await == Trust::Owner {
+            SourceClass::Owner
+        } else {
+            SourceClass::Other(compartment)
+        }
+    }
 }
 
 /// An owner's approval command, parsed.

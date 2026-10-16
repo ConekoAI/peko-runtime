@@ -47,6 +47,15 @@ pub struct CronCreateArgs {
     /// exclusive with `tool`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// `message` jobs only: the configured model each fire's turn runs
+    /// on instead of the principal's pinned model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `message` jobs only: `"attention"` skips a due fire's turn when
+    /// nothing waits on the principal (ADR-083); `"always"` (the
+    /// default) runs every fire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<crate::FireWhen>,
     /// Tool-call parameters for the scheduled `tool` call. Defaults to `{}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
@@ -152,6 +161,16 @@ impl Tool for CronCreateAction {
                     "minLength": 1,
                     "description": "Instruction delivered to the creating session at fire time (trunk fallback), running a full agent turn (dynamic, LLM-driven output — e.g. \"compose a fresh ping and ChannelSend it\"). Mutually exclusive with `tool`."
                 },
+                "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Only with `message`. Configured model id (see `ModelList`) each fire's turn runs on instead of your pinned model, e.g. a cheaper one for routine bookkeeping."
+                },
+                "when": {
+                    "type": "string",
+                    "enum": ["always", "attention"],
+                    "description": "Only with `message` on a recurring schedule. \"attention\" runs a fire's turn only when something waits on you (other principals' posts, unread channel activity, ready plan steps, a failed job) or your last turn from this job is an hour old; other fires are quiet ticks that call no model. \"always\" (default) runs every fire."
+                },
                 "tool": {
                     "type": "string",
                     "minLength": 1,
@@ -256,6 +275,18 @@ impl Tool for CronCreateAction {
             (Some(_), Some(_)) => {
                 anyhow::bail!("Cron action create: `tool` and `message` are mutually exclusive");
             }
+            (Some(_), None) if args.model.is_some() => {
+                anyhow::bail!(
+                    "Cron action create: `model` applies to `message` jobs; a `tool` job runs \
+                     a fixed tool call (give the tool its own model parameter, if it has one)"
+                );
+            }
+            (Some(_), None) if args.when.is_some() => {
+                anyhow::bail!(
+                    "Cron action create: `when` applies to `message` jobs; a `tool` job runs \
+                     no turn"
+                );
+            }
             (Some(tool_name), None) => {
                 if tool_name.trim().is_empty() {
                     anyhow::bail!("Cron action create `tool` must be a non-empty tool name");
@@ -277,6 +308,8 @@ impl Tool for CronCreateAction {
                 CronJobAction::Send {
                     message,
                     target: None,
+                    model: args.model.clone().filter(|m| !m.trim().is_empty()),
+                    when: args.when,
                 }
             }
             (None, None) => {

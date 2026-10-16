@@ -4,6 +4,37 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Quiet ticks (ADR-083, 0.1.0, 2026-10-16)
+
+- Cron message jobs take `when` (`always` / `attention`; `Cron` `create` /
+  `update`). An `attention` job runs a due fire's turn only when something
+  waits on the principal: posts its session's channel digest would show, open
+  plan steps ready or in progress, or another job that failed since its last
+  turn. Otherwise it runs at most hourly. Other fires are quiet ticks: no model
+  call, no run row, `last_status: quiet`, a `cron.quiet` audit event. Manual
+  triggers always run. `attention` needs a recurring schedule.
+- The seeded keepalive waits for attention, and so does an existing keepalive
+  still carrying the runtime's tick text, without its schedule being
+  rewritten. `when: always` restores every tick. The tick text explains this.
+- The channel digest can count what it would show without consuming it.
+
+### Memory maintenance hardening (ADR-080 rev 2, 0.1.0, 2026-10-16)
+
+- A cron-started owner run that writes `kb/MEMORY.md` with `Write` / `Edit`
+  must end each added line with `(source: …)` (a session path or id, or
+  `<channel id>#<event id>`). A line is written only when every source is a
+  conversation where only the owner speaks (or the principal's internal tree).
+  Other lines are dropped from the write and filed in `kb/inbox/` under the
+  conversation they cite, and the tool result lists them.
+- The daily memory run, and agents it spawns, get no `Bash`.
+- The seeded `memory` job stores a marker message; the cron engine supplies the
+  current brief each time it fires. Jobs seeded by the first ADR-080 build are
+  read the same way.
+- Cron message jobs take `model` (`Cron` `create` / `update`; an empty string
+  clears it). Each fire runs on that configured model; an unresolvable model is
+  refused when the job is saved. `CronRuntime::update_job` now takes a
+  `JobPatch`.
+
 ### Channel kinds, bindings, and principal group management (ADR-082, 0.1.0, 2026-10-16)
 
 - A channel's `kind` (`dm` / `group`) is stored in `meta.json` instead of being

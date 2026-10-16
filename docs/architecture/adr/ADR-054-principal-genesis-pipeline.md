@@ -157,6 +157,11 @@ schedule entirely once it is `organized`.
 
 ### D4: P4 handoff — the trunk owns its rhythm
 
+> **Amended by [ADR-083](ADR-083-quiet-ticks.md) (2026-10-16):** the seeded
+> keepalive waits for attention: a tick with nothing waiting calls no model,
+> and a turn runs at least hourly. A keepalive still carrying the runtime's
+> tick text is read the same way when it fires; its schedule is not rewritten.
+
 `organized` is a promise in both directions: the runtime will never
 re-seed or "fix" the principal's cron schedule at boot, and the trunk
 is expected to maintain its own heartbeat (it holds the cron tools —

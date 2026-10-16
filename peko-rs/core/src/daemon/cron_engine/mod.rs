@@ -393,6 +393,9 @@ impl CronEngine {
     }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
+        if self.quiet_tick(&job).await? {
+            return Ok(());
+        }
         let (run, admitted) = self.reserve_run(&job).await?;
         if !admitted {
             info!(
@@ -402,6 +405,91 @@ impl CronEngine {
             return Ok(());
         }
         self.execute_reserved_job(job, run).await
+    }
+
+    /// ADR-083: settle a due `when: attention` fire as a quiet tick when
+    /// nothing waits on the principal and the job's last turn is recent.
+    /// The schedule advances, `last_status` reads `quiet`, and no run row
+    /// is written and no model called. Returns whether the fire was
+    /// quiet. Manual triggers never come here: they always run.
+    async fn quiet_tick(&self, job: &CronJob) -> Result<bool> {
+        if !matches!(job.action, CronJobAction::Send { .. })
+            || crate::principal::genesis::fire_when(job) != peko_cron::FireWhen::Attention
+        {
+            return Ok(false);
+        }
+        let now = Utc::now();
+        if !crate::principal::quiet_tick::may_stay_quiet(job, now) {
+            return Ok(false);
+        }
+        let Some(pm) = self.principal_manager.as_ref() else {
+            return Ok(false);
+        };
+        let Some(principal) = resolve_principal(pm, &job.principal_id).await else {
+            return Ok(false);
+        };
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
+        // A run still in flight is the admission path's business.
+        if scheduler
+            .list_running_runs()?
+            .iter()
+            .any(|run| run.job_id == job.id)
+        {
+            return Ok(false);
+        }
+        let trunk_key = crate::principal::routers::root::trunk_session_id();
+        let session = self
+            .resolve_origin_session(&principal, job, &trunk_key)
+            .await;
+        let channels = self
+            .tooling
+            .upgrade()
+            .and_then(|core| core.services().channel_port());
+        // A job that cannot fire should fail visibly in its run, not
+        // hide behind quiet ticks.
+        let Ok(stamp) =
+            crate::principal::trust::cron_job_stamp(&principal, channels.clone(), job, &session)
+                .await
+        else {
+            return Ok(false);
+        };
+        let jobs = scheduler.list_jobs(true)?;
+        let waiting = crate::principal::quiet_tick::what_waits(
+            &principal,
+            channels,
+            job,
+            &session,
+            stamp.is_owner(),
+            &jobs,
+        )
+        .await;
+        if !waiting.is_empty() {
+            debug!(job = %job.id, "attention fire runs: {}", waiting.join("; "));
+            return Ok(false);
+        }
+        let next_run = match &job.schedule {
+            peko_cron::ScheduleKind::Every { every_ms } => {
+                peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, now)
+            }
+            _ => peko_cron::calculate_next_run(&job.schedule, now)?,
+        };
+        scheduler.record_quiet(&job.id, next_run)?;
+        let _ = self
+            .observability
+            .audit_with_caller(
+                Some(&CallerContext::local().subject()),
+                "cron.quiet",
+                Some(&job.principal_id.0),
+                serde_json::json!({
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "scheduled_at": job.next_run,
+                    "next_run_at": next_run,
+                }),
+            )
+            .await;
+        debug!(job = %job.id, "quiet tick; next at {next_run}");
+        Ok(true)
     }
 
     async fn reserve_run(&self, job: &CronJob) -> Result<(CronRun, bool)> {
@@ -690,6 +778,11 @@ impl CronEngine {
         let origin = self
             .resolve_origin_session(&principal, job, &trunk_key)
             .await;
+        let model = match &job.action {
+            CronJobAction::Send { model, .. } => model.clone(),
+            _ => None,
+        };
+        let message = crate::principal::genesis::fire_message(job, &*principal.config.read().await);
         // ADR-078 D5: the job fires as its creator, re-entered into the
         // session it lands in.
         let channels = self
@@ -726,10 +819,10 @@ impl CronEngine {
                     let outcome = turns
                         .drive_turn_streaming(
                             &origin,
-                            &job.task_description(),
+                            &message,
                             sink,
                             None,
-                            None,
+                            model.clone(),
                             acting_for.clone(),
                         )
                         .await;
@@ -773,12 +866,7 @@ impl CronEngine {
         }
 
         match pm
-            .receive_trunk(
-                principal.id.clone(),
-                job.task_description(),
-                None,
-                acting_for,
-            )
+            .receive_trunk(principal.id.clone(), message, model, acting_for)
             .await
         {
             Ok(response) => Ok(("success".to_string(), Some(response.content))),
@@ -1283,6 +1371,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "check commitments".into(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -1843,6 +1933,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Hello from cron".to_string(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -1894,6 +1986,125 @@ mod tests {
         drop(principal);
     }
 
+    /// ADR-083: an attention-gated fire with nothing waiting is a quiet
+    /// tick (no model call, no run row); a job that failed since the last
+    /// turn, or a last turn an hour old, makes the next fire run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attention_fires_are_quiet_until_something_waits() {
+        let tmp = TempDir::new().unwrap();
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        let (llm, adapter) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        adapter.queue_text("checked the failure");
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_tooling(tool_runtime.tooling().clone())
+            .with_resolver(llm),
+        );
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let principal = create_test_principal(&manager, &workspace, "hush").await;
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = CronScheduler::new(resolver.cron_schedule("hush")).unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            std::sync::Weak::new(),
+        );
+        let principal_id = PrincipalId::from_did(&principal.did().await);
+        let mut tick =
+            crate::principal::genesis::keepalive_job(&manager_config(&principal).await, Utc::now())
+                .unwrap();
+        tick.principal_id = principal_id.clone();
+        tick.next_run = Utc::now() - Duration::seconds(1);
+        tick.last_run = Some(Utc::now() - Duration::minutes(5));
+        scheduler.add_job(&tick).unwrap();
+
+        engine.execute_job(tick.clone()).await.unwrap();
+        let quiet = scheduler.get_job(&tick.id).unwrap().unwrap();
+        assert_eq!(quiet.last_status.as_deref(), Some(peko_cron::QUIET_STATUS));
+        assert!(quiet.next_run > Utc::now(), "the schedule advanced");
+        assert_eq!(quiet.last_run, tick.last_run, "no turn recorded");
+        assert!(scheduler.get_run_history(&tick.id, 10).unwrap().is_empty());
+        assert!(adapter.recorded_requests().is_empty(), "no model call");
+
+        // Another job failed after the last turn: the next fire runs.
+        let mut failed = tick.clone();
+        failed.id = "nightly".into();
+        failed.name = "nightly".into();
+        failed.action = CronJobAction::SpawnTool {
+            tool_name: "Bash".into(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: None,
+            timeout_secs: None,
+        };
+        scheduler.add_job(&failed).unwrap();
+        scheduler
+            .update_job_after_run(&failed.id, "failed", Utc::now() + Duration::days(1))
+            .unwrap();
+        let due = scheduler.get_job(&tick.id).unwrap().unwrap();
+        engine.execute_job(due).await.unwrap();
+        let runs = scheduler.get_run_history(&tick.id, 10).unwrap();
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_eq!(runs[0].status, "success", "{runs:?}");
+        assert_eq!(adapter.recorded_requests().len(), 1);
+
+        // Nothing new since that turn: quiet again; an old last turn
+        // runs regardless (no reply is queued, so it is attempted).
+        let after = scheduler.get_job(&tick.id).unwrap().unwrap();
+        engine.execute_job(after.clone()).await.unwrap();
+        assert_eq!(adapter.recorded_requests().len(), 1);
+        let mut stale = scheduler.get_job(&tick.id).unwrap().unwrap();
+        stale.last_run = Some(Utc::now() - Duration::minutes(61));
+        assert!(!engine.quiet_tick(&stale).await.unwrap());
+
+        // A plan step ready to start is standing work: the fire runs.
+        let recent = scheduler.get_job(&tick.id).unwrap().unwrap();
+        assert!(engine.quiet_tick(&recent).await.unwrap());
+        let now = Utc::now();
+        principal
+            .plan_port
+            .create(
+                principal.id.clone(),
+                "ship".into(),
+                vec![peko_plan::PlanNode {
+                    node_id: peko_plan::NodeId::generate(),
+                    step: "write the release notes".into(),
+                    status: peko_plan::PlanNodeStatus::Pending,
+                    depends_on: vec![],
+                    evidence: None,
+                    blocked_reason: None,
+                    created_at: now,
+                    updated_at: now,
+                }],
+            )
+            .await
+            .unwrap();
+        assert!(!engine.quiet_tick(&recent).await.unwrap());
+    }
+
+    async fn manager_config(principal: &crate::principal::Principal) -> PrincipalConfig {
+        principal.config.read().await.clone()
+    }
+
     /// An `Idle` job fires once per idle stretch: after two hours
     /// without anyone talking to the principal it runs, a second check
     /// does not run it again, and new activity re-arms it. The job keys
@@ -1928,6 +2139,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "Anything to follow up on?".to_string(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -2334,6 +2547,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "cron tick payload".to_string(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -2524,6 +2739,8 @@ mod tests {
         job.action = CronJobAction::Send {
             message: "work".into(),
             target: Some("trunk".into()),
+            model: None,
+            when: None,
         };
         scheduler.add_job(&job).unwrap();
         engine.execute_job(job.clone()).await.unwrap();
@@ -2630,6 +2847,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "organize your memory".to_string(),
                 target: Some("trunk".to_string()),
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -3414,6 +3633,8 @@ mod tests {
             action: CronJobAction::Send {
                 message: "fast fire".to_string(),
                 target: None,
+                model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,

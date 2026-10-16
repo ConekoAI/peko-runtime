@@ -145,8 +145,11 @@ This document defines the public API surface for Peko, including the new Unified
 - `peko::security`: `stamps` (`Stamps`, `TrustSource`, `Driver`,
   `trust_for`, `compartment_of`, `visible_metas`, `may_reach`), `floor`
   (`OWNER_ONLY_TOOLS`: `Plan` is refused to every non-owner run and is no
-  longer in `judge::EXEMPT_TOOLS`), `proposals`, `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
-  `GatedCall`, `Verdict`, `needs_review`).
+  longer in `judge::EXEMPT_TOOLS`), `proposals` (`file`, `file_held`, `pending`), `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
+  `GatedCall`, `Verdict`, `needs_review`), `memory_gate` (ADR-080 D4:
+  `is_scheduled_owner`, `is_memory_run`, `sources`, `cited`, `screen`,
+  `SourceClass`, `Held`). `PolicyGate::source_class` (default `Unknown`)
+  classifies a hot-memory source.
 - `ToolDispatcher::{set_policy_gate, policy_gate}`;
   `PrincipalManager::install_policy_gate`; `PrincipalManager::receive_trunk`
   takes the run's `ActingFor` and refuses non-owner stamps.
@@ -181,7 +184,11 @@ See [the complete catalog](docs/architecture/builtin-tools.md) for all parameter
 TaskTool, PlanTool, and AsyncTool are exported from tools::builtin; CronTool is
 exported by peko_cron. Their per-action implementations are private handlers.
 CronTool::new dispatches to the daemon-installed runtime; CronTool::with_runtime
-binds an explicit Arc<dyn CronRuntime>. CronRuntime::owns_job_history answers
+binds an explicit Arc<dyn CronRuntime>. CronRuntime::update_job takes a
+peko_cron::JobPatch (enabled, wake_on_completion, model, when); CronJobAction::Send
+carries an optional model and `when: Option<FireWhen>` (ADR-083;
+`ATTENTION_MAX_QUIET_MS`, `QUIET_STATUS`, `CronScheduler::record_quiet`).
+`principal::genesis::fire_when` reads a job's effective `when`. CronRuntime::owns_job_history answers
 history ownership for reaped one-shot jobs, whose runs outlive the job. The
 test-support feature exposes peko_cron::testing::FileCronRuntime, a runtime over
 real CronScheduler files. AgentCatalogTool (RoleCatalog) is workspace-only:

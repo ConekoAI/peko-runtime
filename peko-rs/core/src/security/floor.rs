@@ -94,6 +94,13 @@ pub fn tool_refusal(
     tool_name: &str,
     mcp_untrusted_ok: Option<bool>,
 ) -> Option<String> {
+    if tool_name == "Bash" && super::memory_gate::is_memory_run(stamp) {
+        return Some(
+            "`Bash` is not available in the memory-maintenance run (ADR-080): it reads \
+             other people's conversations, so it writes memory only through the file tools."
+                .into(),
+        );
+    }
     if stamp.is_owner() {
         return None;
     }

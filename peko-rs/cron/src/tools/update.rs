@@ -1,14 +1,14 @@
 //! `Cron action update` tool — patch mutable fields of a scheduled job
 //!
 //! Updates a `CronJob` through the [`CronRuntime`] port set by the
-//! daemon at startup, like the sibling cron tools. Covers the two
-//! fields an agent legitimately toggles after creation: `enabled`
-//! (pause/resume without delete) and `wake_on_completion` (result
-//! subscription — whether each fire's outcome steers back into the
-//! creating session's inbox (trunk fallback)).
+//! daemon at startup, like the sibling cron tools. Covers the fields an
+//! agent legitimately changes after creation: `enabled` (pause/resume
+//! without delete), `wake_on_completion` (result subscription — whether
+//! each fire's outcome steers back into the creating session's inbox
+//! (trunk fallback)), and a message job's `model` and `when`.
 
 use crate::tools::delete::{resolve_id_by_label, verify_id_belongs_to_principal};
-use crate::tools::RuntimeBinding;
+use crate::tools::{JobPatch, RuntimeBinding};
 use async_trait::async_trait;
 use peko_tools_core::exec::ToolContext;
 use peko_tools_core::traits::Tool;
@@ -43,6 +43,13 @@ pub struct CronUpdateArgs {
     /// result each fire (SpawnTool jobs only)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_on_completion: Option<bool>,
+    /// Message jobs only: the configured model each fire runs on; an
+    /// empty string returns the job to the principal's pinned model
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Message jobs only: when a due fire runs its turn (ADR-083)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<crate::FireWhen>,
 }
 
 #[async_trait]
@@ -52,7 +59,7 @@ impl Tool for CronUpdateAction {
     }
 
     fn description(&self) -> String {
-        "Update a scheduled job's mutable fields by ID (or label): `enabled` pauses/resumes without deleting (re-enabling resets the failure budget); `wake_on_completion` subscribes or unsubscribes you to the job's result on each fire (tool jobs only — message jobs already land in your session).".to_string()
+        "Update a scheduled job's mutable fields by ID (or label): `enabled` pauses/resumes without deleting (re-enabling resets the failure budget); `wake_on_completion` subscribes or unsubscribes you to the job's result on each fire (tool jobs only — message jobs already land in your session); `model` picks the configured model a message job's turn runs on (an empty string returns it to your pinned model); `when` (\"always\" / \"attention\") sets whether every due fire runs a message job's turn or only fires when something waits on you.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -74,11 +81,20 @@ impl Tool for CronUpdateAction {
                 "wake_on_completion": {
                     "type": "boolean",
                     "description": "Subscribe (true) or unsubscribe (false) the creating session's inbox (trunk fallback) to the job's result each fire. SpawnTool jobs only; message jobs already run in your session."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Message jobs only. Configured model id (see `ModelList`) each fire's turn runs on, e.g. a cheaper one for routine bookkeeping. An empty string returns the job to your pinned model."
+                },
+                "when": {
+                    "type": "string",
+                    "enum": ["always", "attention"],
+                    "description": "Recurring message jobs only. \"attention\": a due fire runs its turn only when something waits on you or the job's last turn is an hour old; otherwise it is a quiet tick with no model call. \"always\": every fire runs."
                 }
             },
             "allOf": [
                 {"anyOf": [{"required": ["id"]}, {"required": ["label"]}]},
-                {"anyOf": [{"required": ["enabled"]}, {"required": ["wake_on_completion"]}]}
+                {"anyOf": [{"required": ["enabled"]}, {"required": ["wake_on_completion"]}, {"required": ["model"]}, {"required": ["when"]}]}
             ]
         })
     }
@@ -109,9 +125,19 @@ impl Tool for CronUpdateAction {
         let args: CronUpdateArgs = serde_json::from_value(params.clone())
             .map_err(|e| anyhow::anyhow!("Invalid Cron action update arguments: {e}"))?;
 
-        if args.enabled.is_none() && args.wake_on_completion.is_none() {
+        let patch = JobPatch {
+            enabled: args.enabled,
+            wake_on_completion: args.wake_on_completion,
+            model: args
+                .model
+                .as_deref()
+                .map(|m| Some(m.trim().to_string()).filter(|m| !m.is_empty())),
+            when: args.when,
+        };
+        if patch.is_empty() {
             return Err(anyhow::anyhow!(
-                "Cron action update requires at least one field to change: `enabled` or `wake_on_completion`"
+                "Cron action update requires at least one field to change: `enabled`, \
+                 `wake_on_completion`, `model`, or `when`"
             ));
         }
 
@@ -137,14 +163,19 @@ impl Tool for CronUpdateAction {
                 crate::tools::check_non_owner_job(&job, &jobs)?;
             }
         }
-        runtime
-            .update_job(&job_id, args.enabled, args.wake_on_completion)
-            .await?;
-        Ok(json!({
+        runtime.update_job(&job_id, &patch).await?;
+        let mut out = json!({
             "updated": true,
             "job_id": job_id,
-            "enabled": args.enabled,
-            "wake_on_completion": args.wake_on_completion,
-        }))
+            "enabled": patch.enabled,
+            "wake_on_completion": patch.wake_on_completion,
+        });
+        if let Some(model) = patch.model {
+            out["model"] = json!(model);
+        }
+        if let Some(when) = patch.when {
+            out["when"] = json!(when.as_str());
+        }
+        Ok(out)
     }
 }

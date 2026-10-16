@@ -174,7 +174,7 @@ async fn create_message_job_records_owner_session_and_send_action() {
     ));
     assert!(matches!(
         job.action,
-        CronJobAction::Send { ref message, target: None } if message == "stand-up"
+        CronJobAction::Send { ref message, target: None, model: None, when: None } if message == "stand-up"
     ));
 }
 
@@ -442,6 +442,123 @@ async fn update_toggles_enabled_resets_failures_and_sets_wake() {
         error.contains("enabled") || error.contains("wake"),
         "{error}"
     );
+}
+
+/// A message job can carry its own model: set at create, changed or
+/// cleared by update. A tool job runs no turn, so it takes none.
+#[tokio::test]
+async fn message_jobs_carry_their_own_model() {
+    let fx = Fixture::new();
+    let model_of = |job: crate::CronJob| match job.action {
+        CronJobAction::Send { model, .. } => model,
+        other => panic!("expected Send, got {other:?}"),
+    };
+    let id = fx
+        .create(
+            ALICE,
+            json!({"message":"tidy memory", "interval_ms":86_400_000, "model":"cheap"}),
+        )
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)).as_deref(), Some("cheap"));
+    let listed = fx.ok(ALICE, json!({"action":"list"})).await;
+    assert!(listed.to_string().contains("cheap"), "{listed}");
+
+    fx.ok(ALICE, json!({"action":"update", "id": id, "model":"other"}))
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)).as_deref(), Some("other"));
+    assert!(fx.job(ALICE, &id).enabled, "a model change leaves the rest");
+
+    fx.ok(ALICE, json!({"action":"update", "id": id, "model":""}))
+        .await;
+    assert_eq!(model_of(fx.job(ALICE, &id)), None, "empty clears");
+
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "tool":"Bash", "interval_ms":60000, "model":"cheap"}),
+        )
+        .await;
+    assert!(
+        error.contains("`model` applies to `message` jobs"),
+        "{error}"
+    );
+    let tool_job = fx
+        .create(ALICE, json!({"tool":"Bash", "interval_ms":60000}))
+        .await;
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"update", "id": tool_job, "model":"cheap"}),
+        )
+        .await;
+    assert!(error.contains("message jobs only"), "{error}");
+}
+
+/// `when` (ADR-083): set at create or update on recurring message jobs;
+/// refused on one-shots and tool jobs. A quiet tick advances the
+/// schedule without a run row or a failure.
+#[tokio::test]
+async fn message_jobs_choose_when_a_fire_runs_its_turn() {
+    let fx = Fixture::new();
+    let when_of = |job: crate::CronJob| match job.action {
+        CronJobAction::Send { when, .. } => when,
+        other => panic!("expected Send, got {other:?}"),
+    };
+    let id = fx
+        .create(
+            ALICE,
+            json!({"message":"tick", "interval_ms":600_000, "when":"attention"}),
+        )
+        .await;
+    assert_eq!(
+        when_of(fx.job(ALICE, &id)),
+        Some(crate::FireWhen::Attention)
+    );
+    let listed = fx.ok(ALICE, json!({"action":"list"})).await;
+    assert!(listed.to_string().contains("attention"), "{listed}");
+    fx.ok(ALICE, json!({"action":"update", "id": id, "when":"always"}))
+        .await;
+    assert_eq!(when_of(fx.job(ALICE, &id)), Some(crate::FireWhen::Always));
+
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "message":"once", "delay":"5m", "when":"attention"}),
+        )
+        .await;
+    assert!(error.contains("recurring"), "{error}");
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"create", "tool":"Bash", "interval_ms":60000, "when":"attention"}),
+        )
+        .await;
+    assert!(
+        error.contains("`when` applies to `message` jobs"),
+        "{error}"
+    );
+    let error = fx
+        .err(
+            ALICE,
+            json!({"action":"update", "id": id, "when":"sometimes"}),
+        )
+        .await;
+    assert!(error.contains("arguments"), "{error}");
+
+    let scheduler = fx.runtime.scheduler(&PrincipalId(ALICE.into()));
+    let before = fx.job(ALICE, &id);
+    let next = chrono::Utc::now() + chrono::Duration::minutes(10);
+    assert!(scheduler.record_quiet(&id, next).unwrap());
+    let after = fx.job(ALICE, &id);
+    assert_eq!(after.next_run, next);
+    assert_eq!(after.last_status.as_deref(), Some(crate::QUIET_STATUS));
+    assert_eq!(after.last_run, before.last_run);
+    assert_eq!(after.run_count, before.run_count);
+    assert_eq!(after.consecutive_failures, 0);
+    assert!(scheduler
+        .get_run_history(&id, 10)
+        .unwrap_or_default()
+        .is_empty());
 }
 
 #[tokio::test]
