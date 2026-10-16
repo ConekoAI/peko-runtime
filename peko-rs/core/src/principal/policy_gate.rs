@@ -195,12 +195,7 @@ impl PrincipalPolicyGate {
     /// The owner, as the subject their conversation is keyed by
     /// (ADR-081 D8: the one owner's own conversation).
     async fn owner_subjects(principal: &Principal) -> Vec<ActorRef> {
-        let owner = principal.config.read().await.owner.clone();
-        if owner.subject_id().is_empty() {
-            vec![ActorRef::User("local".into())]
-        } else {
-            vec![owner]
-        }
+        vec![principal.config.read().await.owner.clone()]
     }
 
     /// Tell the owner a request waits; best-effort (the `approvals`

@@ -248,8 +248,15 @@ The terminal is always the local user — there is no separate login.
 
 ### `transfer` — Transfer a peko to a new owner
 
-Only the current owner can transfer. An online peko's new owner must be a
-Hub account. The change is audited.
+Only the current owner can transfer. The change is audited.
+
+An online peko's owner is recorded on PekoHub: its new owner must be a Hub
+user, and the transfer is made on PekoHub (the runtime asks over the tunnel,
+allowed when the runtime's account is the owner). The local config changes
+only after PekoHub confirms. A peko owned by another Hub account is
+transferred by that account through PekoHub. Editing an online peko's owner
+in `principal.toml` does not change it: PekoHub sends back the recorded
+owner the next time the peko goes online.
 
 ```bash
 peko transfer <NAME> user:hub:<ACCOUNT>

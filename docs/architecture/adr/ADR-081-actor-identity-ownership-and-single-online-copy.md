@@ -1,6 +1,6 @@
 # ADR-081: Actor identity, ownership, and a single online copy
 
-**Status:** Accepted (implemented on `feature/adr-081-actor-identity`; PekoHub on `feature/adr-081-single-online-copy`)
+**Status:** Accepted (runtime: peko-runtime#468; PekoHub: pekohub#44, merged)
 **Date:** 2026-10-15
 **Counterpart:** PekoHub ADR-081 (to be written from §5)
 
@@ -83,14 +83,16 @@ pub struct ActorKey(pub String);                                            // i
 ### D4: One owner
 
 - **Exactly one owner.** `PrincipalConfig.owner: ActorRef`. Trust is `Owner` exactly when the actor's key equals the owner's key. The blanket `user:local` and logged-in-account rules are removed.
+- **No owner recorded means the local user.** A config without an owner (a seed, a hand-written file) loads with the local user as owner, so trust, approvals, registration, and transfer all see the same owner.
 - **Operator ≠ owner.** Local IPC and admin-scoped API keys keep *administrative* authority: settings, removal, import, export, registration. In conversation the operator is the local user, so the operator is the owner only when the local user owns the principal. An operator hosting someone else's principal administers it but chats at whatever trust the owner granted. This doesn't stop a determined operator, who holds the files and the vault; it keeps the trust model honest.
 - **Creation.** The owner is the local user, with whatever routes it has (a registered local user stores its Hub route).
 - **Seeds.** Seeds drop the owner and grants. ADR-060 seeds are never copies.
 - **Transfer.** `peko transfer <peko> <actor>` is an audited Security event (`principal.owner_transfer`).
   - Only the current owner may transfer. The terminal is the local user, so the operator transfers exactly the principals the local user owns.
-  - An online principal's new owner must be a Hub actor; Hub learns the new owner from the linked runtime's next announce.
+  - An online principal is transferred on Hub, to a Hub user (the same rule registration and Hub move approval use). The runtime asks Hub over the tunnel, which Hub allows when the runtime's account is the recorded owner; another owner account transfers through Hub's API. The local config takes the new owner only from Hub's `principal_owner_changed`.
   - Grants and policy sections are unchanged.
-- **Registration needs a Hub owner.** A principal can register only when its owner has a Hub route, so every online principal has a Hub owner.
+- **Registration needs a Hub owner.** A principal can register only when its owner is a user with a Hub route, so every online principal has a Hub user as owner. Naming an owner other than the runtime's own account needs that account's consent on Hub (the link approval of D7).
+- **Hub records an online principal's owner.** Once online, Hub's record is the owner and `config.owner` is its copy. Hub refuses an announce naming a different owner and sends the recorded one, which the runtime writes (`principal.owner_synced`, Security) before re-announcing. A local edit of an online principal's owner is undone; only a transfer changes it.
 
 ### D5: Principal-owned identity state
 
@@ -99,12 +101,12 @@ These move from runtime files into the principal and travel with it:
 | State | Where it lives |
 |---|---|
 | Owner, grants | `principal.toml`, as `ActorRef`s |
-| Learned contacts | `local/contacts.json`: kind, routes, key, signing DID, name, verified-at |
+| Learned contacts | `local/contacts.json`: kind, routes, key, signing DID, name, registration |
 | Channel memberships | `local/channels.json`, written at export from the channel store: channel ID, roster with immutable keys, own session binding (no logs) |
 | Policy | `POLICY.md`, sections resolved through D1 |
 | Cron creators | `CronJob.created_by` as `ActorRef` + compartment; trust re-derived at fire time |
 
-- **Runtime registry.** `runtime/actors.json` becomes a routing index rebuilt from hosted principals and the union of their contacts.
+- **Runtime registry.** `runtime/actors.json` is a routing index only. Contact books never write it; an actor enters it when this runtime resolves it (directory, ingress, registration).
 - **Where Hub routes come from.** Only this runtime's registration receipts and verified directory results write Hub routes.
 - **No Hub routes on hosted principals from the directory.** A directory result never attaches a Hub route to a hosted principal; only that principal's own registration receipt does (fixes F9).
 
@@ -120,8 +122,9 @@ A `.peko` snapshot adds `local/contacts.json`, `local/channels.json`, `POLICY.md
    - Has a Hub route: unchanged.
    - `Local { runtime: R, "local" }` with no Hub route: rewritten to this runtime's local user, which is the same user when R is this runtime.
 3. **Grants, contacts, policy sections, cron creators.** Hub routes are unchanged. Local routes on another runtime go dormant (D1) and revive if the principal returns to that runtime.
-4. **Hub contacts from the snapshot** are *unverified* until re-resolved through the directory. They never write the runtime's alias index directly.
-5. **Channel memberships.** Hub-routed channels reattach on first traffic (pair DMs keep their IDs because keys are kept). Local-only channels go dormant. The owner's DM follows the owner rewrite in step 2, so the `/local-user` session continues.
+4. **Hub contacts from the snapshot** stay dormant (`reachable: false`) until this runtime re-resolves them through the directory, which `ChannelSend` does on first use. They never write the runtime's alias index directly.
+5. **Channel memberships.** Pair DMs keep their IDs because keys are kept, and reattach when the principal next speaks in them (`ensure_dm` re-invites the peer). Local-only channels go dormant. The owner's DM follows the owner, whatever its kind: its sessions are rebound to the DM with the owner's key on the destination — this runtime's local user, or the owner's Hub account — so the conversation continues.
+   - **Open:** group channels and peer-first traffic do not reattach yet. `local/channels.json` is exported but not replayed into the destination's channel store, so a group channel has no mirror on the new runtime until a member re-invites the principal.
 6. **The import arrives offline**: not linked to this runtime on Hub until §5's move completes.
 
 ### D7: Online is one linked copy
@@ -130,6 +133,7 @@ A `.peko` snapshot adds `local/contacts.json`, `local/channels.json`, `POLICY.md
 - **Online.** A principal is online on runtime R exactly when Hub links its Hub ID to R's runtime Hub ID and R's tunnel is live.
 - **Only the linked runtime** announces it, sends or receives its traffic, and receives its durable deliveries.
 - **Receivers check the link.** Hub and receiving runtimes reject principal-signed traffic from any runtime other than the linked one, not just traffic that fails signature checks.
+- **Only the linked copy receives.** A runtime applies and acknowledges a channel's traffic only while one of its local members is reachable over Hub. An old copy leaves it unacknowledged; the sender, after a few unanswered attempts, asks the directory where those members are linked now and moves their route and pending envelopes there. Envelopes stay queued for a runtime that still hosts other members of the channel.
 - **Moving the link.** Registering a principal already linked elsewhere is a move request. It needs proof of the principal's key **and** approval from the owner's Hub account; approval is implicit when that account also owns the requesting runtime.
   - Hub then re-links, tells the old runtime (`principal_unlinked`), and the old copy becomes offline-only.
   - Queued deliveries follow the link, keeping message IDs (ADR-072).
@@ -180,7 +184,7 @@ Pre-launch: no migration code beyond moving existing `known_by` lists into conta
 2. **One live tunnel per runtime.** A second connection is rejected while the first is live (heartbeat within the interval); a stale connection is replaced. The account can revoke a runtime key.
 3. **A principal's Hub ID links to exactly one runtime** (`instances.hub_id` unique, or a separate link table). The move flow (D7) needs principal proof plus owner-account approval and notifies the old runtime.
 4. **Principal traffic is accepted only from the linked runtime.** The directory answers with the linked runtime only.
-5. **`ownerSubject` is the principal's owner** (a Hub actor), not the registration administrator. Transfers of online principals are recorded here.
+5. **`ownerSubject` is the principal's owner** (a Hub user), not the registration administrator, and Hub's record is authoritative: announces never change it, registering under another account needs that account's consent, and only the recorded owner transfers it (API or tunnel), after which Hub tells the linked runtime.
 6. **Retired:** the terminal-login `local_<UUID>` derivation and replace-on-reconnect.
 
 ---
@@ -210,4 +214,7 @@ Pre-launch: no migration code beyond moving existing `known_by` lists into conta
 - Cron trust drops after its grant is revoked.
 - A directory result never attaches a Hub route to a hosted principal.
 - Link (with Hub fixtures): traffic from an unlinked copy is rejected; a move needs owner approval and takes the old copy offline; durable delivery follows the link.
+- An old copy leaves channel traffic unacknowledged; unanswered envelopes follow the moved link but stay queued for a runtime that still hosts other members.
+- A Hub owner's conversation follows a move; an online principal transfers only to a Hub user; an ownerless config is the local user's.
+- Hub's owner record: an announce naming another owner is refused and the runtime adopts the recorded one; registering under another account needs its consent; an online transfer changes the local owner only on Hub's confirmation, and a refusal changes nothing.
 - Registration without proof fails; a concurrent second tunnel is rejected.

@@ -3004,9 +3004,13 @@ async fn build_principal_packager(
 
 /// Transfer `name` to `owner` (ADR-081 D4). Only the current owner may
 /// transfer — the terminal is the local user, so the operator transfers
-/// exactly the principals the local user owns. An online principal's new
-/// owner must be a Hub actor, and Hub learns it from the re-announce.
-/// Grants and policy sections are unchanged. Audited at Security severity.
+/// exactly the principals the local user owns. Grants and policy sections
+/// are unchanged. Audited at Security severity.
+///
+/// Hub records an online principal's owner, so an online principal is
+/// transferred on Hub — to a Hub user — and the local config takes the new
+/// owner only from Hub's confirmation. An offline principal is transferred
+/// here.
 async fn transfer_principal(
     host: &dyn PrincipalHost,
     caller: &CallerContext,
@@ -3030,23 +3034,46 @@ async fn transfer_principal(
         keys.same_actor(&caller.subject(), &previous),
         "[permission_denied] only the principal's owner can transfer it"
     );
-    let port = manager.channel_port();
-    if let Some(port) = &port {
-        let me = port.actor_info(&ActorRef::from(&principal.id)).await;
-        if me.hub_id.is_some() {
-            anyhow::ensure!(
-                port.actor_info(&owner).await.hub_id.is_some(),
-                "An online principal's owner must be a Hub actor"
-            );
-        }
-    }
     host.authority_for(caller)
         .shared_config_write_for_name(name)
         .await
         .map_err(|e| anyhow::anyhow!("[permission_denied] {e}"))?;
-    manager
-        .update_config(name, |config| config.owner = owner.clone())
-        .await?;
+    let online_owner = match &manager.channel_port() {
+        Some(port)
+            if port
+                .actor_info(&ActorRef::from(&principal.id))
+                .await
+                .hub_id
+                .is_some() =>
+        {
+            // The rule registration and Hub move approval use: an online
+            // principal's owner is a Hub user account.
+            let next = port.actor_info(&owner).await;
+            let account = next
+                .hub_id
+                .filter(|_| next.kind == "user")
+                .ok_or_else(|| anyhow::anyhow!("An online principal's owner must be a Hub user"))?;
+            Some(account)
+        }
+        _ => None,
+    };
+    let owner = match online_owner {
+        Some(account) => {
+            let dispatcher = host.tunnel_dispatcher().await.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "An online principal is transferred through PekoHub; connect the tunnel first"
+                )
+            })?;
+            dispatcher.transfer_online(name, &account).await?;
+            principal.config.read().await.owner.clone()
+        }
+        None => {
+            manager
+                .update_config(name, |config| config.owner = owner.clone())
+                .await?;
+            owner
+        }
+    };
     if let Some(audit) = host.observability() {
         audit
             .audit_security_with_caller(
@@ -3059,11 +3086,6 @@ async fn transfer_principal(
                 }),
             )
             .await?;
-    }
-    if let Some(dispatcher) = host.tunnel_dispatcher().await {
-        if let Err(e) = dispatcher.announce_single_instance(name).await {
-            warn!(principal = %name, "owner transfer not yet announced to Hub: {e}");
-        }
     }
     Ok(owner)
 }
@@ -3975,6 +3997,89 @@ mod tests {
             assert!(err.to_string().contains("new owner"), "{err}");
             let principal = manager.get_by_name("mine").await.unwrap();
             assert_eq!(principal.config.read().await.owner, alice);
+        }
+
+        /// ADR-081 D4: an online principal goes only to a Hub user — the
+        /// owner registration and Hub move approval require — and only
+        /// through Hub.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn an_online_principal_transfers_only_to_a_hub_user() {
+            let temp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("PEKO_HOME", temp.path());
+            peko_identity::init_test_env();
+            let resolver = PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let store = Arc::new(peko_channel::ChannelStore::new(
+                peko_channel::ChannelConfig {
+                    runtime_dir: resolver.runtime_dir(),
+                    shared_dir: None,
+                },
+            ));
+            let manager = Arc::new(
+                PrincipalManager::with_path_resolver(
+                    resolver.clone(),
+                    Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+                    Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+                    crate::async_exec::executor::standalone_inbox_registry(),
+                )
+                .with_channel_port(store.clone()),
+            );
+            let principal = manager
+                .create(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "online", "preferred_model_id": "mock",
+                        "owner": {"kind": "user", "id": "local"}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            {
+                let config = principal.config.read().await;
+                store
+                    .register_actor(
+                        &ActorRef::from(&principal.id),
+                        Some(&uuid::Uuid::new_v4().to_string()),
+                        config.did.as_ref().map(|d| d.0.as_str()),
+                        config.actor_key.as_deref(),
+                        Some("online"),
+                        peko_channel::Registration::Private,
+                    )
+                    .await
+                    .unwrap();
+            }
+            let host = Host {
+                manager: manager.clone(),
+                resolver,
+            };
+            let hub_principal =
+                ActorRef::Principal(peko_subject::Route::hub(uuid::Uuid::new_v4().to_string()));
+            let err = transfer_principal(&host, &CallerContext::local(), "online", hub_principal)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("must be a Hub user"), "{err}");
+            let local_peer = ActorRef::User("visitor-x".into());
+            assert!(
+                transfer_principal(&host, &CallerContext::local(), "online", local_peer)
+                    .await
+                    .is_err(),
+                "a local-only actor cannot own an online principal"
+            );
+            // A Hub user is accepted, but the transfer is Hub's to make: with
+            // no tunnel, nothing changes locally.
+            let alice = ActorRef::User(peko_subject::Route::hub(uuid::Uuid::new_v4().to_string()));
+            let err = transfer_principal(&host, &CallerContext::local(), "online", alice)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("through PekoHub"), "{err}");
+            assert_eq!(
+                principal.config.read().await.owner,
+                ActorRef::User("local".into())
+            );
         }
     }
 

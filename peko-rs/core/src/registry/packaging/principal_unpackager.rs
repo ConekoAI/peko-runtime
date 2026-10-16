@@ -409,12 +409,19 @@ impl PrincipalUnpackager {
                 tokio::fs::write(local_root.join(file), bytes).await?;
             }
         }
-        // ADR-081 D6 step 5: the owner's conversation follows a local owner
-        // to this runtime's local user.
-        if foreign_owner.is_some() && options.import_sessions {
+        // ADR-081 D6 step 5: the owner's conversation follows the owner —
+        // to this runtime's local user, or to the owner's Hub account.
+        if portable && options.import_sessions {
             if let Some(channels) = files.get("local/channels.json") {
-                self.rebind_owner_dm(&store, &config, &local_root, channels, &destination)
-                    .await?;
+                self.rebind_owner_dm(
+                    &store,
+                    &snapshot_config.owner,
+                    &config,
+                    &local_root,
+                    channels,
+                    &destination,
+                )
+                .await?;
             }
         }
 
@@ -761,30 +768,57 @@ impl PrincipalUnpackager {
     /// D6 step 5): the pair ID is recomputed from the principal's key and
     /// the local user's here, and the imported sessions bound to the old
     /// pair are rebound, compartment included.
+    /// Rebind the snapshot owner's DM to the DM with the same owner here.
+    /// `snapshot_owner` is the owner as exported (a Hub route, or a local
+    /// route qualified with the source runtime); `config.owner` is the
+    /// owner after the import rule. Pair DMs are keyed by immutable keys,
+    /// and the source local user's key names the source runtime, so the
+    /// channel ID changes even when the person is the same.
     async fn rebind_owner_dm(
         &self,
         store: &peko_channel::ChannelStore,
+        snapshot_owner: &ActorRef,
         config: &PrincipalConfig,
         local_root: &Path,
         channels: &[u8],
         destination: &str,
     ) -> anyhow::Result<()> {
+        use peko_channel::ChannelPort;
         let Some(principal_key) = config.actor_key.as_deref() else {
             return Ok(());
         };
         let channels: Vec<serde_json::Value> = serde_json::from_slice(channels).unwrap_or_default();
         let Some(old) = channels.iter().find_map(|channel| {
             let participants = channel["participants"].as_array()?;
-            let owner_dm = participants.len() == 2
-                && participants
-                    .iter()
-                    .any(|p| p["address"] == "user:local:local");
+            let owner_dm =
+                participants.len() == 2 && participants.iter().any(|p| names(p, snapshot_owner));
             owner_dm.then(|| channel["channel"].as_str().map(str::to_owned))?
         }) else {
             return Ok(());
         };
-        let local = store.ensure_local_user(destination).await?;
-        let new = peko_channel::dm_channel_id(principal_key, &local.identity_key);
+        // Know the owner here the way first ingress would record it, so
+        // its key — and the DM ID — are the ones its next message uses.
+        let owner = &config.owner;
+        if *owner == ActorRef::User("local".into()) {
+            store.ensure_local_user(destination).await?;
+        } else if store.actor_info(owner).await.identity_key == owner.canonical_address() {
+            let hub = owner.route().filter(|r| r.is_hub()).map(|r| r.id());
+            store
+                .register_actor(
+                    owner,
+                    hub,
+                    None,
+                    None,
+                    None,
+                    if hub.is_some() {
+                        peko_channel::Registration::Registered
+                    } else {
+                        peko_channel::Registration::LocalOnly
+                    },
+                )
+                .await?;
+        }
+        let new = peko_channel::dm_channel_id(principal_key, &store.key_of(owner).0);
         if new.as_str() == old {
             return Ok(());
         }
@@ -970,6 +1004,25 @@ fn validate_package_for_principal(
     }
 
     result
+}
+
+/// Whether a `channels.json` participant row is `owner` as exported: a
+/// Hub route matches the row's Hub ID, a qualified local route matches
+/// the address it had on its own runtime.
+fn names(participant: &serde_json::Value, owner: &ActorRef) -> bool {
+    match owner.route() {
+        Some(route) if route.is_hub() => {
+            participant["hub_id"].as_str() == Some(route.id())
+                && participant["kind"].as_str() == owner.canonical_address().split(':').next()
+        }
+        Some(_) => {
+            let home = owner
+                .route_runtime()
+                .map_or_else(|| owner.clone(), |runtime| owner.localized_on(runtime));
+            participant["address"].as_str() == Some(home.canonical_address().as_str())
+        }
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -1568,6 +1621,118 @@ mod tests {
             policy.contains("## principal:local:prin_peer\n"),
             "{policy}"
         );
+    }
+
+    /// ADR-081 D6 step 5: a Hub owner's conversation follows the principal
+    /// too — to this runtime's local user when that is the same Hub
+    /// account, else to the DM the owner's Hub account will use here.
+    #[tokio::test]
+    async fn a_hub_owners_conversation_follows_the_move() {
+        use crate::registry::packaging::principal_packager::{
+            PortableExport, PrincipalExportOptions,
+        };
+        use peko_channel::ChannelPort;
+        const SRC: &str = "did:key:zSource";
+        let alice = uuid::Uuid::new_v4().to_string();
+
+        let identity = Identity::new("mover", DIDScope::Local).await.unwrap();
+        let mut config = sample_config("mover", &identity.did);
+        config.actor_key = Some("mover-key".into());
+        config.owner = ActorRef::User("local".into());
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("src/local");
+        let old_dm = peko_channel::dm_channel_id("mover-key", &format!("local@{SRC}"));
+        let mut sessions =
+            peko_session::SessionManager::new().with_sessions_dir_internal(local.join("sessions"));
+        let session = sessions
+            .create_session(
+                "root",
+                &ActorRef::Public,
+                peko_session::SessionCreateOptions::new(),
+            )
+            .await
+            .unwrap()
+            .session_id()
+            .to_string();
+        sessions
+            .bind_session_channel(&session, old_dm.as_str())
+            .await
+            .unwrap();
+        // The source's local user is registered as alice.
+        let channels = serde_json::to_vec(&serde_json::json!([{
+            "channel": old_dm.as_str(),
+            "participants": [
+                {"address": "principal:local:prin_src", "kind": "principal",
+                 "identity_key": "mover-key"},
+                {"address": "user:local:local", "kind": "user", "hub_id": alice,
+                 "identity_key": format!("local@{SRC}")},
+            ],
+            "binding": "/local-user",
+        }]))
+        .unwrap();
+        let mut hub_routes = std::collections::HashMap::new();
+        hub_routes.insert(
+            "user:local:local".to_string(),
+            ActorRef::User(peko_subject::Route::hub(alice.clone())),
+        );
+        let out = tmp.path().join("mover.peko");
+        PrincipalPackager::new(config, identity)
+            .with_sessions_dir(local.join("sessions"))
+            .with_local_root(&local)
+            .with_portable(PortableExport {
+                source_runtime: SRC.into(),
+                hub_routes,
+                channels: Some(channels),
+            })
+            .export(PrincipalExportOptions {
+                output_path: Some(out.display().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // `own` is alice's second runtime; `other` is registered by bob.
+        for (dir, runtime, account) in [
+            ("own", "did:key:zOwn", alice.clone()),
+            ("other", "did:key:zOther", uuid::Uuid::new_v4().to_string()),
+        ] {
+            let dst_config = tmp.path().join(dir).join("config");
+            let dst_data = tmp.path().join(dir).join("data");
+            write_runtime_identity(&dst_config, runtime);
+            let store = peko_channel::ChannelStore::new(peko_channel::ChannelConfig {
+                runtime_dir: PathResolver::with_dirs(
+                    dst_config.clone(),
+                    dst_data.clone(),
+                    dst_data.clone(),
+                )
+                .runtime_dir(),
+                shared_dir: None,
+            });
+            store.link_local_user(runtime, &account).await.unwrap();
+            let moved = PrincipalUnpackager::new(&out, dst_config, dst_data.clone())
+                .import(PrincipalImportOptions::default())
+                .await
+                .unwrap();
+            let restored: PrincipalConfig =
+                toml::from_str(&std::fs::read_to_string(&moved.config_path).unwrap()).unwrap();
+            let owner = ActorRef::User(peko_subject::Route::hub(alice.clone()));
+            assert_eq!(restored.owner, owner, "Hub owner unchanged");
+            let expected = if dir == "own" {
+                format!("local@{runtime}")
+            } else {
+                store.key_of(&owner).0
+            };
+            let rebound = peko_session::SessionManager::new()
+                .with_sessions_dir_internal(dst_data.join("principals/mover/local/sessions"))
+                .list_all_sessions(false)
+                .await
+                .unwrap();
+            assert_eq!(
+                rebound[0].channel_id.as_deref(),
+                Some(peko_channel::dm_channel_id("mover-key", &expected).as_str()),
+                "the owner's conversation follows to {dir}"
+            );
+        }
     }
 
     /// ADR-056: a package that carries NO Local-tier state (legacy

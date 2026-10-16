@@ -36,15 +36,9 @@ impl TrustSource for PrincipalTrust {
     }
 
     async fn owner(&self) -> ActorRef {
-        let owner = match self.principal.upgrade() {
+        match self.principal.upgrade() {
             Some(principal) => principal.config.read().await.owner.clone(),
-            None => ActorRef::User("".into()),
-        };
-        // An ownerless legacy config belongs to the local operator.
-        if owner.subject_id().is_empty() {
-            ActorRef::User("local".into())
-        } else {
-            owner
+            None => ActorRef::User("local".into()),
         }
     }
 }
