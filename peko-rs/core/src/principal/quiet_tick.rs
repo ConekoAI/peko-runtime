@@ -9,6 +9,9 @@
 //!
 //! Anything else (pending proposals and approvals, for instance) waits on
 //! the owner, not the principal, and would keep every tick busy.
+//!
+//! A `when: quiet` fire (ADR-080 D9) is held instead until nobody has
+//! talked to the principal for a while ([`quiet_hold`]).
 
 use std::sync::Arc;
 
@@ -100,6 +103,31 @@ pub(crate) fn may_stay_quiet(job: &CronJob, now: chrono::DateTime<chrono::Utc>) 
         .is_some_and(|last| (now - last).num_milliseconds() < peko_cron::ATTENTION_MAX_QUIET_MS)
 }
 
+/// Until when a due `when: quiet` fire is held (ADR-080 D9); `None`
+/// runs it now. It runs once nobody has talked to the principal for
+/// [`peko_cron::QUIET_STRETCH_MS`] since `last_activity`, or
+/// [`peko_cron::QUIET_MAX_WAIT_MS`] after it fell due. The due time is
+/// the schedule's next slot after the job's last turn (its creation,
+/// when it has had none), so holding the fire, which moves `next_run`,
+/// does not move the deadline.
+#[must_use]
+pub(crate) fn quiet_hold(
+    job: &CronJob,
+    last_activity: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let quiet_at = last_activity + chrono::Duration::milliseconds(peko_cron::QUIET_STRETCH_MS);
+    if now >= quiet_at {
+        return None;
+    }
+    let after_last_turn =
+        peko_cron::calculate_next_run(&job.schedule, job.last_run.unwrap_or(job.created_at))
+            .unwrap_or(job.next_run);
+    let deadline = after_last_turn.min(job.next_run)
+        + chrono::Duration::milliseconds(peko_cron::QUIET_MAX_WAIT_MS);
+    (now < deadline).then(|| quiet_at.min(deadline))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +193,36 @@ mod tests {
             &job("k", Some(now - Duration::minutes(61)), None),
             now
         ));
+    }
+
+    #[test]
+    fn a_quiet_fire_waits_for_a_quiet_stretch_up_to_the_cap() {
+        let now = Utc::now();
+        let day = Duration::hours(24);
+        let mut nightly = job("memory", Some(now - day), Some("success"));
+        nightly.schedule = ScheduleKind::Every {
+            every_ms: day.num_milliseconds() as u64,
+        };
+        nightly.next_run = now;
+        // Quiet for five hours: it runs.
+        assert_eq!(quiet_hold(&nightly, now - Duration::hours(5), now), None);
+        // Talked to an hour ago: held until four hours after that.
+        assert_eq!(
+            quiet_hold(&nightly, now - Duration::hours(1), now),
+            Some(now + Duration::hours(3))
+        );
+        // Holding moved `next_run`; the deadline still counts from the
+        // due time, so a principal never quiet runs twelve hours late.
+        nightly.next_run = now + Duration::hours(11);
+        let later = now + Duration::hours(11);
+        assert_eq!(
+            quiet_hold(&nightly, later - Duration::minutes(5), later),
+            Some(now + Duration::hours(12))
+        );
+        let deadline = now + Duration::hours(12);
+        assert_eq!(
+            quiet_hold(&nightly, deadline - Duration::minutes(5), deadline),
+            None
+        );
     }
 }

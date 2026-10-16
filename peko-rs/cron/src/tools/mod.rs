@@ -216,6 +216,11 @@ pub enum FireWhen {
     /// [`ATTENTION_MAX_QUIET_MS`] old; otherwise it is a quiet tick: the
     /// schedule advances and no model is called.
     Attention,
+    /// A due fire waits for a quiet stretch: it runs its turn once nobody
+    /// has talked to the principal for [`QUIET_STRETCH_MS`], or
+    /// [`QUIET_MAX_WAIT_MS`] after it fell due, whichever comes first
+    /// (ADR-080 D9). Needs an interval or cron schedule.
+    Quiet,
 }
 
 impl FireWhen {
@@ -225,6 +230,7 @@ impl FireWhen {
         match self {
             Self::Always => "always",
             Self::Attention => "attention",
+            Self::Quiet => "quiet",
         }
     }
 
@@ -234,6 +240,7 @@ impl FireWhen {
         match s {
             "always" => Some(Self::Always),
             "attention" => Some(Self::Attention),
+            "quiet" => Some(Self::Quiet),
             _ => None,
         }
     }
@@ -244,6 +251,33 @@ impl FireWhen {
 /// waits, so habits the principal keeps on its heartbeat still run
 /// hourly.
 pub const ATTENTION_MAX_QUIET_MS: i64 = 60 * 60 * 1000;
+
+/// How long nobody must have talked to the principal before a due
+/// [`FireWhen::Quiet`] fire runs its turn: long enough that a gap in a
+/// working day rarely qualifies and a night usually does.
+pub const QUIET_STRETCH_MS: i64 = 4 * 60 * 60 * 1000;
+
+/// The longest a due [`FireWhen::Quiet`] fire waits for a quiet
+/// stretch. A principal that is never quiet that long still gets its
+/// turn, at most this late.
+pub const QUIET_MAX_WAIT_MS: i64 = 12 * 60 * 60 * 1000;
+
+/// Why `when` cannot go on a job with `schedule`, if it cannot.
+/// `attention` needs a recurring schedule; `quiet` needs an interval or
+/// cron schedule (an idle schedule already waits for quiet).
+#[must_use]
+pub fn when_refusal(when: FireWhen, schedule: &ScheduleKind) -> Option<&'static str> {
+    match (when, schedule) {
+        (FireWhen::Attention | FireWhen::Quiet, ScheduleKind::At { .. }) => {
+            Some("`when` needs a recurring schedule; a one-shot job always runs its turn")
+        }
+        (FireWhen::Quiet, ScheduleKind::Idle { .. }) => Some(
+            "`when: \"quiet\"` needs an interval or cron schedule; an idle schedule already \
+             fires once per quiet stretch",
+        ),
+        _ => None,
+    }
+}
 
 /// The run status a quiet tick leaves on its job. No run row is written.
 pub const QUIET_STATUS: &str = "quiet";

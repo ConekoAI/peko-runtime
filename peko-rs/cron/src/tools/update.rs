@@ -59,7 +59,7 @@ impl Tool for CronUpdateAction {
     }
 
     fn description(&self) -> String {
-        "Update a scheduled job's mutable fields by ID (or label): `enabled` pauses/resumes without deleting (re-enabling resets the failure budget); `wake_on_completion` subscribes or unsubscribes you to the job's result on each fire (tool jobs only — message jobs already land in your session); `model` picks the configured model a message job's turn runs on (an empty string returns it to your pinned model); `when` (\"always\" / \"attention\") sets whether every due fire runs a message job's turn or only fires when something waits on you.".to_string()
+        "Update a scheduled job's mutable fields by ID (or label): `enabled` pauses/resumes without deleting (re-enabling resets the failure budget); `wake_on_completion` subscribes or unsubscribes you to the job's result on each fire (tool jobs only — message jobs already land in your session); `model` picks the configured model a message job's turn runs on (an empty string returns it to your pinned model); `when` (\"always\" / \"attention\" / \"quiet\") sets whether every due fire runs a message job's turn, only fires when something waits on you, or waits for a quiet stretch.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -88,8 +88,8 @@ impl Tool for CronUpdateAction {
                 },
                 "when": {
                     "type": "string",
-                    "enum": ["always", "attention"],
-                    "description": "Recurring message jobs only. \"attention\": a due fire runs its turn only when something waits on you or the job's last turn is an hour old; otherwise it is a quiet tick with no model call. \"always\": every fire runs."
+                    "enum": ["always", "attention", "quiet"],
+                    "description": "Recurring message jobs only. \"attention\": a due fire runs its turn only when something waits on you or the job's last turn is an hour old; otherwise it is a quiet tick with no model call. \"quiet\" (interval or cron schedules): a due fire waits until nobody has talked to you for 4 hours, at most 12 hours past due. \"always\": every fire runs."
                 }
             },
             "allOf": [

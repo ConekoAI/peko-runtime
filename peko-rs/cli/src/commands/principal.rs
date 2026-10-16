@@ -703,7 +703,7 @@ async fn provision_principal(
     // ── P0 provision: seed the kb scaffold (ADR-055) ────────────────
     // The persistent-knowledge floor: `kb/` with the pinned hot set
     // (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) and the
-    // people/groups/roles conventions. Create-if-missing only — for a
+    // people/groups/roles/dreams conventions. Create-if-missing only — for a
     // `--force` re-create the fresh workspace is empty, so this lays
     // down the full floor.
     let kb_created = peko_core::principal::kb::seed_kb_scaffold(&shared_layout.root)?;

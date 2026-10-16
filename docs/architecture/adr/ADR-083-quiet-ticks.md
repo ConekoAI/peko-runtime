@@ -39,6 +39,9 @@ A cron `Send` action may carry `when`:
 `Cron` `create` takes `when` with `message`; `update` changes it. `attention`
 needs a recurring schedule; a one-shot always runs.
 
+ADR-080 D9 (2026-10-16) adds a third value, `quiet`: a due fire waits until
+nobody has talked to the principal for 4 hours, at most 12 hours past due.
+
 ### D2 — What counts as waiting
 
 The engine checks, without a model and without changing anything, in the session

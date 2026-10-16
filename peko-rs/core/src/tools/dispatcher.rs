@@ -952,10 +952,11 @@ impl ToolDispatcher {
         })
     }
 
-    /// ADR-080 D4: screen a scheduled owner run's `Write` / `Edit` of
-    /// `kb/MEMORY.md`. Added lines whose sources are not all owner-only
-    /// are removed from `params` and filed for the owner; the rest is
-    /// written. When nothing is left to write, the call ends here.
+    /// ADR-080 D4, D8: screen a scheduled owner run's `Write` / `Edit` of
+    /// `kb/MEMORY.md` or `kb/CONVENTIONS.md`. Added lines whose sources
+    /// are not all owner-only are removed from `params` and filed for the
+    /// owner; the rest is written. When nothing is left to write, the
+    /// call ends here.
     async fn screen_hot_memory(
         &self,
         principal_id: &peko_subject::PrincipalId,
@@ -965,17 +966,21 @@ impl ToolDispatcher {
         tool_name: &str,
         params: &mut Value,
     ) -> MemoryScreen {
-        use crate::security::memory_gate::{self, SourceClass, HOT_MEMORY};
+        use crate::security::memory_gate::{self, SourceClass, HOT_MEMORY, SOURCED_HOT_FILES};
         let workspace = crate::security::floor::resolve(workspace);
         let target = crate::security::floor::resolve(target);
-        let is_hot = crate::security::floor::protected_relative(&workspace, &target)
-            .is_some_and(|relative| relative == HOT_MEMORY);
+        let Some(hot) = crate::security::floor::protected_relative(&workspace, &target)
+            .and_then(|relative| SOURCED_HOT_FILES.iter().find(|f| **f == relative))
+            .copied()
+        else {
+            return MemoryScreen::Pass;
+        };
         let key = match tool_name {
             "Write" => "content",
             "Edit" => "new_string",
             _ => return MemoryScreen::Pass,
         };
-        let Some(candidate) = params[key].as_str().filter(|_| is_hot).map(str::to_string) else {
+        let Some(candidate) = params[key].as_str().map(str::to_string) else {
             return MemoryScreen::Pass;
         };
         let existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
@@ -992,24 +997,27 @@ impl ToolDispatcher {
         if held.is_empty() {
             return MemoryScreen::Pass;
         }
-        let filed =
-            match crate::security::proposals::file_held(&workspace, stamp, HOT_MEMORY, &held).await
-            {
-                Ok(paths) => paths,
-                Err(e) => {
-                    let text = format!("Error: could not file the held-back lines: {e:#}");
-                    return MemoryScreen::Done(Dispatched::refused(text, Outcome::Error));
-                }
-            };
+        let filed = match crate::security::proposals::file_held(&workspace, stamp, hot, &held).await
+        {
+            Ok(paths) => paths,
+            Err(e) => {
+                let text = format!("Error: could not file the held-back lines: {e:#}");
+                return MemoryScreen::Done(Dispatched::refused(text, Outcome::Error));
+            }
+        };
         let mut reasons = String::new();
         for h in &held {
             reasons.push_str(&format!("\n- {} — {}", h.line.trim(), h.describe()));
         }
+        let elsewhere = if hot == HOT_MEMORY {
+            "Keep facts about other people in `kb/people/` notes instead."
+        } else {
+            "Keep lessons from conversations with others in `kb/dreams/` instead."
+        };
         let note = format!(
-            "{} line(s) were not written to `{HOT_MEMORY}` and were filed for the owner ({}). \
+            "{} line(s) were not written to `{hot}` and were filed for the owner ({}). \
              A scheduled run adds a line there only when it ends with `(source: …)` naming \
-             sessions or channels that only the owner speaks in. Keep facts about other \
-             people in `kb/people/` notes instead.{reasons}",
+             sessions or channels that only the owner speaks in. {elsewhere}{reasons}",
             held.len(),
             filed
                 .iter()
@@ -1024,7 +1032,7 @@ impl ToolDispatcher {
         if unchanged {
             let json = serde_json::json!({
                 "proposed": true,
-                "target": HOT_MEMORY,
+                "target": hot,
                 "proposals": filed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                 "message": note,
             });

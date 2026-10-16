@@ -59,8 +59,9 @@ pub const PROTECTED_FILES: &[&str] = &[
 ];
 
 /// Workspace trees only an owner run may write: the constitution (what
-/// runs and what every agent is told) and the notes injected into
-/// specific agents' prompts.
+/// runs and what every agent is told), the notes injected into specific
+/// agents' prompts, and the dream notebook whose lessons the nightly pass
+/// promotes into `kb/CONVENTIONS.md` (ADR-080 D7).
 pub const PROTECTED_DIRS: &[&str] = &[
     "roles",
     "skills",
@@ -70,6 +71,7 @@ pub const PROTECTED_DIRS: &[&str] = &[
     "plugins",
     "kb/roles",
     "kb/groups",
+    "kb/dreams",
 ];
 
 /// Where proposals land. The runtime writes here; no run may.

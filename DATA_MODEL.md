@@ -43,10 +43,15 @@ This document defines every on-disk and in-memory data format used by the Peko r
   actor's section.
 - `<workspace>/kb/inbox/<compartment>/<ts>-<path>.proposal.md`: a non-owner
   run's write to a protected file, with the proposer's stamp and the change.
-  The same directory holds the `kb/MEMORY.md` lines a scheduled owner run could
-  not source to the owner (ADR-080 D4): a list of held lines with their
-  reasons, filed under the conversation each one cites (uncited lines under
-  `internal`). Runtime-written only; at most 50 per compartment.
+  The same directory holds the `kb/MEMORY.md` and `kb/CONVENTIONS.md` lines a
+  scheduled owner run could not source to the owner (ADR-080 D4, D8): a list of
+  held lines with their reasons, filed under the conversation each one cites
+  (uncited lines under `internal`). Runtime-written only; at most 50 per
+  compartment.
+- `<workspace>/kb/dreams/YYYY-MM-DD.md` (ADR-080 D7): the nightly memory pass's
+  reflections on how the principal worked, one file per night, each lesson
+  ending with `(source: …)`. Cold: never injected into a prompt. Protected (only
+  owner runs write it). The scaffold seeds `kb/dreams/README.md`.
 - `<local>/approvals/apr_<12 hex>.json`: an owner-approval request
   (`call`, `reason`, `created_at`, `expires_at` (24 h), `status`:
   `pending`|`approved`|`denied`, `digest` of tool + arguments).
@@ -214,8 +219,8 @@ and `Cron` schedules count. Peer-session reminders do not count, nor does the
 daily `memory` job.
 
 **Daily memory maintenance (ADR-080).** Every principal's schedule gets one
-recurring `memory` job (every 24 hours, trunk `Send`, runtime stamp) the first
-time the boot pass sees it, whatever its boot state. The ids the runtime has
+recurring `memory` job (every 24 hours, `when: "quiet"`, trunk `Send`, runtime
+stamp) the first time the boot pass sees it, whatever its boot state. The ids the runtime has
 seeded live beside the schedule in `local/cron/seeded_jobs.json`
 (`{"jobs": ["memory"]}`); a recorded id is never seeded again, so a principal
 that deletes or replaces the job keeps it that way. A job the principal already
@@ -223,7 +228,8 @@ named `memory` is kept and only recorded. The seeded job stores a fixed marker
 message, not the brief; the cron engine writes the current brief into the turn
 when the job fires, so brief changes reach existing principals. A `memory` job
 still carrying the full brief text an earlier build stored is read the same
-way; any other message is the principal's own and is sent as written.
+way; any other message is the principal's own and is sent as written. Such a
+job with no `when` is read as `quiet` (rev 3).
 
 **Per-job model.** A `Send` action may carry `model` (a configured model id,
 omitted when unset); each fire's turn runs on it instead of the principal's
@@ -231,12 +237,16 @@ pinned model. `SpawnTool` actions have no model. Older schedules read
 unchanged.
 
 **Quiet ticks (ADR-083).** A `Send` action may carry `when` (`always` |
-`attention`, omitted when unset). A due `attention` fire with nothing waiting and
+`attention` | `quiet`, omitted when unset). A due `attention` fire with nothing waiting and
 a last turn under an hour old writes no run row: it sets the job's `next_run`
 and `last_status: "quiet"` and leaves `last_run` (the last turn), `run_count`
 and `consecutive_failures` alone. A `keepalive` job with the runtime's tick text
 and no `when` is read as `attention`. The seeded keepalive now stores
-`when: "attention"`.
+`when: "attention"`. A due `quiet` fire (ADR-080 D9; interval or cron schedules
+only) is held while the principal's last activity in `idle_activity.json` is
+under 4 hours old, up to 12 hours past its due time (the schedule's next slot
+after `last_run`, else after `created_at`). A held fire is recorded the same
+way as a quiet tick, with `next_run` set to when it may run.
 
 **Idle schedules.** `Idle` jobs read principal activity from
 `<runtime_dir>/idle_activity.json`, a map of runtime `PrincipalId` to the

@@ -1,9 +1,11 @@
 # ADR-080: Daily Memory Maintenance
 
 **Status:** Accepted
-**Date:** 2026-10-15 (rev 2 2026-10-16: D4–D6)
+**Date:** 2026-10-15 (rev 2 2026-10-16: D4–D6; rev 3 2026-10-16: D7–D9)
 **Amends:**
 - [ADR-054](ADR-054-principal-genesis-pipeline.md) D4 (the runtime never touches an `organized` principal's schedule) and D5 (memory is a convention, not machinery).
+- [ADR-078](ADR-078-acting-for-stamps-and-trust-floor.md) D6: `kb/dreams/` joins the protected trees (rev 3, D7).
+- [ADR-083](ADR-083-quiet-ticks.md) D1: `when` gains `quiet` (rev 3, D9).
 
 **Builds on:**
 - [ADR-055](ADR-055-principal-kb.md): the `kb/` tree, its hot set, and its shared 32 KiB budget (rev 3).
@@ -30,6 +32,16 @@ review that consolidates the day into curated memory).
 ADR-054 D5 deferred "memory/dream machinery". D4 promised that once a
 principal is `organized`, the runtime never seeds or fixes its cron schedule.
 
+**Rev 3.** Bookkeeping records what happened. Nothing looks at *how* the
+principal works: the corrections its owner made, the mistakes it repeats, the
+way its owner wants things done. Agents keep relearning these. Muse runs a
+nightly "dream" that reviews recent conversations into `~/dreams/`, and a
+synthesis step turns those notes into standing guidance. The dream notes
+themselves are not put into the prompt. Peko's standing guidance is
+`kb/CONVENTIONS.md`, which every agent reads. ADR-080 D4 left that file
+unchecked. The pass also runs every 24 hours from whenever it was seeded,
+often in the middle of the owner's day.
+
 ## 2. Decision
 
 ### D1 — The runtime seeds a daily `memory` job once per principal
@@ -39,7 +51,7 @@ The boot pass seeds one recurring job into every principal's schedule:
 | Field | Value |
 |---|---|
 | id | `memory` |
-| schedule | every 24 hours, first run one day after seeding |
+| schedule | every 24 hours, first run one day after seeding; each due fire waits for a quiet stretch (D9) |
 | action | `Send` to the trunk, carrying the maintenance brief (D2) |
 | created by | the runtime's stamp (acts for the owner, ADR-078) |
 
@@ -114,7 +126,8 @@ What this does not cover:
 - A line citing an owner source it did not come from, such as a reader agent's
   internal session. Internal sessions count as the owner's own work. Checking
   claims against their sources is the deferred reviewer.
-- `kb/CONVENTIONS.md` and the other hot files.
+- `kb/index.md`, and the group and role notes injected into specific agents.
+  (`kb/CONVENTIONS.md` is covered since rev 3, D8.)
 - `Bash` in other cron turns, and MCP servers that write files.
 
 ### D5 — The brief is supplied when the job fires
@@ -136,6 +149,92 @@ the creating session. `Cron` `create` takes `model` with `message`, and
 model it cannot resolve when the job is created or updated. The seeded memory
 job has no model; the principal may give it a cheaper one.
 
+### D7 — The pass reflects on how the principal worked, into cold `kb/dreams/`
+
+After the bookkeeping (D2 steps 1–4), the brief adds two steps:
+
+5. **Reflect** on how the principal worked, not on what happened: what went
+   well and what went badly, corrections the owner made, mistakes it repeated,
+   and preferences about how to work (tone, length, when to ask, which tools).
+   The lessons go to `kb/dreams/YYYY-MM-DD.md`: one file per night, added to
+   and never rewritten, each lesson ending with `(source: …)` as in D2.
+6. **Promote** (D8).
+
+`kb/dreams/` is cold, and nothing ever injects it. The hot set stays
+`MEMORY.md`, `index.md`, `CONVENTIONS.md`, and the two scope notes under
+`kb/groups/` and `kb/roles/` (ADR-055). A lesson changes how the principal works
+only once it is promoted. The kb scaffold seeds `kb/dreams/README.md` describing
+this, and `kb/index.md` and `kb/README.md` list the directory. Existing
+principals get no scaffold files; the brief has them create the file and list
+the directory in their index.
+
+`kb/dreams/` is a protected tree (ADR-078 D6): only owner runs write it, and
+anyone else's write becomes a proposal. The promotion step reads it, so a guest
+who could write there could plant a "lesson" that cites the owner.
+
+### D8 — A lesson becomes standing guidance only through `kb/CONVENTIONS.md`
+
+Promotion is an edit to `kb/CONVENTIONS.md`, which every agent of the
+principal reads. The brief asks the trunk to read the last week of dream files
+and promote a lesson only when the owner stated it, or when it came up on two or
+more nights. Before promoting, it reads the conversation the lesson cites. It
+writes a short rule about how to work, revises an existing rule rather than
+adding a near-duplicate, cites the conversations the lesson came from (not the
+dream file), keeps the file under its 4 KiB prompt cap, and marks the lesson
+promoted in its dream file.
+
+The D4 source rule now covers `kb/CONVENTIONS.md` as well as `kb/MEMORY.md`.
+Every line a scheduled owner run adds to either file must cite only owner
+sources. Other lines are filed in `kb/inbox/` under the conversation they cite,
+and the tool result says that lessons from conversations with others stay in
+`kb/dreams/`. A dream file is not a source the gate accepts, so a lesson cannot
+skip its origin by citing its own note. An owner-driven run (the owner telling
+the principal "from now on, do X") writes conventions as before.
+
+### D9 — The pass waits for a quiet stretch
+
+A cron `Send` action's `when` (ADR-083 D1) gains `quiet`. A due `quiet` fire
+runs its turn once nobody has talked to the principal for 4 hours
+(`QUIET_STRETCH_MS`), or 12 hours after it fell due (`QUIET_MAX_WAIT_MS`),
+whichever comes first. Until then it is held. `next_run` moves to the earlier of
+those two times, `last_status` reads `quiet`, and no run row is written. If
+someone talks to the principal in the meantime, the next check holds it again.
+"Talked to" is the idle detector's activity: an ingress turn starting or ending,
+or a message queued for a busy session. Cron turns, wakes and other principals'
+posts do not count. The due time is the schedule's next slot after the job's
+last turn, so holding the fire does not move the deadline. `quiet` needs an
+interval or cron schedule. An `Idle` schedule already waits for quiet, and a
+one-shot always runs. Manual triggers always run.
+
+The seeded `memory` job keeps its 24-hour interval and stores `when: quiet`.
+Because the next slot counts from the turn that ran, the pass settles at the
+start of the principal's longest regular quiet stretch, which for most owners
+is the night. A late night pushes it later. If it spills past the night, it
+waits out the day (at most 12 hours) and settles back the next night.
+
+Existing seeded jobs are **reinterpreted when they fire**, as rev 2 did for the
+brief and ADR-083 D4 for the keepalive. A `memory` job that still carries the
+runtime's marker (or the first build's brief) and no `when` is read as `quiet`.
+The runtime still never rewrites an organized principal's schedule. A principal
+that wants the fixed cadence sets `when: always`. One that knows its owner's
+timezone can replace the job with a cron expression and keep `when: quiet`.
+
+Why not a plain `Idle` schedule. It fires once per quiet stretch, which is the
+right trigger. But it never fires for a principal nobody talks to, even when its
+own cron work and peer posts fill the day. It fires twice on a day with a long
+afternoon gap. It has no ceiling for a principal that is never quiet. The 24-hour
+interval supplies the floor, the once-a-day spacing and the ceiling, and the
+idle detector supplies the timing.
+
+### Weekly synthesis: deferred
+
+A separate weekly job that reads the week's dream files and proposes
+`CONVENTIONS.md` edits is not added. Step 6 already reads the last week of
+dreams every night and promotes recurring lessons, so a second job would repeat
+the same reading at the cost of another seeded job and another turn. Revisit
+this if nightly promotion proves too eager or too timid, or if dream files grow
+past what one pass reads comfortably.
+
 ## 3. Alternatives considered
 
 - **Fold maintenance into the keepalive tick.** The tick already says "tend your
@@ -150,6 +249,22 @@ job has no model; the principal may give it a cheaper one.
 - **A memory database with claims, evidence and embeddings.** May come later.
   The source pointers asked for in D2 are the cheap first step toward checkable
   memory.
+- **Put the dream notes in the prompt** (rev 3). Every passing reflection would
+  steer every agent, and nothing would separate a one-off from a lesson. Muse
+  keeps them out of the prompt for the same reason.
+- **Let the reflection write `CONVENTIONS.md` directly, with no dream file.**
+  Leaves no record of lessons that were not promoted, so nothing can recur
+  across nights. A promotion threshold needs that record.
+- **A nightly cron expression in the machine's timezone** (3 a.m. local). The
+  `Cron` tool already defaults cron jobs to the machine's zone. But a hosted
+  daemon's zone is not its owner's, and a fixed hour misses owners who keep
+  late hours. The principal can still choose this once it knows the owner's
+  timezone.
+- **A plain `Idle` schedule, with or without a separate 24-hour fallback job.**
+  See D9. Two jobs would also need to coordinate to avoid running the pass twice.
+- **Change only newly seeded jobs.** Existing principals are the ones whose pass
+  runs mid-day. Reading the unchanged marker as `quiet` reaches them without
+  rewriting their schedules (ADR-054 D4).
 
 ## 4. Consequences
 
@@ -162,6 +277,14 @@ job has no model; the principal may give it a cheaper one.
   others said reaches it only through the owner. Lines without owner sources pile
   up in `kb/inbox/` until the owner reviews them.
 - The memory run cannot use `Bash`.
+- Each pass also reflects into `kb/dreams/`, which costs no prompt bytes. Rules
+  reach `CONVENTIONS.md` from scheduled runs only when cited to the owner's own
+  conversations; others wait in `kb/inbox/`.
+- The pass usually runs once a night, after the principal has been quiet for 4
+  hours. A principal nobody talks to still gets one every 24 hours. A principal
+  that is never quiet gets one at most 36 hours after the last. A daemon restart
+  counts as activity for principals with no recorded activity, so their pass
+  waits 4 hours after boot.
 
 ## 5. Deferred
 
@@ -169,5 +292,8 @@ job has no model; the principal may give it a cheaper one.
   touched) for the review to start from.
 - A second-model check of proposed memory edits against their sources, and
   compare-and-swap writes to the hot kb files.
-- The same source rule for `kb/CONVENTIONS.md`, and for owner runs other than
-  cron turns that read other conversations.
+- The same source rule for owner runs other than cron turns that read other
+  conversations, and for `kb/index.md` and the injected scope notes.
+- A weekly dream synthesis job (see "Weekly synthesis: deferred" in §2).
+- Recording the owner's timezone so the runtime can seed a true nightly cron
+  expression.
