@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Quiet ticks (ADR-083, 0.1.0, 2026-10-16)
+
+- Cron message jobs take `when` (`always` / `attention`; `Cron` `create` /
+  `update`). An `attention` job runs a due fire's turn only when something
+  waits on the principal: posts its session's channel digest would show, open
+  plan steps ready or in progress, or another job that failed since its last
+  turn. Otherwise it runs at most hourly. Other fires are quiet ticks: no model
+  call, no run row, `last_status: quiet`, a `cron.quiet` audit event. Manual
+  triggers always run. `attention` needs a recurring schedule.
+- The seeded keepalive waits for attention, and so does an existing keepalive
+  still carrying the runtime's tick text, without its schedule being
+  rewritten. `when: always` restores every tick. The tick text explains this.
+- The channel digest can count what it would show without consuming it.
+
 ### Memory maintenance hardening (ADR-080 rev 2, 0.1.0, 2026-10-16)
 
 - A cron-started owner run that writes `kb/MEMORY.md` with `Write` / `Edit`

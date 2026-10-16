@@ -185,8 +185,10 @@ TaskTool, PlanTool, and AsyncTool are exported from tools::builtin; CronTool is
 exported by peko_cron. Their per-action implementations are private handlers.
 CronTool::new dispatches to the daemon-installed runtime; CronTool::with_runtime
 binds an explicit Arc<dyn CronRuntime>. CronRuntime::update_job takes a
-peko_cron::JobPatch (enabled, wake_on_completion, model); CronJobAction::Send
-carries an optional model. CronRuntime::owns_job_history answers
+peko_cron::JobPatch (enabled, wake_on_completion, model, when); CronJobAction::Send
+carries an optional model and `when: Option<FireWhen>` (ADR-083;
+`ATTENTION_MAX_QUIET_MS`, `QUIET_STATUS`, `CronScheduler::record_quiet`).
+`principal::genesis::fire_when` reads a job's effective `when`. CronRuntime::owns_job_history answers
 history ownership for reaped one-shot jobs, whose runs outlive the job. The
 test-support feature exposes peko_cron::testing::FileCronRuntime, a runtime over
 real CronScheduler files. AgentCatalogTool (RoleCatalog) is workspace-only:

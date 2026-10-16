@@ -48,7 +48,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
-use peko_cron::{CronJob, CronJobAction, ScheduleKind};
+use peko_cron::{CronJob, CronJobAction, FireWhen, ScheduleKind};
 use peko_subject::PrincipalId;
 
 use crate::common::paths::PathResolver;
@@ -88,6 +88,29 @@ supplies the current brief each time this job fires; replace this message to use
 /// How the brief stored by the first ADR-080 build began. Jobs seeded
 /// then carry the whole brief verbatim; they are read like the marker.
 const LEGACY_MEMORY_BRIEF_PREFIX: &str = "[memory] Daily memory maintenance for `";
+
+/// How the runtime's own keepalive tick text begins. A `keepalive` job
+/// still carrying it and no explicit `when` was seeded before ADR-083.
+const KEEPALIVE_TICK_PREFIX: &str = "[keepalive] Supervision tick for `";
+
+/// When a due `Send` fire of `job` runs its turn (ADR-083): the job's own
+/// `when`, else [`FireWhen::Attention`] for a runtime-seeded keepalive
+/// that still carries the runtime's tick text, else
+/// [`FireWhen::Always`].
+#[must_use]
+pub fn fire_when(job: &CronJob) -> FireWhen {
+    match &job.action {
+        CronJobAction::Send {
+            when: Some(when), ..
+        } => *when,
+        CronJobAction::Send { message, .. }
+            if job.id == KEEPALIVE_JOB_ID && message.starts_with(KEEPALIVE_TICK_PREFIX) =>
+        {
+            FireWhen::Attention
+        }
+        _ => FireWhen::Always,
+    }
+}
 
 /// The text a cron `Send` job delivers when it fires: the current memory
 /// brief for a job carrying [`MEMORY_BRIEF_MARKER`] (or the brief an
@@ -189,8 +212,11 @@ pub fn keepalive_tick_message(config: &PrincipalConfig) -> String {
         "[keepalive] Supervision tick for `{display}`. You are the trunk of this \
 principal: review your session tree (`session list`), tend your memory \
 and workspace, check channels (`channel read`), and continue or adjust \
-your standing work. If this cadence is wrong for you, retune or replace \
-this job with the cron tools — you own your rhythm."
+your standing work. A tick runs only when something waits on you (posts, \
+ready plan steps, a failed job) or an hour has passed since the last one; \
+keep standing work in `Plan` so it counts. If this cadence is wrong for \
+you, retune or replace this job with the cron tools (`when: always` runs \
+every tick) — you own your rhythm."
     )
 }
 
@@ -315,6 +341,7 @@ pub fn genesis_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJ
         message: genesis_brief(config),
         target: Some("trunk".to_string()),
         model: None,
+        when: None,
     };
     // The engine fires on `next_run <= now` and does NOT recompute it
     // from the schedule at add time — leaving the construction default
@@ -324,7 +351,8 @@ pub fn genesis_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJ
 }
 
 /// Build the recurring default keepalive cron job (P4 seed). Targets
-/// the trunk; cadence [`DEFAULT_KEEPALIVE_EVERY_MS`].
+/// the trunk; cadence [`DEFAULT_KEEPALIVE_EVERY_MS`]; `when: attention`,
+/// so a tick with nothing waiting is quiet (ADR-083).
 pub fn keepalive_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJob> {
     let mut job = job_base(
         config,
@@ -339,6 +367,8 @@ pub fn keepalive_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<Cro
         message: keepalive_tick_message(config),
         target: Some("trunk".to_string()),
         model: None,
+        // ADR-083: a tick runs a turn only when something waits.
+        when: Some(FireWhen::Attention),
     };
     // First tick one full cadence after seeding (same next_run
     // semantics as `genesis_job` — the engine honors the stored value).
@@ -365,6 +395,7 @@ pub fn memory_job(config: &PrincipalConfig, now: DateTime<Utc>) -> Result<CronJo
         message: MEMORY_BRIEF_MARKER.to_string(),
         target: Some("trunk".to_string()),
         model: None,
+        when: None,
     };
     job.next_run = now + chrono::Duration::milliseconds(MEMORY_MAINTENANCE_EVERY_MS as i64);
     Ok(job)
@@ -396,6 +427,7 @@ fn job_base(
             message: String::new(),
             target: Some("trunk".to_string()),
             model: None,
+            when: None,
         },
         delete_after_run: false,
         enabled: true,
@@ -990,6 +1022,31 @@ mod tests {
         assert_eq!(job.next_run, now + chrono::Duration::days(1));
         // A once-a-day job does not stand in for the keepalive.
         assert!(!has_recurring_trunk_send(&[job]));
+    }
+
+    /// ADR-083: the seeded keepalive is attention-gated, including one
+    /// seeded before `when` existed; anything else runs every fire.
+    #[test]
+    fn keepalive_ticks_wait_for_attention() {
+        let config = defined_config();
+        let mut job = keepalive_job(&config, Utc::now()).unwrap();
+        assert_eq!(fire_when(&job), FireWhen::Attention);
+        if let CronJobAction::Send { when, .. } = &mut job.action {
+            *when = None;
+        }
+        assert_eq!(fire_when(&job), FireWhen::Attention, "legacy seed");
+        if let CronJobAction::Send { message, .. } = &mut job.action {
+            *message = "my own tick".into();
+        }
+        assert_eq!(fire_when(&job), FireWhen::Always);
+        if let CronJobAction::Send { when, .. } = &mut job.action {
+            *when = Some(FireWhen::Attention);
+        }
+        assert_eq!(fire_when(&job), FireWhen::Attention);
+        assert_eq!(
+            fire_when(&memory_job(&config, Utc::now()).unwrap()),
+            FireWhen::Always
+        );
     }
 
     /// The brief an earlier build stored verbatim is read like the

@@ -187,6 +187,11 @@ pub enum CronJobAction {
         /// routine job such as the daily memory pass use a cheaper model.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// When a due fire starts a turn (ADR-083). `None` reads as
+        /// [`FireWhen::Always`], except for the runtime's own keepalive
+        /// (the engine decides that case).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<FireWhen>,
     },
     /// Schedule an async tool run attributed to the Principal's root.
     SpawnTool {
@@ -199,6 +204,49 @@ pub enum CronJobAction {
         timeout_secs: Option<u64>,
     },
 }
+
+/// When a due `Send` fire starts a turn (ADR-083).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FireWhen {
+    /// Every due fire runs a turn.
+    Always,
+    /// A due fire runs a turn only when something waits on the
+    /// principal, or when the job's last turn is
+    /// [`ATTENTION_MAX_QUIET_MS`] old; otherwise it is a quiet tick: the
+    /// schedule advances and no model is called.
+    Attention,
+}
+
+impl FireWhen {
+    /// The tool / wire form.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Attention => "attention",
+        }
+    }
+
+    /// Parse the tool / wire form.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "always" => Some(Self::Always),
+            "attention" => Some(Self::Attention),
+            _ => None,
+        }
+    }
+}
+
+/// The longest an [`FireWhen::Attention`] job goes without a turn: a due
+/// fire this long after the job's last turn runs one even when nothing
+/// waits, so habits the principal keeps on its heartbeat still run
+/// hourly.
+pub const ATTENTION_MAX_QUIET_MS: i64 = 60 * 60 * 1000;
+
+/// The run status a quiet tick leaves on its job. No run row is written.
+pub const QUIET_STATUS: &str = "quiet";
 
 impl CronJobAction {
     /// Short, human-readable kind label for list rendering.
@@ -369,13 +417,18 @@ pub struct JobPatch {
     /// `Send` jobs only: `Some(Some(id))` runs the turn on that
     /// configured model, `Some(None)` returns it to the pinned model.
     pub model: Option<Option<String>>,
+    /// `Send` jobs only: when a due fire starts a turn.
+    pub when: Option<FireWhen>,
 }
 
 impl JobPatch {
     /// Whether the patch changes nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.wake_on_completion.is_none() && self.model.is_none()
+        self.enabled.is_none()
+            && self.wake_on_completion.is_none()
+            && self.model.is_none()
+            && self.when.is_none()
     }
 }
 
@@ -640,6 +693,7 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                     message,
                     target,
                     model,
+                    when,
                 } => {
                     map.insert(
                         "message".to_string(),
@@ -650,6 +704,9 @@ pub fn render_job_list(jobs: Vec<CronJob>) -> serde_json::Value {
                     }
                     if let Some(m) = model {
                         map.insert("model".to_string(), serde_json::Value::String(m.clone()));
+                    }
+                    if let Some(w) = when {
+                        map.insert("when".to_string(), w.as_str().into());
                     }
                 }
                 CronJobAction::SpawnTool {
@@ -774,6 +831,7 @@ mod tests {
                 message: "ping".into(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -986,6 +1044,7 @@ mod tests {
             message: message.into(),
             target: None,
             model: None,
+            when: None,
         };
         assert_eq!(
             job(send("check the queue")).task_description(),
@@ -1130,6 +1189,7 @@ mod tests {
             message: "hello".into(),
             target: None,
             model: None,
+            when: None,
         })
         .unwrap();
         assert_eq!(

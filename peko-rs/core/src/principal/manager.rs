@@ -2800,6 +2800,7 @@ mod tests {
                 message: "ping".into(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,

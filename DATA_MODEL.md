@@ -230,6 +230,14 @@ omitted when unset); each fire's turn runs on it instead of the principal's
 pinned model. `SpawnTool` actions have no model. Older schedules read
 unchanged.
 
+**Quiet ticks (ADR-083).** A `Send` action may carry `when` (`always` |
+`attention`, omitted when unset). A due `attention` fire with nothing waiting and
+a last turn under an hour old writes no run row: it sets the job's `next_run`
+and `last_status: "quiet"` and leaves `last_run` (the last turn), `run_count`
+and `consecutive_failures` alone. A `keepalive` job with the runtime's tick text
+and no `when` is read as `attention`. The seeded keepalive now stores
+`when: "attention"`.
+
 **Idle schedules.** `Idle` jobs read principal activity from
 `<runtime_dir>/idle_activity.json`, a map of runtime `PrincipalId` to the
 RFC 3339 time someone last talked to the principal: an ingress turn starting

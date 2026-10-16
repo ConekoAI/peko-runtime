@@ -44,7 +44,8 @@ pub use std::str::FromStr;
 pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
     render_job_list, resolve_schedule_kind, set_global_runtime, CronJob, CronJobAction,
-    CronRuntime, CronTool, JobPatch, ScheduleKind, DEFAULT_MAX_RETRIES,
+    CronRuntime, CronTool, FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS,
+    DEFAULT_MAX_RETRIES, QUIET_STATUS,
 };
 
 pub use idle::IdleDetector;
@@ -170,8 +171,19 @@ impl CronScheduler {
         // malformed job never reaches the on-disk DB.
         match &job.action {
             CronJobAction::Send {
-                message, target, ..
+                message,
+                target,
+                when,
+                ..
             } => {
+                if *when == Some(tools::FireWhen::Attention)
+                    && matches!(job.schedule, ScheduleKind::At { .. })
+                {
+                    anyhow::bail!(
+                        "`when: \"attention\"` needs a recurring schedule; a one-shot job \
+                         always runs its turn"
+                    );
+                }
                 if message.trim().is_empty() {
                     anyhow::bail!(
                         "CronJob {} action requires a non-empty 'message'",
@@ -279,6 +291,21 @@ impl CronScheduler {
         Ok(())
     }
 
+    /// Record a quiet tick (ADR-083): advance `next_run` and set
+    /// `last_status` to [`QUIET_STATUS`]. No run row is written, and
+    /// `last_run`, `run_count` and the failure counter are untouched, so
+    /// `last_run` stays the time of the job's last turn.
+    pub fn record_quiet(&self, job_id: &str, next_run: DateTime<Utc>) -> Result<bool> {
+        let mut db = self.read_db()?;
+        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+            return Ok(false);
+        };
+        job.next_run = next_run;
+        job.last_status = Some(QUIET_STATUS.to_string());
+        self.write_db(&db)?;
+        Ok(true)
+    }
+
     /// Update only `last_status` (and `last_run`) on a job, leaving
     /// `next_run` and `run_count` untouched. Used by the cron
     /// reconciler when an `AsyncTask` finishes long after the original
@@ -352,13 +379,29 @@ impl CronScheduler {
         let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
             return Ok(false);
         };
-        if let Some(model) = &patch.model {
-            let CronJobAction::Send { model: slot, .. } = &mut job.action else {
+        if patch.model.is_some() || patch.when.is_some() {
+            let CronJobAction::Send {
+                model: model_slot,
+                when: when_slot,
+                ..
+            } = &mut job.action
+            else {
                 anyhow::bail!(
-                    "`model` applies to message jobs only; job {job_id} runs a fixed tool call"
+                    "`model` and `when` apply to message jobs only; job {job_id} runs a fixed \
+                     tool call"
                 );
             };
-            *slot = model.clone().filter(|m| !m.trim().is_empty());
+            if let Some(model) = &patch.model {
+                *model_slot = model.clone().filter(|m| !m.trim().is_empty());
+            }
+            if let Some(when) = patch.when {
+                if when == tools::FireWhen::Attention
+                    && matches!(job.schedule, ScheduleKind::At { .. })
+                {
+                    anyhow::bail!("`when: \"attention\"` needs a recurring schedule");
+                }
+                *when_slot = Some(when);
+            }
         }
         if let Some(e) = patch.enabled {
             job.enabled = e;
@@ -497,6 +540,7 @@ mod tests {
                 message: "Test message".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -540,6 +584,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: true,
             enabled: true,
@@ -667,6 +712,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -690,6 +736,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -747,6 +794,7 @@ mod tests {
                 message: "x".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: false,
             enabled: true,
@@ -859,6 +907,7 @@ mod tests {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
             model: None,
+            when: None,
         };
 
         // Every{30s} + trunk → refused with the floor in the message.
@@ -884,6 +933,7 @@ mod tests {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
             model: None,
+            when: None,
         };
         at.schedule = ScheduleKind::At {
             at: (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339(),
@@ -895,6 +945,7 @@ mod tests {
             message: "keepalive".to_string(),
             target: Some("trunk".to_string()),
             model: None,
+            when: None,
         };
         cron.schedule = ScheduleKind::Cron {
             expr: "* * * * *".to_string(),
@@ -920,6 +971,7 @@ mod tests {
                 message: "Test".to_string(),
                 target: None,
                 model: None,
+                when: None,
             },
             delete_after_run: true,
             enabled: true,
@@ -975,6 +1027,7 @@ mod tests {
                     message: "Hello".to_string(),
                     target: None,
                     model: None,
+                    when: None,
                 },
                 delete_after_run: false,
                 enabled: true,

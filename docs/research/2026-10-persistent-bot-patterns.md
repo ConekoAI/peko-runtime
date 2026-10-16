@@ -130,7 +130,7 @@ Proposal:
 - Add a small **needs-attention set**: posts from principals, @mentions, and replies to the principal's own posts. An item leaves the set only through `ChannelRead`, a reply in the thread, or an explicit `dismiss`.
 - Render the set as a compact count until it is drained.
 
-### P3. Tiered heartbeat with quiet ticks
+### P3. Tiered heartbeat with quiet ticks (shipped as ADR-083, 2026-10-16)
 
 Muse and Grok separate cheap background jobs from full agent turns.
 
@@ -206,7 +206,7 @@ All of these were verified in code on `master` @ `b5896a13` unless marked otherw
 | G8 | ~~Low-Med~~ | **Addressed 2026-10-15.** Activity is recorded at the ingress turn driver (every human surface, not just `peko send`), persisted per `PrincipalId` across restarts, and cron turns no longer count; idle jobs fire once per quiet stretch. | `cron/src/idle.rs`; `principal/child_turns.rs` |
 | G9 | Low | **No forget or redaction primitive** for sessions, pages or channel logs. | grep: no hits |
 | G10 | Low | **No veto hook and no compaction hook.** There is no Sentinel-style veto point, and no pre-compaction point for flushing memory before context is dropped. | AGENTS.md §6.4 (six points, soft-fail, no vetoes) |
-| G11 | Low | **Peer messages are slow to land.** The latency ceiling is the keepalive cadence (10 min by default), and every check costs a full turn. This is a design tension rather than a bug; see P2/P3. | ADR-072 D1/D4; `genesis.rs:63` |
+| G11 | Low → partly addressed | **Quiet ticks shipped 2026-10-16 (ADR-083).** The keepalive runs a turn only when posts, ready plan steps or a failed job wait, or hourly; otherwise it calls no model. The latency ceiling for peer posts is still the keepalive cadence (10 min by default); a cheaper inter-principal wake path is still open. | ADR-083; `core/src/principal/quiet_tick.rs` |
 | G12 | ~~Doc~~ | **Addressed 2026-10-15.** PEKO.md, AGENT_SESSION_PARADIGM.md, PRINCIPAL_WORKSPACE.md, DATA_MODEL.md and ADR-055 now match the runtime (per-run reach, post-and-return `ChannelSend`, retired session flags and declared children, workspace layout). `AGENTS.md` is untracked (gitignored), so its fixes are local only. | as listed |
 
 ---
