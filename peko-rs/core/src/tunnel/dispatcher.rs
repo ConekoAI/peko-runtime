@@ -182,6 +182,8 @@ impl Default for InstanceState {
 pub struct TunnelDispatcherState {
     /// Whether the tunnel is authenticated and ready
     pub registration_receipts: std::collections::HashMap<String, Result<String, String>>,
+    /// ADR-081 D4: Hub's answers to transfer requests, by request ID.
+    pub transfer_receipts: std::collections::HashMap<String, Result<(), String>>,
     pub pending_registrations: std::collections::HashMap<String, String>,
     pub ready: bool,
     /// Heartbeat interval from server (seconds)
@@ -418,11 +420,7 @@ impl TunnelDispatcher {
     /// The principal's owner as a Hub account, when it has one (ADR-081
     /// D4). Hub's wire form is the bare account UUID.
     async fn hub_owner(&self, principal: &crate::principal::Principal) -> Option<ActorRef> {
-        let mut owner = principal.config.read().await.owner.clone();
-        // An ownerless config belongs to the local operator (as in trust).
-        if owner.subject_id().is_empty() {
-            owner = ActorRef::User("local".into());
-        }
+        let owner = principal.config.read().await.owner.clone();
         let info = self.host.tunnel_channel_port().actor_info(&owner).await;
         match (info.kind.as_str(), info.hub_id) {
             ("user", Some(account)) => Some(ActorRef::User(account.into())),
@@ -578,6 +576,46 @@ impl TunnelDispatcher {
             }
             TunnelMessage::PrincipalUnlinked { local_id, hub_id } => {
                 self.unlink_principal(&local_id, &hub_id).await?;
+            }
+            TunnelMessage::PrincipalOwnerChanged {
+                request_id,
+                local_id,
+                hub_id,
+                owner_id,
+            } => {
+                let synced = self
+                    .sync_owner_from_hub(&local_id, &hub_id, &owner_id)
+                    .await;
+                match request_id {
+                    Some(id) => {
+                        self.state
+                            .write()
+                            .await
+                            .transfer_receipts
+                            .insert(id, synced.as_ref().map(|_| ()).map_err(ToString::to_string));
+                    }
+                    // Hub refused an announce naming another owner, or the
+                    // owner transferred it on Hub: come back online under
+                    // the recorded owner.
+                    None => {
+                        if let Ok(Some(name)) = &synced {
+                            if let Err(e) = self.announce_single_instance(name).await {
+                                warn!(principal = %name, "re-announce after owner sync failed: {e}");
+                            }
+                        }
+                    }
+                }
+                synced?;
+            }
+            TunnelMessage::PrincipalTransferRejected {
+                request_id,
+                message,
+            } => {
+                self.state
+                    .write()
+                    .await
+                    .transfer_receipts
+                    .insert(request_id, Err(message));
             }
             TunnelMessage::PrincipalRegistered {
                 registration_id,
@@ -1093,6 +1131,107 @@ impl TunnelDispatcher {
             .await;
         warn!(principal = %name, hub_id, "Principal is now online on another runtime; this copy is offline-only");
         Ok(())
+    }
+
+    /// Make `local_id`'s owner the one Hub records (ADR-081 D4): Hub is
+    /// the authority on an online principal's owner, and the local config
+    /// is its copy. A notice that does not match the principal's current
+    /// Hub link is ignored. Returns the principal's name when it applied.
+    async fn sync_owner_from_hub(
+        &self,
+        local_id: &str,
+        hub_id: &str,
+        owner_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let manager = self.host.principal_manager();
+        let Some(principal) = manager
+            .get(peko_subject::PrincipalId(local_id.into()))
+            .await
+        else {
+            return Ok(None);
+        };
+        if manager_hub_id(&self.host, &principal).await.as_deref() != Some(hub_id) {
+            warn!(
+                local_id,
+                hub_id, "Ignoring an owner notice that does not match this principal's Hub link"
+            );
+            return Ok(None);
+        }
+        anyhow::Context::context(uuid::Uuid::parse_str(owner_id), "Hub owner IDs are UUIDs")?;
+        let owner = ActorRef::User(peko_subject::Route::hub(owner_id));
+        let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+        let (name, previous) = {
+            let config = principal.config.read().await;
+            (config.name.clone(), config.owner.clone())
+        };
+        if port.key_of(&previous) != port.key_of(&owner) {
+            manager
+                .update_config(&name, |c| c.owner = owner.clone())
+                .await?;
+            let _ = self
+                .host
+                .observability()
+                .audit_security(
+                    "principal.owner_synced",
+                    Some(local_id),
+                    serde_json::json!({
+                        "hub_id": hub_id,
+                        "from": previous.canonical_address(),
+                        "to": owner.canonical_address(),
+                    }),
+                )
+                .await;
+            warn!(principal = %name, owner = %owner, "Principal owner set to the owner PekoHub records");
+        }
+        Ok(Some(name))
+    }
+
+    /// Transfer an online principal through Hub (ADR-081 D4): Hub allows it
+    /// when this runtime's account is the recorded owner, then confirms
+    /// with the new owner, which [`Self::sync_owner_from_hub`] writes.
+    pub async fn transfer_online(&self, name: &str, owner_account: &str) -> anyhow::Result<()> {
+        let manager = self.host.principal_manager();
+        let principal = manager
+            .get_by_name(name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Principal '{name}' not found"))?;
+        let hub_id = manager_hub_id(&self.host, &principal)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the principal is not registered with PekoHub"))?;
+        let handle = {
+            let state = self.state.read().await;
+            anyhow::ensure!(
+                state.ready,
+                "Transferring an online principal needs a connected PekoHub tunnel"
+            );
+            state.tunnel_handle.clone().ok_or_else(|| {
+                anyhow::anyhow!("Transferring an online principal needs a connected PekoHub tunnel")
+            })?
+        };
+        let request_id = uuid::Uuid::new_v4().to_string();
+        handle.send(TunnelMessage::PrincipalTransfer {
+            request_id: request_id.clone(),
+            local_id: principal.id.0.clone(),
+            hub_id,
+            owner_id: owner_account.to_string(),
+        })?;
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if let Some(answer) = self
+                    .state
+                    .write()
+                    .await
+                    .transfer_receipts
+                    .remove(&request_id)
+                {
+                    break answer;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("PekoHub did not answer the transfer request"))?;
+        answer.map_err(|message| anyhow::anyhow!("PekoHub refused the transfer: {message}"))
     }
 
     pub async fn register_principal(
@@ -1691,6 +1830,15 @@ impl TunnelDispatcher {
                 vec![request_id.clone()],
             )
             .await;
+            return Ok(());
+        }
+        // ADR-081 D7: only the linked copy receives. Unanswered, the sender
+        // re-resolves the link and redelivers to the online copy.
+        if !port.has_online_local_member(&channel_id_typed).await {
+            warn!(
+                request_id,
+                channel_id, "inbound TunnelChannelEvent: no local member of this channel is online here; leaving it unacknowledged"
+            );
             return Ok(());
         }
         if let Err(e) = port.append_remote_event(&channel_id_typed, &event).await {
@@ -3033,6 +3181,117 @@ mod tests {
     /// ADR-081 D7: when Hub moves the online link elsewhere, this copy goes
     /// offline-only; a notice naming another Hub link is ignored, and no
     /// directory claim can give the copy its Hub route back.
+    /// ADR-081 D4: an online transfer is Hub's to make. The runtime asks,
+    /// and takes the new owner only from Hub's confirmation; a refusal
+    /// leaves the owner as it was.
+    #[tokio::test]
+    async fn an_online_transfer_takes_the_owner_hub_confirms() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        seed_registered(&dispatcher, "sold").await;
+        let (handle, mut rx) = mock_tunnel_handle();
+        {
+            let mut state = dispatcher.state.write().await;
+            state.tunnel_handle = Some(handle.clone());
+            state.ready = true;
+        }
+        let principal = dispatcher
+            .host
+            .principal_manager()
+            .get_by_name("sold")
+            .await
+            .unwrap();
+        let alice = uuid::Uuid::new_v4().to_string();
+
+        for accept in [false, true] {
+            let asking = {
+                let dispatcher = dispatcher.clone();
+                let alice = alice.clone();
+                tokio::spawn(async move { dispatcher.transfer_online("sold", &alice).await })
+            };
+            let TunnelMessage::PrincipalTransfer {
+                request_id,
+                local_id,
+                hub_id,
+                owner_id,
+            } = rx.recv().await.unwrap()
+            else {
+                panic!("expected a transfer request");
+            };
+            assert_eq!(owner_id, alice);
+            assert_eq!(local_id, principal.id.0);
+            let answer = if accept {
+                TunnelMessage::PrincipalOwnerChanged {
+                    request_id: Some(request_id),
+                    local_id,
+                    hub_id,
+                    owner_id: alice.clone(),
+                }
+            } else {
+                TunnelMessage::PrincipalTransferRejected {
+                    request_id,
+                    message: "not the owner".into(),
+                }
+            };
+            dispatcher.dispatch(answer, handle.clone()).await.unwrap();
+            let result = asking.await.unwrap();
+            let owner = principal.config.read().await.owner.clone();
+            if accept {
+                result.unwrap();
+                assert_eq!(
+                    owner,
+                    ActorRef::User(peko_subject::Route::hub(alice.clone()))
+                );
+            } else {
+                assert!(result.unwrap_err().to_string().contains("not the owner"));
+                assert_eq!(
+                    owner,
+                    ActorRef::User("local".into()),
+                    "a refusal changes nothing"
+                );
+            }
+        }
+    }
+
+    /// ADR-081 D4: Hub's record wins over a local edit. A notice for
+    /// another Hub link is ignored.
+    #[tokio::test]
+    async fn the_local_owner_follows_the_hub_record() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        seed_registered(&dispatcher, "edited").await;
+        let (handle, _rx) = mock_tunnel_handle();
+        let manager = dispatcher.host.principal_manager();
+        let principal = manager.get_by_name("edited").await.unwrap();
+        let hub = manager_hub_id(&dispatcher.host, &principal).await.unwrap();
+        let recorded = uuid::Uuid::new_v4().to_string();
+        // Someone edited the local owner.
+        manager
+            .update_config("edited", |c| c.owner = ActorRef::User("mallory".into()))
+            .await
+            .unwrap();
+
+        let notice = |hub_id: &str| TunnelMessage::PrincipalOwnerChanged {
+            request_id: None,
+            local_id: principal.id.0.clone(),
+            hub_id: hub_id.into(),
+            owner_id: recorded.clone(),
+        };
+        dispatcher
+            .dispatch(notice("another-hub-id"), handle.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            principal.config.read().await.owner,
+            ActorRef::User("mallory".into())
+        );
+        dispatcher.dispatch(notice(&hub), handle).await.unwrap();
+        assert_eq!(
+            principal.config.read().await.owner,
+            ActorRef::User(peko_subject::Route::hub(recorded.clone()))
+        );
+    }
+
     #[tokio::test]
     async fn an_unlinked_copy_goes_offline_only() {
         let app_state = create_test_app_state().await;
@@ -3783,6 +4042,20 @@ mod tests {
 
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
         let (_handle, _rx) = mock_tunnel_handle();
+        // The local member is online (ADR-081 D7: only the linked copy receives).
+        dispatcher
+            .host
+            .tunnel_channel_port()
+            .register_actor(
+                &ActorRef::from(&creator),
+                Some("hub-creator"),
+                None,
+                None,
+                None,
+                peko_channel::Registration::Public,
+            )
+            .await
+            .unwrap();
 
         let kp = peko_identity::keys::KeyPair::generate();
         let source_runtime_id = crate::tunnel::verifying_key_to_did_key(&kp.verifying_key);

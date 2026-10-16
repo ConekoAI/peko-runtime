@@ -1308,6 +1308,11 @@ The following operations must be tested:
   registered principal in any channel without changing its conversation or pending
   message IDs; `TunnelChannelPort::follow_link` accepts its traffic from the runtime
   the directory confirms. Tunnel `principal_unlinked` takes a local copy offline.
+- Hub records an online principal's owner (ADR-081 D4): `TunnelDispatcher::transfer_online`
+  sends `principal_transfer` and waits for `principal_owner_changed` /
+  `principal_transfer_rejected`; an unsolicited `principal_owner_changed` sets the
+  config owner to Hub's record and re-announces. `TunnelChannelPort::has_online_local_member`
+  gates inbound channel traffic to the linked copy.
 
 See [ADR-073](docs/architecture/adr/ADR-073-actor-addresses-and-conversation-bindings.md)
 for the coordinated pre-launch replacement contract.

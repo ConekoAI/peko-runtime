@@ -37,7 +37,8 @@ use common::{generate_jwt, generate_runtime_identity, sign_nonce, PekohubBackend
 /// — re-running with the same DID returns success on the second
 /// call (the create-runtime endpoint is plain INSERT, so we
 /// ignore non-2xx here, which is fine for tests).
-async fn seed_runtime_for_test(backend_url: &str, did: &str) {
+/// Returns the seeded runtime's owner account.
+async fn seed_runtime_for_test(backend_url: &str, did: &str) -> String {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .no_proxy()
@@ -87,6 +88,7 @@ async fn seed_runtime_for_test(backend_url: &str, did: &str) {
     if !status.is_success() && status.as_u16() != 500 {
         panic!("create-runtime failed unexpectedly: {status}");
     }
+    user_id
 }
 
 /// Authenticate a tunnel connection and return the WebSocket split.
@@ -214,6 +216,7 @@ async fn register_test_principal(
         >,
     >,
     runtime_did: &str,
+    owner: &str,
     name: &str,
     instance_id: &str,
 ) -> (String, String, String) {
@@ -241,7 +244,9 @@ async fn register_test_principal(
             bundle_ref: None,
             principal_did: Some(signing_did.clone()),
             principal_pop: Some(proof),
-            owner: None,
+            // ADR-081 D4: an online principal names its Hub user owner; here
+            // the runtime's own account, as after `peko runtime register`.
+            owner: Some(peko_auth::ActorRef::User(owner.to_string().into())),
             runtime_display_name: Some("Transport Test Runtime".into()),
             status: InstanceStatus::Online,
             exposure: InstanceExposure::Public,
@@ -441,8 +446,15 @@ async fn test_tunnel_instance_announce_and_api_visibility() {
     )
     .to_string();
 
-    let (hub_id, local_id, _) =
-        register_test_principal(&mut write, &mut read, &did, "test-agent", &instance_id).await;
+    let (hub_id, local_id, _) = register_test_principal(
+        &mut write,
+        &mut read,
+        &did,
+        &user_id,
+        "test-agent",
+        &instance_id,
+    )
+    .await;
 
     // Query instances API with auth
     let list_resp = client
@@ -638,7 +650,7 @@ async fn test_tunnel_streaming_chunks_survive() {
 async fn test_instance_announce_registers_directory_entry() {
     let backend = PekohubBackend::start().await;
     let (did, signing_key) = generate_runtime_identity();
-    seed_runtime_for_test(&backend.url, &did).await;
+    let owner = seed_runtime_for_test(&backend.url, &did).await;
 
     let (mut write, mut read) = authenticate_tunnel(&backend.ws_url, &did, &signing_key).await;
 
@@ -648,8 +660,15 @@ async fn test_instance_announce_registers_directory_entry() {
     )
     .to_string();
 
-    let (hub_id, local_id, signing_did) =
-        register_test_principal(&mut write, &mut read, &did, "transport-agent", &instance_id).await;
+    let (hub_id, local_id, signing_did) = register_test_principal(
+        &mut write,
+        &mut read,
+        &did,
+        &owner,
+        "transport-agent",
+        &instance_id,
+    )
+    .await;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))

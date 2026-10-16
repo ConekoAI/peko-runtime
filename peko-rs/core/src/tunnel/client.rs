@@ -651,6 +651,9 @@ impl TunnelClient {
             | TunnelMessage::PrincipalRegistrationRejected { .. }
             | TunnelMessage::PrincipalRegistered { .. }
             | TunnelMessage::PrincipalUnlinked { .. }
+            | TunnelMessage::PrincipalTransfer { .. }
+            | TunnelMessage::PrincipalTransferRejected { .. }
+            | TunnelMessage::PrincipalOwnerChanged { .. }
             | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::InstanceAnnounce { .. }
             | TunnelMessage::InstanceHeartbeat { .. }

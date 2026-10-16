@@ -59,6 +59,10 @@ use crate::tunnel::channel_outbox::{ChannelOutbox, OutboxEntry, OutboxItem, Rece
 use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 use std::str::FromStr;
 
+/// Unanswered sends to one runtime before the sender asks the directory
+/// whether the members it reaches there moved (ADR-081 D7).
+const RELINK_AFTER_ATTEMPTS: u32 = 3;
+
 /// Concrete `ChannelPort` impl that wraps a local [`ChannelStore`]
 /// and (in commit 3) fans events out to the channel's remote
 /// members over the tunnel.
@@ -198,7 +202,9 @@ impl TunnelChannelPort {
     }
 
     /// Move a remote member's route in `channel` to `runtime`, and its
-    /// pending envelopes with it (message IDs are kept).
+    /// pending envelopes with it (message IDs are kept). Envelopes for a
+    /// runtime that still hosts other members of the channel stay queued
+    /// for it — those members are owed them too.
     async fn follow_route(
         &self,
         channel: &ChannelId,
@@ -210,13 +216,79 @@ impl TunnelChannelPort {
             .replace_peer_route(channel, did, runtime)
             .await
             .map_err(|e| e.to_string())?;
+        let remaining = self
+            .local
+            .list_remote_members(channel)
+            .await
+            .map_err(|e| e.to_string())?;
         for previous in old {
+            if remaining.iter().any(|m| m.runtime_id == previous) {
+                continue;
+            }
             self.outbox
                 .retarget(channel, &previous, runtime)
                 .await
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    /// Envelopes a runtime keeps leaving unanswered may be for a principal
+    /// whose online link moved: its old copy stops acknowledging them
+    /// (ADR-081 D7). Ask the directory where each member reached there is
+    /// linked now and follow it. Returns whether `entry` was retargeted.
+    async fn relink(&self, ctx: &CrossRuntimeChannelCtx, entry: &OutboxEntry) -> bool {
+        let channel = match &entry.item {
+            OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => channel,
+        };
+        let Ok(members) = self.local.list_remote_members(channel).await else {
+            return false;
+        };
+        let mut moved = false;
+        for member in members
+            .iter()
+            .filter(|m| m.runtime_id == entry.recipient_runtime_id)
+        {
+            let Some(linked) = self.linked_runtime(ctx, &member.principal_id, true).await else {
+                continue;
+            };
+            if linked != entry.recipient_runtime_id
+                && self
+                    .follow_route(channel, &member.principal_id, &linked)
+                    .await
+                    .is_ok()
+            {
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    /// Whether `channel` still has a local member reachable over Hub. A
+    /// copy whose principal's online link moved away keeps its mirror but
+    /// must not apply or acknowledge the channel's traffic (ADR-081 D7):
+    /// left unanswered, the sender re-resolves the link and redelivers to
+    /// the online copy. A mirror with no local member yet is bootstrapping.
+    pub async fn has_online_local_member(&self, channel: &ChannelId) -> bool {
+        let Ok(members) = self.local.members_with_attribution(channel).await else {
+            return true;
+        };
+        let local: Vec<_> = members
+            .into_iter()
+            .filter(|m| m.runtime_id.is_none())
+            .collect();
+        if local.is_empty() {
+            return true;
+        }
+        for member in local {
+            let Ok(subject) = member.principal.parse::<ActorRef>() else {
+                continue;
+            };
+            if self.local.actor_info(&subject).await.hub_id.is_some() {
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn set_ctx(&self, ctx: Arc<CrossRuntimeChannelCtx>) {
@@ -268,7 +340,22 @@ impl TunnelChannelPort {
         let Some(handle) = ctx.tunnel.read().await.clone() else {
             return;
         };
+        let mut relinked = HashSet::new();
         for entry in self.outbox.due(force).await {
+            // Each (channel, runtime) pair asks the directory once a pass.
+            if entry.attempts >= RELINK_AFTER_ATTEMPTS {
+                let channel = match &entry.item {
+                    OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => {
+                        channel.clone()
+                    }
+                };
+                if relinked.insert((channel, entry.recipient_runtime_id.clone()))
+                    && self.relink(&ctx, &entry).await
+                {
+                    // Retargeted: due again on the next tick.
+                    continue;
+                }
+            }
             let envelope = match self.envelope_for(&ctx, &entry).await {
                 Ok(envelope) => envelope,
                 Err(e) => {
@@ -1953,6 +2040,115 @@ mod tests {
             }
         }
         assert_eq!(recipients, vec!["did:key:zRuntimeB".to_string()]);
+    }
+
+    fn sent_to(rx: &mut tokio::sync::mpsc::Receiver<crate::tunnel::TunnelMessage>) -> Vec<String> {
+        let mut recipients = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            if let crate::tunnel::TunnelMessage::TunnelChannelEvent {
+                recipient_runtime_id,
+                ..
+            } = message
+            {
+                recipients.push(recipient_runtime_id);
+            }
+        }
+        recipients
+    }
+
+    /// ADR-081 D7: envelopes the old copy leaves unanswered follow the
+    /// member's moved link — unless another member still lives there.
+    #[tokio::test]
+    async fn unanswered_envelopes_follow_a_moved_link() {
+        use ed25519_dalek::SigningKey;
+        for other_member_stays in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+                runtime_dir: tmp.path().to_path_buf(),
+                shared_dir: None,
+            }));
+            let port = TunnelChannelPort::new(store.clone());
+            let (ctx, mut rx) = build_test_ctx(&port, "did:key:zRuntimeLocal").await;
+            port.set_ctx(ctx).await;
+            let remote_did = crate::tunnel::verifying_key_to_did_key(
+                &SigningKey::from_bytes(&[10; 32]).verifying_key(),
+            );
+            let alice = PrincipalId("prin_alice".into());
+            let channel = port
+                .create(&alice, CreateOpts::runtime("team"))
+                .await
+                .unwrap();
+            store
+                .add_remote_member(&channel, "did:key:zRuntimeOld", &remote_did)
+                .await
+                .unwrap();
+            if other_member_stays {
+                store
+                    .add_remote_member(&channel, "did:key:zRuntimeOld", "did:key:zStays")
+                    .await
+                    .unwrap();
+            }
+            // The sender still has the old link cached (or queued before
+            // the move).
+            port.links.lock().unwrap().insert(
+                remote_did.clone(),
+                ("did:key:zRuntimeOld".into(), std::time::Instant::now()),
+            );
+            port.post(&channel, &ActorRef::from(&alice), PostMsg::root("hello"))
+                .await
+                .unwrap();
+            // The old copy never answers.
+            port.flush(true).await;
+            port.flush(true).await;
+            assert!(sent_to(&mut rx).iter().all(|r| r == "did:key:zRuntimeOld"));
+            // Unanswered three times: the sender asks the directory.
+            port.flush(true).await;
+            port.flush(true).await;
+            assert!(store
+                .is_remote_member(&channel, "did:key:zRuntimeB", &remote_did)
+                .await
+                .unwrap());
+            let expected = if other_member_stays {
+                "did:key:zRuntimeOld"
+            } else {
+                "did:key:zRuntimeB"
+            };
+            assert_eq!(
+                sent_to(&mut rx).last().map(String::as_str),
+                Some(expected),
+                "other member stays: {other_member_stays}"
+            );
+        }
+    }
+
+    /// ADR-081 D7: a channel whose local members are all offline here (the
+    /// online link moved away) is not applied or acknowledged.
+    #[tokio::test]
+    async fn only_a_channel_with_an_online_local_member_receives() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+        let alice = PrincipalId("prin_alice".into());
+        let channel = port
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert!(!port.has_online_local_member(&channel).await);
+        store
+            .register_actor(
+                &ActorRef::from(&alice),
+                Some("hub-alice"),
+                None,
+                None,
+                None,
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        assert!(port.has_online_local_member(&channel).await);
     }
 
     /// `post` with a remote member: the local store gets the event

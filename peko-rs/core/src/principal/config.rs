@@ -46,6 +46,22 @@ pub enum BootState {
     Organized,
 }
 
+fn local_owner() -> peko_auth::ActorRef {
+    peko_auth::ActorRef::User("local".into())
+}
+
+fn owner_or_local<'de, D>(deserializer: D) -> Result<peko_auth::ActorRef, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let owner = peko_auth::ActorRef::deserialize(deserializer)?;
+    Ok(if owner.subject_id().is_empty() {
+        local_owner()
+    } else {
+        owner
+    })
+}
+
 /// On-disk configuration for a Principal. Deserialized from `principal.toml`.
 ///
 /// Unknown tables are ignored on load and never written back — notably
@@ -72,7 +88,10 @@ pub struct PrincipalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_key: Option<String>,
 
-    #[serde(default)]
+    /// The one owner (ADR-081 D4). A config that records none — a seed, or
+    /// a hand-written file — belongs to this runtime's local user; that is
+    /// settled here, at load, so every reader sees the same owner.
+    #[serde(default = "local_owner", deserialize_with = "owner_or_local")]
     pub owner: peko_auth::ActorRef,
 
     #[serde(default)]
@@ -391,6 +410,18 @@ impl PrincipalResourceView for PrincipalConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-081 D4: a config without an owner — missing, or empty as a seed
+    /// writes it — belongs to the local user for every reader.
+    #[test]
+    fn an_ownerless_config_belongs_to_the_local_user() {
+        let missing: PrincipalConfig = toml::from_str("name = 'p'").unwrap();
+        assert_eq!(missing.owner, peko_auth::ActorRef::User("local".into()));
+        let mut seed = missing.clone();
+        seed.owner = peko_auth::ActorRef::default();
+        let reloaded: PrincipalConfig = toml::from_str(&toml::to_string(&seed).unwrap()).unwrap();
+        assert_eq!(reloaded.owner, peko_auth::ActorRef::User("local".into()));
+    }
 
     #[test]
     fn agent_run_limit_defaults_and_legacy_depth_are_ignored() {

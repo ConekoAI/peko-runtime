@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### ADR-081 review fixes (0.1.0, 2026-10-16)
+
+- Only the linked copy receives: a runtime leaves a channel's traffic
+  unacknowledged when none of its local members is reachable over Hub, and a
+  sender that keeps getting no answer asks the directory where the members
+  moved and retargets their pending envelopes (kept for a runtime that still
+  hosts other members).
+- The owner's conversation follows a move for any owner: a Hub owner's DM is
+  rebound to the DM with its key on the destination, not only a local owner's.
+- A config without an owner loads with the local user as owner, so trust,
+  approvals, Hub registration, and transfer agree.
+- An online principal transfers only to a Hub user, matching registration and
+  Hub move approval.
+- Hub records an online principal's owner (ADR-081 D4): `peko transfer` of an
+  online principal asks Hub over the tunnel (allowed when the runtime's account
+  is the owner) and writes the new owner only from Hub's
+  `principal_owner_changed`. When Hub refuses an announce naming another owner,
+  the runtime adopts the recorded owner (`principal.owner_synced`) and
+  re-announces. Registering under another account needs that account's consent
+  on Hub.
+
 ### Typed actor references (ADR-081 §3 follow-ups, 0.1.0, 2026-10-15)
 
 - `Subject` is replaced by `ActorRef` (`User | Principal | Visitor (Route) | Public`)

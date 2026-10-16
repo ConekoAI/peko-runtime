@@ -295,6 +295,29 @@ pub enum TunnelMessage {
         #[serde(rename = "hubId")]
         hub_id: String,
     },
+    /// ADR-081 D4: ask Hub to transfer an online principal. Hub allows it
+    /// when the principal is linked here and this runtime's account is its
+    /// recorded owner.
+    #[serde(rename = "principal_transfer", rename_all = "camelCase")]
+    PrincipalTransfer {
+        request_id: String,
+        local_id: String,
+        hub_id: String,
+        owner_id: String,
+    },
+    #[serde(rename = "principal_transfer_rejected", rename_all = "camelCase")]
+    PrincipalTransferRejected { request_id: String, message: String },
+    /// ADR-081 D4: the owner Hub records for an online principal — after a
+    /// transfer, or when this runtime announced a different one. The
+    /// runtime's config follows it.
+    #[serde(rename = "principal_owner_changed", rename_all = "camelCase")]
+    PrincipalOwnerChanged {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        local_id: String,
+        hub_id: String,
+        owner_id: String,
+    },
     #[serde(rename = "instance_deregister")]
     InstanceDeregister { payload: InstanceDeregisterPayload },
     #[serde(rename = "instance_announce")]
