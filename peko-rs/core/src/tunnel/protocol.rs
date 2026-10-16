@@ -473,17 +473,10 @@ pub enum TunnelMessage {
         /// invite time so the receiver doesn't need a follow-up
         /// `peek` to display the channel.
         name: String,
-        /// Sprint 3 Phase 12a: DM marker — the source channel's
-        /// `passive_binding`, carried so the receiver knows to
-        /// bootstrap a DM-tier mirror bound to its own peer child.
-        /// The VALUE is
-        /// ignored by the receiver: each side's binding names its
-        /// OWN child for the other principal and `-N` slug-collision
-        /// suffixes are runtime-local, so the receiver derives its
-        /// own `/​<slug>` binding from its own session tree. `None`
-        /// means a plain (unbound) cross-runtime channel.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        passive_binding: Option<String>,
+        /// ADR-082 D1: what the channel is. A `dm` invite must carry a
+        /// pair id; the receiver binds its mirror to its own peer child
+        /// (bindings are runtime-local and never on the wire).
+        kind: peko_protocol::channel::ConversationKind,
         /// Initial membership snapshot: every principal that
         /// should appear in the receiver's `members.json` row
         /// table. Phase 12a keying: rows for principals on OTHER
@@ -1196,7 +1189,7 @@ mod tests {
             creator: "prin_alice".to_string(),
             creator_did: "did:peko:principal:alice".to_string(),
             name: "team-chat".to_string(),
-            passive_binding: Some("/principal-bob".to_string()),
+            kind: peko_protocol::channel::ConversationKind::Dm,
             initial_members,
             signature: "base64url-sig".to_string(),
             author_signature: "base64url-author-sig".to_string(),
@@ -1260,7 +1253,7 @@ mod tests {
                 creator,
                 creator_did,
                 name,
-                passive_binding,
+                kind,
                 initial_members: decoded_members,
                 signature,
                 author_signature,
@@ -1273,7 +1266,7 @@ mod tests {
                 assert_eq!(creator, "prin_alice");
                 assert_eq!(creator_did, "did:peko:principal:alice");
                 assert_eq!(name, "team-chat");
-                assert_eq!(passive_binding.as_deref(), Some("/principal-bob"));
+                assert_eq!(kind, peko_protocol::channel::ConversationKind::Dm);
                 assert_eq!(signature, "base64url-sig");
                 assert_eq!(author_signature, "base64url-author-sig");
                 assert_eq!(decoded_members.len(), 2);

@@ -52,7 +52,7 @@ pub const CHANNEL_EVENT_PAYLOAD_VERSION: &str = "peko-channel-event/2";
 
 /// Payload version tag for `ChannelInvitePayload`. See
 /// [`CHANNEL_EVENT_PAYLOAD_VERSION`].
-pub const CHANNEL_INVITE_PAYLOAD_VERSION: &str = "peko-channel-invite/2";
+pub const CHANNEL_INVITE_PAYLOAD_VERSION: &str = "peko-channel-invite/3";
 
 /// Clock-skew leeway (seconds) applied to `exp`: an envelope is
 /// rejected when `now > exp + EXP_LEEWAY_SECS`.
@@ -294,8 +294,7 @@ pub fn verify_author_signature(
 // ===========================================================================
 // Channel-invite helpers — same v2 treatment as the channel event:
 // one shared payload, two JWS (runtime + author), `iat`/`exp`
-// freshness. `passive_binding` signs as the empty string when the
-// envelope carries `None`.
+// freshness. The channel kind signs as `dm` / `group` (ADR-082 D1).
 // ===========================================================================
 
 /// Borrowed view of the fields that go into a `ChannelInvitePayload`.
@@ -326,12 +325,9 @@ pub struct ChannelInviteSignedFields<'a> {
     pub creator_did: &'a str,
     /// Human-readable channel name (`team`, `general`, etc.).
     pub name: &'a str,
-    /// DM marker: the source channel's `passive_binding`, or the
-    /// EMPTY STRING when the channel is unbound. Only the
-    /// presence/absence is meaningful to the receiver (it derives its
-    /// own binding); the value is signed so a hub cannot strip or
-    /// forge the DM-ness of an invite.
-    pub passive_binding: &'a str,
+    /// The channel kind's wire form (`dm` / `group`), signed so a hub
+    /// cannot strip or forge the DM-ness of an invite.
+    pub kind: &'a str,
     /// Pre-serialized bytes of the `initial_members` list. Caller is
     /// responsible for serializing via `serde_json::to_vec(&members)`
     /// once and passing the same bytes to both sign and verify paths.
@@ -353,8 +349,8 @@ pub struct ChannelInvitePayload {
     pub creator: String,
     pub creator_did: String,
     pub name: String,
-    /// DM marker; the empty string when the channel is unbound.
-    pub passive_binding: String,
+    /// `dm` or `group`.
+    pub kind: String,
     /// base64url-no-pad of the serialized `initial_members` bytes.
     pub initial_members_b64u: String,
     /// Issued-at (Unix seconds, UTC).
@@ -383,7 +379,7 @@ pub fn sign_channel_invite(
         creator: fields.creator.to_string(),
         creator_did: fields.creator_did.to_string(),
         name: fields.name.to_string(),
-        passive_binding: fields.passive_binding.to_string(),
+        kind: fields.kind.to_string(),
         initial_members_b64u: URL_SAFE_NO_PAD.encode(fields.initial_members_bytes),
         iat,
         exp,
@@ -711,7 +707,7 @@ mod tests {
             creator: "prin_alice",
             creator_did: "did:peko:principal:alice",
             name: "team-chat",
-            passive_binding: "",
+            kind: "group",
             initial_members_bytes: members_bytes,
         }
     }

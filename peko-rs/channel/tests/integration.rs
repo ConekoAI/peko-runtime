@@ -367,7 +367,7 @@ async fn cli_router_round_trip() {
     let bob = PrincipalId::generate();
 
     let created = router
-        .handle_create(&alice, "demo", None, None)
+        .handle_create(&alice, "demo", None)
         .await
         .expect("create");
     router
@@ -449,7 +449,7 @@ async fn tier_rule_rejects_non_runtime_in_pr1() {
         name: "future-shared".into(),
         tier: Tier::Runtime, // PR-1 only allows Runtime; this stays
         id: None,            // sprint 4: explicit id (None = mint fresh)
-        passive_binding: None,
+        kind: peko_channel::ConversationKind::Group,
     };
     let _ = opts; // sanity: Tier::Runtime is the only valid option
     let _ = port.create(&alice, CreateOpts::runtime("ok")).await;
@@ -474,7 +474,7 @@ async fn group_channel_end_to_end_via_router() {
 
     // D5: explicit `--id` mints the named group channel.
     let created = router
-        .handle_create(&creator, "eng-standup", None, Some(group_id.clone()))
+        .handle_create(&creator, "eng-standup", Some(group_id.clone()))
         .await
         .expect("create with explicit group id");
     assert_eq!(created.channel, group_id, "create must use the explicit id");

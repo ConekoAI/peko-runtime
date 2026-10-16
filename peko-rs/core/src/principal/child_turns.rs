@@ -1408,9 +1408,10 @@ mod tests {
         assert_eq!(channels.len(), 1);
         assert_eq!(
             store
-                .passive_binding(&channels[0])
+                .binding_for(&channels[0], &turns.principal_id)
                 .await
                 .unwrap()
+                .map(|b| b.session)
                 .as_deref(),
             Some("/user-alice")
         );

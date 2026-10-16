@@ -44,12 +44,6 @@ pub enum ChannelCommands {
         creator: String,
         /// Channel display name (free-form string).
         name: String,
-        /// Optional passive binding (Phase 4, agent-session paradigm):
-        /// a session id or `/path` in the creator's session tree. When
-        /// set, inbound messages from other members wake the bound
-        /// session and the reply is posted back (DM-tier channel).
-        #[arg(long)]
-        bind: Option<String>,
         /// Optional explicit channel id (ADR-049 Phase 2, D5), e.g.
         /// `group:<slug>` for a named group channel. Omit to mint a
         /// fresh `chan_<8 base36>` id.
@@ -187,17 +181,12 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
     let json = cmd.json_flag();
     match cmd {
         ChannelCommands::Create {
-            creator,
-            name,
-            bind,
-            id,
-            ..
+            creator, name, id, ..
         } => {
             let packet = RequestPacket::ChannelCreate {
                 request_id: 0,
                 creator_name: creator.clone(),
                 name: name.clone(),
-                passive_binding: bind.clone(),
                 id: id.clone(),
             };
             let ch = run_daemon_or(
@@ -216,7 +205,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         // ADR-049 Phase 2 (D5): validate the explicit id
                         // up front; `None` keeps the chan_* mint.
                         let id = id.map(|raw| parse_channel_id(&raw)).transpose()?;
-                        let resp = router.handle_create(&creator_id, &name, bind, id).await?;
+                        let resp = router.handle_create(&creator_id, &name, id).await?;
                         Ok(resp.channel)
                     })
                 },

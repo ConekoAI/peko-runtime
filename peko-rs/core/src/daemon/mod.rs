@@ -217,14 +217,12 @@ impl Daemon {
 
         // PR-3c / PR-5a / Phase 4: spawn a per-(principal, channel)
         // `ChannelSubscriber` for every loaded principal's channels.
-        // Every subscriber runs the audit meter; channels whose
-        // `meta.json` declares a `passive_binding` (DMs) wake nothing —
-        // ingress drives user DMs, and principal posts never start a
-        // run (ADR-072). Unbound (group-tier) channels get the
-        // `GroupWakeResponder` — a `user:*` root post mentioning the
-        // principal wakes it; principal posts never wake, so
-        // principal-only channels behave exactly as before (agents
-        // read them actively via the `ChannelRead` tool, PR-4a).
+        // Every subscriber runs the audit meter; DMs (`kind: dm`) wake
+        // nothing from here — ingress drives user DMs, and principal
+        // posts never start a run (ADR-072). Groups get the
+        // `GroupWakeResponder`, which wakes per the binding's policy
+        // (ADR-082 D3); principal posts never wake, so principal-only
+        // channels are read actively via the `ChannelRead` tool.
         // Spawn-and-forget so a subscriber crash doesn't block daemon
         // boot; the `ChannelSubscriber::spawn` loop handles transient
         // errors internally (logs and continues; only `NotFound` /
@@ -553,11 +551,10 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Spawn one [`ChannelSubscriber`] per (loaded principal × channel the
 /// principal is a member of). Delegates to the [`ChannelBindingSupervisor`]
-/// held on `AppState` (Phase 4, agent-session paradigm sprint): channels
-/// whose `meta.json` carries a `passive_binding` (DMs) get no responder
-/// (ingress drives user DMs; principal posts never start a run,
-/// ADR-072); unbound (group-tier) channels get the `GroupWakeResponder`
-/// (a `user:*` root post mentioning the principal wakes it). Post-boot
+/// held on `AppState` (Phase 4, agent-session paradigm sprint): DMs
+/// get no responder (ingress drives user DMs; principal posts never
+/// start a run, ADR-072); groups get the `GroupWakeResponder`, which
+/// wakes per the binding's policy (ADR-082 D3). Post-boot
 /// channels (created or joined after this enumeration) are covered by
 /// the supervisor's `ensure_subscriber`, wired to the
 /// `ChannelHost::channel_created` / `ensure_invitee_subscriber` hooks.

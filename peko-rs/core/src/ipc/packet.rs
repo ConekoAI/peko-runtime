@@ -699,12 +699,8 @@ pub enum RequestPacket {
     // the handler takes a `PrincipalId`, the wire carries the
     // principal's display name (the daemon resolves it back to a
     // `PrincipalId` via `ChannelHost::principal_manager`).
-    /// Create a new channel owned by `creator_name`.
-    ///
-    /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
-    /// optional `--bind` value (session id or `/path`). Serde-defaulted
-    /// so pre-Phase-4 clients decode as `None` (unbound) and older
-    /// daemons silently ignore the field.
+    /// Create a new group channel owned by `creator_name` (DMs are
+    /// opened by `ChannelSend`, ADR-082).
     ///
     /// `id` (ADR-049 Phase 2, D5) is the optional explicit channel id
     /// (e.g. `group:<slug>`), validated by the handler via
@@ -715,8 +711,6 @@ pub enum RequestPacket {
         request_id: u64,
         creator_name: String,
         name: String,
-        #[serde(default)]
-        passive_binding: Option<String>,
         #[serde(default)]
         id: Option<String>,
     },

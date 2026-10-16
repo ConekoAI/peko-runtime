@@ -70,10 +70,8 @@ impl ChannelCliRouter {
     /// `peko channel create <name>` — create a channel owned by
     /// `creator`, with the given name. Returns the new channel id.
     ///
-    /// `passive_binding` (Phase 4, agent-session paradigm sprint) is the
-    /// optional `--bind` value: a session id or `/path` in the creator's
-    /// session tree that inbound `Posted` events wake. `None` creates a
-    /// purely active (group-tier) channel — today's default.
+    /// The channel is always a group: DMs are opened by `ChannelSend`
+    /// and their bindings written by the runtime (ADR-082).
     ///
     /// `id` (ADR-049 Phase 2, D5) is the optional explicit channel id
     /// (`--id group:<slug>`); `None` mints a fresh `chan_<8 base36>`.
@@ -81,11 +79,9 @@ impl ChannelCliRouter {
         &self,
         creator: &PrincipalId,
         name: &str,
-        passive_binding: Option<String>,
         id: Option<ChannelId>,
     ) -> Result<CreateResponse> {
         let mut opts = CreateOpts::runtime(name);
-        opts.passive_binding = passive_binding;
         opts.id = id;
         let channel = self.port.create(creator, opts).await?;
         Ok(CreateResponse { channel })

@@ -88,7 +88,9 @@ pub use attention::{AttentionItem, ChannelAttention};
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
-pub use port::{dm_channel_id, short_name_unambiguous, ActorInfo, PortKeys, Registration};
+pub use port::{
+    dm_channel_id, short_name_unambiguous, ActorInfo, Binding, PortKeys, Registration, WakePolicy,
+};
 pub use port::{
     global_channel_port, set_global_channel_port, ChannelError, ChannelPort, ChannelQuery,
     Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier,
@@ -100,4 +102,4 @@ pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 
 // Wire types live in `peko-protocol`; re-exported here for ergonomic
 // callers so `peko_channel::ChannelId` reads naturally.
-pub use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership};
+pub use peko_protocol::channel::{ChannelEvent, ChannelId, ChannelMembership, ConversationKind};

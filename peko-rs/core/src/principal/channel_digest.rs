@@ -157,13 +157,7 @@ enum Scope {
     Elsewhere,
 }
 
-/// What kind of channel it is: a DM (carries a `passive_binding`) or a
-/// group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Dm,
-    Group,
-}
+use peko_channel::ConversationKind as Kind;
 
 /// Core digest logic, split out from [`ChannelDigestSessionContextHandler::render`]
 /// so it is testable without the workspace/env-dependent session-dir
@@ -206,21 +200,28 @@ async fn render_channel_digest(
     let mut bound: Vec<String> = Vec::new();
     let mut elsewhere: Vec<String> = Vec::new();
     for channel in channels {
-        // DM channels carry a `passive_binding` equal to the bound
-        // session's address (the legacy bare `/slug` path or raw id);
-        // group channels bind via the session's peer stamp instead.
-        // `own_path` carries the display-side `sess:` prefix, so both
-        // sides are normalized through `strip_scheme_prefix` before
-        // comparing — stored bindings never carry the prefix.
-        let (kind, scope) = match port.binding_for(&channel, &principal).await.unwrap_or(None) {
-            Some(b) => {
-                let b_path = peko_session::path::strip_scheme_prefix(&b);
-                let own = peko_session::path::strip_scheme_prefix(&own_path);
-                let mine = b_path == own || b == session_key;
-                (Kind::Dm, if mine { Scope::Bound } else { Scope::Elsewhere })
-            }
-            None if group_bound_channel == Some(channel.as_str()) => (Kind::Group, Scope::Bound),
-            None => (Kind::Group, Scope::Elsewhere),
+        // ADR-082: the kind is stored; the binding names the session
+        // (a bare `/slug` path or raw id). `own_path` carries the
+        // display-side `sess:` prefix, so both sides are normalized
+        // through `strip_scheme_prefix` before comparing. The session's
+        // own channel stamp also marks its conversation (the session
+        // side is authoritative).
+        let Ok(kind) = port.conversation_kind(&channel).await else {
+            continue;
+        };
+        let bound_here = port
+            .binding_for(&channel, &principal)
+            .await
+            .unwrap_or(None)
+            .is_some_and(|b| {
+                peko_session::path::strip_scheme_prefix(&b.session)
+                    == peko_session::path::strip_scheme_prefix(&own_path)
+                    || b.session == session_key
+            });
+        let scope = if bound_here || group_bound_channel == Some(channel.as_str()) {
+            Scope::Bound
+        } else {
+            Scope::Elsewhere
         };
         if scope == Scope::Elsewhere && !sees_elsewhere {
             continue;
@@ -610,6 +611,22 @@ mod tests {
         }
     }
 
+    /// A DM bound to our session `session` (ADR-082: a pair id, `kind: dm`).
+    async fn bound_dm(port: &Arc<dyn ChannelPort>, name: &str, session: &str) -> ChannelId {
+        let me = PrincipalId(ME.id.to_string());
+        let channel = port
+            .create(
+                &me,
+                CreateOpts::runtime(name)
+                    .with_id(peko_channel::dm_channel_id(ME.id, name))
+                    .with_kind(Kind::Dm),
+            )
+            .await
+            .unwrap();
+        port.bind(&channel, &me, session).await.unwrap();
+        channel
+    }
+
     fn store() -> (tempfile::TempDir, Arc<dyn ChannelPort>) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(ChannelStore::new(ChannelConfig {
@@ -780,13 +797,7 @@ mod tests {
     async fn digest_first_observation_then_render_and_advance() {
         let (_dir, port) = store();
         // A DM channel bound to our session `/user-a`.
-        let channel = port
-            .create(
-                &PrincipalId(ME.id.to_string()),
-                CreateOpts::runtime("dm-user-a").with_passive_binding("/user-a"),
-            )
-            .await
-            .unwrap();
+        let channel = bound_dm(&port, "dm-user-a", "/user-a").await;
         // Pre-existing traffic (inbound peer + our own reply).
         port.post_attributed(
             &channel,
@@ -848,9 +859,8 @@ mod tests {
             .is_none());
     }
 
-    /// Group-bound discovery: a group channel has no `passive_binding`;
-    /// the session's `peer_id == <channel wire id>` stamp is the only
-    /// binding evidence. A user root mentioning us woke the session and
+    /// Group-bound discovery: the session's own channel stamp marks its
+    /// group even before a binding record exists. A user root mentioning us woke the session and
     /// is skipped; an unmentioned one and other principals' posts show.
     #[tokio::test]
     async fn digest_group_bound_session_skips_only_the_waking_posts() {
@@ -926,13 +936,7 @@ mod tests {
     #[tokio::test]
     async fn other_principals_posts_show_on_every_conversation_session() {
         let (_dir, port) = store();
-        let dm = port
-            .create(
-                &PrincipalId(ME.id.to_string()),
-                CreateOpts::runtime("dm-other").with_passive_binding("/principal-other"),
-            )
-            .await
-            .unwrap();
+        let dm = bound_dm(&port, "dm-other", "/principal-other").await;
         port.post_attributed(
             &dm,
             &me_subject(),
@@ -988,13 +992,7 @@ mod tests {
     async fn a_channel_newer_than_the_session_is_unread_from_the_start() {
         let (_dir, port) = store();
         let metas = tree(Some(0));
-        let dm = port
-            .create(
-                &PrincipalId(ME.id.to_string()),
-                CreateOpts::runtime("dm-new").with_passive_binding("/principal-new"),
-            )
-            .await
-            .unwrap();
+        let dm = bound_dm(&port, "dm-new", "/principal-new").await;
         port.post_attributed(
             &dm,
             &me_subject(),
@@ -1015,13 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn another_principals_post_waits_until_the_principal_posts_there() {
         let (_dir, port) = store();
-        let dm = port
-            .create(
-                &PrincipalId(ME.id.to_string()),
-                CreateOpts::runtime("dm-other").with_passive_binding("/principal-other"),
-            )
-            .await
-            .unwrap();
+        let dm = bound_dm(&port, "dm-other", "/principal-other").await;
         let metas = tree(None);
         assert!(render_channel_digest(&port, &metas, trunk_id(), &ME, true)
             .await
@@ -1073,13 +1065,7 @@ mod tests {
     #[tokio::test]
     async fn waiting_lists_are_per_session() {
         let (_dir, port) = store();
-        let dm = port
-            .create(
-                &PrincipalId(ME.id.to_string()),
-                CreateOpts::runtime("dm-other").with_passive_binding("/principal-other"),
-            )
-            .await
-            .unwrap();
+        let dm = bound_dm(&port, "dm-other", "/principal-other").await;
         let metas = tree(None);
         for session in [trunk_id(), child_id()] {
             assert!(render_channel_digest(&port, &metas, session, &ME, true)

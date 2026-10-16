@@ -2051,7 +2051,12 @@ impl crate::tunnel::TunnelHost for AppState {
                 }
             }
         }
-        if invite.channel_id.starts_with("dm_") {
+        let pair_id = peko_channel::ChannelId(invite.channel_id.clone()).is_pair_id();
+        anyhow::ensure!(
+            pair_id == (invite.kind == peko_channel::ConversationKind::Dm),
+            "Only a DM invite may carry a pair id, and it must"
+        );
+        if invite.kind == peko_channel::ConversationKind::Dm {
             let me = self
                 .tunnel_channel_port
                 .actor_info(&ActorRef::from(&principal.id))
@@ -2103,8 +2108,8 @@ impl crate::tunnel::TunnelHost for AppState {
         //    channel for the same peer). The wire binding VALUE is
         //    ignored: each side's binding names its own child, and
         //    `-N` slug suffixes are runtime-local.
-        let binding = match invite.passive_binding.as_ref() {
-            Some(_) => {
+        let binding = match invite.kind {
+            peko_channel::ConversationKind::Dm => {
                 let (owner, agent_name) = {
                     let config = principal.config.read().await;
                     (
@@ -2137,7 +2142,7 @@ impl crate::tunnel::TunnelHost for AppState {
                 .await?;
                 Some(format!("/{slug}"))
             }
-            None => None,
+            peko_channel::ConversationKind::Group => None,
         };
 
         // 3. Bootstrap the mirror. `join_remote` is idempotent on the
@@ -2152,6 +2157,7 @@ impl crate::tunnel::TunnelHost for AppState {
                 &invite.initial_members,
                 &principal.id,
                 &invite.source_runtime_id,
+                invite.kind,
                 binding,
             )
             .await?;
