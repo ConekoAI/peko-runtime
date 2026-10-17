@@ -727,7 +727,7 @@ Supply exactly one of id or label.
 
 #### update
 
-Pause/resume a job, change completion wake behavior, or change a message job's model or `when`.
+Pause/resume a job, change completion wake behavior, change a message job's model, `when` or message, or change a recurring job's schedule, keeping its id.
 
 [Implementation](../../peko-rs/cron/src/tools/update.rs)
 
@@ -739,8 +739,13 @@ Pause/resume a job, change completion wake behavior, or change a message job's m
 | `wake_on_completion` | boolean | no | — |
 | `model` | string | no | — |
 | `when` | string | no | enum: always, attention, quiet |
+| `message` | string | no | nonempty |
+| `interval_ms` | integer | no | — |
+| `cron` | string | no | — |
+| `timezone` | string | no | — |
+| `idle_ms` | integer | no | — |
 
-Requires id or label and at least one of enabled/wake_on_completion/model/when. model and when apply to message jobs; an empty model returns the job to the pinned model, when attention needs a recurring schedule, and when quiet an interval or cron schedule. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
+Requires id or label and at least one of enabled/wake_on_completion/model/when/message/interval_ms/cron/timezone/idle_ms. model, when and message apply to message jobs; an empty model returns the job to the pinned model, when attention needs a recurring schedule, and when quiet an interval or cron schedule. The `memory` job's marker message cannot be replaced (ADR-080 D5); replacing the message of a job whose `when` came from the runtime's tick text pins that `when`. At most one of interval_ms, cron and idle_ms replaces the schedule, validated as in create (message jobs on interval_ms need at least 60000 ms); the next fire is computed from the new schedule from now. A new cron keeps the job's timezone unless timezone is given; timezone alone moves a cron job to that zone. The job keeps its id, creator, counters and history, so the runtime's seeded `keepalive` and `memory` jobs keep the behavior tied to their ids. A nonempty id takes precedence if both selectors are supplied. Re-enabling resets consecutive failures; completion subscription applies to tool jobs and uses the creating session (trunk fallback).
 
 #### trigger
 

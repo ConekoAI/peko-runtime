@@ -114,7 +114,8 @@ impl Tool for CronDeleteAction {
             ));
         };
 
-        runtime.delete_job(&job_id).await?;
+        let owner = peko_subject::PrincipalId(principal_id);
+        runtime.delete_job(&owner, &job_id).await?;
         Ok(json!({
             "cancelled": true,
             "job_id": job_id,

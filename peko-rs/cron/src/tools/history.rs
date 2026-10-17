@@ -123,7 +123,8 @@ impl Tool for CronHistoryAction {
         };
 
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
-        let runs = runtime.run_history(&job_id, limit).await?;
+        let owner = peko_subject::PrincipalId(principal_id);
+        let runs = runtime.run_history(&owner, &job_id, limit).await?;
         Ok(json!({
             "job_id": job_id,
             "count": runs.len(),

@@ -105,7 +105,8 @@ impl Tool for CronTriggerAction {
             ));
         };
 
-        let run_id = runtime.trigger_job(&job_id).await?;
+        let owner = peko_subject::PrincipalId(principal_id);
+        let run_id = runtime.trigger_job(&owner, &job_id).await?;
         Ok(json!({
             "triggered": true,
             "job_id": job_id,

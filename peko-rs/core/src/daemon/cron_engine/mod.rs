@@ -347,23 +347,21 @@ impl CronEngine {
     /// ("verify the wiring before re-enabling").
     ///
     /// Errors:
-    /// - `"job {id} not found"` if no loaded principal owns the job.
+    /// - `"job {id} not found"` if `principal_id`'s schedule has no such job.
     /// - `"cron lookup"` for low-level scheduler failures.
-    pub async fn execute_job_for_id(&self, job_id: &str) -> Result<String> {
-        // Walk loaded schedulers looking for the one that owns the
-        // job. Schedulers are keyed by principal_id (DID); the
-        // on-disk file is keyed by name. The walk is the canonical
-        // way to resolve a job_id → principal_id without a separate
-        // index.
-        let pairs = self.all_schedulers().await;
-        let mut found: Option<(PrincipalId, Arc<CronScheduler>, CronJob)> = None;
-        for (id, scheduler) in &pairs {
-            if let Ok(Some(job)) = scheduler.get_job(job_id) {
-                found = Some((id.clone(), scheduler.clone(), job));
-                break;
-            }
-        }
-        let Some((_principal_id, _scheduler, job)) = found else {
+    pub async fn execute_job_for_id(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+    ) -> Result<String> {
+        // Job ids are unique per principal only (every principal has the
+        // seeded `keepalive` and `memory` jobs), so look in the caller's
+        // own schedule.
+        let scheduler = self.scheduler_for(principal_id).await?;
+        let Some(job) = scheduler
+            .get_job(job_id)
+            .map_err(|e| anyhow::anyhow!("cron lookup: {e}"))?
+        else {
             return Err(anyhow::anyhow!("job {job_id} not found"));
         };
 
@@ -3607,7 +3605,8 @@ mod tests {
         scheduler.add_job(&job).unwrap();
 
         // Manual trigger returns a non-empty run_id immediately.
-        let run_id = engine.execute_job_for_id("job-abc").await.unwrap();
+        let owner = PrincipalId::from_did(&principal.did().await);
+        let run_id = engine.execute_job_for_id(&owner, "job-abc").await.unwrap();
         assert!(!run_id.is_empty());
 
         // And the work actually happens (poll until finalized).
@@ -3650,7 +3649,7 @@ mod tests {
         assert_ne!(first_admitted, second_admitted);
         assert_eq!(scheduler.list_running_runs().unwrap().len(), 1);
         assert_eq!(
-            engine.execute_job_for_id("job-abc").await.unwrap(),
+            engine.execute_job_for_id(&owner, "job-abc").await.unwrap(),
             first.id
         );
         assert_eq!(scheduler.get_run_history("job-abc", 10).unwrap().len(), 2);
@@ -3658,8 +3657,8 @@ mod tests {
         drop(principal);
     }
 
-    /// PR 2: `execute_job_for_id` errors when no principal owns the
-    /// job (id not present in any loaded scheduler).
+    /// PR 2: `execute_job_for_id` errors when the principal's schedule
+    /// has no such job.
     #[tokio::test]
     async fn execute_job_for_id_returns_error_for_unknown_job() {
         let tmp = TempDir::new().unwrap();
@@ -3684,7 +3683,8 @@ mod tests {
         );
 
         // No jobs registered — the lookup must fail.
-        let result = engine.execute_job_for_id("does-not-exist").await;
+        let owner = PrincipalId::from_did(&principal.did().await);
+        let result = engine.execute_job_for_id(&owner, "does-not-exist").await;
         assert!(
             result.is_err(),
             "unknown job id must error, got: {result:?}"

@@ -1,8 +1,8 @@
 //! Test support: a [`CronRuntime`] backed by real [`CronScheduler`] files.
 //!
 //! Mirrors `DaemonCronAdapter`'s storage layout — one schedule file per
-//! principal, job ids resolved across every principal's file — without a
-//! `PrincipalManager` or cron engine. Because it uses the production
+//! principal, by-id calls resolved in the calling principal's file —
+//! without a `PrincipalManager` or cron engine. Because it uses the production
 //! scheduler, retention rules (run history outliving a reaped one-shot job,
 //! re-enable resetting failures) behave exactly as they do in the daemon.
 //!
@@ -75,8 +75,8 @@ impl FileCronRuntime {
             .clone()
     }
 
-    /// The principal whose schedule holds `job_id` as a live job or in its
-    /// run history, matching `DaemonCronAdapter::resolve_owner`.
+    /// The first principal whose schedule holds `job_id` as a live job or
+    /// in its run history.
     fn owner(&self, job_id: &str) -> Result<Option<(String, PathBuf)>> {
         let schedules = self.schedules.lock().unwrap().clone();
         for (principal, path) in schedules {
@@ -121,11 +121,8 @@ impl CronRuntime for FileCronRuntime {
         Ok(job.id)
     }
 
-    async fn delete_job(&self, job_id: &str) -> Result<()> {
-        let (_, path) = self
-            .owner(job_id)?
-            .ok_or_else(|| anyhow!("Job {job_id} not found"))?;
-        CronScheduler::new(&path)?.delete_job(job_id)?;
+    async fn delete_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<()> {
+        self.scheduler(principal_id).delete_job(job_id)?;
         Ok(())
     }
 
@@ -133,11 +130,16 @@ impl CronRuntime for FileCronRuntime {
         Ok(self.jobs())
     }
 
-    async fn update_job(&self, job_id: &str, patch: &crate::JobPatch) -> Result<()> {
-        let (_, path) = self
-            .owner(job_id)?
-            .ok_or_else(|| anyhow!("Job {job_id} not found"))?;
-        if !CronScheduler::new(&path)?.update_job_fields(job_id, patch)? {
+    async fn update_job(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        patch: &crate::JobPatch,
+    ) -> Result<()> {
+        if !self
+            .scheduler(principal_id)
+            .update_job_fields(job_id, patch)?
+        {
             return Err(anyhow!("Job {job_id} not found"));
         }
         Ok(())
@@ -145,11 +147,8 @@ impl CronRuntime for FileCronRuntime {
 
     /// Records a `running` run, coalescing with one already in flight. No
     /// engine fires the job; tests finish runs through the scheduler.
-    async fn trigger_job(&self, job_id: &str) -> Result<String> {
-        let (_, path) = self
-            .owner(job_id)?
-            .ok_or_else(|| anyhow!("Job {job_id} not found"))?;
-        let scheduler = CronScheduler::new(&path)?;
+    async fn trigger_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<String> {
+        let scheduler = self.scheduler(principal_id);
         if scheduler.get_job(job_id)?.is_none() {
             return Err(anyhow!("Job {job_id} not found"));
         }
@@ -163,11 +162,13 @@ impl CronRuntime for FileCronRuntime {
         Self::record(&scheduler, job_id, "running")
     }
 
-    async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
-        let (_, path) = self
-            .owner(job_id)?
-            .ok_or_else(|| anyhow!("Job {job_id} not found"))?;
-        CronScheduler::new(&path)?.get_run_history(job_id, limit)
+    async fn run_history(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CronRun>> {
+        self.scheduler(principal_id).get_run_history(job_id, limit)
     }
 
     async fn owns_job_history(&self, principal_id: &PrincipalId, job_id: &str) -> Result<bool> {

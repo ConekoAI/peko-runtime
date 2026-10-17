@@ -34,7 +34,7 @@
 //!
 //! Once a principal reaches `organized`, the runtime NEVER touches its
 //! cron schedule again — the trunk is self-regulating (PEKO.md §K: it
-//! holds the cron tools and may retune or replace its own jobs). The
+//! holds the cron tools and may retune or remove its own jobs). The
 //! runtime only guarantees that a heartbeat EXISTS; what it does is
 //! the trunk's business. The cron engine stamps `organized` after a
 //! successful genesis turn. Boot also recovers that transition from
@@ -120,7 +120,7 @@ pub fn fire_when(job: &CronJob) -> FireWhen {
 /// Whether `job` delivers the runtime's memory brief: it carries
 /// [`MEMORY_BRIEF_MARKER`], or it is the seeded `memory` job still
 /// carrying the brief an earlier build stored.
-fn carries_memory_brief(job: &CronJob) -> bool {
+pub(crate) fn carries_memory_brief(job: &CronJob) -> bool {
     matches!(&job.action, CronJobAction::Send { message, .. }
         if message == MEMORY_BRIEF_MARKER
             || (job.id == MEMORY_JOB_ID && message.starts_with(LEGACY_MEMORY_BRIEF_PREFIX)))
@@ -206,10 +206,14 @@ time or a duration such as `3d`): your heartbeat wakes you when it comes \
 due and stays quiet until then. Plans are how you keep goals in view; \
 do not start the work this turn. Skip this if you have no goals yet.\n\
 5. The runtime gave you a default keepalive job (`keepalive`, every \
-10 minutes, targeting you). Adjust the cadence with the cron tools if \
-it does not fit — but never leave yourself without a heartbeat. It also \
-gave you a nightly `memory` job that turns each day's sessions into your \
-`kb/` and reflects on how you worked; it is yours to retune or remove.\n\n\
+10 minutes, targeting you). It also gave you a nightly `memory` job that \
+turns each day's sessions into your `kb/` and reflects on how you worked. \
+Both are yours. Retune them with `Cron` action `update` (`interval_ms`, \
+`cron` with `timezone`, `when`, `model`), not by deleting and re-creating \
+them: the runtime keys their behaviour to the ids `keepalive` and \
+`memory`, and the `memory` job gets its current brief from the runtime at \
+each fire. You may remove the `memory` job, but never leave yourself \
+without a heartbeat.\n\n\
 Stay bounded: this is a setup turn, not a work sprint.\n",
     );
     brief
@@ -234,8 +238,9 @@ your standing work. A tick runs only when something waits on you (posts, \
 ready plan steps, a check-in that came due, a failed job) or an hour has \
 passed since the last one; keep standing work in `Plan` so it counts, and \
 give a step you mean to come back to a `checkAt`. If this cadence is wrong for \
-you, retune or replace this job with the cron tools (`when: always` runs \
-every tick) — you own your rhythm."
+you, retune this job with `Cron` action `update` on id `keepalive` \
+(`interval_ms` or `cron` sets the cadence, `when: always` runs every tick) \
+rather than replacing it — you own your rhythm."
     )
 }
 

@@ -95,29 +95,23 @@ impl DaemonCronAdapter {
             })
     }
 
-    /// Resolve the loaded principal that owns `job_id`, returning its
-    /// name and schedule file path. Falls back to run-history lookup
-    /// for one-shot (`delete_after_run=true`) jobs that fire once and
-    /// then self-delete — the run record survives the deletion so we
-    /// can still resolve owner for `peko cron history` (2026-08-07
-    /// field test, Finding 4).
-    async fn resolve_owner(&self, job_id: &str) -> Option<(String, PathBuf)> {
-        for name in self.all_principal_names().await {
-            let path = self.path_resolver.cron_schedule(&name);
-            let scheduler = match CronScheduler::new(&path) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            if let Ok(Some(_)) = scheduler.get_job(job_id) {
-                return Some((name, path));
-            }
-            if let Ok(runs) = scheduler.get_run_history(job_id, 1) {
-                if !runs.is_empty() {
-                    return Some((name, path));
-                }
-            }
-        }
-        None
+    /// The schedule file of the loaded principal `principal_id` (runtime
+    /// id or DID). By-id calls go to the caller's own file: job ids are
+    /// unique only per principal, since every principal has the seeded
+    /// `keepalive` and `memory` jobs. A lookup across all principals by id
+    /// alone once deleted another principal's keepalive while the
+    /// caller's kept firing.
+    async fn schedule_path(&self, principal_id: &PrincipalId) -> Result<PathBuf> {
+        let principal =
+            crate::daemon::cron_engine::resolve_principal(&self.principal_manager, principal_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Principal '{}' is not loaded", principal_id.0))?;
+        Ok(self.path_resolver.cron_schedule(&principal.name().await))
+    }
+
+    async fn scheduler(&self, principal_id: &PrincipalId) -> Result<CronScheduler> {
+        let path = self.schedule_path(principal_id).await?;
+        CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))
     }
 }
 
@@ -157,34 +151,57 @@ impl CronRuntime for DaemonCronAdapter {
         Ok(job_id)
     }
 
-    async fn delete_job(&self, job_id: &str) -> Result<()> {
-        let (name, path) = self
-            .resolve_owner(job_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
-        let scheduler =
-            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
-        let removed = scheduler
+    async fn delete_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<()> {
+        let removed = self
+            .scheduler(principal_id)
+            .await?
             .delete_job(job_id)
             .map_err(|e| anyhow::anyhow!("Failed to remove job: {e}"))?;
         if !removed {
-            warn!("cron remove: job {job_id} not found under principal {name}");
+            warn!("cron remove: job {job_id} not found under principal {principal_id}");
         }
         Ok(())
     }
 
-    async fn update_job(&self, job_id: &str, patch: &peko_cron::JobPatch) -> Result<()> {
-        let (_name, path) = self
-            .resolve_owner(job_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
+    async fn update_job(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        patch: &peko_cron::JobPatch,
+    ) -> Result<()> {
         if let Some(Some(model)) = &patch.model {
             self.check_model(model).await?;
         }
-        let scheduler =
-            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
+        let scheduler = self.scheduler(principal_id).await?;
+        let job = scheduler
+            .get_job(job_id)
+            .map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?
+            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
+        let mut patch = patch.clone();
+        if patch.message.is_some() {
+            // ADR-080 D5: the runtime supplies the memory brief at fire
+            // time in place of this marker. A replaced marker would freeze
+            // the principal's paraphrase and drop every later brief.
+            if crate::principal::genesis::carries_memory_brief(&job) {
+                anyhow::bail!(
+                    "job {job_id} delivers the runtime's current memory brief, so its message \
+                     stays; change its schedule, `when` or `model` here, or create a separate \
+                     job for a routine of your own"
+                );
+            }
+            // A seeded job without its own `when` takes it from the
+            // runtime text it carries (ADR-083); pin it before the text goes.
+            if patch.when.is_none() {
+                if let peko_cron::CronJobAction::Send { when: None, .. } = &job.action {
+                    let derived = crate::principal::genesis::fire_when(&job);
+                    if derived != peko_cron::FireWhen::Always {
+                        patch.when = Some(derived);
+                    }
+                }
+            }
+        }
         let updated = scheduler
-            .update_job_fields(job_id, patch)
+            .update_job_fields(job_id, &patch)
             .map_err(|e| anyhow::anyhow!("Failed to update job: {e}"))?;
         if !updated {
             return Err(anyhow::anyhow!("Job {job_id} not found"));
@@ -192,22 +209,22 @@ impl CronRuntime for DaemonCronAdapter {
         Ok(())
     }
 
-    async fn trigger_job(&self, job_id: &str) -> Result<String> {
+    async fn trigger_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<String> {
         let engine = self
             .cron_engine
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("cron engine not available on this runtime"))?;
-        engine.execute_job_for_id(job_id).await
+        engine.execute_job_for_id(principal_id, job_id).await
     }
 
-    async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<peko_cron::CronRun>> {
-        let (_name, path) = self
-            .resolve_owner(job_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
-        let scheduler =
-            CronScheduler::new(&path).map_err(|e| anyhow::anyhow!("Cron DB error: {e}"))?;
-        scheduler
+    async fn run_history(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        limit: usize,
+    ) -> Result<Vec<peko_cron::CronRun>> {
+        self.scheduler(principal_id)
+            .await?
             .get_run_history(job_id, limit)
             .map_err(|e| anyhow::anyhow!("Failed to read run history: {e}"))
     }
@@ -499,6 +516,224 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not found"), "{error}");
+    }
+
+    /// Give `who` the runtime-seeded `keepalive` and `memory` jobs.
+    async fn seed(fx: &Fixture, who: &Principal) {
+        use crate::principal::genesis::{keepalive_job, memory_job};
+        let config = who.config.read().await.clone();
+        let now = chrono::Utc::now();
+        let scheduler = fx.scheduler(who).await;
+        scheduler
+            .add_job(&keepalive_job(&config, now).unwrap())
+            .unwrap();
+        scheduler
+            .add_job(&memory_job(&config, now).unwrap())
+            .unwrap();
+    }
+
+    /// Every principal has jobs `keepalive` and `memory`. A by-id call
+    /// reaches the caller's own job whichever principal loaded first: the
+    /// live MiMo eval saw one principal's `delete keepalive` remove the
+    /// other's while its own kept firing.
+    #[tokio::test]
+    async fn seeded_job_ids_resolve_to_the_callers_schedule() {
+        use crate::principal::genesis::{KEEPALIVE_JOB_ID, MEMORY_JOB_ID};
+        let fx = Fixture::new().await;
+        seed(&fx, &fx.alice).await;
+        seed(&fx, &fx.bob).await;
+
+        // Both directions, so the list order cannot hide a wrong lookup.
+        fx.call(
+            &fx.bob,
+            json!({ "action": "delete", "id": KEEPALIVE_JOB_ID }),
+        )
+        .await
+        .unwrap();
+        fx.call(
+            &fx.alice,
+            json!({ "action": "update", "id": KEEPALIVE_JOB_ID, "enabled": false }),
+        )
+        .await
+        .unwrap();
+        fx.call(
+            &fx.alice,
+            json!({ "action": "delete", "id": MEMORY_JOB_ID }),
+        )
+        .await
+        .unwrap();
+        fx.call(
+            &fx.bob,
+            json!({ "action": "update", "id": MEMORY_JOB_ID, "enabled": false }),
+        )
+        .await
+        .unwrap();
+
+        let alice = fx.scheduler(&fx.alice).await;
+        let bob = fx.scheduler(&fx.bob).await;
+        assert!(!alice.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap().enabled);
+        assert!(alice.get_job(MEMORY_JOB_ID).unwrap().is_none());
+        assert!(bob.get_job(KEEPALIVE_JOB_ID).unwrap().is_none());
+        assert!(!bob.get_job(MEMORY_JOB_ID).unwrap().unwrap().enabled);
+
+        alice
+            .record_run(&CronRun {
+                id: "run_alice".into(),
+                job_id: KEEPALIVE_JOB_ID.into(),
+                started_at: chrono::Utc::now(),
+                finished_at: Some(chrono::Utc::now()),
+                status: "success".into(),
+                output: None,
+                error: None,
+            })
+            .unwrap();
+        bob.record_run(&CronRun {
+            id: "run_bob".into(),
+            job_id: KEEPALIVE_JOB_ID.into(),
+            started_at: chrono::Utc::now(),
+            finished_at: Some(chrono::Utc::now()),
+            status: "success".into(),
+            output: None,
+            error: None,
+        })
+        .unwrap();
+        for (who, mine, theirs) in [
+            (&fx.alice, "run_alice", "run_bob"),
+            (&fx.bob, "run_bob", "run_alice"),
+        ] {
+            let history = fx
+                .call(who, json!({ "action": "history", "id": KEEPALIVE_JOB_ID }))
+                .await
+                .unwrap()
+                .to_string();
+            assert!(
+                history.contains(mine) && !history.contains(theirs),
+                "{history}"
+            );
+        }
+    }
+
+    /// `update` retunes a seeded job's schedule in place: the id, creator,
+    /// trunk target and `when` stay, so the runtime still treats it as its
+    /// keepalive or memory job. The memory job's marker message stays.
+    #[tokio::test]
+    async fn update_retunes_seeded_jobs_in_place() {
+        use crate::principal::genesis::{
+            fire_message, fire_when, has_recurring_trunk_send, KEEPALIVE_JOB_ID,
+            MEMORY_BRIEF_MARKER, MEMORY_JOB_ID,
+        };
+        use peko_cron::{CronJobAction, FireWhen, ScheduleKind};
+        let fx = Fixture::new().await;
+        seed(&fx, &fx.alice).await;
+        let scheduler = fx.scheduler(&fx.alice).await;
+        let before = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+
+        let out = fx
+            .call(
+                &fx.alice,
+                json!({ "action": "update", "id": KEEPALIVE_JOB_ID, "interval_ms": 1_800_000 }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["schedule"], "every 30m", "{out}");
+        let keepalive = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        assert_eq!(
+            keepalive.schedule,
+            ScheduleKind::Every {
+                every_ms: 1_800_000
+            }
+        );
+        assert_eq!(keepalive.created_by, before.created_by);
+        assert_eq!(keepalive.created_at, before.created_at);
+        assert_eq!(fire_when(&keepalive), FireWhen::Attention);
+        assert!(has_recurring_trunk_send(std::slice::from_ref(&keepalive)));
+        let lead = keepalive.next_run - chrono::Utc::now();
+        assert!(
+            lead > chrono::Duration::minutes(29) && lead <= chrono::Duration::minutes(30),
+            "next fire one new interval out, got {lead}"
+        );
+
+        let error = fx
+            .call(
+                &fx.alice,
+                json!({ "action": "update", "id": KEEPALIVE_JOB_ID, "interval_ms": 1_000 }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("every_ms >= 60000"), "{error}");
+        assert_eq!(
+            scheduler
+                .get_job(KEEPALIVE_JOB_ID)
+                .unwrap()
+                .unwrap()
+                .schedule,
+            ScheduleKind::Every {
+                every_ms: 1_800_000
+            }
+        );
+
+        fx.call(
+            &fx.alice,
+            json!({
+                "action": "update", "id": MEMORY_JOB_ID,
+                "cron": "0 3 * * *", "timezone": "Asia/Tokyo",
+            }),
+        )
+        .await
+        .unwrap();
+        fx.call(
+            &fx.alice,
+            json!({ "action": "update", "id": MEMORY_JOB_ID, "cron": "30 2 * * *" }),
+        )
+        .await
+        .unwrap();
+        let memory = scheduler.get_job(MEMORY_JOB_ID).unwrap().unwrap();
+        assert_eq!(
+            memory.schedule,
+            ScheduleKind::Cron {
+                expr: "30 2 * * *".into(),
+                tz: Some("Asia/Tokyo".into()),
+            },
+            "a new expression keeps the job's zone"
+        );
+        assert_eq!(fire_when(&memory), FireWhen::Quiet);
+        let config = fx.alice.config.read().await.clone();
+        assert_ne!(fire_message(&memory, &config), MEMORY_BRIEF_MARKER);
+
+        let error = fx
+            .call(
+                &fx.alice,
+                json!({ "action": "update", "id": MEMORY_JOB_ID, "message": "do my memory" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("memory brief"), "{error}");
+        assert!(matches!(
+            scheduler.get_job(MEMORY_JOB_ID).unwrap().unwrap().action,
+            CronJobAction::Send { message, .. } if message == MEMORY_BRIEF_MARKER
+        ));
+
+        // A pre-ADR-083 keepalive reads `attention` from its tick text;
+        // a replaced message keeps that by pinning `when`.
+        let mut legacy = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        if let CronJobAction::Send { when, .. } = &mut legacy.action {
+            *when = None;
+        }
+        scheduler.delete_job(KEEPALIVE_JOB_ID).unwrap();
+        scheduler.add_job(&legacy).unwrap();
+        assert_eq!(fire_when(&legacy), FireWhen::Attention);
+        fx.call(
+            &fx.alice,
+            json!({ "action": "update", "id": KEEPALIVE_JOB_ID, "message": "my own tick" }),
+        )
+        .await
+        .unwrap();
+        let retold = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        assert!(matches!(
+            &retold.action,
+            CronJobAction::Send { message, when: Some(FireWhen::Attention), .. }
+                if message == "my own tick"
+        ));
     }
 
     #[tokio::test]
