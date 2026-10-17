@@ -174,7 +174,8 @@ impl Agent {
             self.inbox_registry.clone(),
             self.subagent_executor.quota_meter().cloned(),
         )
-        .with_task_registry(self.tooling.task_registry_for(&self.principal_id));
+        .with_task_registry(self.tooling.task_registry_for(&self.principal_id))
+        .with_principal_id(self.principal_id.0.clone());
         install_run(
             tooling,
             &self.principal_id,
@@ -1200,7 +1201,13 @@ impl Agent {
             .async_executor_for(&self.principal_id, async_inbox_registry)
             .await;
         let async_inbox_registry = Arc::clone(executor.inbox_registry());
-        let async_inbox_key = session_key.clone().unwrap_or_else(|| "default".to_string());
+        // The registry is daemon-shared and the trunk id is the same for
+        // every principal: drain under the principal-scoped key that trunk
+        // admission and completion delivery push to.
+        let async_inbox_key = peko_session::inbox_key(
+            &self.principal_id.0,
+            session_key.as_deref().unwrap_or("default"),
+        );
         let async_completion_queue = async_inbox_registry.get_or_create(&async_inbox_key).await;
 
         // Async services belong to the principal. Task receipts, concurrency

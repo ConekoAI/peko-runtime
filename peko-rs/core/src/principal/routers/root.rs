@@ -82,7 +82,7 @@ pub fn default_root_prompt() -> AgentPrompt {
 /// to opaque UUIDs).
 #[must_use]
 pub fn trunk_session_id() -> String {
-    peko_session::SessionId::from("root:self").to_string()
+    peko_session::SessionId::from(peko_session::TRUNK_SESSION_LITERAL).to_string()
 }
 
 /// The session id the trunk router runs a turn in, adjusted for the

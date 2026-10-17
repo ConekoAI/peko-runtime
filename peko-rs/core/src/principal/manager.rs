@@ -1653,7 +1653,11 @@ impl PrincipalManager {
             detector.record_activity(&principal.id.0).await;
         }
         let session_id = super::routers::root::trunk_session_id();
-        match self.inbox_registry.try_acquire_run(&session_id).await {
+        // The trunk id is the same constant for every principal; the
+        // registry key is principal-scoped so another principal's busy
+        // trunk neither refuses nor receives this turn.
+        let inbox_key = peko_session::inbox_key(&principal.id.0, &session_id);
+        match self.inbox_registry.try_acquire_run(&inbox_key).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await;
                 if let Some(detector) = idle_detector {
@@ -1665,7 +1669,7 @@ impl PrincipalManager {
                 }
             }
             None => {
-                let inbox = self.inbox_registry.get_or_create(&session_id).await;
+                let inbox = self.inbox_registry.get_or_create(&inbox_key).await;
                 inbox
                     .push(SteeringMessage::new(ctx.message.clone()).into())
                     .await;
@@ -3800,12 +3804,14 @@ mod tests {
         adapter.queue_text("unused — the queued path makes no LLM call");
 
         // Hold the trunk run permit: the next trunk turn must steer.
-        // Sprint 6: production acquires on the v5 UUID form of
-        // `root:self` (`trunk_session_id()`), not the literal — the
-        // permit key must match what `receive_trunk` looks up.
+        // The permit key is the principal-scoped trunk key — it must
+        // match what `receive_trunk` looks up.
         let _permit = manager
             .inbox_registry
-            .try_acquire_run(&super::super::routers::root::trunk_session_id())
+            .try_acquire_run(&peko_session::inbox_key(
+                &id.0,
+                &super::super::routers::root::trunk_session_id(),
+            ))
             .await
             .expect("permit should be free");
 
@@ -3822,6 +3828,121 @@ mod tests {
             response.content.contains("Queued for root agent session"),
             "expected the queued-steering response, got: {}",
             response.content
+        );
+    }
+
+    /// Two principals in one manager share the daemon-wide
+    /// `InboxRegistry`, and the trunk id is the same constant for both.
+    /// Principal A's busy trunk must neither refuse principal B's trunk
+    /// turn (queueing it where A's trunk drains it) nor have its queued
+    /// steering drained by B's trunk run.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn trunk_admission_and_inbox_are_per_principal() {
+        use super::super::routers::root::trunk_session_id;
+        use peko_session::inbox_key;
+        let (_temp, manager, adapter, a) = setup().await;
+        let b = create_test_principal(&manager, "other").await.id.clone();
+        let trunk = trunk_session_id();
+        let a_key = inbox_key(&a.0, &trunk);
+        let b_key = inbox_key(&b.0, &trunk);
+
+        // A's trunk is busy, with a supervision tick already queued for it.
+        let _a_permit = manager
+            .inbox_registry
+            .try_acquire_run(&a_key)
+            .await
+            .expect("A's trunk permit should be free");
+        let a_queued = manager
+            .receive_trunk(
+                a.clone(),
+                "Supervision tick for A".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
+            .await
+            .expect("A's trunk receive should succeed");
+        assert!(
+            a_queued.content.contains("Queued for root agent session"),
+            "A is busy, so its tick queues: {}",
+            a_queued.content
+        );
+
+        // B's cron Send runs a real turn instead of queueing behind A.
+        adapter.queue_text("b trunk reply");
+        let b_response = manager
+            .receive_trunk(
+                b.clone(),
+                "Supervision tick for B".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
+            .await
+            .expect("B's trunk receive should succeed");
+        assert!(
+            b_response.content.contains("b trunk reply"),
+            "B's turn must run, not queue behind A's busy trunk: {}",
+            b_response.content
+        );
+
+        // A's tick is still waiting for A; B's run did not drain it.
+        let a_inbox = manager
+            .inbox_registry
+            .peek_inbox(&a_key)
+            .await
+            .expect("A's trunk inbox exists");
+        let a_items = a_inbox.drain_all().await;
+        assert_eq!(a_items.len(), 1, "exactly A's own tick stays queued for A");
+        match &a_items[0] {
+            peko_session::AsyncInboxItem::Steering(s) => {
+                assert!(s.content.contains("Supervision tick for A"));
+            }
+            other => panic!("expected A's steering tick, got {other:?}"),
+        }
+
+        // B's transcript carries B's tick and none of A's.
+        let b_principal = manager.get(b.clone()).await.expect("B exists");
+        let b_jsonl = std::fs::read_to_string(
+            b_principal
+                .memory
+                .sessions_dir()
+                .join(format!("{trunk}.jsonl")),
+        )
+        .expect("B's trunk JSONL exists");
+        assert!(b_jsonl.contains("Supervision tick for B"));
+        assert!(
+            !b_jsonl.contains("Supervision tick for A"),
+            "A's tick must never reach B's trunk"
+        );
+
+        // Both busy: B's next tick queues for B only.
+        let _b_permit = manager
+            .inbox_registry
+            .try_acquire_run(&b_key)
+            .await
+            .expect("B's trunk permit is free again after its turn");
+        manager
+            .receive_trunk(
+                b.clone(),
+                "second tick for B".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
+            .await
+            .expect("B's trunk receive should succeed");
+        assert!(
+            a_inbox.is_empty().await,
+            "B's tick must not land in A's inbox"
+        );
+        let b_inbox = manager
+            .inbox_registry
+            .peek_inbox(&b_key)
+            .await
+            .expect("B's trunk inbox exists");
+        assert_eq!(b_inbox.len().await, 1, "B's tick queues for B");
+        assert!(
+            manager.inbox_registry.peek_inbox(&trunk).await.is_none(),
+            "nothing is keyed by the bare, shared trunk id"
         );
     }
 }

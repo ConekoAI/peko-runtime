@@ -305,6 +305,10 @@ impl AsyncExecutor {
             }
         }
 
+        // Registry keys are principal-scoped for the trunk (its id is the
+        // same for every principal); the wake notice keeps the plain
+        // session id and the principal travels alongside it.
+        let principal = &claimed.config.principal_id.0;
         let steer_target = claimed
             .config
             .principal_root_session_key
@@ -315,7 +319,10 @@ impl AsyncExecutor {
             let text = crate::async_exec::steer::format_cron_steer_message(
                 &label, &task_id, &tool_name, &status,
             );
-            let inbox = self.inbox_registry.get_or_create(&target).await;
+            let inbox = self
+                .inbox_registry
+                .get_or_create(&peko_session::inbox_key(principal, &target))
+                .await;
             inbox
                 .push(InboxItem::Steering(SteeringMessage::new(text)).into())
                 .await;
@@ -329,7 +336,10 @@ impl AsyncExecutor {
                 completed_at: chrono::Utc::now(),
                 parent_session_key: parent_session_key.clone(),
             };
-            let inbox = self.inbox_registry.get_or_create(&parent_session_key).await;
+            let inbox = self
+                .inbox_registry
+                .get_or_create(&peko_session::inbox_key(principal, &parent_session_key))
+                .await;
             inbox.push(InboxItem::Completion(event).into()).await;
             (parent_session_key, false)
         };

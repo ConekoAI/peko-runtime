@@ -143,7 +143,8 @@ impl CallerAwareSessionTool {
             Some(Arc::clone(&principal.quota_meter)),
         )
         .with_task_registry(task_registry)
-        .with_acting_for(acting_for);
+        .with_acting_for(acting_for)
+        .with_principal_id(principal.id.0.clone());
         SessionTool::new(Arc::new(runtime) as SharedSessionRuntime)
     }
 }

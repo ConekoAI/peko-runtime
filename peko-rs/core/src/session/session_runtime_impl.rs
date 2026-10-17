@@ -87,6 +87,9 @@ pub struct SessionManagerRuntime {
     /// `Session` tool call: a non-owner run sees and manages only its own
     /// compartment's sessions. `None` only for runtime-internal callers.
     acting_for: Option<peko_tools_core::ActingFor>,
+    /// The owning principal, for principal-scoped `InboxRegistry` keys
+    /// (the trunk id is shared by every principal). `None` keys raw.
+    principal_id: Option<String>,
 }
 
 impl SessionManagerRuntime {
@@ -107,6 +110,23 @@ impl SessionManagerRuntime {
             quota_meter,
             task_registry: None,
             acting_for: None,
+            principal_id: None,
+        }
+    }
+
+    /// Bind the owning principal so run-permit checks use its scoped
+    /// `InboxRegistry` key ([`peko_session::inbox_key`]).
+    #[must_use]
+    pub fn with_principal_id(mut self, principal_id: String) -> Self {
+        self.principal_id = Some(principal_id);
+        self
+    }
+
+    /// The `InboxRegistry` key for session `id` of this runtime's principal.
+    fn inbox_key(&self, id: &str) -> String {
+        match &self.principal_id {
+            Some(principal) => peko_session::inbox_key(principal, id),
+            None => id.to_string(),
         }
     }
 
@@ -185,6 +205,7 @@ impl SessionManagerRuntime {
             quota_meter: self.quota_meter.clone(),
             task_registry: self.task_registry.clone(),
             acting_for: self.acting_for.clone(),
+            principal_id: self.principal_id.clone(),
         }
     }
 
@@ -507,7 +528,11 @@ impl SessionRuntime for SessionManagerRuntime {
         // (the same guard the delete path uses at `delete_session`).
         for info in &mut sessions {
             let run_held = match &self.inbox_registry {
-                Some(registry) => registry.peek_run_held(&info.session_id).await,
+                Some(registry) => {
+                    registry
+                        .peek_run_held(&self.inbox_key(&info.session_id))
+                        .await
+                }
                 None => false,
             };
             info.run_active = run_held || self.subagent_run_active(&info.session_id).await;
@@ -1013,7 +1038,7 @@ impl SessionRuntime for SessionManagerRuntime {
             Some(registry) => {
                 for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
                     let permit = registry
-                        .try_acquire_run(id)
+                        .try_acquire_run(&self.inbox_key(id))
                         .await
                         .ok_or_else(|| self.refuse(err_run_active(id)))?;
                     _permits.push(permit);
@@ -1133,7 +1158,7 @@ impl SessionRuntime for SessionManagerRuntime {
         match &self.inbox_registry {
             Some(registry) => {
                 for id in std::iter::once(&session_key.clone()).chain(descendants.iter()) {
-                    if registry.peek_run_held(id).await {
+                    if registry.peek_run_held(&self.inbox_key(id)).await {
                         return Err(self.refuse(err_run_active(id)));
                     }
                 }

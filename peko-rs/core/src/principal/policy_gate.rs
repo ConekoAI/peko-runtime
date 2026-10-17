@@ -771,9 +771,10 @@ async fn notify_requester(manager: &PrincipalManager, record: &ApprovalRecord, t
         record.id,
         summarize(&record.call)
     );
+    let key = peko_session::inbox_key(&record.call.principal_id, session);
     manager
         .shared_inbox_registry()
-        .get_or_create(session)
+        .get_or_create(&key)
         .await
         .push(peko_session::SteeringMessage::new(note).into())
         .await;
