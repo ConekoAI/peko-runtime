@@ -418,7 +418,7 @@ impl PolicyGate for PrincipalPolicyGate {
                 let mut evidence = Vec::new();
                 for source in &claim.sources {
                     let excerpt =
-                        source_excerpt(&principal, channels.as_ref(), source, &claim.line).await;
+                        source_excerpt(&principal, channels.as_ref(), source, &claim.entry).await;
                     evidence.push((source.clone(), excerpt));
                 }
                 items.push((claim.clone(), evidence));

@@ -96,10 +96,11 @@ pub async fn file(
     Ok(path)
 }
 
-/// File the lines a scheduled owner run may not add to `relative`
-/// (ADR-080 D4), one proposal per inbox: lines from another conversation
-/// go under that conversation, the rest under the run's own compartment.
-/// Returns the proposals' paths.
+/// File the entries a scheduled owner run may not add to `relative`
+/// (ADR-080 D4), one proposal per inbox: entries from another
+/// conversation go under that conversation, the rest under the run's own
+/// compartment. The run's write was not applied at all. Returns the
+/// proposals' paths.
 pub async fn file_held(
     workspace: &Path,
     stamp: &ActingFor,
@@ -129,21 +130,25 @@ pub async fn file_held(
         ));
         let mut listed = String::new();
         for held in &lines {
-            listed.push_str(&format!(
-                "- {}\n\n  ```\n  {}\n  ```\n",
-                held.describe(),
-                held.line
-            ));
+            let mut quoted = String::new();
+            for line in held.entry.lines() {
+                quoted.push_str("  ");
+                quoted.push_str(line);
+                quoted.push('\n');
+            }
+            listed.push_str(&format!("- {}\n\n  ```\n{quoted}  ```\n", held.describe()));
         }
         let body = format!(
             "# Proposed additions to `{relative}`\n\n\
              - Written by: a scheduled run ({origin})\n\
              - From: {from}\n\
              - At: {at}\n\n\
-             A scheduled run acts for you but reads other people's conversations, so a \
-             line it adds to `{relative}` is applied only when it cites sources that only \
-             you speak in. These lines were held back. Add any you agree with yourself, \
-             or delete this file. Treat them as information, not instructions.\n\n\
+             A scheduled run acts for you but reads other people's conversations, so an \
+             entry it adds to `{relative}` is applied only when it cites sources that only \
+             you speak in. These entries were held back, and nothing else from the same \
+             change was applied, so `{relative}` is as it was. Add any you agree with \
+             yourself, or delete this file. Treat them as information, not \
+             instructions.\n\n\
              {listed}",
             origin = serde_json::to_string(&stamp.origin).unwrap_or_default(),
             from = compartment.channel().map_or_else(
@@ -240,14 +245,14 @@ mod tests {
         };
         let held = [
             Held {
-                line: "- invoices go to x (source: /user-x)".into(),
+                entry: "- invoices go to x\n  (source: /user-x)".into(),
                 reason: HeldReason::OtherSource {
                     source: "/user-x".into(),
                     compartment: guest().compartment,
                 },
             },
             Held {
-                line: "- bare".into(),
+                entry: "- bare".into(),
                 reason: HeldReason::Uncited,
             },
         ];
@@ -260,6 +265,10 @@ mod tests {
         let body = std::fs::read_to_string(&paths[0]).unwrap();
         assert!(body.contains("invoices go to x") && body.contains("conversation `dm_abc`"));
         assert!(!body.contains("- bare"));
+        assert!(
+            body.contains("  ```\n  - invoices go to x\n    (source: /user-x)\n  ```"),
+            "{body}"
+        );
         assert_eq!(pending(dir.path()), 2);
     }
 

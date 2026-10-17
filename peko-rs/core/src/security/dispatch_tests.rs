@@ -385,8 +385,12 @@ async fn only_the_owner_decides_channel_rosters() {
     assert_eq!(*gate.reviewed.lock().unwrap(), 0);
 }
 
-/// A gate that only classifies hot-memory sources (ADR-080 D4).
-struct SourceGate;
+/// A gate that only classifies hot-memory sources (ADR-080 D4), and
+/// records the entries it reviews.
+#[derive(Default)]
+struct SourceGate {
+    reviewed: std::sync::Mutex<Vec<String>>,
+}
 
 #[async_trait::async_trait]
 impl PolicyGate for SourceGate {
@@ -411,7 +415,7 @@ impl PolicyGate for SourceGate {
             _ => SourceClass::Unknown,
         }
     }
-    /// ADR-085: a line mentioning coffee is unsupported, one mentioning
+    /// ADR-085: an entry mentioning coffee is unsupported, one mentioning
     /// a fog is unchecked, anything else is supported.
     async fn check_claims(
         &self,
@@ -419,12 +423,16 @@ impl PolicyGate for SourceGate {
         claims: &[crate::security::memory_gate::Claim],
     ) -> Vec<crate::security::memory_gate::ClaimCheck> {
         use crate::security::memory_gate::ClaimCheck;
+        self.reviewed
+            .lock()
+            .unwrap()
+            .extend(claims.iter().map(|claim| claim.entry.clone()));
         claims
             .iter()
             .map(|claim| {
-                if claim.line.contains("coffee") {
+                if claim.entry.contains("coffee") {
                     ClaimCheck::Unsupported("the owner talked about tea".into())
-                } else if claim.line.contains("fog") {
+                } else if claim.entry.contains("fog") {
                     ClaimCheck::Unchecked("the reviewer could not run".into())
                 } else {
                     ClaimCheck::Supported
@@ -444,12 +452,14 @@ fn scheduled(job_id: &str) -> ActingFor {
 }
 
 #[tokio::test]
-async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
+async fn a_scheduled_run_writes_only_owner_sourced_entries_to_hot_memory() {
     let h = ToolHarness::new().await;
-    h.tooling.dispatcher().set_policy_gate(Arc::new(SourceGate));
+    let gate = Arc::new(SourceGate::default());
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
     let memory = h.write("kb/MEMORY.md", "# Memory\n- old\n");
     let caller = Caller::acting_for(scheduled("keepalive"));
 
+    // One held entry holds the whole write: nothing is applied.
     let out = h
         .call_as(
             &caller,
@@ -460,10 +470,11 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
         )
         .await;
     assert!(out.success, "{}", out.display);
-    assert!(out.display.contains("2 line(s)"), "{}", out.display);
+    assert_eq!(out.value["proposed"], true, "{}", out.value);
+    assert!(out.display.contains("2 entries"), "{}", out.display);
     assert_eq!(
         std::fs::read_to_string(&memory).unwrap(),
-        "# Memory\n- old\n- owner likes tea (source: /local-user)\n"
+        "# Memory\n- old\n"
     );
     let filed = std::fs::read_dir(h.workspace().join("kb/inbox/dm_x"))
         .unwrap()
@@ -473,8 +484,39 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
     let body = std::fs::read_to_string(filed.path()).unwrap();
     assert!(body.contains("invoices go to x") && !body.contains("uncited"));
     assert_eq!(crate::security::proposals::pending(h.workspace()), 2);
+    assert!(
+        gate.reviewed.lock().unwrap().is_empty(),
+        "a held write is not reviewed"
+    );
 
-    // An edit adding only a guest-sourced line writes nothing.
+    // Repeated without the held entries, it is written. A wrapped entry
+    // with its source on the last line is reviewed whole.
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": memory, "content": "# Memory\n- old\n\
+                   - owner likes tea (source: /local-user)\n\
+                   - owner reads novels in the\n  evening. (source: /local-user).\n"}),
+        )
+        .await;
+    assert!(
+        out.success && out.value.get("proposed").is_none(),
+        "{}",
+        out.display
+    );
+    assert!(std::fs::read_to_string(&memory)
+        .unwrap()
+        .contains("owner likes tea"));
+    assert_eq!(
+        *gate.reviewed.lock().unwrap(),
+        vec![
+            "- owner likes tea (source: /local-user)".to_string(),
+            "- owner reads novels in the\n  evening. (source: /local-user).".to_string(),
+        ]
+    );
+
+    // An edit adding only a guest-sourced entry writes nothing.
     let out = h
         .call_as(
             &caller,
@@ -486,33 +528,60 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
     assert_eq!(out.value["proposed"], true, "{}", out.value);
     assert!(!std::fs::read_to_string(&memory).unwrap().contains("boss"));
 
-    // ADR-085: an owner-sourced line the reviewer finds unsupported, or
-    // could not check, is held under the run's own compartment.
+    // ADR-085: an owner-sourced entry the reviewer finds unsupported, or
+    // could not check, is held under the run's own compartment, and the
+    // supported one beside it waits too.
     let out = h
         .call_as(
             &caller,
             "Edit",
             json!({"file_path": memory, "old_string": "- old\n",
                    "new_string": "- old\n- owner loves coffee (source: /local-user)\n\
-                   - owner walks in fog (source: /local-user)\n- owner reads (source: /local-user)\n"}),
+                   - owner walks in fog (source: /local-user)\n- owner sings (source: /local-user)\n"}),
         )
         .await;
     assert!(out.success, "{}", out.display);
     assert!(
-        out.display.contains("2 line(s)") && out.display.contains("the owner talked about tea"),
+        out.display.contains("2 entries") && out.display.contains("the owner talked about tea"),
         "{}",
         out.display
     );
     let text = std::fs::read_to_string(&memory).unwrap();
-    assert!(text.contains("owner reads") && !text.contains("coffee") && !text.contains("fog"));
+    assert!(!text.contains("sings") && !text.contains("coffee") && !text.contains("fog"));
     let internal = std::fs::read_dir(h.workspace().join("kb/inbox/internal"))
         .unwrap()
         .map(|f| std::fs::read_to_string(f.unwrap().path()).unwrap())
         .collect::<String>();
     assert!(internal.contains("coffee") && internal.contains("could not be checked"));
 
-    // Removing and rewording old lines needs no source; the owner's own
-    // run is not screened.
+    // Rewriting an existing entry into one that is held keeps the old
+    // entry (observed on MiMo: the old version's removal was applied).
+    let before = std::fs::read_to_string(&memory).unwrap();
+    let out = h
+        .call_as(
+            &caller,
+            "Write",
+            json!({"file_path": memory, "content": before
+                .replace("- owner likes tea (source: /local-user)", "- owner likes coffee (source: /local-user)")}),
+        )
+        .await;
+    assert_eq!(out.value["proposed"], true, "{}", out.value);
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), before);
+    // The same through an edit that touches one line of a wrapped entry.
+    let out = h
+        .call_as(
+            &caller,
+            "Edit",
+            json!({"file_path": memory, "old_string": "  evening. (source: /local-user).",
+                   "new_string": "  evening."}),
+        )
+        .await;
+    assert_eq!(out.value["proposed"], true, "{}", out.value);
+    assert!(out.display.contains("names no source"), "{}", out.display);
+    assert_eq!(std::fs::read_to_string(&memory).unwrap(), before);
+
+    // Removing old entries needs no source; the owner's own run is not
+    // screened.
     let out = h
         .call_as(
             &caller,
@@ -520,7 +589,12 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
             json!({"file_path": memory, "old_string": "- old\n", "new_string": ""}),
         )
         .await;
-    assert!(out.success, "{}", out.display);
+    assert!(
+        out.success && out.value.get("proposed").is_none(),
+        "{}",
+        out.display
+    );
+    assert!(!std::fs::read_to_string(&memory).unwrap().contains("- old"));
     let out = h
         .call(
             "Write",
@@ -528,11 +602,39 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
         )
         .await;
     assert!(
-        out.success && out.value.get("memory_held").is_none(),
+        out.success && out.value.get("proposed").is_none(),
         "{}",
         out.display
     );
     assert_eq!(std::fs::read_to_string(&memory).unwrap(), "- anything\n");
+}
+
+/// The genesis turn organizes a new principal from its own definition and
+/// reads no one's conversation: its hot-memory writes are not screened.
+#[tokio::test]
+async fn the_genesis_turn_writes_hot_memory_unscreened() {
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(Arc::new(SourceGate::default()));
+    let memory = h.write("kb/MEMORY.md", "# Memory\n");
+    let out = h
+        .call_as(
+            &Caller::acting_for(scheduled(crate::principal::genesis::GENESIS_JOB_ID)),
+            "Write",
+            json!({"file_path": memory, "content": "# Memory\n- Studio: six people\n  in Porto.\n"}),
+        )
+        .await;
+    assert!(
+        out.success && out.value.get("proposed").is_none(),
+        "{}",
+        out.display
+    );
+    assert_eq!(
+        std::fs::read_to_string(&memory).unwrap(),
+        "# Memory\n- Studio: six people\n  in Porto.\n"
+    );
+    assert_eq!(crate::security::proposals::pending(h.workspace()), 0);
 }
 
 /// ADR-080 D7/D8: the nightly pass promotes lessons into
@@ -541,7 +643,9 @@ async fn a_scheduled_run_writes_only_owner_sourced_lines_to_hot_memory() {
 #[tokio::test]
 async fn a_scheduled_run_promotes_only_owner_sourced_conventions() {
     let h = ToolHarness::new().await;
-    h.tooling.dispatcher().set_policy_gate(Arc::new(SourceGate));
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(Arc::new(SourceGate::default()));
     let conventions = h.write("kb/CONVENTIONS.md", "# Conventions\n- journal daily\n");
     let caller = Caller::acting_for(scheduled("memory"));
 
@@ -558,14 +662,14 @@ async fn a_scheduled_run_promotes_only_owner_sourced_conventions() {
         .await;
     assert!(out.success, "{}", out.display);
     assert!(
-        out.display.contains("2 line(s)") && out.display.contains("`kb/CONVENTIONS.md`"),
+        out.display.contains("2 entries") && out.display.contains("`kb/CONVENTIONS.md`"),
         "{}",
         out.display
     );
     assert!(out.display.contains("kb/dreams/"), "{}", out.display);
     assert_eq!(
         std::fs::read_to_string(&conventions).unwrap(),
-        "# Conventions\n- journal daily\n- answer yes/no questions in one line (source: /local-user)\n"
+        "# Conventions\n- journal daily\n"
     );
     let filed = std::fs::read_dir(h.workspace().join("kb/inbox/dm_x"))
         .unwrap()

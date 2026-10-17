@@ -3223,7 +3223,7 @@ mod tests {
         let gate =
             crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
         let claims = vec![Claim {
-            line: "- owner likes tea (source: /local-user)".into(),
+            entry: "- owner likes tea (source: /local-user)".into(),
             sources: vec!["/local-user".into()],
         }];
         assert!(
