@@ -1656,7 +1656,7 @@ impl PrincipalManager {
         // The trunk id is the same constant for every principal; the
         // registry key is principal-scoped so another principal's busy
         // trunk neither refuses nor receives this turn.
-        let inbox_key = super::routers::root::inbox_key(&principal.id.0, &session_id);
+        let inbox_key = peko_session::inbox_key(&principal.id.0, &session_id);
         match self.inbox_registry.try_acquire_run(&inbox_key).await {
             Some(_permit) => {
                 let decision = principal.router.route(ctx).await;
@@ -3808,7 +3808,7 @@ mod tests {
         // match what `receive_trunk` looks up.
         let _permit = manager
             .inbox_registry
-            .try_acquire_run(&super::super::routers::root::inbox_key(
+            .try_acquire_run(&peko_session::inbox_key(
                 &id.0,
                 &super::super::routers::root::trunk_session_id(),
             ))
@@ -3839,7 +3839,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn trunk_admission_and_inbox_are_per_principal() {
-        use super::super::routers::root::{inbox_key, trunk_session_id};
+        use super::super::routers::root::trunk_session_id;
+        use peko_session::inbox_key;
         let (_temp, manager, adapter, a) = setup().await;
         let b = create_test_principal(&manager, "other").await.id.clone();
         let trunk = trunk_session_id();

@@ -321,9 +321,7 @@ impl AsyncExecutor {
             );
             let inbox = self
                 .inbox_registry
-                .get_or_create(&crate::principal::routers::root::inbox_key(
-                    principal, &target,
-                ))
+                .get_or_create(&peko_session::inbox_key(principal, &target))
                 .await;
             inbox
                 .push(InboxItem::Steering(SteeringMessage::new(text)).into())
@@ -340,10 +338,7 @@ impl AsyncExecutor {
             };
             let inbox = self
                 .inbox_registry
-                .get_or_create(&crate::principal::routers::root::inbox_key(
-                    principal,
-                    &parent_session_key,
-                ))
+                .get_or_create(&peko_session::inbox_key(principal, &parent_session_key))
                 .await;
             inbox.push(InboxItem::Completion(event).into()).await;
             (parent_session_key, false)

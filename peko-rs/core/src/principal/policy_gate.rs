@@ -771,7 +771,7 @@ async fn notify_requester(manager: &PrincipalManager, record: &ApprovalRecord, t
         record.id,
         summarize(&record.call)
     );
-    let key = crate::principal::routers::root::inbox_key(&record.call.principal_id, session);
+    let key = peko_session::inbox_key(&record.call.principal_id, session);
     manager
         .shared_inbox_registry()
         .get_or_create(&key)

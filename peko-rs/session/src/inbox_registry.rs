@@ -22,8 +22,36 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::AsyncInboxLike;
+use crate::{AsyncInboxLike, SessionId};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+
+/// The literal the principal trunk's session id derives from. The trunk
+/// id (`SessionId::from(TRUNK_SESSION_LITERAL)`) is the same for every
+/// principal; core's `trunk_session_id()` is built from this.
+pub const TRUNK_SESSION_LITERAL: &str = "root:self";
+
+/// The registry key for `session_id` owned by `principal_id`.
+///
+/// The registry is daemon-wide and keyed by string, while the trunk id
+/// is the same constant for every principal. Keyed raw, one principal's
+/// busy trunk refused another's turn and queued it into the shared trunk
+/// inbox, where whichever trunk ran next drained it. The trunk key is
+/// therefore qualified with its principal. Every other session id is a
+/// random per-session UUID and passes through unchanged, so children
+/// keep keying the registry by their plain session id.
+///
+/// Every registry access that can see the trunk id — admission, the
+/// loop's drain, completion/steer delivery, wake, run-active checks —
+/// must go through this so they agree on the key.
+#[must_use]
+pub fn inbox_key(principal_id: &str, session_id: &str) -> String {
+    let trunk = SessionId::from(TRUNK_SESSION_LITERAL).to_string();
+    if session_id == trunk || SessionId::from(session_id).to_string() == trunk {
+        format!("{principal_id}/{trunk}")
+    } else {
+        session_id.to_string()
+    }
+}
 
 /// Factory that creates a fresh inbox on first access. The factory
 /// runs only when a new session id is registered, so the inbox
@@ -188,6 +216,22 @@ mod tests {
     use peko_tools_core::ToolResult;
     use serde_json::json;
     use tokio::sync::Mutex as AsyncMutex;
+
+    #[test]
+    fn inbox_key_scopes_only_the_trunk_by_principal() {
+        let trunk = SessionId::from(TRUNK_SESSION_LITERAL).to_string();
+        let a = inbox_key("prin_a", &trunk);
+        let b = inbox_key("prin_b", &trunk);
+        assert_ne!(a, b, "two principals' trunks must not share an inbox key");
+        assert_eq!(
+            inbox_key("prin_a", TRUNK_SESSION_LITERAL),
+            a,
+            "literal form maps too"
+        );
+        let child = SessionId::new().to_string();
+        assert_eq!(inbox_key("prin_a", &child), child);
+        assert_eq!(inbox_key("prin_b", &child), child);
+    }
 
     /// Minimal AsyncInboxLike stub for tests — does not exercise any
     /// envelope-conversion path (that's covered by peko-extension-host

@@ -3393,7 +3393,7 @@ mod tests {
 
         // Poll up to 2s for the steer message to land in the trunk
         // inbox (the closure runs in the background).
-        let trunk_key = crate::principal::routers::root::inbox_key(
+        let trunk_key = peko_session::inbox_key(
             &principal.id.0,
             &crate::principal::routers::root::trunk_session_id(),
         );

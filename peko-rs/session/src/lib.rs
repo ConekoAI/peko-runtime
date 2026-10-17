@@ -93,7 +93,9 @@ pub use events::{
     SystemEvent,
 };
 pub use id::SessionId;
-pub use inbox_registry::{InboxFactory, InboxRegistry, RunPermitGuard};
+pub use inbox_registry::{
+    inbox_key, InboxFactory, InboxRegistry, RunPermitGuard, TRUNK_SESSION_LITERAL,
+};
 pub use index::{SessionEntry, SessionIndex};
 pub use jsonl::{
     NormalizedEntry, RotationReason, RotationSink, SessionStorage, TranscriptSearchHit,

@@ -1204,7 +1204,7 @@ impl Agent {
         // The registry is daemon-shared and the trunk id is the same for
         // every principal: drain under the principal-scoped key that trunk
         // admission and completion delivery push to.
-        let async_inbox_key = crate::principal::routers::root::inbox_key(
+        let async_inbox_key = peko_session::inbox_key(
             &self.principal_id.0,
             session_key.as_deref().unwrap_or("default"),
         );

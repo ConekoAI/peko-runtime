@@ -115,7 +115,7 @@ impl SessionManagerRuntime {
     }
 
     /// Bind the owning principal so run-permit checks use its scoped
-    /// `InboxRegistry` key ([`crate::principal::routers::root::inbox_key`]).
+    /// `InboxRegistry` key ([`peko_session::inbox_key`]).
     #[must_use]
     pub fn with_principal_id(mut self, principal_id: String) -> Self {
         self.principal_id = Some(principal_id);
@@ -125,7 +125,7 @@ impl SessionManagerRuntime {
     /// The `InboxRegistry` key for session `id` of this runtime's principal.
     fn inbox_key(&self, id: &str) -> String {
         match &self.principal_id {
-            Some(principal) => crate::principal::routers::root::inbox_key(principal, id),
+            Some(principal) => peko_session::inbox_key(principal, id),
             None => id.to_string(),
         }
     }

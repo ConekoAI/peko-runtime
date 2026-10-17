@@ -92,7 +92,7 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
     // same for every principal); the turn below still runs on the plain
     // session id.
     let inbox_key = match &notice.principal_id {
-        Some(principal) => crate::principal::routers::root::inbox_key(principal, &session_key),
+        Some(principal) => peko_session::inbox_key(principal, &session_key),
         None => session_key.clone(),
     };
 

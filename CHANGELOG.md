@@ -15,7 +15,7 @@ All notable changes to Peko.
   next trunk run of any principal drained it, so B's supervision tick showed
   up in another principal's trunk transcript. Async completions and cron
   steers delivered to a trunk leaked the same way.
-- `routers::root::inbox_key(principal, session)` now qualifies the trunk id
+- `peko_session::inbox_key(principal, session)` (beside `InboxRegistry`) now qualifies the trunk id
   with its principal and passes every other session id through unchanged.
   All registry access that can see the trunk goes through it: trunk
   admission (`receive_trunk`), the agentic loop's drain, executor
