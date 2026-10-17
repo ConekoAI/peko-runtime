@@ -259,6 +259,16 @@ fn schemas_accept_valid_calls_and_reject_incomplete_or_conflicting_calls() {
         ("Cron", json!({"action":"update", "id":"job"}), false),
         (
             "Cron",
+            json!({"action":"update", "id":"keepalive", "interval_ms":1_800_000}),
+            true,
+        ),
+        (
+            "Cron",
+            json!({"action":"update", "id":"memory", "cron":"0 3 * * *", "timezone":"Asia/Tokyo"}),
+            true,
+        ),
+        (
+            "Cron",
             json!({"action":"delete", "id":"job", "label":"l"}),
             false,
         ),
@@ -393,7 +403,7 @@ fn domain_action_schemas_reject_missing_unknown_and_irrelevant_fields() {
         (
             "Cron",
             json!({"action":"update", "id":"job", "enabled":false}),
-            "message",
+            "delay",
         ),
         ("Cron", json!({"action":"trigger", "id":"job"}), "enabled"),
         ("Cron", json!({"action":"history", "id":"job"}), "enabled"),

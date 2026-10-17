@@ -104,7 +104,7 @@ pub fn validate_trunk_send_interval(
 // ─── DTOs (canonical home; root re-exports these) ─────────────────
 
 /// Schedule kinds for cron jobs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScheduleKind {
     /// One-shot at specific time.
@@ -453,6 +453,11 @@ pub struct JobPatch {
     pub model: Option<Option<String>>,
     /// `Send` jobs only: when a due fire starts a turn.
     pub when: Option<FireWhen>,
+    /// A new recurring schedule. The next fire is computed from it; the
+    /// job keeps its id, creator and history.
+    pub schedule: Option<ScheduleKind>,
+    /// `Send` jobs only: the instruction each fire delivers.
+    pub message: Option<String>,
 }
 
 impl JobPatch {
@@ -463,6 +468,8 @@ impl JobPatch {
             && self.wake_on_completion.is_none()
             && self.model.is_none()
             && self.when.is_none()
+            && self.schedule.is_none()
+            && self.message.is_none()
     }
 }
 
@@ -477,29 +484,43 @@ pub trait CronRuntime: Send + Sync {
     /// Register a new cron job. Returns the assigned job ID.
     async fn add_job(&self, job: CronJob) -> Result<String>;
 
-    /// Delete a cron job by ID. Returns `Ok(())` whether the job
-    /// existed or not (idempotent).
-    async fn delete_job(&self, job_id: &str) -> Result<()>;
+    /// Delete `principal_id`'s cron job by ID. Returns `Ok(())` whether
+    /// the job existed or not (idempotent).
+    ///
+    /// This and the other by-id methods take the owning principal because
+    /// job ids are unique only within one principal's schedule: every
+    /// principal has the runtime-seeded `keepalive` and `memory` jobs.
+    async fn delete_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<()>;
 
     /// List all cron jobs (across all principals — call sites filter
     /// by `principal_name` if needed).
     async fn list_jobs(&self) -> Result<Vec<CronJob>>;
 
-    /// Patch a job's mutable fields; `None` fields in `patch` are left
-    /// untouched. Returns an error when the job does not exist or the
-    /// patch does not fit its action.
-    async fn update_job(&self, job_id: &str, patch: &JobPatch) -> Result<()>;
+    /// Patch `principal_id`'s job's mutable fields; `None` fields in
+    /// `patch` are left untouched. Returns an error when the job does not
+    /// exist or the patch does not fit its action.
+    async fn update_job(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        patch: &JobPatch,
+    ) -> Result<()>;
 
     /// Fire a job immediately, out of schedule. Returns the run id;
     /// coalesces with an in-flight run of the same job (returns the
     /// existing run id instead of double-firing). Manual triggers
     /// ignore the job's `enabled` flag (debugging path). The run
     /// executes in the background; its outcome lands in run history.
-    async fn trigger_job(&self, job_id: &str) -> Result<String>;
+    async fn trigger_job(&self, principal_id: &PrincipalId, job_id: &str) -> Result<String>;
 
     /// Read a job's run history, most recent first, capped at `limit`.
     /// Errors when the job (or its history) does not exist.
-    async fn run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>>;
+    async fn run_history(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CronRun>>;
 
     /// Whether `principal_id` owns `job_id`'s run history: the job is live
     /// in that principal's schedule, or it was deleted (a fired one-shot

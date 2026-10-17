@@ -152,6 +152,12 @@ its current display name. A principal that replaces the message keeps its own.
 A `memory` job still carrying the full brief stored by the first build is read
 like the marker.
 
+`Cron` `update` refuses to replace the marker (2026-10-17). It changes the
+job's schedule, `when` and `model` in place, so the job keeps its id, and with
+it the brief and the `Bash`-free run (`is_memory_run`). A principal that wants its own routine creates a separate job.
+Before `update` took a schedule, principals deleted and re-created the job to
+retune it, and each re-created job lost all of this.
+
 ### D6 — A message job can run on its own model
 
 A cron `Send` action may carry `model`, a configured model id. Each fire's

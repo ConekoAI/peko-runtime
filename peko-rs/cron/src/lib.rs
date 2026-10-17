@@ -110,12 +110,50 @@ impl CronScheduler {
             })?;
         }
 
+        let _lock = self.lock()?;
         if !self.db_path.exists() {
             let db = CronDatabase::default();
             self.write_db(&db)?;
         }
 
         Ok(())
+    }
+
+    /// Take the schedule's write lock: an exclusive advisory lock on a
+    /// sidecar `<schedule>.lock` file, released when the guard drops.
+    ///
+    /// Every write is a read-modify-write of the whole file, and the
+    /// daemon opens several `CronScheduler`s on one path (the engine's
+    /// cached one, one per cron tool call, genesis seeding), plus the CLI
+    /// in another process. Without the lock two writers interleave and
+    /// the later one writes back the jobs it read before the earlier one
+    /// wrote, undoing its delete, update or add. File locks conflict
+    /// across open files, so this also serializes threads of one process.
+    fn lock(&self) -> Result<std::fs::File> {
+        let path = self.db_path.with_extension("lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open cron lock: {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("Failed to lock cron DB: {}", path.display()))?;
+        Ok(file)
+    }
+
+    /// Apply `change` to the database under the write lock, re-reading
+    /// it first so no writer works from a stale copy. `change` returns
+    /// its result and whether it changed anything; the file is written
+    /// only when it did.
+    fn mutate<T>(&self, change: impl FnOnce(&mut CronDatabase) -> Result<(T, bool)>) -> Result<T> {
+        let _lock = self.lock()?;
+        let mut db = self.read_db()?;
+        let (out, changed) = change(&mut db)?;
+        if changed {
+            self.write_db(&db)?;
+        }
+        Ok(out)
     }
 
     /// Read the database from disk
@@ -137,7 +175,7 @@ impl CronScheduler {
         Ok(db)
     }
 
-    /// Write the database to disk atomically
+    /// Write the database to disk atomically. Callers hold [`Self::lock`].
     fn write_db(&self, db: &CronDatabase) -> Result<()> {
         let json = serde_json::to_string_pretty(db).context("Failed to serialize cron database")?;
 
@@ -154,12 +192,6 @@ impl CronScheduler {
 
     /// Add a new cron job
     pub fn add_job(&self, job: &CronJob) -> Result<()> {
-        let mut db = self.read_db()?;
-
-        if db.jobs.iter().any(|j| j.id == job.id) {
-            anyhow::bail!("Cron job with id '{}' already exists", job.id);
-        }
-
         // Validate the action shape. Send/Notify require a non-empty
         // message; SpawnTool requires a non-empty tool name; a Send
         // `target` must be a known value (serde rejects unknown targets
@@ -213,8 +245,13 @@ impl CronScheduler {
             }
         }
 
-        db.jobs.push(job.clone());
-        self.write_db(&db)?;
+        self.mutate(|db| {
+            if db.jobs.iter().any(|j| j.id == job.id) {
+                anyhow::bail!("Cron job with id '{}' already exists", job.id);
+            }
+            db.jobs.push(job.clone());
+            Ok(((), true))
+        })?;
 
         info!(
             "Added cron job {}: '{}' (action={}) with schedule {}",
@@ -264,9 +301,10 @@ impl CronScheduler {
         status: &str,
         next_run: DateTime<Utc>,
     ) -> Result<()> {
-        let mut db = self.read_db()?;
-
-        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok(((), false));
+            };
             job.last_run = Some(Utc::now());
             job.last_status = Some(status.to_string());
             job.next_run = next_run;
@@ -280,10 +318,8 @@ impl CronScheduler {
             } else {
                 job.consecutive_failures += 1;
             }
-            self.write_db(&db)?;
-        }
-
-        Ok(())
+            Ok(((), true))
+        })
     }
 
     /// Record a quiet tick (ADR-083): advance `next_run` and set
@@ -291,14 +327,14 @@ impl CronScheduler {
     /// `last_run`, `run_count` and the failure counter are untouched, so
     /// `last_run` stays the time of the job's last turn.
     pub fn record_quiet(&self, job_id: &str, next_run: DateTime<Utc>) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
-            return Ok(false);
-        };
-        job.next_run = next_run;
-        job.last_status = Some(QUIET_STATUS.to_string());
-        self.write_db(&db)?;
-        Ok(true)
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
+            };
+            job.next_run = next_run;
+            job.last_status = Some(QUIET_STATUS.to_string());
+            Ok((true, true))
+        })
     }
 
     /// Update only `last_status` (and `last_run`) on a job, leaving
@@ -312,19 +348,19 @@ impl CronScheduler {
     /// we skipped this, a `SpawnTool` job that fails would never
     /// disable — bypassing the budget that the `Send` path enforces.
     pub fn set_job_last_status(&self, job_id: &str, status: &str) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
-            return Ok(false);
-        };
-        job.last_run = Some(Utc::now());
-        job.last_status = Some(status.to_string());
-        if status == "success" {
-            job.consecutive_failures = 0;
-        } else {
-            job.consecutive_failures += 1;
-        }
-        self.write_db(&db)?;
-        Ok(true)
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
+            };
+            job.last_run = Some(Utc::now());
+            job.last_status = Some(status.to_string());
+            if status == "success" {
+                job.consecutive_failures = 0;
+            } else {
+                job.consecutive_failures += 1;
+            }
+            Ok((true, true))
+        })
     }
 
     /// Delete a job. Run history is intentionally preserved: one-shot
@@ -333,99 +369,73 @@ impl CronScheduler {
     /// job that had just successfully run (2026-08-07 field test,
     /// Finding 4). Growth is bounded by `record_run`'s 1000-run cap.
     pub fn delete_job(&self, job_id: &str) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let before = db.jobs.len();
-        db.jobs.retain(|j| j.id != job_id);
-        let deleted = db.jobs.len() < before;
-
+        let deleted = self.mutate(|db| {
+            let before = db.jobs.len();
+            db.jobs.retain(|j| j.id != job_id);
+            let deleted = db.jobs.len() < before;
+            Ok((deleted, deleted))
+        })?;
         if deleted {
-            self.write_db(&db)?;
-            info!("Deleted cron job {}", job_id);
+            info!(
+                "Deleted cron job {} from {}",
+                job_id,
+                self.db_path.display()
+            );
         }
-
         Ok(deleted)
     }
 
     /// Enable/disable a job
     pub fn set_job_enabled(&self, job_id: &str, enabled: bool) -> Result<bool> {
-        let mut db = self.read_db()?;
-
-        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
+            };
             job.enabled = enabled;
-            self.write_db(&db)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+            Ok((true, true))
+        })
     }
 
     /// Patch mutable job fields in place (2026-09-07, `Cron action update`).
     ///
     /// `enabled` flips the schedule gate; `wake_on_completion` toggles
     /// result subscription on `SpawnTool` jobs (a no-op on `Send` jobs,
-    /// whose turn outcome already lands in the trunk session); `model`
-    /// sets or clears a `Send` job's model and is refused on a
-    /// `SpawnTool` job, which runs no turn of its own. When re-enabling
-    /// a job the consecutive-failure counter resets — the operator/agent
+    /// whose turn outcome already lands in the trunk session); `model`,
+    /// `when` and `message` change a `Send` job and are refused on a
+    /// `SpawnTool` job, which runs no turn of its own. `schedule`
+    /// replaces a recurring schedule and computes the next fire from it;
+    /// the job keeps its id, creator, history and counters, which is
+    /// what lets a principal retune a runtime-seeded job without losing
+    /// what the runtime keys on that id. When re-enabling a job the
+    /// consecutive-failure counter resets — the operator/agent
     /// re-enabled it deliberately, so the retry budget starts fresh
     /// instead of re-disabling on the next failure.
+    ///
+    /// The patch applies whole or not at all.
     pub fn update_job_fields(&self, job_id: &str, patch: &tools::JobPatch) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
-            return Ok(false);
-        };
-        if patch.model.is_some() || patch.when.is_some() {
-            let CronJobAction::Send {
-                model: model_slot,
-                when: when_slot,
-                ..
-            } = &mut job.action
-            else {
-                anyhow::bail!(
-                    "`model` and `when` apply to message jobs only; job {job_id} runs a fixed \
-                     tool call"
-                );
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
             };
-            if let Some(model) = &patch.model {
-                *model_slot = model.clone().filter(|m| !m.trim().is_empty());
-            }
-            if let Some(when) = patch.when {
-                if let Some(refusal) = tools::when_refusal(when, &job.schedule) {
-                    anyhow::bail!(refusal);
-                }
-                *when_slot = Some(when);
-            }
-        }
-        if let Some(e) = patch.enabled {
-            job.enabled = e;
-            if e {
-                job.consecutive_failures = 0;
-            }
-        }
-        if let Some(wake) = patch.wake_on_completion {
-            if let CronJobAction::SpawnTool {
-                wake_on_completion, ..
-            } = &mut job.action
-            {
-                *wake_on_completion = Some(wake);
-            }
-        }
-        self.write_db(&db)?;
-        Ok(true)
+            let mut patched = job.clone();
+            apply_patch(&mut patched, patch, Utc::now())?;
+            *job = patched;
+            Ok((true, true))
+        })
     }
 
     /// Record a job run
     pub fn record_run(&self, run: &CronRun) -> Result<()> {
-        let mut db = self.read_db()?;
-        db.runs.push(run.clone());
-        // Keep only the last 1000 runs to prevent unbounded growth
-        const MAX_RUNS: usize = 1000;
-        if db.runs.len() > MAX_RUNS {
-            db.runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
-            db.runs.truncate(MAX_RUNS);
-        }
-        self.write_db(&db)?;
-        Ok(())
+        self.mutate(|db| {
+            db.runs.push(run.clone());
+            // Keep only the last 1000 runs to prevent unbounded growth
+            const MAX_RUNS: usize = 1000;
+            if db.runs.len() > MAX_RUNS {
+                db.runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+                db.runs.truncate(MAX_RUNS);
+            }
+            Ok(((), true))
+        })
     }
 
     /// Attach the async `output` (e.g. a spawned task id) and/or `error`
@@ -441,17 +451,17 @@ impl CronScheduler {
         output: Option<String>,
         error: Option<String>,
     ) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
-            return Ok(false);
-        };
-        if run.finished_at.is_some() {
-            return Ok(false);
-        }
-        run.output = output;
-        run.error = error;
-        self.write_db(&db)?;
-        Ok(true)
+        self.mutate(|db| {
+            let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
+                return Ok((false, false));
+            };
+            if run.finished_at.is_some() {
+                return Ok((false, false));
+            }
+            run.output = output;
+            run.error = error;
+            Ok((true, true))
+        })
     }
 
     /// Get run history for a job
@@ -485,19 +495,19 @@ impl CronScheduler {
         output: Option<String>,
         error: Option<String>,
     ) -> Result<bool> {
-        let mut db = self.read_db()?;
-        let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
-            return Ok(false);
-        };
-        if run.finished_at.is_some() {
-            return Ok(false);
-        }
-        run.status = status.to_string();
-        run.output = output;
-        run.error = error;
-        run.finished_at = Some(Utc::now());
-        self.write_db(&db)?;
-        Ok(true)
+        self.mutate(|db| {
+            let Some(run) = db.runs.iter_mut().find(|r| r.id == run_id) else {
+                return Ok((false, false));
+            };
+            if run.finished_at.is_some() {
+                return Ok((false, false));
+            }
+            run.status = status.to_string();
+            run.output = output;
+            run.error = error;
+            run.finished_at = Some(Utc::now());
+            Ok((true, true))
+        })
     }
 
     /// Idle-triggered jobs — a filtered view over the schedule.
@@ -512,11 +522,241 @@ impl CronScheduler {
     }
 }
 
+/// Apply `patch` to `job`, validating the result the way `add_job`
+/// validates a new job. On error `job` may be half-patched; callers
+/// patch a copy.
+fn apply_patch(job: &mut CronJob, patch: &tools::JobPatch, now: DateTime<Utc>) -> Result<()> {
+    let job_id = job.id.clone();
+    if let Some(schedule) = &patch.schedule {
+        if matches!(schedule, ScheduleKind::At { .. }) {
+            anyhow::bail!(
+                "update keeps a job recurring; create a one-shot job instead of moving \
+                 job {job_id} to a single time"
+            );
+        }
+        job.schedule = schedule.clone();
+        job.next_run = tools::calculate_next_run(schedule, now)?;
+    }
+    if patch.model.is_some() || patch.when.is_some() || patch.message.is_some() {
+        let CronJobAction::Send {
+            message: message_slot,
+            model: model_slot,
+            when: when_slot,
+            ..
+        } = &mut job.action
+        else {
+            anyhow::bail!(
+                "`model`, `when` and `message` apply to message jobs only; job {job_id} runs \
+                 a fixed tool call"
+            );
+        };
+        if let Some(message) = &patch.message {
+            if message.trim().is_empty() {
+                anyhow::bail!("`message` must be non-empty");
+            }
+            message_slot.clone_from(message);
+        }
+        if let Some(model) = &patch.model {
+            *model_slot = model.clone().filter(|m| !m.trim().is_empty());
+        }
+        if let Some(when) = patch.when {
+            *when_slot = Some(when);
+        }
+    }
+    if let CronJobAction::Send { when, target, .. } = &job.action {
+        if patch.when.is_some() || patch.schedule.is_some() {
+            if let Some(refusal) = when.and_then(|w| tools::when_refusal(w, &job.schedule)) {
+                anyhow::bail!(refusal);
+            }
+        }
+        if patch.schedule.is_some() {
+            tools::validate_trunk_send_interval(&job.schedule, target)?;
+        }
+    }
+    if let Some(e) = patch.enabled {
+        job.enabled = e;
+        if e {
+            job.consecutive_failures = 0;
+        }
+    }
+    if let Some(wake) = patch.wake_on_completion {
+        if let CronJobAction::SpawnTool {
+            wake_on_completion, ..
+        } = &mut job.action
+        {
+            *wake_on_completion = Some(wake);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    fn send_job(id: &str, schedule: ScheduleKind) -> CronJob {
+        CronJob {
+            id: id.to_string(),
+            name: id.to_string(),
+            schedule,
+            principal_id: PrincipalId("prin_test_principal".to_string()),
+            action: CronJobAction::Send {
+                message: "tick".to_string(),
+                target: Some("trunk".to_string()),
+                model: None,
+                when: Some(FireWhen::Attention),
+            },
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 7,
+            consecutive_failures: 0,
+            max_retries: None,
+            origin_session: None,
+            created_by: Some(peko_tools_core::ActingFor::runtime()),
+        }
+    }
+
+    /// Writers on separate `CronScheduler`s for one file, as in the
+    /// daemon (engine, cron tools, genesis), never undo each other's
+    /// changes: each read-modify-write runs under the file lock.
+    #[test]
+    fn concurrent_writers_keep_every_change() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("schedule.toml");
+        CronScheduler::new(&db_path).unwrap();
+        let doomed: Vec<String> = (0..40).map(|i| format!("doomed-{i}")).collect();
+        let seed = CronScheduler::new(&db_path).unwrap();
+        for id in &doomed {
+            seed.add_job(&send_job(id, ScheduleKind::Every { every_ms: 600_000 }))
+                .unwrap();
+        }
+
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let path = db_path.clone();
+            handles.push(std::thread::spawn(move || {
+                let scheduler = CronScheduler::new(&path).unwrap();
+                for i in 0..40 {
+                    let id = format!("added-{t}-{i}");
+                    scheduler
+                        .add_job(&send_job(&id, ScheduleKind::Every { every_ms: 600_000 }))
+                        .unwrap();
+                }
+            }));
+        }
+        for chunk in doomed.chunks(10) {
+            let path = db_path.clone();
+            let chunk = chunk.to_vec();
+            handles.push(std::thread::spawn(move || {
+                let scheduler = CronScheduler::new(&path).unwrap();
+                for id in chunk {
+                    assert!(scheduler.delete_job(&id).unwrap(), "{id} vanished early");
+                    scheduler.record_quiet("added-0-0", Utc::now()).unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let jobs = CronScheduler::new(&db_path)
+            .unwrap()
+            .list_jobs(true)
+            .unwrap();
+        let ids: std::collections::HashSet<_> = jobs.iter().map(|j| j.id.as_str()).collect();
+        let resurrected: Vec<_> = doomed
+            .iter()
+            .filter(|id| ids.contains(id.as_str()))
+            .collect();
+        assert!(
+            resurrected.is_empty(),
+            "deleted jobs came back: {resurrected:?}"
+        );
+        let lost: Vec<_> = (0..4)
+            .flat_map(|t| (0..40).map(move |i| format!("added-{t}-{i}")))
+            .filter(|id| !ids.contains(id.as_str()))
+            .collect();
+        assert!(lost.is_empty(), "added jobs were lost: {lost:?}");
+    }
+
+    /// A schedule change keeps the job's identity and counters, computes
+    /// the next fire from the new schedule, and is validated like a new
+    /// job; a refused patch leaves the job as it was.
+    #[test]
+    fn schedule_update_keeps_the_job_and_validates_the_result() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("schedule.toml")).unwrap();
+        let job = send_job("keepalive", ScheduleKind::Every { every_ms: 600_000 });
+        scheduler.add_job(&job).unwrap();
+
+        let cron = ScheduleKind::Cron {
+            expr: "0 9 * * *".into(),
+            tz: Some("Europe/Berlin".into()),
+        };
+        let patch = tools::JobPatch {
+            schedule: Some(cron.clone()),
+            ..Default::default()
+        };
+        assert!(scheduler.update_job_fields("keepalive", &patch).unwrap());
+        let updated = scheduler.get_job("keepalive").unwrap().unwrap();
+        assert_eq!(updated.schedule, cron);
+        assert_eq!(updated.run_count, 7);
+        assert_eq!(updated.created_at, job.created_at);
+        assert_eq!(updated.created_by, job.created_by);
+        assert_eq!(
+            updated.next_run,
+            tools::calculate_next_run(&cron, Utc::now()).unwrap()
+        );
+
+        for (patch, refusal) in [
+            (
+                tools::JobPatch {
+                    schedule: Some(ScheduleKind::Every { every_ms: 1_000 }),
+                    ..Default::default()
+                },
+                "every_ms >=",
+            ),
+            (
+                tools::JobPatch {
+                    schedule: Some(ScheduleKind::At {
+                        at: (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                    }),
+                    ..Default::default()
+                },
+                "one-shot",
+            ),
+            (
+                tools::JobPatch {
+                    schedule: Some(ScheduleKind::Idle { minutes: 30 }),
+                    when: Some(FireWhen::Quiet),
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+                "idle schedule",
+            ),
+            (
+                tools::JobPatch {
+                    message: Some("  ".into()),
+                    ..Default::default()
+                },
+                "non-empty",
+            ),
+        ] {
+            let error = scheduler
+                .update_job_fields("keepalive", &patch)
+                .unwrap_err();
+            assert!(error.to_string().contains(refusal), "{patch:?}: {error}");
+            let kept = scheduler.get_job("keepalive").unwrap().unwrap();
+            assert_eq!(kept.schedule, cron);
+            assert!(kept.enabled);
+        }
+    }
 
     #[test]
     fn test_add_and_list_job() {

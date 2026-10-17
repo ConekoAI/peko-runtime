@@ -4,6 +4,54 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: principals retune their seeded cron jobs in place (2026-10-17)
+
+Observed on MiMo (peko-benchmark `reports/2026101612*`, report
+`docs/MEMORY_HEARTBEAT_MIMO_2026-10-16.md`). The genesis brief and the
+keepalive tick told principals to retune their jobs, but `Cron` `update` took
+no schedule ("'interval_ms' is not a parameter here"). So they deleted and
+re-created the `memory` job (3 times at genesis, once with a guessed
+`Asia/Tokyo`) and the keepalive (twice mid-run). A re-created job has a new
+`cron_<uuid>` id and its own message. It loses the fire-time memory brief
+(ADR-080 D5), the `Bash`-free memory run (`is_memory_run`), the keepalive's
+derived `when: attention` and its trunk `target`.
+
+- **`Cron` `update` changes the schedule.** It takes `interval_ms`, `cron`
+  (keeping the job's timezone unless `timezone` is given), `timezone` alone
+  for a cron job, or `idle_ms`, and also `message`. The job keeps its id,
+  `created_by`, counters and history. The new schedule is validated as at
+  creation (trunk interval floor, `when` fit, the non-owner floor). The next
+  fire is computed from now. A refused patch changes nothing. `JobPatch` gains
+  `schedule` and `message`, and `ScheduleKind` derives `PartialEq`/`Eq`.
+- **The memory marker stays.** `update` refuses a new `message` on a job that
+  carries the runtime's memory brief marker, and points to a separate job
+  instead. Replacing the message of a job whose `when` comes from the
+  runtime's tick text pins that `when`.
+- **Prompts point at `update`.** The genesis brief and the keepalive tick
+  say to retune with `Cron` action `update` on the job's id rather than
+  re-create it.
+- **By-id cron calls reach the caller's own job.** This was the cause of the
+  "deleted keepalive keeps firing" observation (`20261016T122233Z…-always`).
+  Every principal has jobs `keepalive` and `memory`, and `delete`, `update`,
+  `trigger` and `history` checked that the caller owned a job with that id.
+  `DaemonCronAdapter::resolve_owner` and `CronEngine::execute_job_for_id` then
+  acted on the first loaded principal with that id. At 13:47:18 principal
+  `always` deleted `peer`'s seeded keepalive, which is missing from `peer`'s
+  final schedule, and its own kept firing. The `CronRuntime` by-id methods
+  now take the owning `PrincipalId`, and `resolve_owner` is gone.
+- **Cron store writes are serialized.** Every `CronScheduler` write
+  re-reads the file and writes it back under an exclusive lock on
+  `<schedule>.lock` (`std::fs::File::lock`). Before this, separate scheduler
+  instances (the engine, each tool call, genesis, the CLI) did unlocked
+  read-modify-writes through a shared `.tmp` path. With the lock disabled, the
+  new concurrency test fails on every run (rename errors, a torn file, lost
+  writes).
+- Remaining risk: the memory-marker check reads the job before the locked
+  write. Only `update` itself changes the marker, so the gap is harmless.
+  `FileCronRuntime` (test support) does not apply the marker rule.
+  Lock files are advisory, so a non-Rust editor of the schedule file bypasses
+  them.
+
 ### Fix: the hot-memory gate never applies a write in part (ADR-080 D4, 2026-10-17)
 
 Observed on MiMo v2.6 Flash (peko-benchmark
