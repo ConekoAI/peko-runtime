@@ -45,6 +45,21 @@ pub const TRUNK_SESSION_LITERAL: &str = "root:self";
 /// must go through this so they agree on the key.
 #[must_use]
 pub fn inbox_key(principal_id: &str, session_id: &str) -> String {
+    principal_session_key(principal_id, session_id)
+}
+
+/// The key for `session_id`'s entry in any daemon-wide store shared by
+/// principals: the trunk id qualified as `{principal_id}/{trunk}`, every
+/// other session id unchanged.
+///
+/// The trunk id is the same constant for every principal, so a store
+/// keyed by raw session id gives all trunks one entry. Besides the
+/// [`InboxRegistry`] ([`inbox_key`]), the channels' per-session read
+/// marks and waiting lists (`read_marks.json`, `attention.json`) use
+/// this key: a channel is shared by its member principals, and keyed
+/// raw, the first trunk to read a post consumed it for all of them.
+#[must_use]
+pub fn principal_session_key(principal_id: &str, session_id: &str) -> String {
     let trunk = SessionId::from(TRUNK_SESSION_LITERAL).to_string();
     if session_id == trunk || SessionId::from(session_id).to_string() == trunk {
         format!("{principal_id}/{trunk}")

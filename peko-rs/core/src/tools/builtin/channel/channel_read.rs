@@ -526,9 +526,28 @@ impl Tool for ChannelReadTool {
         // Advance the session's digest read mark to the newest returned
         // line — only on success and only when the page was non-empty.
         // Best-effort: a persistence failure must not fail the read.
-        if let (Some(session_key), Some(mark)) =
+        // The marks are keyed per principal: every trunk shares one id
+        // (`channel_digest::session_channel_state`).
+        if let (Some(session_id), Some(mark)) =
             (ctx.session_id.clone().filter(|s| !s.is_empty()), max_seen)
         {
+            let address = self
+                .port
+                .actor_info(&peko_subject::ActorRef::from(&peko_subject::PrincipalId(
+                    principal_str.clone(),
+                )))
+                .await
+                .address;
+            let state = crate::principal::channel_digest::session_channel_state(
+                self.port.as_ref(),
+                &channel_id,
+                &principal_str,
+                &session_id,
+                &[principal_str.as_str(), address.as_str()],
+                true,
+            )
+            .await;
+            let session_key = peko_session::principal_session_key(&principal_str, &session_id);
             if let Err(e) = self
                 .port
                 .advance_read_mark(&channel_id, &session_key, mark)
@@ -538,7 +557,7 @@ impl Tool for ChannelReadTool {
             }
             // Posts this read returned are no longer waiting on the
             // session (`peko_channel::attention`).
-            match self.port.attention(&channel_id, &session_key).await {
+            match state.map(|s| s.waiting) {
                 Ok(waiting) if waiting.iter().any(|w| returned.contains(&w.id)) => {
                     let left = waiting
                         .into_iter()
@@ -905,6 +924,93 @@ mod tests {
                 .len(),
             2,
             "another session's list is untouched"
+        );
+    }
+
+    /// Every principal's trunk has the same session id. One principal's
+    /// trunk reading a group clears its own read mark and waiting list,
+    /// never another principal's; a trunk still on the raw-id entry
+    /// adopts it, less its own posts.
+    #[tokio::test]
+    async fn trunk_reads_are_per_principal() {
+        let fx = Fixture::new().await;
+        let carol = PrincipalId::generate();
+        fx.store
+            .invite(&fx.channel, &fx.alice, &ActorRef::from(&carol))
+            .await
+            .unwrap();
+        let post = fx.post(&ActorRef::User("bob".into()), "deploy done").await;
+        let item = |author: &str| peko_channel::AttentionItem {
+            id: post.clone(),
+            author: author.into(),
+            at: "t".into(),
+            preview: "p".into(),
+        };
+        let trunk = peko_session::SessionId::from(peko_session::TRUNK_SESSION_LITERAL).to_string();
+        let alice_key = peko_session::principal_session_key(&fx.alice.0, &trunk);
+        let carol_key = peko_session::principal_session_key(&carol.0, &trunk);
+        fx.store
+            .set_attention(&fx.channel, &carol_key, vec![item("prin_other")])
+            .await
+            .unwrap();
+        // Alice's trunk predates the keying: its state is the raw entry.
+        fx.store
+            .set_attention(
+                &fx.channel,
+                &trunk,
+                vec![item("prin_other"), item(&fx.alice.0)],
+            )
+            .await
+            .unwrap();
+        fx.store
+            .advance_read_mark(&fx.channel, &trunk, "0".into())
+            .await
+            .unwrap();
+        fx.post(&ActorRef::from(&fx.alice), "later").await;
+
+        let carol_ctx = ToolContext::for_hook_run("run", "tc", CHANNEL_READ_TOOL_NAME)
+            .with_acting_for(peko_tools_core::ActingFor::runtime())
+            .with_principal_id(carol.0.clone())
+            .with_principal_name("carol")
+            .with_session_id(trunk.clone());
+        fx.tool
+            .execute_with_context(json!({ "channel": fx.channel.as_str() }), &carol_ctx)
+            .await
+            .unwrap();
+        assert!(fx
+            .store
+            .attention(&fx.channel, &carol_key)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(fx
+            .store
+            .read_mark(&fx.channel, &carol_key)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            fx.store.read_mark(&fx.channel, &alice_key).await.unwrap(),
+            None,
+            "carol's read must not move alice's trunk"
+        );
+        assert_eq!(
+            fx.store.attention(&fx.channel, &trunk).await.unwrap().len(),
+            2
+        );
+
+        // Alice reads only the newest post: her trunk adopts the raw
+        // entry; the older post still waits, her own is dropped.
+        fx.tool
+            .execute_with_context(
+                json!({ "channel": fx.channel.as_str(), "limit": 1 }),
+                &fx.ctx(Some(&trunk)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.store.attention(&fx.channel, &alice_key).await.unwrap(),
+            vec![item("prin_other")]
         );
     }
 

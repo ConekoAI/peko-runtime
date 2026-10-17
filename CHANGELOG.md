@@ -4,6 +4,64 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: channel read marks and waiting lists are per principal (2026-10-17)
+
+Observed on MiMo with all principals in one daemon (peko-benchmark
+`reports/20261017T081529Z-memory-heartbeat-attention`,
+`docs/MEMORY_HEARTBEAT_FIXES_MIMO_2026-10-17.md`, gap 1). `attn` was woken by
+each of three peer posts in a shared group. `lean` (`when: attention`) was
+woken by none of them and learned of them 81, 26 and 26 minutes later, on
+turns woken for other reasons. With one principal per daemon the same posts
+woke `lean` within 30–330 s.
+
+- A channel's `read_marks.json` and `attention.json` are shared by its member
+  principals and were keyed by session id. Every principal's trunk has the
+  same id (`trunk_session_id()`), so all trunks had one read mark and one
+  waiting list per channel. The first trunk whose digest rendered a post, or
+  that `ChannelRead` it, consumed it for the others. The quiet-tick check
+  (`pending_posts`) then found nothing for them, so `when: attention` jobs
+  stayed quiet.
+- The channel digest (`digest_pass`, `unread_events`, `pending_posts`) and
+  `ChannelRead` now key both stores by
+  `peko_session::principal_session_key(principal, session)`. It is the
+  function behind #475's `inbox_key`: the trunk id becomes
+  `{principal}/{trunk}`, and every other session id is unchanged. Both
+  callers load state through `channel_digest::session_channel_state`.
+- Why not a unique trunk id per principal: the trunk id is the trunk's
+  storage key in each principal's sessions dir, every child's
+  `parent_session_id`, the default cron target, and the root-family guard
+  literal. Changing it means rewriting all of that per principal. Only stores
+  shared across principals collide, and #475 already qualified the key for
+  the inbox.
+- **Migration.** No offline step. A trunk with no read mark under its
+  qualified key reads the old raw-trunk-id entry instead of adopting the tip,
+  so posts that arrived before the upgrade are not dropped. Waiting posts it
+  wrote itself are left out. On the first digest render or `ChannelRead`, the
+  entry is copied to the qualified key (waiting list first, then the mark;
+  the mark ends the fallback). A peek writes nothing. The raw entry stays in
+  the file for the channel's other principals and is never written again. In
+  a one-principal daemon the trunk carries on exactly where it was. In a
+  multi-principal daemon each trunk starts from the shared position, so posts
+  another trunk consumed before the upgrade stay consumed. Child sessions
+  have random ids, so their keys and entries are unchanged.
+- Audit of other stores keyed by session id. None of these cross
+  principals:
+  - Channel bindings are keyed per (channel, principal).
+  - Child-turn and subagent run guards use the per-principal task registry
+    (`task_registry_for`).
+  - Peer-recall artifacts go to the principal's own memory.
+  - Approvals live in the principal's `approvals/` dir. Their replay
+    dispatches through the principal's executor, and the inbox note uses
+    `inbox_key`.
+  - The completion wake and cron steers were fixed in #475.
+  - `streaming_runs` only holds peer children, which have random ids.
+  - Prompt change detection (`RuntimeContextState`) is per run.
+  - The subscriber `cursors.json` is per principal.
+- Tests: `trunks_of_two_principals_keep_their_own_marks_and_waiting_lists`,
+  `a_trunk_adopts_its_raw_trunk_id_entry` and `trunk_reads_are_per_principal`.
+  All three fail with raw keying. The first fails at "A's digest must not
+  consume B's posts".
+
 ### Fix: principals retune their seeded cron jobs in place (2026-10-17)
 
 Observed on MiMo (peko-benchmark `reports/2026101612*`, report
