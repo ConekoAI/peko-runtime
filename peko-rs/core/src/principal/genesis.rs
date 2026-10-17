@@ -57,7 +57,7 @@ use crate::principal::config::{BootState, PrincipalConfig};
 use crate::principal::PrincipalManager;
 
 /// Job id of the one-shot genesis turn.
-pub const GENESIS_JOB_ID: &str = "genesis";
+pub const GENESIS_JOB_ID: &str = crate::security::memory_gate::GENESIS_JOB_ID;
 
 /// Job id of the recurring default keepalive.
 pub const KEEPALIVE_JOB_ID: &str = "keepalive";

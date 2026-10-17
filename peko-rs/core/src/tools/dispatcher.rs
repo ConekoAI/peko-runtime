@@ -35,12 +35,10 @@ use crate::tools::catalog::ToolCatalog;
 
 /// What [`ToolDispatcher::screen_hot_memory`] decided.
 enum MemoryScreen {
-    /// Nothing held back.
+    /// Nothing held back: the write goes ahead as asked.
     Pass,
-    /// Some lines held back; the rest is written, and the note is added
-    /// to the result.
-    Partly(String),
-    /// Nothing left to write, or filing failed: the call's result.
+    /// The write was filed for the owner and nothing of it applied, or
+    /// filing failed: the call's result.
     Done(Dispatched),
 }
 
@@ -719,9 +717,6 @@ impl ToolDispatcher {
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
         let workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
-        // ADR-080 D4: lines a scheduled owner run adds to hot memory
-        // without an owner-only source, held back and filed.
-        let mut memory_note = None;
         if stamp.is_untrusted() {
             // The file tools default to a runtime-wide directory; an
             // untrusted run's relative paths are its workspace's instead.
@@ -782,7 +777,9 @@ impl ToolDispatcher {
                     });
                 }
             }
-            if write && crate::security::memory_gate::is_scheduled_owner(&stamp) {
+            // ADR-080 D4: a scheduled owner run's write to hot memory that
+            // adds an entry without an owner-only source is filed instead.
+            if write && crate::security::memory_gate::is_screened(&stamp) {
                 if let Some(workspace) = workspace.as_deref() {
                     match self
                         .screen_hot_memory(
@@ -791,12 +788,11 @@ impl ToolDispatcher {
                             &target,
                             &stamp,
                             &tool_name,
-                            &mut params,
+                            &params,
                         )
                         .await
                     {
                         MemoryScreen::Pass => {}
-                        MemoryScreen::Partly(note) => memory_note = Some(note),
                         MemoryScreen::Done(dispatched) => return Ok(dispatched),
                     }
                 }
@@ -931,13 +927,7 @@ impl ToolDispatcher {
                 outcome: Outcome::Cancelled,
             });
         }
-        let (mut text, mut json, success) = settle(&tool_name, &metadata.source, &result);
-        if let Some(note) = memory_note {
-            text = format!("{text}\n\n{note}");
-            if let Some(object) = json.as_object_mut() {
-                object.insert("memory_held".into(), Value::String(note));
-            }
-        }
+        let (text, json, success) = settle(&tool_name, &metadata.source, &result);
         let outcome =
             if call.background_progress.is_none() && ledger::detached_task_id(&json).is_some() {
                 Outcome::Detached
@@ -953,10 +943,12 @@ impl ToolDispatcher {
     }
 
     /// ADR-080 D4, D8: screen a scheduled owner run's `Write` / `Edit` of
-    /// `kb/MEMORY.md` or `kb/CONVENTIONS.md`. Added lines whose sources
-    /// are not all owner-only are removed from `params` and filed for the
-    /// owner; the rest is written. When nothing is left to write, the
-    /// call ends here.
+    /// `kb/MEMORY.md` or `kb/CONVENTIONS.md`. The entries the write adds
+    /// to the file must cite only owner-only sources and, under ADR-085,
+    /// be found supported by them. When any entry is held, the whole call
+    /// is filed for the owner and nothing of it is written: a write that
+    /// rewrites an entry also removes its old version, and applying the
+    /// rest would lose the entry.
     async fn screen_hot_memory(
         &self,
         principal_id: &peko_subject::PrincipalId,
@@ -964,7 +956,7 @@ impl ToolDispatcher {
         target: &std::path::Path,
         stamp: &peko_tools_core::ActingFor,
         tool_name: &str,
-        params: &mut Value,
+        params: &Value,
     ) -> MemoryScreen {
         use crate::security::memory_gate::{self, SourceClass, HOT_MEMORY, SOURCED_HOT_FILES};
         let workspace = crate::security::floor::resolve(workspace);
@@ -975,15 +967,26 @@ impl ToolDispatcher {
         else {
             return MemoryScreen::Pass;
         };
-        let key = match tool_name {
-            "Write" => "content",
-            "Edit" => "new_string",
-            _ => return MemoryScreen::Pass,
+        let existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
+        // The file as the call would leave it, so an entry is judged
+        // whole even when an edit touches one of its lines. An edit the
+        // tool will refuse is screened on its replacement text alone.
+        let candidate = match tool_name {
+            "Write" => params["content"].as_str().map(str::to_string),
+            "Edit" => params["new_string"].as_str().map(|new| {
+                memory_gate::apply_edit(
+                    &existing,
+                    params["old_string"].as_str().unwrap_or_default(),
+                    new,
+                    params["replace_all"].as_bool().unwrap_or(false),
+                )
+                .unwrap_or_else(|| new.to_string())
+            }),
+            _ => None,
         };
-        let Some(candidate) = params[key].as_str().map(str::to_string) else {
+        let Some(candidate) = candidate else {
             return MemoryScreen::Pass;
         };
-        let existing = tokio::fs::read_to_string(&target).await.unwrap_or_default();
         let gate = self.policy_gate();
         let mut classes = std::collections::HashMap::new();
         for source in memory_gate::cited(&existing, &candidate) {
@@ -993,22 +996,25 @@ impl ToolDispatcher {
             };
             classes.insert(source, class);
         }
-        let (mut kept, mut held) = memory_gate::screen(&existing, &candidate, &classes);
-        // ADR-085: what survives the source check goes to a reviewer
-        // with excerpts of what it cites; unsupported or unchecked lines
-        // are held too.
-        let claims = memory_gate::claims(&existing, &kept);
-        if !claims.is_empty() {
-            let checks = match &gate {
-                Some(gate) => gate.check_claims(&principal_id.0, &claims).await,
-                None => claims
-                    .iter()
-                    .map(|_| memory_gate::ClaimCheck::Unchecked("no reviewer is configured".into()))
-                    .collect(),
-            };
-            let (reviewed, unsupported) = memory_gate::hold_unsupported(&kept, &claims, &checks);
-            kept = reviewed;
-            held.extend(unsupported);
+        let mut held = memory_gate::screen(&existing, &candidate, &classes);
+        // ADR-085: when every added entry passes the source check, the
+        // entries go to a reviewer with excerpts of what they cite;
+        // unsupported or unchecked ones are held too. A write already
+        // held needs no review.
+        if held.is_empty() {
+            let claims = memory_gate::claims(&existing, &candidate);
+            if !claims.is_empty() {
+                let checks = match &gate {
+                    Some(gate) => gate.check_claims(&principal_id.0, &claims).await,
+                    None => claims
+                        .iter()
+                        .map(|_| {
+                            memory_gate::ClaimCheck::Unchecked("no reviewer is configured".into())
+                        })
+                        .collect(),
+                };
+                held = memory_gate::hold_unsupported(&claims, &checks);
+            }
         }
         if held.is_empty() {
             return MemoryScreen::Pass;
@@ -1017,13 +1023,17 @@ impl ToolDispatcher {
         {
             Ok(paths) => paths,
             Err(e) => {
-                let text = format!("Error: could not file the held-back lines: {e:#}");
+                let text = format!("Error: could not file the held-back entries: {e:#}");
                 return MemoryScreen::Done(Dispatched::refused(text, Outcome::Error));
             }
         };
         let mut reasons = String::new();
         for h in &held {
-            reasons.push_str(&format!("\n- {} — {}", h.line.trim(), h.describe()));
+            reasons.push_str(&format!(
+                "\n- {} — {}",
+                memory_gate::flatten(&h.entry),
+                h.describe()
+            ));
         }
         let elsewhere = if hot == HOT_MEMORY {
             "Keep facts about other people in `kb/people/` notes instead."
@@ -1031,38 +1041,33 @@ impl ToolDispatcher {
             "Keep lessons from conversations with others in `kb/dreams/` instead."
         };
         let note = format!(
-            "{} line(s) were not written to `{hot}` and were filed for the owner ({}). \
-             A scheduled run adds a line there only when it ends with `(source: …)` naming \
-             sessions or channels that only the owner speaks in and, while others are \
-             talking to this principal, a reviewer finds the line supported by them. \
-             {elsewhere}{reasons}",
+            "Nothing was written to `{hot}`: {} entr{} in this {tool_name} could not be added, \
+             so the whole {tool_name} was filed for the owner ({}) and the file is unchanged. \
+             A scheduled run adds an entry there only when the entry cites `(source: …)` \
+             naming sessions or channels that only the owner speaks in and, while others are \
+             talking to this principal, a reviewer finds it supported by them. To apply the \
+             rest, repeat the change without these entries, leaving any existing entry they \
+             would replace as it is. {elsewhere}{reasons}",
             held.len(),
+            if held.len() == 1 { "y" } else { "ies" },
             filed
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let unchanged = match tool_name {
-            "Write" => kept == existing,
-            _ => params["old_string"].as_str() == Some(kept.as_str()),
-        };
-        if unchanged {
-            let json = serde_json::json!({
-                "proposed": true,
-                "target": hot,
-                "proposals": filed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                "message": note,
-            });
-            return MemoryScreen::Done(Dispatched {
-                text: note,
-                json,
-                success: true,
-                outcome: Outcome::Proposed,
-            });
-        }
-        params[key] = Value::String(kept);
-        MemoryScreen::Partly(note)
+        let json = serde_json::json!({
+            "proposed": true,
+            "target": hot,
+            "proposals": filed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "message": note,
+        });
+        MemoryScreen::Done(Dispatched {
+            text: note,
+            json,
+            success: true,
+            outcome: Outcome::Proposed,
+        })
     }
 
     /// Fire an observe-only hook point for the call (PreToolUse /

@@ -70,6 +70,12 @@ goes to a reviewer:
   skipped them). Held lines are filed in `kb/inbox/` under the run's own
   compartment, with the reason, and the tool result lists them.
 - **No gate bound: fail closed.** Every sourced line is held.
+- *Amended 2026-10-17:* a "line" here is an ADR-080 D4 entry, a list item
+  with its continuation lines. The reviewer gets each entry whole, flattened
+  to one line, so a wrapped fact is not judged fragment by fragment. The
+  review runs only when every added entry has passed the source check. Any
+  held entry holds the whole write (ADR-080 D4), so a supported entry beside
+  it waits until the run repeats the change without the held entry.
 
 ### D3 — Scope
 

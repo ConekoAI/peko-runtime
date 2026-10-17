@@ -4,6 +4,51 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the hot-memory gate never applies a write in part (ADR-080 D4, 2026-10-17)
+
+Observed on MiMo v2.6 Flash (peko-benchmark
+`reports/20261016T124529Z-memory-heartbeat-nightly`, `20261016T132006Z…/rep1`).
+The gate never caught a guest plant; the model refused those itself. In 3 of
+6 guest-exposed or reviewed passes it deleted or cut owner facts, and it
+falsely held 13 correct owner facts.
+
+- **A held entry holds the whole write.** `screen` used to drop held lines from
+  a `Write`/`Edit` of `kb/MEMORY.md` or `kb/CONVENTIONS.md` and apply the rest.
+  When a run rewrote an entry to add its source, the old version's removal
+  applied and the new version was held. One pass lost four of five owner
+  facts, and another cut two entries to their first line. Now any held entry
+  files the call for the owner and leaves the file unchanged
+  (`Outcome::Proposed`). The result lists the held entries and tells the run
+  to repeat the change without them. `MemoryScreen::Partly` and the
+  `memory_held` result key are gone.
+- **Entries, not physical lines.** The gate compares the file as the call
+  would leave it with the file as it is, entry by entry. An entry is a list
+  item with its continuation lines, or a paragraph. An `Edit` is applied
+  exactly as the tool would (`memory_gate::apply_edit`). An edit the tool will
+  refuse is screened on its `new_string` alone. Re-wrapping or re-indenting
+  an entry adds nothing. Changing one line of a wrapped entry makes the whole
+  entry new. `#5` at the start of a line is not a heading.
+- **Sources.** `(source: …)` counts on any line of the entry, and any text
+  after the group is ignored, so `(source: sess:/local-user).` cites. Items
+  may be in backticks. A bare `#5` after `chan_x#4` in the same group is
+  `chan_x#5`. With no channel before it, or after an item with no `#`, it
+  stays bare and unknown.
+- **Genesis is exempt** (`memory_gate::is_screened`). The one-shot `genesis`
+  cron turn reads no one's conversation and is not asked for sources, but each
+  wrapped line it wrote went to `kb/inbox/`. `GENESIS_JOB_ID` now lives in
+  `memory_gate`. Cron-tool jobs get `cron_<uuid>` ids, so no other job can
+  claim it.
+- **The reviewer gets whole entries.** `Claim::entry` and `Held::entry`
+  replace `line`. `review_prompt` quotes each entry flattened to one line.
+  Excerpt selection and the output budget are unchanged. The review runs only
+  when every added entry passed the source check, since a held write is not
+  applied anyway. Proposals quote multi-line entries in full.
+- Remaining risk: a run that keeps re-sending a write containing a held entry
+  writes nothing, and each attempt files another proposal (the inbox stays
+  capped). A genesis turn that runs late in a legacy principal with existing
+  conversations is not screened either. Deletions by a scheduled run are
+  still not screened (ADR-080 D4 screens additions only).
+
 ### Fix: trunk run admission and inbox are per principal (2026-10-17)
 
 - The daemon-wide `InboxRegistry` (run permits and steering/completion

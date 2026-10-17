@@ -4,7 +4,7 @@
 //! - [`floor`] is the fixed floor every call passes: no shell below
 //!   trusted, workspace confinement, and owner-only protected files.
 //! - [`proposals`] files a non-owner's protected write for the owner.
-//! - [`memory_gate`] holds back `MEMORY.md` and `CONVENTIONS.md` lines a
+//! - [`memory_gate`] holds back `MEMORY.md` and `CONVENTIONS.md` writes a
 //!   scheduled owner run cannot source to the owner (ADR-080 D4, D8).
 //! - [`policy`] reads the owner's `POLICY.md`.
 //! - [`judge`] decides which calls a separate reviewer sees, and how.

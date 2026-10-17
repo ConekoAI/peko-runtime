@@ -104,20 +104,30 @@ them. Without a check, a guest's words reach `kb/MEMORY.md`, and from there ever
 agent's prompt, as the owner's own memory. ADR-078 sends non-owner writes to the
 inbox, but these writes come from an owner run.
 
-- When an owner run started by a cron job (`Origin::Cron`, any job) writes
-  `kb/MEMORY.md` with `Write` or `Edit`, the dispatcher compares the new text
-  with the file. Each added line, meaning not already in the file (compared
-  trimmed) and not blank, a heading, a rule or a fence, must end with
-  `(source: a, b)`. A source is a session path or id, or
-  `<channel id>#<event id>`.
+- When an owner run started by a cron job (`Origin::Cron`, any job but the
+  one-shot `genesis` turn) writes `kb/MEMORY.md` with `Write` or `Edit`, the
+  dispatcher compares the file as the call would leave it with the file as it
+  is. The comparison is by entry: a list item with the lines that continue it,
+  or a paragraph. Blank lines, headings, rules and fences only separate
+  entries. Each added entry, meaning not already in the file (compared with
+  whitespace collapsed, so moving or re-wrapping adds nothing), must cite
+  `(source: a, b)` on any of its lines. A source is a session path or id, or
+  `<channel id>#<event id>`; `chan_x#4, #5` is short for `chan_x#4, chan_x#5`.
 - A source passes when it exists and its compartment's ceiling is owner: the
   principal's internal tree, or a conversation where only the owner speaks
-  besides the principal. A line passes when it cites at least one source and
+  besides the principal. An entry passes when it cites at least one source and
   all of them pass.
-- Lines that do not pass are removed from the write and filed in `kb/inbox/`,
-  under the conversation they cite (uncited or unknown ones go under the run's
-  own compartment). The rest is written, and the tool result lists what was
-  held back. If nothing is left to write, the call ends as a proposal.
+- When any added entry does not pass, the whole call is held: nothing of it is
+  written, and each failing entry is filed in `kb/inbox/` under the
+  conversation it cites (uncited or unknown ones go under the run's own
+  compartment). The tool result lists them and says to repeat the change
+  without them. *Amended 2026-10-17:* the gate used to remove only the
+  failing lines and write the rest. A run that rewrote an entry then lost
+  it: the old version's removal applied and the new version was held. On
+  MiMo v2.6 Flash this dropped four of five owner facts in one nightly pass.
+- The genesis turn is exempt. It organizes a new principal from its own
+  definition, reads no one's conversation, and its brief asks for no sources;
+  screening it filed every line it wrote to `kb/MEMORY.md` in the inbox.
 - The memory run (`Origin::Cron { job_id: "memory" }`, and agents it spawns)
   gets no `Bash`, so the file tools are its only way to the file. Other cron
   turns keep `Bash`: fixed-tool jobs (`tool: "Bash"`) run under the same stamp.
