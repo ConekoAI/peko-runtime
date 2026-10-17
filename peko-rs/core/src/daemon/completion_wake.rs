@@ -88,11 +88,19 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
         return;
     }
 
+    // The registry key is principal-scoped for the trunk (its id is the
+    // same for every principal); the turn below still runs on the plain
+    // session id.
+    let inbox_key = match &notice.principal_id {
+        Some(principal) => crate::principal::routers::root::inbox_key(principal, &session_key),
+        None => session_key.clone(),
+    };
+
     // Gate on the run permit: a session with a run in flight drains
     // the inbox at its next iteration — no wake needed. The permit is
     // also the mutual-exclusion token against concurrent wake handlers
     // and post-run successor chains for this session.
-    let Some(_permit) = ctx.inbox_registry.try_acquire_run(&session_key).await else {
+    let Some(_permit) = ctx.inbox_registry.try_acquire_run(&inbox_key).await else {
         debug!(
             session = %session_key,
             task = %notice.task_id,
@@ -150,7 +158,7 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
 
     let mut chained = 0u8;
     loop {
-        let pending = match ctx.inbox_registry.peek_inbox(&session_key).await {
+        let pending = match ctx.inbox_registry.peek_inbox(&inbox_key).await {
             Some(inbox) => !inbox.is_empty().await,
             None => false,
         };

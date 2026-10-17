@@ -4,6 +4,39 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: trunk run admission and inbox are per principal (2026-10-17)
+
+- The daemon-wide `InboxRegistry` (run permits and steering/completion
+  inboxes) was keyed by session id, and the trunk id
+  (`trunk_session_id()`, the v5 form of `root:self`) is the same for every
+  principal. With several principals in one daemon, a trunk turn for B
+  arriving while A's trunk ran was refused and queued ("Queued for root agent
+  session …") into the shared trunk inbox. B never got that turn, and the
+  next trunk run of any principal drained it, so B's supervision tick showed
+  up in another principal's trunk transcript. Async completions and cron
+  steers delivered to a trunk leaked the same way.
+- `routers::root::inbox_key(principal, session)` now qualifies the trunk id
+  with its principal and passes every other session id through unchanged.
+  All registry access that can see the trunk goes through it: trunk
+  admission (`receive_trunk`), the agentic loop's drain, executor
+  completion/steer delivery (keyed by the task's principal), the completion
+  wake handler, policy-gate approval notes, and the Session tool's
+  run-active checks (`SessionManagerRuntime::with_principal_id`). Session
+  ids themselves and the "Queued for root agent session …" text are
+  unchanged.
+- DM, peer, group and spawned child sessions have random ids, so they never
+  collided. Their keys and the IPC `principal_send`/stop/successor paths and
+  channel binding are unchanged.
+- Remaining risk: a registry access that sees the trunk id without its
+  principal still uses the bare key, so it misses the trunk's inbox. It would
+  not cross principals. Today that covers a `SessionManagerRuntime` built
+  without `with_principal_id` (tests and the CLI), and async tasks stamped
+  with the system principal (an `async_router` call whose `ToolContext` has
+  no `principal_id`). Their completions targeting a trunk wait under the
+  `system` scope instead of being drained by the trunk. The agent loop's
+  fallback key `default` (runs with no session key) is still shared across
+  principals.
+
 ### Memory claims reviewed against their sources (ADR-085, 0.1.0, 2026-10-16)
 
 - A scheduled owner run's sourced lines for `kb/MEMORY.md` or

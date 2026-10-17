@@ -85,6 +85,30 @@ pub fn trunk_session_id() -> String {
     peko_session::SessionId::from("root:self").to_string()
 }
 
+/// The `InboxRegistry` key for `session_id` owned by `principal_id`.
+///
+/// The registry (run permits + steering/completion inboxes) is
+/// daemon-wide and keyed by string, while [`trunk_session_id`] is the
+/// same constant for every principal. Keyed raw, one principal's busy
+/// trunk refused another's turn and queued it into the shared trunk
+/// inbox, where whichever trunk ran next drained it. The trunk key is
+/// therefore qualified with its principal. Every other session id is
+/// a random per-session UUID and passes through unchanged, so children
+/// keep keying the registry by their plain session id.
+///
+/// Every registry access that can see the trunk id — admission, the
+/// loop's drain, completion/steer delivery, wake, run-active checks —
+/// must go through this so they agree on the key.
+#[must_use]
+pub fn inbox_key(principal_id: &str, session_id: &str) -> String {
+    let trunk = trunk_session_id();
+    if session_id == trunk || peko_session::SessionId::from(session_id).to_string() == trunk {
+        format!("{principal_id}/{trunk}")
+    } else {
+        session_id.to_string()
+    }
+}
+
 /// The session id the trunk router runs a turn in, adjusted for the
 /// channel.
 ///
@@ -395,6 +419,18 @@ mod tests {
             uuid::Uuid::parse_str(&trunk).is_ok(),
             "trunk_session_id should be a valid UUID; got {trunk:?}"
         );
+    }
+
+    #[test]
+    fn inbox_key_scopes_only_the_trunk_by_principal() {
+        let trunk = trunk_session_id();
+        let a = inbox_key("prin_a", &trunk);
+        let b = inbox_key("prin_b", &trunk);
+        assert_ne!(a, b, "two principals' trunks must not share an inbox key");
+        assert_eq!(inbox_key("prin_a", "root:self"), a, "literal form maps too");
+        let child = peko_session::SessionId::new().to_string();
+        assert_eq!(inbox_key("prin_a", &child), child);
+        assert_eq!(inbox_key("prin_b", &child), child);
     }
 
     #[test]

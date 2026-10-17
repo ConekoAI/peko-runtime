@@ -3393,7 +3393,10 @@ mod tests {
 
         // Poll up to 2s for the steer message to land in the trunk
         // inbox (the closure runs in the background).
-        let trunk_key = crate::principal::routers::root::trunk_session_id();
+        let trunk_key = crate::principal::routers::root::inbox_key(
+            &principal.id.0,
+            &crate::principal::routers::root::trunk_session_id(),
+        );
         for _ in 0..200 {
             let trunk_inbox = registry.get_or_create(&trunk_key).await;
             if !trunk_inbox.is_empty().await {
