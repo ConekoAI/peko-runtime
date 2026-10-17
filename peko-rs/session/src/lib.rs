@@ -94,7 +94,8 @@ pub use events::{
 };
 pub use id::SessionId;
 pub use inbox_registry::{
-    inbox_key, InboxFactory, InboxRegistry, RunPermitGuard, TRUNK_SESSION_LITERAL,
+    inbox_key, principal_session_key, InboxFactory, InboxRegistry, RunPermitGuard,
+    TRUNK_SESSION_LITERAL,
 };
 pub use index::{SessionEntry, SessionIndex};
 pub use jsonl::{

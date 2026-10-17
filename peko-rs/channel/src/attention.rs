@@ -2,7 +2,8 @@
 //!
 //! One `attention.json` per channel, beside `read_marks.json` at
 //! `<runtime_dir>/channels/<channel_id>/attention.json`. For each
-//! *session* (keyed by session-id string) it holds the posts by other
+//! *session* (keyed like `read_marks.json`: the session-id string, or
+//! `{principal}/{trunk}` for a trunk) it holds the posts by other
 //! principals that the session has been shown but has not handled.
 //!
 //! Only humans and cron start runs (ADR-072 D1), so another

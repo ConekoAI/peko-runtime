@@ -33,6 +33,16 @@
 //! posts on the channel after them. Users' posts stay one-shot: the
 //! ones that want a reply start turns themselves.
 //!
+//! ## Keyed per principal
+//!
+//! Marks and waiting lists live in the channel, which its member
+//! principals share, and every principal's trunk has the same session
+//! id. They are therefore stored under
+//! [`peko_session::principal_session_key`] — the trunk id qualified by
+//! its principal — so one trunk's digest or `ChannelRead` never consumes
+//! a post for another. [`session_channel_state`] loads them and moves a
+//! trunk's pre-qualification entry over on first use.
+//!
 //! ## Deliberate render-time side effect
 //!
 //! The handler advances the read mark as it renders (to the max line
@@ -229,6 +239,7 @@ async fn digest_pass(
     };
     let own_path = peko_session::path::compute_path(metas, session_id);
     let session_key = session_id.as_str();
+    let own_authors = [me.id, me.address];
     // Humans and cron drive the trunk and the peer standing children;
     // a spawned subagent works a narrow task and sees only its bound
     // channels.
@@ -282,13 +293,33 @@ async fn digest_pass(
             continue;
         }
 
-        let events = unread_events(port, &channel, &session_key, own_meta.created_at, write)
-            .await
-            .unwrap_or_default();
-        let stored = port
-            .attention(&channel, &session_key)
-            .await
-            .unwrap_or_default();
+        let state = match session_channel_state(
+            port.as_ref(),
+            &channel,
+            me.id,
+            &session_key,
+            &own_authors,
+            write,
+        )
+        .await
+        {
+            Ok(state) => state,
+            Err(e) => {
+                tracing::debug!("channel digest: session state ({channel}) failed: {e}");
+                continue;
+            }
+        };
+        let events = unread_events(
+            port,
+            &channel,
+            &state.key,
+            state.mark,
+            own_meta.created_at,
+            write,
+        )
+        .await
+        .unwrap_or_default();
+        let stored = state.waiting;
         if events.is_empty() && stored.is_empty() {
             continue;
         }
@@ -318,7 +349,7 @@ async fn digest_pass(
         // need an answer survive in the waiting list, not the mark.
         if let Some((max_id, _)) = events.last() {
             if let Err(e) = port
-                .advance_read_mark(&channel, &session_key, max_id.clone())
+                .advance_read_mark(&channel, &state.key, max_id.clone())
                 .await
             {
                 tracing::debug!("channel digest: advance_read_mark({channel}) failed: {e}");
@@ -326,7 +357,7 @@ async fn digest_pass(
         }
         if waiting_now != stored {
             if let Err(e) = port
-                .set_attention(&channel, &session_key, waiting_now.clone())
+                .set_attention(&channel, &state.key, waiting_now.clone())
                 .await
             {
                 tracing::debug!("channel digest: set_attention({channel}) failed: {e}");
@@ -373,11 +404,72 @@ async fn digest_pass(
     (Some(cap_digest(sections.join("\n"))), listed)
 }
 
+/// A session's read mark and waiting list on one channel, and the key
+/// they are stored under.
+#[derive(Debug)]
+pub(crate) struct SessionChannelState {
+    /// [`peko_session::principal_session_key`] of the session.
+    pub(crate) key: String,
+    /// The last line id the session observed (`None` = first look).
+    pub(crate) mark: Option<peko_channel::port::TaskId>,
+    /// Posts waiting on the session.
+    pub(crate) waiting: Vec<AttentionItem>,
+}
+
+/// Load `session_id`'s read mark and waiting list on `channel`, keyed
+/// by [`peko_session::principal_session_key`] (see the module doc).
+///
+/// Migration: before the key was qualified, every trunk used the raw
+/// trunk id. A trunk with no mark under its own key yet starts from the
+/// raw entry instead of adopting the tip (which would drop what arrived
+/// since), less the waiting posts it wrote itself. With `adopt` the
+/// entry is copied to the trunk's key, so later reads and writes use only
+/// that; without it (a peek) nothing is written. The raw entry is left
+/// in place for the channel's other principals.
+pub(crate) async fn session_channel_state(
+    port: &dyn ChannelPort,
+    channel: &peko_channel::ChannelId,
+    principal_id: &str,
+    session_id: &str,
+    own_authors: &[&str],
+    adopt: bool,
+) -> peko_channel::Result<SessionChannelState> {
+    let key = peko_session::principal_session_key(principal_id, session_id);
+    let mark = port.read_mark(channel, &key).await?;
+    if mark.is_some() || key == session_id {
+        let waiting = port.attention(channel, &key).await?;
+        return Ok(SessionChannelState { key, mark, waiting });
+    }
+    let Some(legacy_mark) = port.read_mark(channel, session_id).await? else {
+        let waiting = port.attention(channel, &key).await?;
+        return Ok(SessionChannelState { key, mark, waiting });
+    };
+    let waiting: Vec<AttentionItem> = port
+        .attention(channel, session_id)
+        .await?
+        .into_iter()
+        .filter(|item| !own_authors.contains(&item.author.as_str()))
+        .collect();
+    if adopt {
+        // Waiting list first: a mark under the key ends the fallback, so
+        // a failure between the two writes retries the whole copy.
+        port.set_attention(channel, &key, waiting.clone()).await?;
+        port.advance_read_mark(channel, &key, legacy_mark.clone())
+            .await?;
+    }
+    Ok(SessionChannelState {
+        key,
+        mark: Some(legacy_mark),
+        waiting,
+    })
+}
+
 /// The events on `channel` this session has not observed yet,
 /// oldest→newest, or `None` when the channel can't be read or this is
 /// the session's first look at a channel that predates it.
 ///
-/// First observation adopts the current tip as the mark and reports
+/// `mark` is the session's read mark, stored under `session_key`. First
+/// observation (`None`) adopts the current tip as the mark and reports
 /// nothing — never dump history into the prompt — unless the channel is
 /// newer than the session (`session_created_ms`): then everything on it
 /// is unread, so the first message from a new peer is not swallowed.
@@ -385,16 +477,10 @@ async fn unread_events(
     port: &Arc<dyn ChannelPort>,
     channel: &peko_channel::ChannelId,
     session_key: &str,
+    mark: Option<peko_channel::port::TaskId>,
     session_created_ms: u64,
     write: bool,
 ) -> Option<Vec<(peko_channel::port::TaskId, ChannelEvent)>> {
-    let mark = match port.read_mark(channel, session_key).await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::debug!("channel digest: read_mark({channel}) failed: {e}");
-            return None;
-        }
-    };
     let Some(mark) = mark else {
         let all = match port.peek_with_ids(channel, &Checkpoint::default()).await {
             Ok(all) => all,
@@ -1177,6 +1263,136 @@ mod tests {
             .await
             .unwrap()
             .contains("ping"));
+    }
+
+    /// Every principal's trunk has the same session id. Two principals in
+    /// one group: A's digest, and A answering there, must not consume or
+    /// clear posts for B, whose quiet-tick peek still counts them and
+    /// whose digest then shows them. (`ChannelRead`'s side:
+    /// `channel_read::tests::trunk_reads_are_per_principal`.)
+    #[tokio::test]
+    async fn trunks_of_two_principals_keep_their_own_marks_and_waiting_lists() {
+        const B: Me<'static> = Me {
+            hub: None,
+            address: "principal:local:prin_b",
+            id: "prin_b",
+            name: "bee",
+        };
+        let trunk = peko_session::id::SessionId::from(peko_session::TRUNK_SESSION_LITERAL);
+        let mut meta = SessionMetadata::new(trunk, "root", "trunk.jsonl");
+        meta.created_at += 3_600_000;
+        let metas = vec![meta];
+
+        let (_dir, port) = store();
+        let group = port
+            .create(&PrincipalId(ME.id.to_string()), CreateOpts::runtime("crew"))
+            .await
+            .unwrap();
+        port.invite(
+            &group,
+            &PrincipalId(ME.id.to_string()),
+            &ActorRef::from(&PrincipalId(B.id.to_string())),
+        )
+        .await
+        .unwrap();
+        for me in [&ME, &B] {
+            assert!(render_channel_digest(&port, &metas, trunk, me, true)
+                .await
+                .is_none());
+        }
+
+        // A peer's post (waits) and a user's unmentioned one (one-shot).
+        for (author, text) in [("prin_other", "deploy done"), ("user:bob", "lunch?")] {
+            port.post_attributed(&group, &me_subject(), author, PostMsg::root(text))
+                .await
+                .unwrap();
+        }
+        let a = render_channel_digest(&port, &metas, trunk, &ME, true)
+            .await
+            .expect("A sees both posts");
+        assert!(a.contains("deploy done") && a.contains("lunch?"), "{a}");
+        assert_eq!(
+            digest_pass(&port, &metas, trunk, &B, true, false).await.1,
+            2,
+            "A's digest must not consume B's posts"
+        );
+
+        // A answers on the channel: nothing waits on A any more.
+        port.post_attributed(&group, &me_subject(), ME.address, PostMsg::root("on it"))
+            .await
+            .unwrap();
+        assert!(render_channel_digest(&port, &metas, trunk, &ME, true)
+            .await
+            .is_none());
+
+        let b = render_channel_digest(&port, &metas, trunk, &B, true)
+            .await
+            .expect("B still sees the posts");
+        assert!(b.contains("2 waiting"), "the peer post and A's answer: {b}");
+        for text in ["deploy done", "lunch?", "on it"] {
+            assert!(b.contains(text), "{text}: {b}");
+        }
+    }
+
+    /// Upgrading: the trunk's marks were stored under the raw trunk id. A
+    /// trunk starts from that entry rather than the tip, drops waiting
+    /// posts it wrote itself, and a peek writes nothing.
+    #[tokio::test]
+    async fn a_trunk_adopts_its_raw_trunk_id_entry() {
+        let trunk = peko_session::id::SessionId::from(peko_session::TRUNK_SESSION_LITERAL);
+        let raw = trunk.as_str();
+        let mut meta = SessionMetadata::new(trunk, "root", "trunk.jsonl");
+        meta.created_at += 3_600_000;
+        let metas = vec![meta];
+
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-legacy", "/principal-legacy").await;
+        let seen = port
+            .post_attributed(&dm, &me_subject(), "prin_other", PostMsg::root("old"))
+            .await
+            .unwrap();
+        let item = |author: &str| AttentionItem {
+            id: seen.clone(),
+            author: author.into(),
+            at: "t".into(),
+            preview: format!("from {author}"),
+        };
+        port.advance_read_mark(&dm, &raw, seen.clone())
+            .await
+            .unwrap();
+        port.set_attention(&dm, &raw, vec![item("prin_other"), item(ME.address)])
+            .await
+            .unwrap();
+        port.post_attributed(&dm, &me_subject(), "prin_other", PostMsg::root("new"))
+            .await
+            .unwrap();
+
+        let key = peko_session::principal_session_key(ME.id, &raw);
+        assert_eq!(
+            digest_pass(&port, &metas, trunk, &ME, true, false).await.1,
+            2
+        );
+        assert_eq!(
+            port.read_mark(&dm, &key).await.unwrap(),
+            None,
+            "a peek adopts nothing"
+        );
+
+        let text = render_channel_digest(&port, &metas, trunk, &ME, true)
+            .await
+            .expect("the legacy waiting post and the new one show");
+        assert!(text.contains("2 waiting"), "{text}");
+        assert!(
+            text.contains("from prin_other") && text.contains("new"),
+            "{text}"
+        );
+        assert!(!text.contains(ME.address), "{text}");
+        assert!(port.read_mark(&dm, &key).await.unwrap().is_some());
+        assert_eq!(
+            port.attention(&dm, &raw).await.unwrap().len(),
+            2,
+            "the raw entry stays for the channel's other principals"
+        );
     }
 
     #[test]

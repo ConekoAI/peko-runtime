@@ -2,7 +2,9 @@
 //!
 //! One `read_marks.json` per channel, located at
 //! `<runtime_dir>/channels/<channel_id>/read_marks.json`. Tracks, for
-//! each *session* (keyed by session-id string), the highest `TaskId`
+//! each *session* (keyed by session-id string — for a principal's trunk,
+//! whose id every principal shares, `{principal}/{trunk}`; see
+//! `peko_session::principal_session_key`), the highest `TaskId`
 //! (global log line number) that session has *observed* — either
 //! because the `ChannelDigestSessionContextHandler` rendered (or
 //! filtered) everything up to it, or because the session's
