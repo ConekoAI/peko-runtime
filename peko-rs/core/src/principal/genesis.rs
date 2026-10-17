@@ -291,9 +291,11 @@ there is a lot of it, so your own context stays light.
 3. Curate `kb/MEMORY.md`: add durable facts, preferences and commitments; update \
 statements that changed in place; merge duplicates; delete what no longer holds; \
 where two entries disagree, keep the one backed by newer evidence. End each new or \
-changed line with `(source: …)` naming where it came from: the session path or id, or \
-`<channel id>#<event id>`, comma-separated when there are several. Cite the \
-conversation itself, not a spawned reader's session. The runtime writes a line here \
+changed line with `(source: …)` naming where it came from, comma-separated when there \
+are several. Prefer `<channel id>#<event id>` for the message that says it \
+(`ChannelRead` shows each event's id), and cite a session path or id only for what was \
+said outside any channel. Cite the conversation itself, not a spawned reader's session. \
+The runtime writes a line here \
 only when every source is a conversation only your owner speaks in and, while anyone \
 else has talked to you this week, a reviewer reading excerpts of those sources finds \
 the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. It shares a 32 KiB prompt budget with the other \
@@ -1158,6 +1160,11 @@ mod tests {
         for goal in &config.intent.goals {
             assert!(memory.contains(&format!("   - {goal}\n")), "{memory}");
         }
+        // ADR-085: an event id pins the reviewer's evidence exactly.
+        assert!(
+            memory.contains("Prefer `<channel id>#<event id>`"),
+            "{memory}"
+        );
         let no_goals = memory_maintenance_brief(&bare_config());
         assert!(!no_goals.contains("7. Goals"));
         assert!(keepalive_tick_message(&config).contains("checkAt"));

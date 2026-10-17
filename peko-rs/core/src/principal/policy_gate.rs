@@ -167,6 +167,21 @@ impl PrincipalPolicyGate {
         prompt: &str,
         max_tokens: u32,
     ) -> Result<String> {
+        Self::complete(manager, principal, policy, system, prompt, max_tokens)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    /// [`Self::ask_model`], also saying whether the answer stopped at
+    /// `max_tokens`.
+    async fn complete(
+        manager: &PrincipalManager,
+        principal: &Principal,
+        policy: &policy::Policy,
+        system: &str,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<(String, bool)> {
         let resolver = manager
             .llm_resolver()
             .context("no model resolver on this runtime")?;
@@ -198,14 +213,16 @@ impl PrincipalPolicyGate {
             .charge_with_cost(&response.usage, cost)
             .await
             .map_err(|e| anyhow::anyhow!("reviewer charge refused: {e}"))?;
-        Ok(response
+        let text = response
             .content
             .iter()
             .filter_map(|block| match block {
                 peko_message::ContentBlock::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-            .collect())
+            .collect();
+        let truncated = response.stop_reason == peko_provider_api::StopReason::Length;
+        Ok((text, truncated))
     }
 
     /// The owner, as the subject their conversation is keyed by
@@ -424,24 +441,43 @@ impl PolicyGate for PrincipalPolicyGate {
                 items.push((claim.clone(), evidence));
             }
             let prompt = memory_gate::review_prompt(&items);
-            let max_tokens = 40 + 40 * batch.len() as u32;
-            match Self::ask_model(
-                &manager,
-                &principal,
-                &policy,
-                memory_gate::REVIEW_SYSTEM,
-                &prompt,
-                max_tokens,
-            )
-            .await
-            {
-                Ok(answer) => checks.extend(memory_gate::parse_review(&answer, batch.len())),
-                Err(e) => {
-                    checks.extend(batch.iter().map(|_| {
-                        ClaimCheck::Unchecked(format!("the reviewer could not run: {e:#}"))
-                    }))
+            // Thinking counts against the cap (ADR-085 D2): an answer cut
+            // off before it covers every claim is asked once more with
+            // more room.
+            let mut max_tokens = memory_gate::review_budget(batch.len());
+            let mut retried = false;
+            let found = loop {
+                let answer = Self::complete(
+                    &manager,
+                    &principal,
+                    &policy,
+                    memory_gate::REVIEW_SYSTEM,
+                    &prompt,
+                    max_tokens,
+                )
+                .await;
+                match answer {
+                    Ok((text, truncated)) => {
+                        let found = memory_gate::parse_review(&text, batch.len());
+                        let missing = found.iter().any(|c| matches!(c, ClaimCheck::Unchecked(_)));
+                        if truncated && missing && !retried {
+                            retried = true;
+                            max_tokens *= memory_gate::REVIEW_RETRY_FACTOR;
+                            continue;
+                        }
+                        break found;
+                    }
+                    Err(e) => {
+                        break batch
+                            .iter()
+                            .map(|_| {
+                                ClaimCheck::Unchecked(format!("the reviewer could not run: {e:#}"))
+                            })
+                            .collect()
+                    }
                 }
-            }
+            };
+            checks.extend(found);
         }
         checks
     }
@@ -509,8 +545,12 @@ async fn resolve_session(
 /// What `source` says that bears on `claim` (ADR-085), capped at
 /// [`crate::security::memory_gate::EXCERPT_BYTES_PER_SOURCE`]. A
 /// `<channel>#<event>` source quotes that event and its neighbours; a
-/// bare channel or a session quotes the passages sharing the most words
-/// with the claim. Empty when nothing is found.
+/// bare channel quotes the posts sharing the most words with the claim,
+/// the owner's first. A session bound to a conversation (the owner's DM,
+/// a group) is quoted from that conversation's posts, as a bare channel
+/// would be; any other session from its messages, leaving out what the
+/// runtime injected (its context blocks, hook, cron and agent notes).
+/// Empty when nothing is found.
 pub(crate) async fn source_excerpt(
     principal: &Principal,
     channels: Option<&Arc<dyn peko_channel::ChannelPort>>,
@@ -518,66 +558,99 @@ pub(crate) async fn source_excerpt(
     claim: &str,
 ) -> String {
     use crate::security::memory_gate::{
-        best_excerpts, channel_of, clip, EXCERPT_BYTES_PER_SOURCE, PASSAGE_BYTES,
+        best_excerpts, channel_of, is_runtime_text, Passage, EXCERPT_BYTES_PER_SOURCE,
     };
     if let Some(channel) = channel_of(source) {
-        let Some(port) = channels else {
-            return String::new();
-        };
-        let id = peko_channel::ChannelId(channel.to_string());
-        let Ok(events) = port
-            .peek_with_ids(&id, &peko_channel::Checkpoint::default())
-            .await
-        else {
-            return String::new();
-        };
-        // (event id, label, text)
-        let posts: Vec<(String, String, String)> = events
-            .into_iter()
-            .filter_map(|(id, event)| match event {
-                peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
-                    let label = format!("[{id}] {author}");
-                    Some((id, label, text))
-                }
-                _ => None,
-            })
-            .collect();
         let event = source.split_once('#').map(|(_, e)| e.trim());
-        if let Some(at) = event.and_then(|e| posts.iter().position(|(id, _, _)| id == e)) {
-            let window = &posts[at.saturating_sub(2)..(at + 3).min(posts.len())];
-            let text: Vec<String> = window
-                .iter()
-                .map(|(_, label, text)| clip(&format!("{label}: {text}"), PASSAGE_BYTES))
-                .collect();
-            return clip(&text.join("\n"), EXCERPT_BYTES_PER_SOURCE);
-        }
-        let passages: Vec<(String, String)> = posts
-            .into_iter()
-            .map(|(_, label, text)| (label, text))
-            .collect();
-        return best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE);
+        return channel_excerpt(principal, channels, channel, event, claim)
+            .await
+            .unwrap_or_default();
     }
-    let Some((id, _)) = resolve_session(principal, source).await else {
+    let Some((id, metas)) = resolve_session(principal, source).await else {
         return String::new();
     };
+    if let peko_tools_core::Compartment::Conversation { channel } =
+        crate::security::compartment_of(&metas, id)
+    {
+        if let Some(excerpt) = channel_excerpt(principal, channels, &channel, None, claim).await {
+            return excerpt;
+        }
+    }
     let storage = peko_session::jsonl::SessionStorage::new(principal.memory.sessions_dir());
     let Ok(entries) = storage.load_normalized(&id.to_string()).await else {
         return String::new();
     };
-    let passages: Vec<(String, String)> = entries
+    let passages: Vec<Passage> = entries
         .into_iter()
         .filter_map(|entry| {
+            use peko_session::events::MessageSource;
             use peko_session::jsonl::NormalizedEntry as E;
             let (who, text) = match entry {
-                E::UserMessage { content, .. } => ("user", content),
+                E::UserMessage {
+                    content, source, ..
+                } if source == MessageSource::User && !is_runtime_text(&content) => {
+                    ("user", content)
+                }
                 E::AssistantMessage { content, .. } => ("assistant", content),
                 E::Compaction { summary, .. } => ("earlier summary", summary),
                 _ => return None,
             };
-            Some((who.to_string(), text))
+            Some(Passage::new(who, text))
         })
         .collect();
     best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE)
+}
+
+/// [`source_excerpt`] for a channel: `event` and the two posts on either
+/// side, else the posts sharing the most words with `claim`, the
+/// owner's first. Posts are labelled `[<event>] <author>`, the owner's
+/// with `(owner)`. `None` when the channel cannot be read.
+async fn channel_excerpt(
+    principal: &Principal,
+    channels: Option<&Arc<dyn peko_channel::ChannelPort>>,
+    channel: &str,
+    event: Option<&str>,
+    claim: &str,
+) -> Option<String> {
+    use crate::security::memory_gate::{
+        best_excerpts, clip, Passage, EXCERPT_BYTES_PER_SOURCE, PASSAGE_BYTES,
+    };
+    let port = channels?;
+    let id = peko_channel::ChannelId(channel.to_string());
+    let events = port
+        .peek_with_ids(&id, &peko_channel::Checkpoint::default())
+        .await
+        .ok()?;
+    let owner = principal.config.read().await.owner.clone();
+    let keys = crate::security::actor_keys(Some(&**port));
+    // (event id, passage)
+    let posts: Vec<(String, Passage)> = events
+        .into_iter()
+        .filter_map(|(id, event)| match event {
+            peko_protocol::channel::ChannelEvent::Posted { author, text, .. } => {
+                let by_owner = author
+                    .parse::<ActorRef>()
+                    .is_ok_and(|actor| keys.same_actor(&actor, &owner));
+                let label = if by_owner {
+                    format!("[{id}] {author} (owner)")
+                } else {
+                    format!("[{id}] {author}")
+                };
+                Some((id, Passage::new(label, text).first(by_owner)))
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(at) = event.and_then(|e| posts.iter().position(|(id, _)| id == e)) {
+        let window = &posts[at.saturating_sub(2)..(at + 3).min(posts.len())];
+        let text: Vec<String> = window
+            .iter()
+            .map(|(_, p)| clip(&format!("{}: {}", p.label, p.text), PASSAGE_BYTES))
+            .collect();
+        return Some(clip(&text.join("\n"), EXCERPT_BYTES_PER_SOURCE));
+    }
+    let passages: Vec<Passage> = posts.into_iter().map(|(_, passage)| passage).collect();
+    Some(best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE))
 }
 
 /// An owner's approval command, parsed.

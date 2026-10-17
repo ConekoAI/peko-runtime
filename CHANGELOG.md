@@ -4,6 +4,68 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the hot-memory reviewer gets usable evidence and room to answer (2026-10-17)
+
+Observed on MiMo v2.6 Flash in two live nightly evaluations (peko-benchmark
+`docs/MEMORY_HEARTBEAT_MIMO_2026-10-16.md` and
+`docs/MEMORY_HEARTBEAT_FIXES_MIMO_2026-10-17.md`, `reviewer_calls`). The
+ADR-085 reviewer produced no correct verdict in default mode. Under
+`memory_review: guests` it held every nightly hot-memory write for any
+principal with a guest. ADR-085 D2 is amended.
+
+- **Budget.** `check_claims` asked for `40 + 40 × claims` output tokens.
+  MiMo thinks with thinking unset, and thinking counts against the cap: 6 of
+  13 calls (4 of 4 under `guests` in the last two rounds) stopped at the cap
+  with only a thinking block, so every entry was held as "the reviewer gave
+  no finding". The budget is now `2048 + 64 × claims`
+  (`memory_gate::review_budget`). An answer cut off (`StopReason::Length`)
+  before it covers every claim is asked once more at 4× the budget. Thinking
+  is not turned off: `ChatOptions` has no portable off switch
+  (`ThinkingEffort::None` only omits the field), and sending
+  `thinking: {type: "disabled"}` to Anthropic-compatible third parties is
+  unverified. A model that does not think stops at its last finding, so the
+  larger cap costs nothing there.
+- **Runtime entries in excerpts.** A session's user-role rows include the
+  per-iteration `<runtime-context>` block (`MessageSource::Hook`), which
+  carries the principal's own `kb/MEMORY.md`, identity and plans. Word overlap
+  picked those over the owner's message, so correct owner facts were judged
+  "excerpts contain only runtime context and identity blocks", and a line
+  already in `kb/MEMORY.md` could be quoted back as `user:` evidence. Session
+  excerpts now keep only `MessageSource::User` rows with no runtime block
+  (`<runtime-context>`, `<acting-for>`, a `[runtime]` note); people's text has
+  those tags defused before it is stored. Hook, cron, agent, A2A and
+  spawn-parent rows are left out.
+- **Bound sessions.** A session bound to a conversation (the owner's DM, a
+  group; `compartment_of` is `Conversation`) is quoted from that
+  conversation's posts instead of the session. Citing the owner's DM
+  directly is what gave correct "supported" verdicts on MiMo. If the channel
+  cannot be read, the session's own messages are used, filtered as above.
+- **Owner first.** Channel excerpts (a bare channel or a bound session) choose
+  the owner's posts before the rest, so a long agent reply that repeats the
+  claim cannot push the owner's message out of the 2 KB budget. Owner posts
+  are labelled `(owner)`, and the reviewer's system prompt says `(owner)` and
+  `user:` are the owner's words.
+- **Group channels.** `memory_gate::channel_of` accepted only `chan_`/`dm_`, so
+  `group:<slug>#<event>` sources were "not found" with empty excerpts. It now
+  accepts `group:<slug>` too.
+- **Brief.** The nightly memory brief now asks for `<channel id>#<event id>`
+  citations first, and a session path or id only for what was said outside
+  any channel.
+- Unchanged: the whole-write hold from #476. One held entry still holds the
+  whole `Write`/`Edit`.
+- Tests: `owner_passages_are_chosen_before_better_matching_ones`,
+  `runtime_text_is_recognised`, `the_budget_leaves_room_to_think`,
+  `sources_are_read_from_any_group_in_the_entry` (group ids),
+  `memory_review_evidence_leaves_out_runtime_entries`,
+  `memory_review_evidence_quotes_group_posts`,
+  `memory_review_retries_a_cut_off_answer_once`, `briefs_keep_goals_as_plans`
+  (citation wording).
+- Remaining risks: a model that thinks past 4× the budget still gives no
+  finding, and its entries are still held. The ADR-078 D7 call reviewer
+  (`ask_reviewer`, 300 tokens) has the same cap problem on thinking models
+  and is not changed here. Verdict quality on MiMo with the new evidence is
+  not yet measured live.
+
 ### Fix: channel read marks and waiting lists are per principal (2026-10-17)
 
 Observed on MiMo with all principals in one daemon (peko-benchmark

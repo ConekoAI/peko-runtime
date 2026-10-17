@@ -3336,6 +3336,248 @@ mod tests {
         .is_empty());
     }
 
+    /// ADR-085: a session bound to a conversation is quoted from the
+    /// conversation, the owner's posts first and marked; any other
+    /// session leaves out what the runtime injected into it, so a line
+    /// already in `kb/MEMORY.md` cannot vouch for itself.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_evidence_leaves_out_runtime_entries() {
+        use peko_session::events::MessageSource;
+        let (_temp, manager, _adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let mine = manager
+            .ensure_peer_child_ingress(&principal, &owner)
+            .await
+            .expect("owner ingress");
+        let port = manager.channel_port().expect("port");
+        let dm = mine.dm_channel.clone().expect("owner DM");
+        let me = format!("principal:local:{}", principal.id.0);
+        for (author, text) in [
+            (owner.to_string(), "the weather is fine"),
+            (owner.to_string(), "I drink green tea every morning"),
+            (
+                me.clone(),
+                "Noted: you drink green tea every morning. Green tea every morning, got it.",
+            ),
+        ] {
+            crate::principal::peer_dm::post_peer_dm_inbound(
+                &port,
+                &principal.id,
+                &dm,
+                &author,
+                text,
+            )
+            .await
+            .expect("post");
+        }
+        let storage = peko_session::jsonl::SessionStorage::new(principal.memory.sessions_dir());
+        let append = |session: String, text: &str, source: MessageSource| {
+            let storage = storage.clone();
+            let event = peko_session::SessionEvent::MessageV2(
+                peko_session::message::SessionMessage::user(text, source),
+            );
+            async move {
+                storage
+                    .append_event(&session, &event)
+                    .await
+                    .expect("append")
+            }
+        };
+        let injected = "<runtime-context>\n## memory\n- owner drinks green tea every morning \
+                        (source: /local-user)\n</runtime-context>";
+        append(mine.child_id.clone(), injected, MessageSource::Hook).await;
+        let claim = "- owner drinks green tea every morning";
+
+        // Bound to the owner's DM: the DM's posts, the owner's marked.
+        let bound = crate::principal::policy_gate::source_excerpt(
+            &principal,
+            Some(&port),
+            &mine.child_id,
+            claim,
+        )
+        .await;
+        assert!(
+            bound.contains(" (owner): I drink green tea every morning")
+                && !bound.contains("weather"),
+            "{bound}"
+        );
+        assert!(bound.contains(&me) && !bound.contains(&format!("{me} (owner)")));
+        assert!(!bound.contains("runtime-context") && !bound.contains("## memory"));
+
+        // Not bound to any conversation: its own messages, runtime
+        // entries left out.
+        let mut sessions = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir());
+        let metas = sessions.list_all_sessions(false).await.unwrap();
+        let trunk = metas
+            .iter()
+            .find(|m| {
+                crate::security::compartment_of(&metas, m.session_id)
+                    == peko_tools_core::Compartment::Internal
+            })
+            .expect("a session bound to no conversation")
+            .session_id
+            .to_string();
+        append(trunk.clone(), injected, MessageSource::Hook).await;
+        append(
+            trunk.clone(),
+            "[memory] green tea pass",
+            MessageSource::Cron,
+        )
+        .await;
+        append(
+            trunk.clone(),
+            "green tea note from a helper",
+            MessageSource::Agent,
+        )
+        .await;
+        append(
+            trunk.clone(),
+            "[runtime] Approval request about green tea",
+            MessageSource::User,
+        )
+        .await;
+        append(
+            trunk.clone(),
+            "I drink green tea before nine",
+            MessageSource::User,
+        )
+        .await;
+        let unbound =
+            crate::principal::policy_gate::source_excerpt(&principal, Some(&port), &trunk, claim)
+                .await;
+        assert_eq!(unbound, "user: I drink green tea before nine");
+    }
+
+    /// ADR-085: `group:<slug>` sources are channels, quoted like any.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_evidence_quotes_group_posts() {
+        use peko_channel::ChannelPort as _;
+        let (_temp, manager, _adapter, id, store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let owner = principal.config.read().await.owner.clone();
+        let port = manager.channel_port().expect("port");
+        let group = peko_channel::ChannelId::for_group("vendors");
+        store
+            .create(
+                &principal.id,
+                peko_channel::CreateOpts::runtime("vendors").with_id(group.clone()),
+            )
+            .await
+            .expect("group");
+        for text in ["Harbor Print quoted EUR 1,200", "unrelated"] {
+            crate::principal::peer_dm::post_peer_dm_inbound(
+                &port,
+                &principal.id,
+                &group,
+                &owner.to_string(),
+                text,
+            )
+            .await
+            .expect("post");
+        }
+        let events = store
+            .peek_with_ids(&group, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap();
+        let quote = &events
+            .iter()
+            .find(|(_, e)| matches!(e, peko_protocol::channel::ChannelEvent::Posted { text, .. } if text.contains("Harbor")))
+            .unwrap()
+            .0;
+        let claim = "- Harbor Print quoted EUR 1,200";
+        for source in [
+            format!("group:vendors#{quote}"),
+            "group:vendors".to_string(),
+        ] {
+            let excerpt = crate::principal::policy_gate::source_excerpt(
+                &principal,
+                Some(&port),
+                &source,
+                claim,
+            )
+            .await;
+            assert!(
+                excerpt.contains("(owner): Harbor Print quoted EUR 1,200"),
+                "{source}: {excerpt}"
+            );
+        }
+    }
+
+    /// ADR-085 D2: thinking counts against the reviewer's cap, so the
+    /// budget leaves room for it, and an answer cut off before it covers
+    /// every claim is asked once more with more room.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_retries_a_cut_off_answer_once() {
+        use crate::security::judge::PolicyGate as _;
+        use crate::security::memory_gate::{review_budget, Claim, ClaimCheck, REVIEW_RETRY_FACTOR};
+        let (_temp, manager, adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let port = manager.channel_port().expect("port");
+        let theirs = manager
+            .ensure_peer_child_ingress(&principal, &ActorRef::User("alice".into()))
+            .await
+            .expect("guest ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            theirs.dm_channel.as_ref().expect("guest DM"),
+            "user:local:alice",
+            "hello",
+        )
+        .await
+        .expect("post");
+        let gate =
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let claims = vec![Claim {
+            entry: "- owner likes tea (source: /local-user)".into(),
+            sources: vec!["/local-user".into()],
+        }];
+        let cut_off = || {
+            peko_providers::MockResponse::Success(peko_provider_api::ChatResponse {
+                content: vec![],
+                tool_calls: vec![],
+                stop_reason: peko_provider_api::StopReason::Length,
+                usage: Default::default(),
+                provider: "mock".into(),
+                model: String::new(),
+            })
+        };
+        let budgets = |adapter: &MockAdapter, from: usize| -> Vec<Option<u32>> {
+            adapter.recorded_requests()[from..]
+                .iter()
+                .map(|r| r.options.max_tokens)
+                .collect()
+        };
+
+        let before = adapter.recorded_requests().len();
+        adapter.queue_chat_response(cut_off());
+        adapter.queue_text("1: supported");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![ClaimCheck::Supported]
+        );
+        let first = review_budget(1);
+        assert_eq!(
+            budgets(&adapter, before),
+            vec![Some(first), Some(first * REVIEW_RETRY_FACTOR)]
+        );
+
+        // Cut off twice: no third call, and no finding.
+        let before = adapter.recorded_requests().len();
+        adapter.queue_chat_response(cut_off());
+        adapter.queue_chat_response(cut_off());
+        assert!(matches!(
+            gate.check_claims(&id.0, &claims).await.as_slice(),
+            [ClaimCheck::Unchecked(_)]
+        ));
+        assert_eq!(budgets(&adapter, before).len(), 2);
+    }
+
     /// ADR-080 D4: a hot-memory source counts as the owner's only when
     /// nobody else speaks in it.
     #[tokio::test(flavor = "multi_thread")]
