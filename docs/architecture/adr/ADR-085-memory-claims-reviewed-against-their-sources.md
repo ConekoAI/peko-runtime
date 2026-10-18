@@ -1,7 +1,7 @@
 # ADR-085: Memory Claims Reviewed Against Their Sources; Turns From the Ledger
 
 **Status:** Accepted
-**Date:** 2026-10-16 (D4 added the same day)
+**Date:** 2026-10-16 (D4 added the same day; D2 amended 2026-10-17)
 
 **Amends:**
 - [ADR-080](ADR-080-daily-memory-maintenance.md) D4 and D8: a sourced line also
@@ -76,6 +76,22 @@ goes to a reviewer:
   review runs only when every added entry has passed the source check. Any
   held entry holds the whole write (ADR-080 D4), so a supported entry beside
   it waits until the run repeats the change without the held entry.
+- *Amended 2026-10-17 (evidence):* the runtime's own entries are not
+  evidence. A session's excerpts keep only messages a person typed
+  (`MessageSource::User`, no `<runtime-context>` / `<acting-for>` block, no
+  `[runtime]` note) and the agent's replies. The per-iteration context block
+  carries `kb/MEMORY.md` itself; quoted as `user:` it crowded out the owner's
+  words and let a line vouch for itself. A session bound to a conversation
+  is quoted from that conversation's posts, like a bare channel. Channel
+  excerpts choose the owner's posts first and mark them `(owner)`.
+  `group:<slug>` sources are channels.
+- *Amended 2026-10-17 (budget):* the call's `max_tokens` is
+  `2048 + 64 × lines`. Thinking counts against it, and a reasoning model
+  (MiMo v2.6) with thinking unset used all of `40 + 40 × lines` thinking in
+  half its calls, so no line got a finding. An answer cut off before it
+  covers every line is asked once more at 4× the budget. Thinking is left
+  at the provider default: there is no portable off switch, and a model that
+  does not think stops at its last finding.
 
 ### D3 — Scope
 
@@ -130,8 +146,8 @@ the memory pass reads.
   The owner can set `memory_review: off` to trade that safety for availability.
 - The review is only as good as the excerpt: a claim drawn from a long session
   cited by path, with no shared words, gets "(nothing found)" and is held.
-  Citing `<channel>#<event>` avoids this, and the brief asks the model to write
-  what the source says.
+  Citing `<channel>#<event>` avoids this. The brief asks for that form first
+  and asks the model to write what the source says.
 
 ## 5. Deferred
 
