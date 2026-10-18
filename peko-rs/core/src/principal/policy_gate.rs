@@ -441,32 +441,43 @@ impl PolicyGate for PrincipalPolicyGate {
                 items.push((claim.clone(), evidence));
             }
             let prompt = memory_gate::review_prompt(&items);
-            // Thinking counts against the cap (ADR-085 D2): an answer cut
-            // off before it covers every claim is asked once more with
-            // more room.
+            // ADR-085 D2: an answer that leaves a claim without a finding
+            // is asked once more. Thinking counts against the cap, so a
+            // cut-off answer gets more room; a malformed or degenerate one
+            // gets the expected format restated. The retry fills only
+            // what the first answer missed.
             let mut max_tokens = memory_gate::review_budget(batch.len());
-            let mut retried = false;
+            let mut asked = prompt.clone();
+            let mut earlier: Option<Vec<ClaimCheck>> = None;
             let found = loop {
                 let answer = Self::complete(
                     &manager,
                     &principal,
                     &policy,
                     memory_gate::REVIEW_SYSTEM,
-                    &prompt,
+                    &asked,
                     max_tokens,
                 )
                 .await;
                 match answer {
                     Ok((text, truncated)) => {
-                        let found = memory_gate::parse_review(&text, batch.len());
+                        let parsed = memory_gate::parse_review(&text, batch.len());
+                        let found = match earlier.take() {
+                            Some(first) => break memory_gate::merge_reviews(first, parsed),
+                            None => parsed,
+                        };
                         let missing = found.iter().any(|c| matches!(c, ClaimCheck::Unchecked(_)));
-                        if truncated && missing && !retried {
-                            retried = true;
-                            max_tokens *= memory_gate::REVIEW_RETRY_FACTOR;
-                            continue;
+                        if !missing {
+                            break found;
                         }
-                        break found;
+                        if truncated {
+                            max_tokens *= memory_gate::REVIEW_RETRY_FACTOR;
+                        }
+                        asked = memory_gate::review_retry_prompt(&prompt, batch.len());
+                        earlier = Some(found);
                     }
+                    // A retry that cannot run keeps the first answer's findings.
+                    Err(_) if earlier.is_some() => break earlier.take().unwrap_or_default(),
                     Err(e) => {
                         break batch
                             .iter()
