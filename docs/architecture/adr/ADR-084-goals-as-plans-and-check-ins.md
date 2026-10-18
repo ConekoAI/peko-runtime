@@ -60,6 +60,21 @@ A due check-in therefore wakes the heartbeat once. After that turn it stays in
 the plans section until the principal acts, reschedules it, or clears it, but it
 does not wake the principal again. This mirrors how ADR-083 counts failed jobs.
 
+*Amended 2026-10-18.* Rule 1 now also needs the plan to have changed since
+the job's last turn (`PlanRecord::updated_at` later than `last_run`, or the job
+never ran a turn). Ready work the last turn already saw does not wake the
+heartbeat again. It stays in the plans section, the hourly floor still brings
+it back, and any change to the plan (a step added, completed, re-snoozed or
+blocked, by any run) wakes it once. On MiMo v2.6 Flash every goal-bearing
+genesis left ready steps without `checkAt`, and the attention keepalive ran
+18 of 18 ticks while its turns reported nothing to do. A no-goal principal
+adopted goals of its own and did the same, 16 of 16. The principals then
+slowed themselves to 30-minute keepalives (peko-benchmark
+`docs/MEMORY_HEARTBEAT_ROUND3_MIMO_2026-10-18.md`). The genesis brief and
+keepalive tick now say the defaults are deliberate, that a quiet tick costs
+nothing, and that the `memory` job gets a clock time only once the owner has
+given a timezone.
+
 ### D3 — No job of its own per check-in
 
 Check-ins ride the attention-gated heartbeat. The seeded keepalive checks every

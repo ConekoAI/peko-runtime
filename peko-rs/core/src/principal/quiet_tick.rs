@@ -4,9 +4,9 @@
 //! The check calls no model and changes nothing. Something waits when:
 //! - the session the job fires in would see channel posts in its digest
 //!   (other principals' posts on its waiting list, or unread activity),
-//! - an owner run's open plans have steps ready or in progress that no
-//!   future `check_at` snoozes, or a check-in that came due since this
-//!   job's last turn (ADR-084), or
+//! - an owner run's open plans changed since this job's last turn and
+//!   have steps ready or in progress that no future `check_at` snoozes,
+//!   or a check-in came due since that turn (ADR-084), or
 //! - another of the principal's jobs failed since this job's last turn.
 //!
 //! Anything else (pending proposals and approvals, for instance) waits on
@@ -50,7 +50,9 @@ pub(crate) async fn what_waits(
         };
         let (active, due) = plan_work(&plans, job.last_run, chrono::Utc::now());
         if active > 0 {
-            waiting.push(format!("{active} plan step(s) ready or in progress"));
+            waiting.push(format!(
+                "{active} plan step(s) ready or in progress in plans changed since the last turn"
+            ));
         }
         if due > 0 {
             waiting.push(format!("{due} plan check-in(s) came due"));
@@ -64,16 +66,24 @@ pub(crate) async fn what_waits(
 }
 
 /// Plan work for a fire: steps ready or in progress that no future
-/// `check_at` snoozes, and check-ins that came due after `last_turn`
-/// (any due one, when the job never ran a turn). A check-in that was
-/// already due at the last turn has had its turn; it stays listed in
-/// the plans section but does not wake the principal again (ADR-084).
+/// `check_at` snoozes, in plans that changed after `last_turn`, and
+/// check-ins that came due after `last_turn` (any, when the job never
+/// ran a turn). Work the last turn already saw does not wake the
+/// principal again: unchanged ready steps would otherwise wake every
+/// tick (observed on MiMo: genesis plans woke 18 of 18 ticks while the
+/// turns found nothing to do). They stay in the plans section, and the
+/// hourly floor still brings them back. A check-in that was already due
+/// at the last turn has had its turn the same way (ADR-084).
 fn plan_work(
     plans: &[peko_plan::PlanRecord],
     last_turn: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> (usize, usize) {
-    let active = plans.iter().map(|p| p.active_nodes(now).len()).sum();
+    let active = plans
+        .iter()
+        .filter(|p| last_turn.is_none_or(|last| p.updated_at > last))
+        .map(|p| p.active_nodes(now).len())
+        .sum();
     let due = plans
         .iter()
         .flat_map(|p| p.due_check_ins(now))
@@ -214,6 +224,17 @@ mod tests {
 
         let ready = plan(vec![node(PlanNodeStatus::Pending, None)]);
         assert_eq!(plan_work(&ready, last_turn, now), (1, 0));
+        // A ready step the last turn already saw (its plan unchanged
+        // since) does not wake the heartbeat again; a job with no turn
+        // yet still runs for it.
+        let mut seen = ready.clone();
+        seen[0].updated_at = now - Duration::minutes(20);
+        assert_eq!(plan_work(&seen, last_turn, now), (0, 0));
+        assert_eq!(plan_work(&seen, None, now), (1, 0));
+        // A plan touched after the last turn (a new step, a step marked
+        // done that unblocks another) wakes it once.
+        seen[0].updated_at = now - Duration::minutes(5);
+        assert_eq!(plan_work(&seen, last_turn, now), (1, 0));
         let snoozed = plan(vec![node(
             PlanNodeStatus::Pending,
             Some(now + Duration::days(1)),

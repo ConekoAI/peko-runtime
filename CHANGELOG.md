@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: unchanged plans no longer wake the attention heartbeat every tick (2026-10-18)
+
+ADR-084 D2 is amended. A ready or in-progress step now wakes an
+attention-gated job only when its plan changed after the job's last turn.
+Previously every unchanged ready step woke every tick. On MiMo v2.6 Flash
+(peko-benchmark `docs/MEMORY_HEARTBEAT_ROUND3_MIMO_2026-10-18.md`), goal plans
+made from genesis woke 18 of 18 ticks, and a no-goal principal's self-adopted
+plans woke 16 of 16. Its turns said "nothing needs attention", and every
+principal then slowed itself to a 30-minute keepalive. Due check-ins, posts and
+failed jobs wake as before, and the hourly floor still brings unchanged work
+back.
+
+The genesis brief and the keepalive tick text now say the defaults are
+deliberate. A quiet tick costs nothing. A step that waits on someone should be
+marked `blocked`. The `memory` job should get a `cron` clock time only once the
+owner has stated a timezone, not from the machine's clock: every goal-bearing
+genesis had pinned it to a fixed hour in the host's zone. The tick text is
+stored when a job is seeded, so it reaches only newly seeded keepalives. The
+wake rule applies to every attention-gated job.
+
 ### Fix: a malformed reviewer answer is asked once more (2026-10-18)
 
 ADR-085 D2 is amended. Any reviewer answer that leaves a hot-memory entry
