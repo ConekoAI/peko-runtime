@@ -208,12 +208,17 @@ do not start the work this turn. Skip this if you have no goals yet.\n\
 5. The runtime gave you a default keepalive job (`keepalive`, every \
 10 minutes, targeting you). It also gave you a nightly `memory` job that \
 turns each day's sessions into your `kb/` and reflects on how you worked. \
-Both are yours. Retune them with `Cron` action `update` (`interval_ms`, \
-`cron` with `timezone`, `when`, `model`), not by deleting and re-creating \
-them: the runtime keys their behaviour to the ids `keepalive` and \
-`memory`, and the `memory` job gets its current brief from the runtime at \
-each fire. You may remove the `memory` job, but never leave yourself \
-without a heartbeat.\n\n\
+Both are yours, and their defaults are deliberate: keep them unless your \
+owner asks for something else. A quiet keepalive tick costs nothing, so a \
+slower cadence only delays your answer to other principals. The `memory` \
+job waits for a quiet stretch after its 24-hour interval, which lands in \
+your owner's night without knowing their timezone; set a clock time (`cron` \
+with `timezone`) only once your owner has told you their timezone, not \
+from this machine's clock. To retune either job use `Cron` action `update` \
+on its id, never delete and re-create it: the runtime keys their behaviour \
+to the ids `keepalive` and `memory`, and the `memory` job gets its current \
+brief from the runtime at each fire. You may remove the `memory` job, but \
+never leave yourself without a heartbeat.\n\n\
 Stay bounded: this is a setup turn, not a work sprint.\n",
     );
     brief
@@ -235,12 +240,13 @@ pub fn keepalive_tick_message(config: &PrincipalConfig) -> String {
 principal: review your session tree (`session list`), tend your memory \
 and workspace, check channels (`channel read`), and continue or adjust \
 your standing work. A tick runs only when something waits on you (posts, \
-ready plan steps, a check-in that came due, a failed job) or an hour has \
-passed since the last one; keep standing work in `Plan` so it counts, and \
-give a step you mean to come back to a `checkAt`. If this cadence is wrong for \
-you, retune this job with `Cron` action `update` on id `keepalive` \
-(`interval_ms` or `cron` sets the cadence, `when: always` runs every tick) \
-rather than replacing it — you own your rhythm."
+a plan that changed since your last tick, a check-in that came due, a failed \
+job) or an hour has passed since the last one, so a quiet tick costs \
+nothing: keep the 10-minute cadence unless your owner asks otherwise. Keep \
+standing work in `Plan`, and give a step you mean to come back to a \
+`checkAt`; mark a step that waits on someone `blocked`. To change this job \
+use `Cron` action `update` on id `keepalive` (`interval_ms` or `cron` sets \
+the cadence, `when: always` runs every tick) rather than replacing it."
     )
 }
 
@@ -1168,6 +1174,18 @@ mod tests {
         let no_goals = memory_maintenance_brief(&bare_config());
         assert!(!no_goals.contains("7. Goals"));
         assert!(keepalive_tick_message(&config).contains("checkAt"));
+        // Defaults are kept unless the owner asks; no machine-clock pinning.
+        assert!(
+            genesis.contains("keep them unless your owner asks"),
+            "{genesis}"
+        );
+        assert!(
+            genesis.contains("not from this machine's clock"),
+            "{genesis}"
+        );
+        assert!(
+            keepalive_tick_message(&config).contains("a plan that changed since your last tick")
+        );
     }
 
     /// The brief an earlier build stored verbatim is read like the

@@ -54,7 +54,8 @@ the job fires in (the trunk, or its creating session):
 2. **Standing work.** For an owner run, the steps of open plans that are ready
    or in progress. *Amended by [ADR-084](ADR-084-goals-as-plans-and-check-ins.md):*
    a future `check_at` snoozes such a step, and a check-in that came due since
-   the job's last turn also counts.
+   the job's last turn also counts. Since 2026-10-18 (ADR-084 D2), a step
+   counts only when its plan changed after the job's last turn.
 3. **Failures.** Another of the principal's jobs whose last run failed after
    this job's last turn.
 
