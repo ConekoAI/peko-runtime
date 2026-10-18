@@ -92,6 +92,18 @@ goes to a reviewer:
   covers every line is asked once more at 4× the budget. Thinking is left
   at the provider default: there is no portable off switch, and a model that
   does not think stops at its last finding.
+- *Amended 2026-10-18 (malformed answers):* any answer that leaves a line
+  without a finding is asked once more, not only a cut-off one:
+  - A cut-off answer gets 4× the budget.
+  - A malformed or degenerate one gets the same budget with the expected format
+    restated after the evidence.
+  - The retry fills only the lines the first answer missed.
+
+  The parser also reads `Line 2: …` and `<2>: …`. A template echo,
+  `<n>: …`, is read in order. On MiMo v2.6, 2 of 12 answers were unreadable:
+  `<tool_call><function思った><r><r>…` on a 9-line batch, and `<n>: unsupported -
+  …`. Because any unchecked line holds the whole write (ADR-080 D4), one such
+  answer held 13 entries, 7 of them correct owner facts.
 
 ### D3 — Scope
 

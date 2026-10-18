@@ -455,16 +455,34 @@ pub fn parse_review(answer: &str, count: usize) -> Vec<ClaimCheck> {
     let mut checks = vec![ClaimCheck::Unchecked("the reviewer gave no finding".into()); count];
     for line in answer.lines() {
         let line = line.trim().trim_start_matches(['-', '*', ' ']);
-        let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
-        let Ok(number) = digits.parse::<usize>() else {
+        // Tolerate `Line 2: …` and `<2>: …`, the prompt's own wording.
+        let line = strip_prefix_ci(line, "line ").unwrap_or(line);
+        let (slot, rest) = if let Some(inner) = line.strip_prefix('<') {
+            let Some((label, rest)) = inner.split_once('>') else {
+                continue;
+            };
+            match label.trim().parse::<usize>() {
+                Ok(number) => (number.checked_sub(1), rest),
+                // A template echo (`<n>: supported`) answers by order: it
+                // fills the first claim that has no finding yet.
+                Err(_) => (
+                    checks
+                        .iter()
+                        .position(|c| matches!(c, ClaimCheck::Unchecked(_))),
+                    rest,
+                ),
+            }
+        } else {
+            let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
+            let Ok(number) = digits.parse::<usize>() else {
+                continue;
+            };
+            (number.checked_sub(1), &line[digits.len()..])
+        };
+        let Some(slot) = slot.filter(|i| *i < count) else {
             continue;
         };
-        let Some(slot) = number.checked_sub(1).filter(|i| *i < count) else {
-            continue;
-        };
-        let rest = line[digits.len()..]
-            .trim_start_matches([':', '.', ')', ' '])
-            .trim();
+        let rest = rest.trim_start_matches([':', '.', ')', ' ']).trim();
         let lower = rest.to_ascii_lowercase();
         checks[slot] = if lower.starts_with("unsupported") {
             let reason = rest["unsupported".len()..]
@@ -482,6 +500,38 @@ pub fn parse_review(answer: &str, count: usize) -> Vec<ClaimCheck> {
         };
     }
     checks
+}
+
+fn strip_prefix_ci<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.get(..prefix.len())
+        .filter(|head| head.eq_ignore_ascii_case(prefix))
+        .map(|_| &text[prefix.len()..])
+}
+
+/// The review prompt asked again after an answer that left a claim
+/// without a finding (malformed, degenerate or cut off): the same
+/// evidence, then a plain restatement of the expected answer.
+#[must_use]
+pub fn review_retry_prompt(prompt: &str, count: usize) -> String {
+    format!(
+        "{prompt}\nYour previous answer could not be read. Reply with exactly {count} \
+         line(s) and nothing else, numbered 1 to {count} in order, each either \
+         `1: supported` or `1: unsupported - <short reason>` with its own number.\n"
+    )
+}
+
+/// The findings of two answers to the same review: the first answer's,
+/// with any claim it left unchecked taken from the second.
+#[must_use]
+pub fn merge_reviews(first: Vec<ClaimCheck>, second: Vec<ClaimCheck>) -> Vec<ClaimCheck> {
+    first
+        .into_iter()
+        .zip(second)
+        .map(|(a, b)| match a {
+            ClaimCheck::Unchecked(_) => b,
+            found => found,
+        })
+        .collect()
 }
 
 /// The claims the reviewer did not support, held. `checks` pairs with
@@ -806,6 +856,48 @@ mod tests {
                 ClaimCheck::Unchecked("the reviewer gave no finding".into()),
             ]
         );
+    }
+
+    /// Observed on MiMo: `<n>: unsupported - …` (the template echoed)
+    /// and `Line 2: …` (the prompt's own label) carry real findings.
+    #[test]
+    fn template_echoes_and_line_labels_parse() {
+        assert_eq!(
+            parse_review("<n>: unsupported - not the owner's words", 1),
+            vec![ClaimCheck::Unsupported("not the owner's words".into())]
+        );
+        assert_eq!(
+            parse_review("<n>: supported\n<n>: unsupported - guess\n", 2),
+            vec![
+                ClaimCheck::Supported,
+                ClaimCheck::Unsupported("guess".into())
+            ]
+        );
+        assert_eq!(
+            parse_review("Line 2: supported\n<1>: unsupported\n", 2),
+            vec![
+                ClaimCheck::Unsupported("no reason given".into()),
+                ClaimCheck::Supported
+            ]
+        );
+        // Degenerate output stays unchecked.
+        assert!(matches!(
+            parse_review("<tool_call><function><r><r></function></tool_call>", 1).as_slice(),
+            [ClaimCheck::Unchecked(_)]
+        ));
+    }
+
+    #[test]
+    fn a_retry_fills_only_what_the_first_answer_missed() {
+        let unchecked = || ClaimCheck::Unchecked("the reviewer gave no finding".into());
+        assert_eq!(
+            merge_reviews(
+                vec![ClaimCheck::Supported, unchecked()],
+                vec![ClaimCheck::Unsupported("x".into()), ClaimCheck::Supported]
+            ),
+            vec![ClaimCheck::Supported, ClaimCheck::Supported]
+        );
+        assert!(review_retry_prompt("P", 3).contains("exactly 3 line(s)"));
     }
 
     #[test]

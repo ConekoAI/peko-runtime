@@ -3578,6 +3578,80 @@ mod tests {
         assert_eq!(budgets(&adapter, before).len(), 2);
     }
 
+    /// ADR-085 D2: a malformed or degenerate answer (observed on MiMo:
+    /// `<tool_call><function思った><r><r>…`) is asked once more with the
+    /// format restated, at the same budget; the retry fills only the
+    /// claims the first answer left without a finding.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn memory_review_retries_a_malformed_answer_once() {
+        use crate::security::judge::PolicyGate as _;
+        use crate::security::memory_gate::{review_budget, Claim, ClaimCheck};
+        let (_temp, manager, adapter, id, _store) = setup_with_channels().await;
+        let principal = manager.get(id.clone()).await.expect("principal");
+        let port = manager.channel_port().expect("port");
+        let theirs = manager
+            .ensure_peer_child_ingress(&principal, &ActorRef::User("alice".into()))
+            .await
+            .expect("guest ingress");
+        crate::principal::peer_dm::post_peer_dm_inbound(
+            &port,
+            &principal.id,
+            theirs.dm_channel.as_ref().expect("guest DM"),
+            "user:local:alice",
+            "hello",
+        )
+        .await
+        .expect("post");
+        let gate =
+            crate::principal::policy_gate::PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let claim = |entry: &str| Claim {
+            entry: entry.into(),
+            sources: vec!["/local-user".into()],
+        };
+        let claims = vec![
+            claim("- owner likes tea (source: /local-user)"),
+            claim("- owner lives in Porto (source: /local-user)"),
+        ];
+
+        let before = adapter.recorded_requests().len();
+        adapter.queue_text("<tool_call><function><r><r><r></function></tool_call>");
+        adapter.queue_text("1: supported\n2: unsupported - not in the excerpt");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![
+                ClaimCheck::Supported,
+                ClaimCheck::Unsupported("not in the excerpt".into())
+            ]
+        );
+        let requests = &adapter.recorded_requests()[before..];
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].options.max_tokens, Some(review_budget(2)));
+        assert!(format!("{:?}", requests[1].messages).contains("could not be read"));
+
+        // The first answer's findings stand; the retry only fills gaps.
+        let before = adapter.recorded_requests().len();
+        adapter.queue_text("1: unsupported - a guess\nnoise");
+        adapter.queue_text("1: supported\n2: supported");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![
+                ClaimCheck::Unsupported("a guess".into()),
+                ClaimCheck::Supported
+            ]
+        );
+        assert_eq!(adapter.recorded_requests().len() - before, 2);
+
+        // A complete first answer is not asked again.
+        let before = adapter.recorded_requests().len();
+        adapter.queue_text("<n>: supported\n<n>: supported");
+        assert_eq!(
+            gate.check_claims(&id.0, &claims).await,
+            vec![ClaimCheck::Supported, ClaimCheck::Supported]
+        );
+        assert_eq!(adapter.recorded_requests().len() - before, 1);
+    }
+
     /// ADR-080 D4: a hot-memory source counts as the owner's only when
     /// nobody else speaks in it.
     #[tokio::test(flavor = "multi_thread")]
