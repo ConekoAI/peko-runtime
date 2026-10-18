@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a malformed reviewer answer is asked once more (2026-10-18)
+
+ADR-085 D2 is amended. Any reviewer answer that leaves a hot-memory entry
+without a finding is retried once. A cut-off answer gets 4× the budget, as
+before. A malformed or degenerate answer gets the same budget with the
+expected format restated. The retry fills only the entries the first answer
+missed, and a retry that cannot run keeps the first answer's findings.
+
+`parse_review` also reads `Line 2: …`, `<2>: …`, and the template echo
+`<n>: …` in order.
+
+On MiMo v2.6 Flash (peko-benchmark
+`docs/MEMORY_HEARTBEAT_ROUND3_MIMO_2026-10-18.md`), 2 of 12 answers were
+unreadable. One was `<tool_call><function思った><r><r>…`, the other
+`<n>: unsupported - …`. Because ADR-080 D4 holds the whole write when any entry
+is unchecked, one of them held 13 entries, 7 of them correct owner facts.
+
 ### Fix: the hot-memory reviewer gets usable evidence and room to answer (2026-10-17)
 
 Observed on MiMo v2.6 Flash in two live nightly evaluations (peko-benchmark
