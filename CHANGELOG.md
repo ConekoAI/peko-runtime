@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a provider call cut off by the client deadline is retried (2026-10-19)
+
+The retry classifiers (`BodyStringClassifier` and the legacy
+`RetryableError::is_retryable`) now treat "timed out" as transient.
+reqwest reports its own deadline as `operation timed out` and never
+says "timeout", so a stalled send or stream body was classified
+`InvalidRequest`. Neither the transport nor the agentic loop's
+mid-stream retry tried again, and the turn failed. On MiMo v2.6 Flash
+(peko-benchmark `docs/MEMORY_HEARTBEAT_ROUND4_MIMO_2026-10-18.md`), one
+stream stalled until the 300 s client deadline and a principal's genesis
+failed outright with `Stream error: request or response body error:
+operation timed out`.
+
 ### Fix: unchanged plans no longer wake the attention heartbeat every tick (2026-10-18)
 
 ADR-084 D2 is amended. A ready or in-progress step now wakes an

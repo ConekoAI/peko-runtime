@@ -81,8 +81,10 @@ impl RetryableError for anyhow::Error {
             }
         }
 
-        // Check for timeout/network-related errors
+        // Check for timeout/network-related errors (reqwest's own
+        // deadline reads "operation timed out")
         if msg.contains("timeout")
+            || msg.contains("timed out")
             || msg.contains("connection")
             || msg.contains("reset")
             || msg.contains("refused")
@@ -295,8 +297,8 @@ pub trait RetryClassifier: Send + Sync {
 /// retry sites agree.
 ///
 /// Matches [`RetryableError::is_retryable`]'s substring set (429 /
-/// 500 / 502 / 503 / 504 / 529, "timeout", "connection reset",
-/// "refused") — every error that the legacy bool classifier
+/// 500 / 502 / 503 / 504 / 529, "timeout" / "timed out",
+/// "connection reset", "refused") — every error that the legacy bool classifier
 /// flagged as retryable, `classify` flags as `Transient`, just
 /// with the richer variant shape.
 #[derive(Debug, Default, Clone, Copy)]
@@ -375,10 +377,18 @@ impl RetryClassification {
         // Network-shape keywords match the existing
         // `RetryableError::is_retryable` set; classified as
         // Transient with no server-suggested delay (the source is
-        // connection-level, not throttle-level).
+        // connection-level, not throttle-level). reqwest reports its
+        // own deadline as "operation timed out", with no "timeout" in
+        // the text: a stalled stream or send must still retry.
         if contains_any(
             msg,
-            &["timeout", "connection reset", "refused", "connection error"],
+            &[
+                "timeout",
+                "timed out",
+                "connection reset",
+                "refused",
+                "connection error",
+            ],
         ) {
             return Self::Transient { retry_after: None };
         }
@@ -507,6 +517,24 @@ mod classification_tests {
         ] {
             let c = classify(body);
             assert!(c.is_retryable(), "{body} should retry, got {c:?}");
+        }
+    }
+
+    /// reqwest's own deadline renders as "operation timed out" (its
+    /// `TimedOut` source), never "timeout". On MiMo a stalled stream
+    /// hit the 300 s client deadline mid-body; classified
+    /// `InvalidRequest`, it was not retried and the genesis turn
+    /// failed (peko-benchmark MEMORY_HEARTBEAT_ROUND4_MIMO_2026-10-18).
+    #[test]
+    fn reqwest_deadline_is_transient() {
+        for msg in [
+            "Stream error: request or response body error: operation timed out",
+            "error sending request for url (https://api.example/v1/messages): \
+             operation timed out",
+        ] {
+            let c = classify(msg);
+            assert!(c.is_retryable(), "{msg} should retry, got {c:?}");
+            assert!(anyhow::anyhow!("{msg}").is_retryable(), "legacy: {msg}");
         }
     }
 
