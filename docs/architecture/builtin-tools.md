@@ -327,7 +327,8 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
   an actor and posts on its pair DM. Local messaging needs no Hub setup.
 - `user:local:<id>` / `user:hub:<UUID>` or `visitor:local:<id>` / `visitor:hub:<UUID>` delivers a labeled note to an existing conversation.
 - `dm_<hash>`, `chan_<id>`, or `group:<slug>` posts directly to a conversation;
-  `parent` threads a reply using an event's line id. Actor targets do not accept
+  `parent` threads a reply using an event's line `id` or its stable `msg_id`
+  (resolved to the line). Actor targets do not accept
   `parent`; use the returned conversation ID. `label` applies only to human notes.
 
 Principal sends return canonical `to`, real `channel` (also `dm_channel` for old

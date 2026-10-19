@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `ChannelSend` accepts a post's `msg_id` as `parent` (2026-10-19)
+
+ChannelRead shows each post's line `id` next to its stable `msg_id`, and a
+reply's `reply_to` in the `msg_` form. `ChannelSend` took only the numeric line
+as `parent`, so a model that copied the `msg_` id got `invalid parent TaskId
+msg_…: not a numeric line offset` and had to send again. `parent` now also
+accepts a `msg_id` and resolves it to that post's line (`ChannelPort::find_post`).
+An id that is not in the channel is refused with a pointer to both forms. The
+error appeared in 6 retained ledgers across peko-benchmark memory/heartbeat
+rounds 2–4 (`docs/MEMORY_HEARTBEAT_ROUND4_MIMO_2026-10-18.md`).
+
 ### Fix: a provider call cut off by the client deadline is retried (2026-10-19)
 
 The retry classifiers (`BodyStringClassifier` and the legacy
