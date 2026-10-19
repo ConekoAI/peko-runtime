@@ -663,7 +663,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
                 },
                 "parent": {
                     "type": "string",
-                    "description": "Channel posts only: id of the message being replied to (an event id from ChannelRead or a previous send); omit to post a new message."
+                    "description": "Channel posts only: the message being replied to, by its `id` or `msg_id` from ChannelRead or the `id` of a previous send; omit to post a new message."
                 },
                 "label": {
                     "type": "string",
@@ -812,6 +812,10 @@ impl ChannelSendTool {
             ProtoChannelKind::Group => "group",
             _ => unreachable!("execute_bare is only called for Bare / Group kinds"),
         };
+        let parent = match parent {
+            Some(p) if p.parse::<u64>().is_err() => Some(self.parent_line(channel_id, &p).await?),
+            other => other,
+        };
         let mut msg = match parent {
             Some(p) => PostMsg::reply(p, text.to_string()),
             None => PostMsg::root(text.to_string()),
@@ -862,6 +866,28 @@ impl ChannelSendTool {
             })
             .expect("ChannelSendResult must serialize to JSON")),
             Err(e) => Err(anyhow::anyhow!("ChannelSend post: {e}")),
+        }
+    }
+
+    /// The log line of the post `parent` names by its stable id.
+    /// ChannelRead shows each post's line `id` next to its `msg_id`, and
+    /// a reply's `reply_to` in the `msg_` form, so a model threading a
+    /// reply copies either; the log threads by line. An unknown channel
+    /// keeps the id, so the post reports the channel as usual.
+    async fn parent_line(
+        &self,
+        channel_id: &ProtoChannelId,
+        parent: &str,
+    ) -> anyhow::Result<String> {
+        match self.port.find_post(channel_id, parent).await {
+            Ok(Some((line, _))) => Ok(line),
+            Ok(None) => anyhow::bail!(
+                "ChannelSend: parent {parent} is not a message in {}; use a post's `id` or \
+                 `msg_id` from ChannelRead",
+                channel_id.as_str()
+            ),
+            Err(ChannelError::NotFound(_)) => Ok(parent.to_string()),
+            Err(e) => Err(anyhow::anyhow!("ChannelSend parent lookup: {e}")),
         }
     }
 
@@ -1151,6 +1177,51 @@ mod tests {
             fx.posts(&channel).await.last().unwrap(),
             &(Some(root_id), "reply".to_string())
         );
+    }
+
+    /// ChannelRead shows a post's `msg_id` (and replies' `reply_to`) in
+    /// the `msg_` form; models copy it as `parent`. It threads the reply
+    /// onto that post's line (seen on MiMo: "invalid parent TaskId
+    /// msg_…: not a numeric line offset", then a retry with the line).
+    #[tokio::test]
+    async fn parent_accepts_the_stable_msg_id() {
+        let fx = Fixture::new();
+        let channel = fx.channel_of(&fx.alice, None).await;
+        let root = fx
+            .send(json!({ "to": channel.as_str(), "text": "root" }))
+            .await
+            .unwrap();
+        let line = root["id"].as_str().unwrap().to_string();
+        let msg_id = fx
+            .port
+            .peek_with_ids(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|(id, ev)| match ev {
+                ChannelEvent::Posted {
+                    msg_id: Some(m), ..
+                } if id == line => Some(m),
+                _ => None,
+            })
+            .expect("a post carries a msg_id");
+        fx.send(json!({ "to": channel.as_str(), "text": "reply", "parent": msg_id }))
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.posts(&channel).await.last().unwrap(),
+            &(Some(line), "reply".to_string())
+        );
+
+        let got = fx
+            .send(json!({ "to": channel.as_str(), "text": "x", "parent": "msg_nope" }))
+            .await
+            .unwrap_err();
+        assert!(
+            got.to_string().contains("parent msg_nope is not a message"),
+            "{got}"
+        );
+        assert_eq!(fx.posts(&channel).await.len(), 2, "nothing was posted");
     }
 
     #[tokio::test]
