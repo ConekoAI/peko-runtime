@@ -164,13 +164,16 @@ wire shapes are unchanged.
 
 `cron.result` details retain status, error and execution `duration_ms`, and add
 RFC3339 `scheduled_at`, `finished_at`, `next_run_at`, and integer
-`skipped_interval_slots` for `Every` jobs (null otherwise). The slot count is the
-number of grid points omitted between the fired scheduled slot and the next
-future slot, excluding both endpoints. It includes overdue slots from late
-admission or execution; it does not count failed turns or missed world reads.
-Run history and schedule storage formats are unchanged. A same-job in-flight
-fire does not create another history row; after completion overdue slots are
-skipped, not queued for replay.
+`skipped_interval_slots` for `Every` jobs (null otherwise), and boolean
+`catch_up`. The slot count is the number of grid points omitted between the
+fired scheduled slot and the new `next_run`, excluding both endpoints. It
+includes overdue slots from late admission or execution; it does not count
+failed turns or missed world reads. Run history and schedule storage formats
+are unchanged. A same-job in-flight fire does not create another history row.
+After a successful run that finished on or past its next slot, `next_run` is
+the latest such slot (`catch_up: true`), so the job runs once more right away;
+earlier overdue slots are skipped, never replayed. Failed runs skip to the
+next future slot.
 For an async run still `running` after the completion wait budget, `finished_at`
 is null. `wait_finished_at` marks the end of that wait; `duration_ms` is its
 duration. These fields do not fabricate task completion or full task duration.

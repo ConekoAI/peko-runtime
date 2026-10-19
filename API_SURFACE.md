@@ -223,11 +223,14 @@ returns the existing open run ID. Timer/manual admission is shared across engine
 clones and does not hold its short lock while running tools. Public signatures
 and wire types are unchanged.
 
-Runs of the same job are coalesced while one is in flight. For `Every`, completion
-advances the scheduled grid to the first strictly future slot; overdue slots are
-skipped without catch-up. An interval is nominal, not a guarantee of observation
-frequency. `cron.result` audit details include `scheduled_at`, `finished_at`,
-`next_run_at`, and `skipped_interval_slots` (null for non-interval schedules).
+Runs of the same job are coalesced while one is in flight. For `Every`, a
+successful run that finishes on or past its next slot sets `next_run` to the
+latest slot at or before completion, so it runs once more right away
+(`peko_cron::interval_catch_up_slot`); any earlier overdue slots are skipped. A
+failed run, or one still `running` after its wait, advances to the first strictly
+future slot. `cron.result` audit details include `scheduled_at`, `finished_at`,
+`next_run_at`, `skipped_interval_slots` (null for non-interval schedules), and
+`catch_up`.
 If an async completion wait ends with status `running`, `finished_at` is null;
 `wait_finished_at` and `duration_ms` describe the wait, not task completion.
 Skipped slots include late admission and execution overruns, not failed runs.

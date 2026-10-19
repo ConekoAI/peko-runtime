@@ -430,8 +430,9 @@ three variants:
   one root).
 
 Schedule kinds cover the needed rhythms: `At`, `Every`, `Cron` (with
-timezone), `Idle`, and `Event` triggers. Missed intervals are anchored
-(no catch-up bursts) and in-flight fires coalesce. Trunk-targeted `Every`
+timezone), `Idle`, and `Event` triggers. Missed intervals are anchored:
+a successful run that overran catches up once, never in a burst, and
+in-flight fires coalesce. Trunk-targeted `Every`
 sends enforce a 60s floor (`TRUNK_MIN_INTERVAL_MS`, Phase 3b) — a faster
 self-targeted keepalive is a token-burn anti-pattern.
 

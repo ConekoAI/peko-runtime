@@ -42,9 +42,9 @@ pub use peko_subject::PrincipalId;
 pub use std::str::FromStr;
 #[allow(unused_imports)]
 pub use tools::{
-    calculate_next_interval_anchored, calculate_next_run, global_runtime, normalize_cron_expr,
-    render_job_list, resolve_schedule_kind, set_global_runtime, CronJob, CronJobAction,
-    CronRuntime, CronTool, FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS,
+    calculate_next_interval_anchored, calculate_next_run, global_runtime, interval_catch_up_slot,
+    normalize_cron_expr, render_job_list, resolve_schedule_kind, set_global_runtime, CronJob,
+    CronJobAction, CronRuntime, CronTool, FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS,
     DEFAULT_MAX_RETRIES, QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS,
 };
 
