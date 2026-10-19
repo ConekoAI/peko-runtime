@@ -695,9 +695,10 @@ pub fn calculate_next_run(schedule: &ScheduleKind, after: DateTime<Utc>) -> Resu
 /// tick quantisation slip (up to one poll interval, 15s by default) plus
 /// the execution time accumulate into permanent drift — a 60s job fired
 /// every ~75s (2026-08-07 field test, Finding 6). Anchoring to the
-/// scheduled `next_run` preserves the grid. Slots at or before completion
-/// are skipped after overruns or downtime without bursting; this does not
-/// guarantee one execution or observation per interval.
+/// scheduled `next_run` preserves the grid. Slots at or before `now` are
+/// skipped without bursting; the engine pairs this with
+/// [`interval_catch_up_slot`] so a successful run that overran still
+/// fires once more.
 pub fn calculate_next_interval_anchored(
     scheduled: DateTime<Utc>,
     every_ms: u64,
@@ -712,6 +713,28 @@ pub fn calculate_next_interval_anchored(
         next += step;
     }
     next
+}
+
+/// The slot a successful `Every` run that overran fires once more at:
+/// the latest grid slot after `scheduled` and at or before `finished`.
+/// `None` when the run finished before its next slot.
+///
+/// The slot is already due, so the job runs again on the next poll, and
+/// completion anchors to it, which keeps the grid. However many slots the
+/// run spanned, it catches up once: a turn ending 5 s past a 60 s slot
+/// used to lose that whole interval and the check it was due to make
+/// (peko-benchmark `docs/RESPONSIBILITY_MASTER_RERUN_MIMO_2026-10-19.md`).
+pub fn interval_catch_up_slot(
+    scheduled: DateTime<Utc>,
+    every_ms: u64,
+    finished: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    if every_ms == 0 {
+        return None;
+    }
+    let step = chrono::Duration::milliseconds(every_ms as i64);
+    let missed = calculate_next_interval_anchored(scheduled, every_ms, finished) - step;
+    (missed > scheduled).then_some(missed)
 }
 
 /// Render a list of [`CronJob`] values into the canonical `Cron action list`
@@ -1005,8 +1028,9 @@ mod tests {
         let scheduled = DateTime::parse_from_rfc3339("2026-10-07T05:25:56Z")
             .unwrap()
             .with_timezone(&Utc);
-        // Finishing on the next slot counts as overdue, not a catch-up.
-        // The 60.759s live worker likewise loses a whole scheduled check.
+        // Finishing on the next slot counts as overdue: the next future
+        // slot is one step later. A successful run catches up on the
+        // overdue slot separately (`interval_catch_up_slot`).
         for (finish_ms, next_ms) in [(59_999, 60_000), (60_000, 120_000), (60_759, 120_000)] {
             assert_eq!(
                 calculate_next_interval_anchored(
@@ -1017,6 +1041,30 @@ mod tests {
                 scheduled + chrono::Duration::milliseconds(next_ms)
             );
         }
+    }
+
+    #[test]
+    fn overrun_catches_up_once_at_the_latest_missed_slot() {
+        let scheduled = DateTime::parse_from_rfc3339("2026-10-19T05:57:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let at = |ms: i64| scheduled + chrono::Duration::milliseconds(ms);
+        // Before the next slot: nothing to catch up. On or past it: the
+        // latest slot at or before completion, never more than one.
+        for (finish_ms, slot_ms) in [
+            (-10_000, None),
+            (59_999, None),
+            (60_000, Some(60_000)),
+            (64_900, Some(60_000)),
+            (210_000, Some(180_000)),
+        ] {
+            assert_eq!(
+                interval_catch_up_slot(scheduled, 60_000, at(finish_ms)),
+                slot_ms.map(at),
+                "finished at +{finish_ms} ms"
+            );
+        }
+        assert_eq!(interval_catch_up_slot(scheduled, 0, at(60_000)), None);
     }
 
     #[test]

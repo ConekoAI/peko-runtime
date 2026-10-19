@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: an interval run that overran its slot catches up once (2026-10-19)
+
+When an `Every` run finished on or past its next slot, completion moved
+`next_run` to the first future slot, so a turn ending 5 s late lost a whole
+interval. In the peko-benchmark responsibility rerun
+(`docs/RESPONSIBILITY_MASTER_RERUN_MIMO_2026-10-19.md`), a 60 s worker turn
+ended 4.9 s after its 200 s slot. The next read came at 266.6 s, after the
+180–240 s escalation window had closed, and the obligation was missed.
+
+Now a successful run that overran sets `next_run` to the latest slot it
+missed (`peko_cron::interval_catch_up_slot`). The job runs once more on
+the next poll and stays on its grid. However many slots the run spanned, it
+catches up once. Failed runs, and runs still `running` past their wait,
+skip to the next future slot as before, so a failing job is not retried
+back to back. `cron.result` gains `catch_up`, and `skipped_interval_slots`
+no longer counts the caught-up slot. The `Cron` tool description says that
+a turn always longer than its interval now runs back to back.
+
 ### Fix: `ChannelSend` accepts a post's `msg_id` as `parent` (2026-10-19)
 
 ChannelRead shows each post's line `id` next to its stable `msg_id`, and a

@@ -630,14 +630,27 @@ impl CronEngine {
         // drift (60s job fired every ~75s; 2026-08-07 field test,
         // Finding 6). Other schedule kinds compute absolute times and
         // are immune.
-        let next_run = match &job.schedule {
-            peko_cron::ScheduleKind::Every { every_ms } => {
+        //
+        // A successful run that finished on or past its next slot fires
+        // once more right away, at the latest slot it missed. A failed
+        // run, or one still running past its wait, resumes at the next
+        // future slot, so failures keep their spacing.
+        let catch_up_slot = match &job.schedule {
+            peko_cron::ScheduleKind::Every { every_ms } if status == "success" => {
+                peko_cron::interval_catch_up_slot(job.next_run, *every_ms, finished_at)
+            }
+            _ => None,
+        };
+        let next_run = match (&job.schedule, catch_up_slot) {
+            (_, Some(slot)) => slot,
+            (peko_cron::ScheduleKind::Every { every_ms }, None) => {
                 peko_cron::calculate_next_interval_anchored(job.next_run, *every_ms, finished_at)
             }
             _ => peko_cron::calculate_next_run(&job.schedule, finished_at)?,
         };
         // Count omitted interval slots, including execution overruns and late
-        // admission. This is not a count of failed turns or missed observations.
+        // admission; a caught-up slot is not omitted. This is not a count of
+        // failed turns or missed observations.
         let skipped_slots = match &job.schedule {
             peko_cron::ScheduleKind::Every { every_ms } if *every_ms > 0 => Some(
                 ((next_run - job.next_run).num_milliseconds().max(0) as u64 / every_ms)
@@ -663,6 +676,7 @@ impl CronEngine {
                     "wait_finished_at": finished_at,
                     "next_run_at": next_run,
                     "skipped_interval_slots": skipped_slots,
+                    "catch_up": catch_up_slot.is_some(),
                 }),
             )
             .await;
@@ -3155,7 +3169,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_interval_coalesces_native_dispatch_and_audits_skipped_slot() {
+    async fn test_interval_coalesces_native_dispatch_and_catches_up_once() {
         let tmp = TempDir::new().unwrap();
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -3233,17 +3247,22 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+        // The run finished past the next slot and succeeded, so it
+        // catches up once at that slot, which is already due.
         let updated = scheduler.get_job(&job.id).unwrap().unwrap();
         assert_eq!(updated.run_count, 1);
         assert_eq!(updated.last_status.as_deref(), Some("success"));
-        assert_eq!(updated.next_run, job.next_run + Duration::seconds(120));
-        assert!(scheduler.due_jobs(Utc::now()).unwrap().is_empty());
+        assert_eq!(updated.next_run, job.next_run + Duration::seconds(60));
+        let due = scheduler.due_jobs(Utc::now()).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, job.id);
         let audit = obs.get_audit_log(50).await;
         let result = audit
             .iter()
             .find(|e| e.event_type == "cron.result")
             .unwrap();
-        assert_eq!(result.details["skipped_interval_slots"], 1);
+        assert_eq!(result.details["skipped_interval_slots"], 0);
+        assert_eq!(result.details["catch_up"], true);
         assert_eq!(
             result.details["scheduled_at"],
             serde_json::json!(job.next_run)
@@ -3525,6 +3544,10 @@ mod tests {
         let updated = scheduler.get_job(&job.id).unwrap().unwrap();
         assert_eq!(updated.last_status.as_deref(), Some("failed"));
         assert_eq!(updated.consecutive_failures, 1);
+        // It finished past its next slot, but a failure does not catch
+        // up: the job waits for the next future slot.
+        assert!(updated.next_run > Utc::now());
+        assert!(scheduler.due_jobs(Utc::now()).unwrap().is_empty());
 
         // The `cron.result` audit event carries the real status + error.
         let audit = obs.get_audit_log(50).await;
