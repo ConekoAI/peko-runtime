@@ -193,11 +193,22 @@ requests caching but does not guarantee a hit from a compatible endpoint.
 ## Cron Send history after daemon restart
 
 When a new daemon first opens a principal's cron schedule, unfinished
-`running` rows whose owning job is a `Send` become `failed`, with
-`finished_at` and an error stating that the interrupted outcome may be partial.
-The owning job's last status and failure counter are updated; authored
-enablement, next due time and run count are retained. Existing terminal history
-and `SpawnTool` rows retain their existing lifecycle. Recovery is once per
+`running` rows whose owning job is a `Send`, or a `SpawnTool` without an
+attached task id, become `interrupted`, with `finished_at` and an error stating
+that the interrupted outcome may be partial. A `SpawnTool` row whose attached
+task is missing from the new process's registry becomes `interrupted` the same
+way (the hourly janitor still closes a task purged at any other time as
+`failed`). The owning job's last status becomes `interrupted`; its failure
+counter is left alone, since a restart says nothing about the job's health.
+Authored enablement, next due time and run count are retained. Existing
+terminal history retains its lifecycle.
+
+A fire whose tool fails because the job's previous work is still in flight
+(`has an active run in flight`, e.g. an `Agent` child that outlived its run's
+timeout) is recorded as `skipped` and likewise leaves the failure counter
+alone. `success` resets the counter; every other terminal status (`failed`,
+`timed_out`, `cancelled`) bumps it toward `max_retries`
+(`peko_cron::status_resets_failures`). Recovery is once per
 schedule path in that daemon, shared across principal-id/DID aliases and engine
 clones; subsequent opens cannot reap a live Send turn. There are no new wire
 or storage fields. This clears stale coalescing state so ordinary due polling

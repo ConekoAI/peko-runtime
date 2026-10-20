@@ -282,6 +282,26 @@ pub fn when_refusal(when: FireWhen, schedule: &ScheduleKind) -> Option<&'static 
 /// The run status a quiet tick leaves on its job. No run row is written.
 pub const QUIET_STATUS: &str = "quiet";
 
+/// The run status of a run cut short by a daemon restart. Its outcome is
+/// unknown, so it neither resets nor counts toward the retry budget.
+pub const INTERRUPTED_STATUS: &str = "interrupted";
+
+/// The run status of a fire that found the job's previous work still in
+/// flight (an `Agent` child that outlived its run's timeout). The fire is
+/// coalesced with that work, not counted as a failure.
+pub const SKIPPED_STATUS: &str = "skipped";
+
+/// How a run's status moves the job's consecutive-failure count:
+/// `Some(true)` resets it, `Some(false)` bumps it, `None` leaves it.
+#[must_use]
+pub fn status_resets_failures(status: &str) -> Option<bool> {
+    match status {
+        "success" => Some(true),
+        INTERRUPTED_STATUS | SKIPPED_STATUS => None,
+        _ => Some(false),
+    }
+}
+
 impl CronJobAction {
     /// Short, human-readable kind label for list rendering.
     #[must_use]

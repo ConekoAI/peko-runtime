@@ -4,6 +4,36 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: one slow provider call no longer disables a cron worker (2026-10-20)
+
+In the peko-benchmark responsibility rerun 2
+(`docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`, pairs 1 and 4), a
+71.5 s provider call pushed a cron `Agent` worker past its 90 s job timeout.
+Three things then went wrong:
+
+- **The child kept running.** The async executor dropped the timed-out tool
+  body. The Agent tool's abort bridge was dropped with it, so the child run
+  never heard the cancel.
+- **The next fire counted as a failure.** It found the child still in flight
+  and failed with `has an active run in flight`.
+- **The restart counted too.** It was the third failure toward the
+  auto-disable, so the worker was turned off.
+
+Fixes:
+
+- **Abort before drop.** On timeout, `AsyncExecutor` signals the task body's
+  abort channel, then gives the body 2 s to act before dropping it. An Agent
+  child now stops at its next iteration.
+- **Coalesce in-flight fires.** A cron fire that finds its previous work still
+  in flight is recorded as `skipped`, not failed.
+- **Restarts are not failures.** A run interrupted by a daemon restart is
+  recorded as `interrupted`, not failed. This covers a `Send` row, an untracked
+  `SpawnTool` row, or a `SpawnTool` whose task was lost with the old process.
+
+Neither `skipped` nor `interrupted` moves `consecutive_failures`
+(`peko_cron::status_resets_failures`), and neither wakes the attention
+heartbeat as a failed job.
+
 ### Fix: an interval run that overran its slot catches up once (2026-10-19)
 
 When an `Every` run finished on or past its next slot, completion moved

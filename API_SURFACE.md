@@ -231,6 +231,15 @@ failed run, or one still `running` after its wait, advances to the first strictl
 future slot. `cron.result` audit details include `scheduled_at`, `finished_at`,
 `next_run_at`, `skipped_interval_slots` (null for non-interval schedules), and
 `catch_up`.
+
+`peko_cron::INTERRUPTED_STATUS` (`"interrupted"`, a run cut short by a daemon
+restart) and `peko_cron::SKIPPED_STATUS` (`"skipped"`, a fire coalesced with
+previous work still in flight) are run statuses that leave a job's
+`consecutive_failures` unchanged; `peko_cron::status_resets_failures` is the one
+rule the scheduler and the attention heartbeat share. When an async task times
+out, `AsyncExecutor` signals the task body's abort channel and gives it two
+seconds before dropping it, so work the body started outside its own future (an
+`Agent` child run) is cancelled too.
 If an async completion wait ends with status `running`, `finished_at` is null;
 `wait_finished_at` and `duration_ms` describe the wait, not task completion.
 Skipped slots include late admission and execution overruns, not failed runs.
