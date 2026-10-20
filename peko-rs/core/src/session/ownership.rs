@@ -261,8 +261,14 @@ pub fn err_run_active(target: &str) -> anyhow::Error {
 /// instead of dropping the wake.
 #[must_use]
 pub fn is_run_active_error(err: &anyhow::Error) -> bool {
-    err.chain()
-        .any(|e| e.to_string().contains("has an active run in flight"))
+    err.chain().any(|e| is_run_active_message(&e.to_string()))
+}
+
+/// [`is_run_active_error`] for an error already rendered to text, such
+/// as a failed async task's `error` string.
+#[must_use]
+pub fn is_run_active_message(text: &str) -> bool {
+    text.contains("has an active run in flight")
 }
 
 /// Non-recursive `delete` on a session that has descendants.

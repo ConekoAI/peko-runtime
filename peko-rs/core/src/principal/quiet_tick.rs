@@ -101,10 +101,12 @@ fn failed_since(job: &CronJob, jobs: &[CronJob]) -> Vec<String> {
     jobs.iter()
         .filter(|other| other.id != job.id && other.principal_id == job.principal_id)
         .filter(|other| {
-            other
-                .last_status
-                .as_deref()
-                .is_some_and(|s| !matches!(s, "success" | "running") && s != QUIET_STATUS)
+            other.last_status.as_deref().is_some_and(|s| {
+                // Interrupted and skipped runs are not failures.
+                s != QUIET_STATUS
+                    && s != "running"
+                    && peko_cron::status_resets_failures(s) == Some(false)
+            })
         })
         .filter(|other| match (other.last_run, job.last_run) {
             (Some(failed_at), Some(last_turn)) => failed_at > last_turn,
@@ -196,10 +198,16 @@ mod tests {
             job("new-fail", Some(now - Duration::minutes(1)), Some("failed")),
             job("fine", Some(now), Some("success")),
             job("hushed", Some(now), Some(QUIET_STATUS)),
+            job("restarted", Some(now), Some(peko_cron::INTERRUPTED_STATUS)),
+            job("coalesced", Some(now), Some(peko_cron::SKIPPED_STATUS)),
+            job("slow", Some(now), Some("timed_out")),
         ];
-        assert_eq!(failed_since(&tick, &jobs), vec!["new-fail"]);
+        assert_eq!(failed_since(&tick, &jobs), vec!["new-fail", "slow"]);
         let fresh = job("keepalive", None, None);
-        assert_eq!(failed_since(&fresh, &jobs), vec!["old-fail", "new-fail"]);
+        assert_eq!(
+            failed_since(&fresh, &jobs),
+            vec!["old-fail", "new-fail", "slow"]
+        );
     }
 
     /// ADR-084: a future check-in snoozes a ready step; a check-in wakes

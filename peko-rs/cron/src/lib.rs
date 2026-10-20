@@ -43,9 +43,10 @@ pub use std::str::FromStr;
 #[allow(unused_imports)]
 pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, interval_catch_up_slot,
-    normalize_cron_expr, render_job_list, resolve_schedule_kind, set_global_runtime, CronJob,
-    CronJobAction, CronRuntime, CronTool, FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS,
-    DEFAULT_MAX_RETRIES, QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS,
+    normalize_cron_expr, render_job_list, resolve_schedule_kind, set_global_runtime,
+    status_resets_failures, CronJob, CronJobAction, CronRuntime, CronTool, FireWhen, JobPatch,
+    ScheduleKind, ATTENTION_MAX_QUIET_MS, DEFAULT_MAX_RETRIES, INTERRUPTED_STATUS,
+    QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS, SKIPPED_STATUS,
 };
 
 pub use idle::IdleDetector;
@@ -309,15 +310,12 @@ impl CronScheduler {
             job.last_status = Some(status.to_string());
             job.next_run = next_run;
             job.run_count += 1;
-            // Retry-budget accounting: a success resets the counter;
-            // any non-success (failed, errored, …) bumps it. The engine
-            // consults `consecutive_failures` after this call to decide
-            // whether to disable the job.
-            if status == "success" {
-                job.consecutive_failures = 0;
-            } else {
-                job.consecutive_failures += 1;
-            }
+            // Retry-budget accounting: a success resets the counter; a
+            // failure (failed, timed out, …) bumps it; an interrupted or
+            // skipped run leaves it. The engine consults
+            // `consecutive_failures` after this call to decide whether to
+            // disable the job.
+            count_failure(job, status);
             Ok(((), true))
         })
     }
@@ -354,11 +352,7 @@ impl CronScheduler {
             };
             job.last_run = Some(Utc::now());
             job.last_status = Some(status.to_string());
-            if status == "success" {
-                job.consecutive_failures = 0;
-            } else {
-                job.consecutive_failures += 1;
-            }
+            count_failure(job, status);
             Ok((true, true))
         })
     }
@@ -525,6 +519,16 @@ impl CronScheduler {
 /// Apply `patch` to `job`, validating the result the way `add_job`
 /// validates a new job. On error `job` may be half-patched; callers
 /// patch a copy.
+/// Move `job`'s consecutive-failure count for a run that ended `status`
+/// ([`tools::status_resets_failures`]).
+fn count_failure(job: &mut CronJob, status: &str) {
+    match tools::status_resets_failures(status) {
+        Some(true) => job.consecutive_failures = 0,
+        Some(false) => job.consecutive_failures += 1,
+        None => {}
+    }
+}
+
 fn apply_patch(job: &mut CronJob, patch: &tools::JobPatch, now: DateTime<Utc>) -> Result<()> {
     let job_id = job.id.clone();
     if let Some(schedule) = &patch.schedule {
@@ -1079,6 +1083,37 @@ mod tests {
             .unwrap();
         let job = scheduler.get_job("b").unwrap().unwrap();
         assert_eq!(job.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn interrupted_and_skipped_runs_leave_the_failure_count() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        scheduler.add_job(&make_job("d", Some(2))).unwrap();
+        scheduler
+            .update_job_after_run("d", "timed_out", Utc::now())
+            .unwrap();
+        // Neither a restart nor a coalesced fire is the job failing.
+        scheduler
+            .update_job_after_run("d", SKIPPED_STATUS, Utc::now())
+            .unwrap();
+        scheduler
+            .set_job_last_status("d", INTERRUPTED_STATUS)
+            .unwrap();
+        let job = scheduler.get_job("d").unwrap().unwrap();
+        assert_eq!(job.consecutive_failures, 1);
+        assert_eq!(job.last_status.as_deref(), Some(INTERRUPTED_STATUS));
+        scheduler
+            .update_job_after_run("d", "success", Utc::now())
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .get_job("d")
+                .unwrap()
+                .unwrap()
+                .consecutive_failures,
+            0
+        );
     }
 
     #[test]

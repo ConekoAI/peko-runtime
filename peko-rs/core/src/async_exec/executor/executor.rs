@@ -104,6 +104,12 @@ use tokio::sync::RwLock;
 /// number is not mistaken for a global cap.
 pub const DEFAULT_MAX_CONCURRENT_TASKS_PER_EXECUTOR: usize = 8;
 
+/// How long a timed-out task body gets to observe its abort signal
+/// before it is dropped. Long enough for the Agent tool's signal bridge
+/// to cancel its child run; short enough that a body ignoring the
+/// signal adds little to the timeout.
+const TIMEOUT_ABORT_GRACE: Duration = Duration::from_secs(2);
+
 /// Internal outcome of executing an async task, distinguishing timeout from failure
 enum TaskOutcome {
     Success(Value),
@@ -471,11 +477,27 @@ impl AsyncExecutor {
             }
             // Execute the work with optional timeout enforcement.
             let outcome = match timeout_duration {
-                Some(duration) => match tokio::time::timeout(duration, execution_fn()).await {
-                    Ok(Ok(value)) => TaskOutcome::Success(value),
-                    Ok(Err(e)) => TaskOutcome::Failure(e),
-                    Err(_) => TaskOutcome::Timeout(timeout_secs.unwrap_or(0)),
-                },
+                Some(duration) => {
+                    let body = execution_fn();
+                    tokio::pin!(body);
+                    match tokio::time::timeout(duration, &mut body).await {
+                        Ok(Ok(value)) => TaskOutcome::Success(value),
+                        Ok(Err(e)) => TaskOutcome::Failure(e),
+                        Err(_) => {
+                            // Signal the body's abort channel before
+                            // dropping it, and give it a moment to act. A
+                            // tool that started work outside this future
+                            // (Agent's child run) would otherwise keep
+                            // that work alive, so the job's next fire
+                            // found the child still in flight.
+                            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
+                                entry.signal_cancel();
+                            }
+                            let _ = tokio::time::timeout(TIMEOUT_ABORT_GRACE, &mut body).await;
+                            TaskOutcome::Timeout(timeout_secs.unwrap_or(0))
+                        }
+                    }
+                }
                 None => match execution_fn().await {
                     Ok(value) => TaskOutcome::Success(value),
                     Err(e) => TaskOutcome::Failure(e),
@@ -1854,6 +1876,83 @@ mod dispatch_tool_tests {
             ),
             None => panic!("entry disappeared after cancel"),
         }
+    }
+
+    /// Models the Agent tool: the body bridges its abort signal into a
+    /// token that a detached "child" task watches, then waits forever.
+    struct DetachedChildStubTool {
+        child_cancelled: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Tool for DetachedChildStubTool {
+        fn name(&self) -> &str {
+            "detached_child_stub"
+        }
+        fn description(&self) -> String {
+            "starts work outside its own future, like Agent".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            unreachable!("dispatched with a context")
+        }
+        async fn execute_with_context(
+            &self,
+            _params: serde_json::Value,
+            ctx: &peko_tools_core::ToolContext,
+        ) -> anyhow::Result<serde_json::Value> {
+            let (token, _guard) =
+                peko_tools_core::bridge_to_cancellation_token(Some(ctx.abort_signal()));
+            let notify = self.child_cancelled.clone();
+            tokio::spawn(async move {
+                token.cancelled().await;
+                notify.notify_one();
+            });
+            std::future::pending().await
+        }
+    }
+
+    /// A timed-out task's abort signal fires before its body is dropped,
+    /// so work the body started elsewhere (an Agent child run) stops too.
+    /// Before, the dropped body took its signal bridge with it, the child
+    /// ran on, and a cron job's next fire found it still in flight.
+    #[tokio::test]
+    async fn test_timeout_signals_abort_before_dropping_the_body() {
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        let child_cancelled = Arc::new(tokio::sync::Notify::new());
+        core.catalog()
+            .register_system(
+                Arc::new(DetachedChildStubTool {
+                    child_cancelled: child_cancelled.clone(),
+                }),
+                crate::tools::metadata::ToolSource::BuiltIn,
+            )
+            .await;
+        let executor = Arc::new(AsyncExecutor::new(standalone_inbox_registry()));
+        let context =
+            ToolDispatchContext::builder("detached_child_stub", serde_json::json!({}), "session_x")
+                .for_principal("system".to_string())
+                .with_acting_for(peko_tools_core::ActingFor::runtime());
+        let config = AsyncToolConfig {
+            timeout_millis: Some(200),
+            ..Default::default()
+        };
+        let receipt = executor
+            .dispatch_tool_with_signal(&core, context, config, None)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), child_cancelled.notified())
+            .await
+            .expect("the detached child must be cancelled when its task times out");
+        for _ in 0..200 {
+            if let Some(AsyncTaskStatus::TimedOut { .. }) =
+                executor.check_status(&receipt.task_id).await
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the task never reached TimedOut");
     }
 
     /// F38: `dispatch_tool_with_signal` bridges an external

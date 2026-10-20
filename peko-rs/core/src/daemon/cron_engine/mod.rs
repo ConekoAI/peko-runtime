@@ -166,7 +166,12 @@ impl CronEngine {
             for run in scheduler.list_running_runs()? {
                 if let Some(task_id) = run.output.as_ref() {
                     if self.task_status(principal_id, task_id).await.is_none() {
-                        finalize_missing_task(&scheduler, &run, task_id)?;
+                        finalize_missing_task(
+                            &scheduler,
+                            &run,
+                            task_id,
+                            peko_cron::INTERRUPTED_STATUS,
+                        )?;
                     }
                 }
             }
@@ -588,16 +593,33 @@ impl CronEngine {
             CronJobAction::SpawnTool { .. } => self.run_spawn_tool_job(&job).await,
         };
 
-        let (status, output, error) = match result {
+        let (mut status, output, error) = match result {
             Ok((s, o, e)) => (s, o, e),
             Err(e) => ("failed".to_string(), None, Some(e.to_string())),
         };
+        // The job's previous work is still running: an `Agent` child that
+        // outlived its run's timeout. Coalesce this fire with it instead of
+        // counting a failure, which used to disable a healthy worker after
+        // one slow provider call (peko-benchmark
+        // `docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`).
+        if status == "failed"
+            && error
+                .as_deref()
+                .is_some_and(crate::session::ownership::is_run_active_message)
+        {
+            status = peko_cron::SKIPPED_STATUS.to_string();
+        }
 
         // Surface failures loudly — the run row and the `cron.result`
         // audit event below carry the detail; this WARN is what an
         // operator sees live in the daemon log (2026-09-06 live bug: a
         // failing `ChannelSend` spawn vanished with no trace).
-        if status != "success" && status != "running" {
+        if status == peko_cron::SKIPPED_STATUS {
+            info!(
+                "⏭️  Cron job '{}' (run {}) skipped: its previous work is still in flight",
+                job.name, run_id
+            );
+        } else if status != "success" && status != "running" {
             warn!(
                 "⚠️ Cron job '{}' (run {}) finished with status '{}': {}",
                 job.name,
@@ -689,7 +711,7 @@ impl CronEngine {
         // the budget is exhausted. `max_retries: None` means unlimited
         // — that preserves the legacy behavior for callers that have
         // not picked up the new field yet.
-        if status != "success" {
+        if peko_cron::status_resets_failures(&status) == Some(false) {
             if let Ok(Some(updated)) = scheduler.get_job(&job.id) {
                 let budget = updated.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
                 if updated.consecutive_failures >= budget {
@@ -1196,7 +1218,8 @@ impl CronEngine {
                 // replaying the interrupted task.
                 None => {
                     let scheduler = self.scheduler_for(&principal_id).await?;
-                    finalized += usize::from(finalize_missing_task(&scheduler, &run, &task_id)?);
+                    finalized +=
+                        usize::from(finalize_missing_task(&scheduler, &run, &task_id, "failed")?);
                     continue;
                 }
             };
@@ -1273,15 +1296,19 @@ fn recover_interrupted_runs(scheduler: &CronScheduler) -> Result<usize> {
             CronJobAction::SpawnTool { .. } if run.output.is_none() => "SpawnTool",
             CronJobAction::SpawnTool { .. } => continue,
         };
+        // A restart says nothing about the job's health, so the run is
+        // `interrupted`: it neither resets nor counts toward the retry
+        // budget (peko-benchmark
+        // `docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`).
         if scheduler.finalize_run(
             &run.id,
-            "failed",
+            peko_cron::INTERRUPTED_STATUS,
             run.output,
             Some(format!(
                 "daemon restarted before cron {action} completed; outcome may be partial"
             )),
         )? {
-            scheduler.set_job_last_status(&job.id, "failed")?;
+            scheduler.set_job_last_status(&job.id, peko_cron::INTERRUPTED_STATUS)?;
             recovered += 1;
             warn!(run_id = %run.id, job_id = %job.id, action, "Recovered interrupted cron run");
         }
@@ -1290,10 +1317,18 @@ fn recover_interrupted_runs(scheduler: &CronScheduler) -> Result<usize> {
 }
 
 /// Missing process-local evidence never certifies the tool's external effects.
-fn finalize_missing_task(scheduler: &CronScheduler, run: &CronRun, task_id: &str) -> Result<bool> {
+/// After a restart (`status` [`peko_cron::INTERRUPTED_STATUS`]) the task was
+/// lost with the old process; at any other time it was purged unseen, which
+/// counts as a failure.
+fn finalize_missing_task(
+    scheduler: &CronScheduler,
+    run: &CronRun,
+    task_id: &str,
+    status: &str,
+) -> Result<bool> {
     if !scheduler.finalize_run(
         &run.id,
-        "failed",
+        status,
         Some(task_id.to_string()),
         Some(format!(
             "async task {task_id} missing from registry; outcome unknown and may be partial"
@@ -1301,7 +1336,7 @@ fn finalize_missing_task(scheduler: &CronScheduler, run: &CronRun, task_id: &str
     )? {
         return Ok(false);
     }
-    scheduler.set_job_last_status(&run.job_id, "failed")?;
+    scheduler.set_job_last_status(&run.job_id, status)?;
     warn!(run_id = %run.id, job_id = %run.job_id, task_id, "Cron task outcome unavailable");
     Ok(true)
 }
@@ -1489,7 +1524,7 @@ mod tests {
         let reopened = CronScheduler::new(path).unwrap();
         let history = reopened.get_run_history(&send.id, 10).unwrap();
         let failed = history.iter().find(|r| r.id == "abandoned").unwrap();
-        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.status, peko_cron::INTERRUPTED_STATUS);
         assert!(failed.finished_at.is_some());
         assert!(failed
             .error
@@ -1507,7 +1542,7 @@ mod tests {
             .iter()
             .find(|r| r.id == "spawn-untracked")
             .unwrap();
-        assert_eq!(failed_spawn.status, "failed");
+        assert_eq!(failed_spawn.status, peko_cron::INTERRUPTED_STATUS);
         assert!(failed_spawn.finished_at.is_some());
         assert!(failed_spawn
             .error
@@ -1521,7 +1556,13 @@ mod tests {
         assert!(!updated.enabled);
         assert_eq!(updated.next_run, send.next_run);
         assert_eq!(updated.run_count, 0);
-        assert_eq!(updated.consecutive_failures, 1);
+        // A restart is not the job's failure: the retry budget is untouched.
+        assert_eq!(
+            updated.last_status.as_deref(),
+            Some(peko_cron::INTERRUPTED_STATUS)
+        );
+        assert_eq!(updated.consecutive_failures, 0);
+        assert_eq!(updated_spawn.consecutive_failures, 0);
     }
 
     #[tokio::test]
@@ -1553,7 +1594,7 @@ mod tests {
         assert!(loaded.list_running_runs().unwrap().is_empty());
         assert_eq!(
             loaded.get_run_history(&job.id, 10).unwrap()[0].status,
-            "failed"
+            peko_cron::INTERRUPTED_STATUS
         );
         assert_eq!(loaded.due_jobs(Utc::now()).unwrap().len(), 1);
         loaded
@@ -1561,13 +1602,14 @@ mod tests {
             .unwrap();
         let alias = engine.clone().scheduler_for(&principal.id).await.unwrap();
         assert_eq!(alias.list_running_runs().unwrap()[0].id, "current-daemon");
+        // The interrupted run is not counted toward the retry budget.
         assert_eq!(
             alias
                 .get_job(&job.id)
                 .unwrap()
                 .unwrap()
                 .consecutive_failures,
-            1
+            0
         );
         loaded
             .finalize_run("current-daemon", "cancelled", None, None)
@@ -1618,7 +1660,7 @@ mod tests {
         assert!(loaded.list_running_runs().unwrap().is_empty());
         assert_eq!(
             loaded.get_run_history(&job.id, 10).unwrap()[0].status,
-            "failed"
+            peko_cron::INTERRUPTED_STATUS
         );
         assert_eq!(loaded.due_jobs(Utc::now()).unwrap().len(), 1);
         loaded
@@ -1686,7 +1728,7 @@ mod tests {
         assert!(loaded.list_running_runs().unwrap().is_empty());
         assert_eq!(engine.reconcile_running_runs().await.unwrap(), 0);
         let recovered = loaded.get_run_history(&job.id, 10).unwrap();
-        assert_eq!(recovered[0].status, "failed");
+        assert_eq!(recovered[0].status, peko_cron::INTERRUPTED_STATUS);
         assert_eq!(recovered[0].output, abandoned.output);
         assert!(recovered[0]
             .error
@@ -3565,6 +3607,103 @@ mod tests {
             result_event.details
         );
 
+        drop(principal);
+    }
+
+    /// Models a cron `Agent` fire whose previous child run outlived its
+    /// job's timeout: the resume is refused as in flight.
+    struct CronBusyStubTool;
+
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronBusyStubTool {
+        fn name(&self) -> &str {
+            "cron_busy_stub"
+        }
+        fn description(&self) -> String {
+            "stub tool whose target session is still running".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Err(crate::session::ownership::err_run_active("/worker"))
+        }
+    }
+
+    /// A fire that finds the job's previous work still in flight is
+    /// coalesced as `skipped`: it neither counts toward the retry budget
+    /// nor disables the job. Before, three of these after one slow
+    /// provider call disabled a healthy worker (peko-benchmark
+    /// `docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_spawn_tool_in_flight_collision_is_skipped_not_failed() {
+        let tmp = TempDir::new().unwrap();
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let (llm_resolver, _adapter) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_resolver(llm_resolver),
+        );
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let core = crate::tools::runtime::ToolingRuntime::standalone();
+        core.catalog()
+            .register(
+                Arc::new(CronBusyStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
+        let obs = Arc::new(Observability::new("daemon"));
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            obs,
+            Some(manager.clone()),
+            Arc::downgrade(&core),
+        );
+        let mut job = recovery_job(PrincipalId::from_did(&principal.did().await));
+        job.id = "busy-worker".into();
+        job.action = CronJobAction::SpawnTool {
+            tool_name: "cron_busy_stub".to_string(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(60),
+        };
+        // One real failure would already disable it.
+        job.max_retries = Some(1);
+        scheduler.add_job(&job).unwrap();
+
+        engine.execute_job(job.clone()).await.unwrap();
+
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, peko_cron::SKIPPED_STATUS);
+        assert!(runs[0]
+            .error
+            .as_deref()
+            .is_some_and(crate::session::ownership::is_run_active_message));
+        let updated = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert!(updated.enabled, "a coalesced fire must not disable the job");
+        assert_eq!(updated.consecutive_failures, 0);
+        assert_eq!(
+            updated.last_status.as_deref(),
+            Some(peko_cron::SKIPPED_STATUS)
+        );
+        assert!(updated.next_run > Utc::now());
         drop(principal);
     }
 
