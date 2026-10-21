@@ -7,6 +7,10 @@
 - [ADR-054](ADR-054-principal-genesis-pipeline.md) P4: the seeded keepalive no
   longer runs a full turn on every tick.
 
+**Amended by:**
+- [ADR-086](ADR-086-peer-posts-bring-the-keepalive-forward.md): a post by
+  another principal brings an attention-gated keepalive's next fire forward.
+
 **Builds on:**
 - [ADR-072](ADR-072-human-started-runs-and-durable-delivery.md): only humans and
   cron start runs; other principals' posts wait on the waiting list (D4a).

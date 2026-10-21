@@ -1025,6 +1025,10 @@ impl AppState {
     /// `AppState` exists is replaced by the daemon and re-attached
     /// here so the IPC handler can dispatch manual triggers).
     pub fn set_cron_engine(&mut self, engine: Arc<crate::daemon::cron_engine::CronEngine>) {
+        // ADR-086: peer posts bring the recipient's keepalive forward.
+        self.channel_binding_supervisor.set_peer_nudge(
+            Arc::clone(&engine) as Arc<dyn crate::daemon::channel_binding::PeerPostNudge>
+        );
         self.cron_engine = Some(engine);
     }
 

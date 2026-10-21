@@ -336,6 +336,23 @@ impl CronScheduler {
         })
     }
 
+    /// Move `job_id`'s next fire to `at` when that is earlier (ADR-086).
+    /// Never pushes a fire later, so a slot that is already due, or a
+    /// catch-up (`interval_catch_up_slot`), is kept. Returns whether the
+    /// job moved.
+    pub fn bring_forward(&self, job_id: &str, at: DateTime<Utc>) -> Result<bool> {
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
+            };
+            if job.next_run <= at {
+                return Ok((false, false));
+            }
+            job.next_run = at;
+            Ok((true, true))
+        })
+    }
+
     /// Update only `last_status` (and `last_run`) on a job, leaving
     /// `next_run` and `run_count` untouched. Used by the cron
     /// reconciler when an `AsyncTask` finishes long after the original
@@ -1084,6 +1101,26 @@ mod tests {
             .unwrap();
         let job = scheduler.get_job("b").unwrap().unwrap();
         assert_eq!(job.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn bring_forward_only_moves_a_fire_earlier() {
+        let tmp = TempDir::new().unwrap();
+        let scheduler = CronScheduler::new(tmp.path().join("cron.json")).unwrap();
+        let mut job = make_job("e", None);
+        let base = Utc::now();
+        job.next_run = base + chrono::Duration::minutes(10);
+        scheduler.add_job(&job).unwrap();
+        let earlier = base + chrono::Duration::minutes(2);
+        assert!(scheduler.bring_forward("e", earlier).unwrap());
+        assert_eq!(scheduler.get_job("e").unwrap().unwrap().next_run, earlier);
+        // Later or equal: unchanged.
+        assert!(!scheduler
+            .bring_forward("e", base + chrono::Duration::minutes(5))
+            .unwrap());
+        assert!(!scheduler.bring_forward("e", earlier).unwrap());
+        assert!(!scheduler.bring_forward("missing", base).unwrap());
+        assert_eq!(scheduler.get_job("e").unwrap().unwrap().next_run, earlier);
     }
 
     #[test]

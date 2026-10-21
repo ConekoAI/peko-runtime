@@ -162,6 +162,11 @@ the open row before returning the ID or spawning work; timer/manual coalescing
 reuses that row. History and audit completion keep the same ID. Storage and
 wire shapes are unchanged.
 
+A `cron.nudge` audit event (ADR-086) records a peer post bringing a principal's
+attention keepalive forward: `job_id`, `channel` (`pending` when applied after
+an in-flight turn), `last_turn`, and the new `next_run_at`. No schedule field
+is added; `next_run` simply moves earlier.
+
 `cron.result` details retain status, error and execution `duration_ms`, and add
 RFC3339 `scheduled_at`, `finished_at`, `next_run_at`, and integer
 `skipped_interval_slots` for `Every` jobs (null otherwise), and boolean

@@ -26,6 +26,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+mod nudge;
+
 /// Self-contained cron subsystem.
 #[derive(Clone)]
 pub struct CronEngine {
@@ -62,6 +64,8 @@ pub struct CronEngine {
     principal_manager: Option<Arc<PrincipalManager>>,
     /// Held weakly so the cron engine never keeps the daemon's core alive.
     tooling: Weak<ToolingRuntime>,
+    /// ADR-086 nudges per principal (budget and in-flight pending flags).
+    nudges: Arc<Mutex<nudge::NudgeBook>>,
 }
 
 impl CronEngine {
@@ -90,6 +94,7 @@ impl CronEngine {
             observability,
             principal_manager,
             tooling,
+            nudges: Arc::new(Mutex::new(nudge::NudgeBook::default())),
         }
     }
 
@@ -778,6 +783,9 @@ impl CronEngine {
                 }
             }
         }
+
+        // ADR-086: a peer post that arrived during this keepalive turn.
+        self.apply_pending_nudge(&job).await;
 
         info!("✅ Job '{}' completed with status: {}", job.name, status);
         Ok(())
@@ -3926,5 +3934,314 @@ mod tests {
         );
 
         drop(principal);
+    }
+
+    // ─── ADR-086: peer posts bring the attention keepalive forward ───
+
+    /// An engine over one principal with its seeded keepalive, whose last
+    /// turn was `last_turn_ago` and next fire is ten minutes out. The
+    /// tooling carries `port`, which the attention check reads.
+    async fn nudge_fixture(
+        tmp: &TempDir,
+        last_turn_ago: Duration,
+        port: Arc<dyn peko_channel::ChannelPort>,
+    ) -> (
+        CronEngine,
+        Arc<CronScheduler>,
+        Arc<crate::principal::Principal>,
+    ) {
+        let manager = setup_principal_manager(tmp).await;
+        let principal =
+            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let tooling = manager.tooling();
+        tooling.services().set_channel_port(port);
+        let resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("crony")).unwrap());
+        let now = Utc::now();
+        let config = principal.config.read().await.clone();
+        let mut keepalive = crate::principal::genesis::keepalive_job(&config, now).unwrap();
+        keepalive.last_run = Some(now - last_turn_ago);
+        keepalive.next_run = now + Duration::minutes(10);
+        scheduler.add_job(&keepalive).unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(Arc::clone(&manager)),
+            Arc::downgrade(&tooling),
+        );
+        (engine, scheduler, principal)
+    }
+
+    fn replace_job(scheduler: &CronScheduler, job: &CronJob) {
+        scheduler.delete_job(&job.id).unwrap();
+        scheduler.add_job(job).unwrap();
+    }
+
+    fn empty_port(tmp: &TempDir) -> Arc<dyn peko_channel::ChannelPort> {
+        Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ))
+    }
+
+    /// The fire moves to two minutes after the last turn (or now), once;
+    /// a second post inside the gap shares that fire; the hourly budget
+    /// caps how often the fire moves.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_post_nudge_keeps_the_gap_and_the_budget() {
+        use crate::principal::genesis::KEEPALIVE_JOB_ID;
+        use nudge::{NudgeOutcome, NUDGE_BUDGET_PER_HOUR, NUDGE_MIN_GAP};
+        let tmp = TempDir::new().unwrap();
+        let (engine, scheduler, principal) =
+            nudge_fixture(&tmp, Duration::seconds(30), empty_port(&tmp)).await;
+        let last = scheduler
+            .get_job(KEEPALIVE_JOB_ID)
+            .unwrap()
+            .unwrap()
+            .last_run
+            .unwrap();
+
+        let outcome = engine
+            .nudge_attention(&principal.id, "chan_a")
+            .await
+            .unwrap();
+        assert_eq!(outcome, NudgeOutcome::Moved(last + NUDGE_MIN_GAP));
+        assert_eq!(
+            engine
+                .nudge_attention(&principal.id, "chan_a")
+                .await
+                .unwrap(),
+            NudgeOutcome::AlreadySooner,
+            "a post inside the gap shares the moved fire"
+        );
+
+        for spent in 1..NUDGE_BUDGET_PER_HOUR {
+            let mut job = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+            job.next_run = Utc::now() + Duration::minutes(10);
+            replace_job(&scheduler, &job);
+            assert!(
+                matches!(
+                    engine
+                        .nudge_attention(&principal.id, "chan_a")
+                        .await
+                        .unwrap(),
+                    NudgeOutcome::Moved(_)
+                ),
+                "nudge {} of {NUDGE_BUDGET_PER_HOUR}",
+                spent + 1
+            );
+        }
+        let mut job = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        let cadence = Utc::now() + Duration::minutes(10);
+        job.next_run = cadence;
+        replace_job(&scheduler, &job);
+        assert_eq!(
+            engine
+                .nudge_attention(&principal.id, "chan_a")
+                .await
+                .unwrap(),
+            NudgeOutcome::OverBudget
+        );
+        assert_eq!(
+            scheduler
+                .get_job(KEEPALIVE_JOB_ID)
+                .unwrap()
+                .unwrap()
+                .next_run,
+            cadence,
+            "past the budget the normal cadence applies"
+        );
+    }
+
+    /// Only an enabled `when: attention` keepalive is nudged: one the
+    /// principal set to `always`, or disabled, keeps its schedule.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_post_nudge_leaves_other_keepalives_alone() {
+        use crate::principal::genesis::KEEPALIVE_JOB_ID;
+        use nudge::NudgeOutcome;
+        let tmp = TempDir::new().unwrap();
+        let (engine, scheduler, principal) =
+            nudge_fixture(&tmp, Duration::minutes(5), empty_port(&tmp)).await;
+        let mut job = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        let scheduled = job.next_run;
+        if let CronJobAction::Send { when, .. } = &mut job.action {
+            *when = Some(peko_cron::FireWhen::Always);
+        }
+        replace_job(&scheduler, &job);
+        assert_eq!(
+            engine
+                .nudge_attention(&principal.id, "chan_a")
+                .await
+                .unwrap(),
+            NudgeOutcome::NotAttentionGated
+        );
+        if let CronJobAction::Send { when, .. } = &mut job.action {
+            *when = None;
+        }
+        job.enabled = false;
+        replace_job(&scheduler, &job);
+        assert_eq!(
+            engine
+                .nudge_attention(&principal.id, "chan_a")
+                .await
+                .unwrap(),
+            NudgeOutcome::NotAttentionGated
+        );
+        assert_eq!(
+            scheduler
+                .get_job(KEEPALIVE_JOB_ID)
+                .unwrap()
+                .unwrap()
+                .next_run,
+            scheduled
+        );
+    }
+
+    /// A post that arrives during a keepalive turn is not lost when the
+    /// turn's completion reschedules the job: completion applies it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_post_during_a_keepalive_turn_applies_at_completion() {
+        use crate::principal::genesis::KEEPALIVE_JOB_ID;
+        use nudge::{NudgeOutcome, NUDGE_MIN_GAP};
+        let tmp = TempDir::new().unwrap();
+        let (engine, scheduler, principal) =
+            nudge_fixture(&tmp, Duration::minutes(5), empty_port(&tmp)).await;
+        // Open the schedule first: a first open closes runs left by an
+        // earlier daemon, and this one belongs to the current daemon.
+        engine.scheduler_for(&principal.id).await.unwrap();
+        scheduler
+            .record_run(&open_recovery_run(KEEPALIVE_JOB_ID, "in-flight"))
+            .unwrap();
+        assert_eq!(
+            engine
+                .nudge_attention(&principal.id, "chan_a")
+                .await
+                .unwrap(),
+            NudgeOutcome::Pending
+        );
+        // The turn completes: its own rescheduling, then the engine's hook.
+        scheduler
+            .finalize_run("in-flight", "success", None, None)
+            .unwrap();
+        let cadence = Utc::now() + Duration::minutes(10);
+        scheduler
+            .update_job_after_run(KEEPALIVE_JOB_ID, "success", cadence)
+            .unwrap();
+        let job = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        engine.apply_pending_nudge(&job).await;
+        let after = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        assert_eq!(after.next_run, after.last_run.unwrap() + NUDGE_MIN_GAP);
+        // Applied once.
+        engine.apply_pending_nudge(&after).await;
+        assert_eq!(
+            scheduler
+                .get_job(KEEPALIVE_JOB_ID)
+                .unwrap()
+                .unwrap()
+                .next_run,
+            after.next_run
+        );
+    }
+
+    /// End to end: another principal's DM post reaches the subscriber's
+    /// responder, the keepalive becomes due, and the next poll runs a
+    /// turn for it (a run row; a quiet tick writes none).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_dm_post_runs_the_keepalive_on_the_next_poll() {
+        use crate::principal::genesis::KEEPALIVE_JOB_ID;
+        use peko_channel::{ChannelEvent, ChannelPort, PostMsg};
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let (engine, scheduler, principal) =
+            nudge_fixture(&tmp, Duration::minutes(5), Arc::clone(&port)).await;
+        // The trunk the keepalive fires in; after genesis it always exists.
+        peko_session::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir())
+            .create_session(
+                "root",
+                &ActorRef::User("local".into()),
+                peko_session::manager::SessionCreateOptions {
+                    session_id: Some(peko_session::SessionId::from(
+                        peko_session::TRUNK_SESSION_LITERAL,
+                    )),
+                    trigger: "cron".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let other = ActorRef::Principal("prin_other".into());
+        let dm = port
+            .ensure_dm(&principal.id, &other, "/principal-other")
+            .await
+            .unwrap();
+        let line = store
+            .post(&dm, &other, PostMsg::root("ready for review"))
+            .await
+            .unwrap();
+        let (_, event) = store
+            .peek_with_ids(&dm, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(_, ev)| matches!(ev, ChannelEvent::Posted { .. }))
+            .unwrap();
+
+        let slot: crate::daemon::channel_binding::PeerNudgeSlot = Arc::default();
+        let _ = slot.set(Arc::new(engine.clone()));
+        let responder = crate::daemon::channel_binding::with_peer_nudge(
+            Arc::new(peko_channel::NoopChannelResponder),
+            Arc::clone(&port),
+            slot,
+        );
+        responder
+            .consider_response(peko_channel::RespondCtx {
+                channel: dm.clone(),
+                principal: principal.id.clone(),
+                event,
+                event_id: line,
+                now: std::time::SystemTime::now(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            scheduler
+                .get_job(KEEPALIVE_JOB_ID)
+                .unwrap()
+                .unwrap()
+                .next_run
+                <= Utc::now(),
+            "the keepalive is due"
+        );
+
+        engine.check_and_run().await.unwrap();
+        let mut ran = false;
+        for _ in 0..100 {
+            let history = scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap();
+            if history.iter().any(|r| r.status == "success") {
+                ran = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(
+            ran,
+            "the nudged keepalive must run a turn, not a quiet tick: job {:?}, runs {:?}",
+            scheduler.get_job(KEEPALIVE_JOB_ID).unwrap(),
+            scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap()
+        );
     }
 }
