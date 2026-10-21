@@ -38,6 +38,19 @@ impl Fixture {
         self.tool.execute_with_context(params, &ctx).await
     }
 
+    async fn call_as(
+        &self,
+        principal: &str,
+        params: Value,
+        stamp: peko_tools_core::ActingFor,
+    ) -> anyhow::Result<Value> {
+        let ctx = ToolContext::for_hook_run("run", "call", "Cron")
+            .with_acting_for(stamp)
+            .with_principal_id(principal)
+            .with_session_id("session-1");
+        self.tool.execute_with_context(params, &ctx).await
+    }
+
     async fn ok(&self, principal: &str, params: Value) -> Value {
         self.call(principal, params.clone())
             .await
@@ -388,6 +401,76 @@ async fn delete_by_id_or_label_removes_only_the_callers_job() {
         .ok(ALICE, json!({"action":"delete", "label":"nightly"}))
         .await;
     assert_eq!(deleted["job_id"], by_label.as_str());
+    assert!(fx.runtime.jobs().is_empty());
+}
+
+/// The runtime's own jobs stop only when the owner asks in person:
+/// genesis and scheduled turns may retune `keepalive` and `memory`, but
+/// not delete or pause them. Other jobs are theirs to manage.
+#[tokio::test]
+async fn only_the_owner_in_person_deletes_or_pauses_a_seeded_job() {
+    use peko_tools_core::{ActingFor, Origin};
+    let fx = Fixture::new();
+    let id = fx
+        .create(ALICE, json!({"message":"tick", "interval_ms":600000}))
+        .await;
+    let mut seeded = fx.job(ALICE, &id);
+    seeded.id = "keepalive".into();
+    fx.runtime
+        .scheduler(&PrincipalId(ALICE.into()))
+        .add_job(&seeded)
+        .unwrap();
+    let scheduled = ActingFor {
+        origin: Origin::Cron {
+            job_id: "genesis".into(),
+        },
+        ..ActingFor::runtime()
+    };
+    let owner_message = ActingFor {
+        actor: "user:local:local".into(),
+        origin: Origin::Ingress { channel: None },
+        ..ActingFor::runtime()
+    };
+
+    for params in [
+        json!({"action":"delete", "id":"keepalive"}),
+        json!({"action":"update", "id":"keepalive", "enabled":false}),
+    ] {
+        let error = fx
+            .call_as(ALICE, params.clone(), scheduled.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("runtime's own jobs"), "{params}: {error}");
+    }
+    assert!(fx.job(ALICE, "keepalive").enabled);
+
+    // Retuning in place stays open to the scheduled run.
+    fx.call_as(
+        ALICE,
+        json!({"action":"update", "id":"keepalive", "interval_ms":1800000}),
+        scheduled.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fx.job(ALICE, "keepalive").schedule,
+        ScheduleKind::Every {
+            every_ms: 1_800_000
+        }
+    );
+    // A job of the principal's own is not guarded.
+    fx.call_as(ALICE, json!({"action":"delete", "id": id}), scheduled)
+        .await
+        .unwrap();
+
+    fx.call_as(
+        ALICE,
+        json!({"action":"delete", "id":"keepalive"}),
+        owner_message,
+    )
+    .await
+    .unwrap();
     assert!(fx.runtime.jobs().is_empty());
 }
 
