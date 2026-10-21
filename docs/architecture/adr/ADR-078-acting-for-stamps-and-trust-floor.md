@@ -121,6 +121,8 @@ pub struct ActingFor {
 
 `effective trust = min(driver trust, ceiling)`. When the trunk resumes `/user-x`, that run acts for X.
 
+(Amended 2026-10-21: every peer-child turn driver reads rosters through the channel port. Channel-binding wakes, completion wakes and cron origin turns built their stamps without it, so each conversation counted as having an unknown roster. A group whose only other member is the owner then ran untrusted on those paths, and as owner when the run came through `peko send`.)
+
 ### D4: Session isolation (closes G1)
 
 An owner run reaches the whole store. Any other run sees its own compartment plus the ancestors that anchor its slug paths; it lists, finds, reads, resumes, attaches, copies, moves, compacts, branches, and removes only inside its compartment; everything else reads as missing. A non-owner run cannot mint a session at an absolute path outside its conversation, and no branch overwrite may mix compartments. Enforced in `SessionManagerRuntime` (per call, from the `Session` tool's context) and in the subagent executor.

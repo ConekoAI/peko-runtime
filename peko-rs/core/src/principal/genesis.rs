@@ -517,7 +517,7 @@ fn job_base(
 /// Whether `job_id` names one of the jobs the runtime seeds itself.
 #[must_use]
 pub fn is_seeded_job(job_id: &str) -> bool {
-    job_id == GENESIS_JOB_ID || job_id == KEEPALIVE_JOB_ID || job_id == MEMORY_JOB_ID
+    peko_cron::SEEDED_JOB_IDS.contains(&job_id)
 }
 
 /// Does `jobs` already carry an enabled RECURRING trunk-targeted send?
@@ -1054,6 +1054,17 @@ mod tests {
         std::fs::write(&dir_role, b"custom").unwrap();
         assert!(!seed_default_root_role(ws2.path()).unwrap());
         assert_eq!(std::fs::read_to_string(&dir_role).unwrap(), "custom");
+    }
+
+    /// The `Cron` tool guards the ids peko-cron lists; they must be the
+    /// ids the runtime seeds.
+    #[test]
+    fn seeded_ids_match_the_cron_guard() {
+        let mut ids = [GENESIS_JOB_ID, KEEPALIVE_JOB_ID, MEMORY_JOB_ID];
+        ids.sort_unstable();
+        let mut guarded = peko_cron::SEEDED_JOB_IDS.to_vec();
+        guarded.sort_unstable();
+        assert_eq!(ids.to_vec(), guarded);
     }
 
     #[test]

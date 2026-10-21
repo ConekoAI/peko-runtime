@@ -61,7 +61,11 @@ the owner's timezone, and any fixed hour is wrong for someone.
 Seeding happens **at most once per principal**, whatever its boot state, and is
 recorded in `seeded_jobs.json` beside the schedule. From then on the job is the
 principal's: it may retune, disable, or delete it, and the runtime never
-re-creates it. If the principal already has a job named `memory`, the runtime
+re-creates it. (Amended 2026-10-21: only a run the owner started in person —
+their own message, or a request they approved — may delete or disable it, or
+the other seeded jobs `genesis` and `keepalive`. Genesis and scheduled turns
+retune them in place. A genesis run on MiMo deleted this job, and nothing
+noticed; `peko_cron::seeded_job_refusal`.) If the principal already has a job named `memory`, the runtime
 keeps it and only records the marker.
 
 This narrows ADR-054 D4 instead of breaking it. D4 forbids the runtime from

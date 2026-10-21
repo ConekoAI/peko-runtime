@@ -279,6 +279,33 @@ pub fn when_refusal(when: FireWhen, schedule: &ScheduleKind) -> Option<&'static 
     }
 }
 
+/// The jobs the runtime seeds for every principal itself: genesis, the
+/// keepalive heartbeat (ADR-083) and the nightly memory pass (ADR-080).
+pub const SEEDED_JOB_IDS: &[&str] = &["genesis", "keepalive", "memory"];
+
+/// Why a run acting for `stamp` may not delete or pause the seeded job
+/// `job_id`, if it may not. Only a run the owner started in person (their
+/// own message, or a request they approved) stops one; any other run,
+/// genesis and scheduled turns included, can retune it in place. A genesis
+/// run once deleted the nightly memory job, and nothing noticed
+/// (peko-benchmark `docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`).
+#[must_use]
+pub fn seeded_job_refusal(job_id: &str, stamp: &peko_tools_core::ActingFor) -> Option<String> {
+    use peko_tools_core::Origin;
+    let by_owner = stamp.is_owner()
+        && matches!(
+            stamp.origin,
+            Origin::Ingress { .. } | Origin::Approval { .. }
+        );
+    (SEEDED_JOB_IDS.contains(&job_id) && !by_owner).then(|| {
+        format!(
+            "`{job_id}` is one of the runtime's own jobs; only the owner, in a message of \
+             their own, can delete or pause it. Retune it in place with `Cron action=update` \
+             (`interval_ms`, `cron`, `when`, `model`) instead."
+        )
+    })
+}
+
 /// The run status a quiet tick leaves on its job. No run row is written.
 pub const QUIET_STATUS: &str = "quiet";
 

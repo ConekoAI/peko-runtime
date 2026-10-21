@@ -254,6 +254,11 @@ impl Tool for CronUpdateAction {
                 "Either id or label is required for Cron action update"
             ));
         };
+        if args.enabled == Some(false) {
+            if let Some(refusal) = crate::tools::seeded_job_refusal(&job_id, &ctx.acting_for()) {
+                return Err(anyhow::anyhow!(refusal));
+            }
+        }
         let jobs = runtime.list_jobs().await?;
         let job: &CronJob = jobs
             .iter()

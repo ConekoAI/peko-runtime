@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: owner-only groups are owner on every path; seeded jobs stop only at the owner's word (2026-10-21)
+
+**Conversation rosters.** Channel-binding wakes, completion wakes and cron
+origin turns built their turn driver without the channel port. Their stamps
+treated every conversation as having an unknown roster, so each ran untrusted
+and acted for the channel itself. ADR-078 D2 sets the ceiling to the
+least-trusted member other than the principal, so a group whose only other
+member is the owner is owner. `peko send` already behaved that way; a group
+`@mention` did not.
+
+In peko-benchmark rerun 2
+(`docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`, pairs 3 and 5), the
+policy reviewer denied an owner-only review group's reads of the principal's
+own notes, and the review step timed out. `PeerChildTurns::build` now gives its
+stamps the services' channel port. Mixed groups and stranger DMs keep their
+untrusted ceiling and their review.
+
+**Seeded jobs.** `Cron action=delete` and `update` with `enabled: false`
+refuse a runtime-seeded job (`genesis`, `keepalive`, `memory`) unless the owner
+started the run in person, by their own message or an approved request.
+Genesis and scheduled turns can still retune those jobs in place (#477). In the
+same rerun, pair 10's genesis deleted the nightly `memory` job, and nothing
+noticed (`peko_cron::seeded_job_refusal`, ADR-080 D1 amended).
+
 ### Fix: one slow provider call no longer disables a cron worker (2026-10-20)
 
 In the peko-benchmark responsibility rerun 2

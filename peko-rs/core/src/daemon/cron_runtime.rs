@@ -386,11 +386,17 @@ mod tests {
             }
         }
 
+        /// Calls as the owner in person, who may also stop the runtime's
+        /// own jobs.
         async fn call(&self, who: &Principal, params: Value) -> anyhow::Result<Value> {
+            let owner = peko_tools_core::ActingFor {
+                origin: peko_tools_core::Origin::Ingress { channel: None },
+                ..peko_tools_core::ActingFor::runtime()
+            };
             let ctx = ToolContext::for_hook_run("run", "call", "Cron")
                 .with_principal_id(who.id.0.clone())
                 .with_session_id("session-1")
-                .with_acting_for(peko_tools_core::ActingFor::runtime());
+                .with_acting_for(owner);
             self.tool.execute_with_context(params, &ctx).await
         }
 

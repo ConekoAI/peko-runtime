@@ -45,7 +45,10 @@ impl Tool for CronDeleteAction {
     }
 
     fn description(&self) -> String {
-        "Cancel a scheduled job by ID (or by label).".to_string()
+        "Cancel a scheduled job by ID (or by label). The runtime's own jobs (`keepalive`, \
+         `memory`) are deleted only at the owner's own request; retune them with \
+         `update` instead."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -114,6 +117,9 @@ impl Tool for CronDeleteAction {
             ));
         };
 
+        if let Some(refusal) = crate::tools::seeded_job_refusal(&job_id, &ctx.acting_for()) {
+            return Err(anyhow::anyhow!(refusal));
+        }
         let owner = peko_subject::PrincipalId(principal_id);
         runtime.delete_job(&owner, &job_id).await?;
         Ok(json!({

@@ -277,10 +277,15 @@ impl PeerChildTurns {
         executor.set_caller_principal_did(principal.did().await.0);
         let trust: Arc<dyn crate::security::TrustSource> =
             Arc::new(crate::principal::trust::PrincipalTrust::new(principal));
+        // ADR-078: stamps read conversation rosters through the channel
+        // port. Without it every conversation stamped untrusted and acted
+        // for the channel, so a group whose only human is the owner ran
+        // below owner on every caller that skipped `with_channel_port`
+        // (channel-binding wakes, completion wakes, cron origin turns).
         let executor = executor.with_stamps(Some(crate::security::Stamps::new(
             principal.id.clone(),
             Arc::clone(&trust),
-            None,
+            tooling.services().channel_port(),
         )));
 
         // Tool-bag parity with the root-agent path
@@ -365,11 +370,12 @@ impl PeerChildTurns {
         port: Option<Arc<dyn peko_channel::ChannelPort>>,
     ) -> Self {
         // ADR-078: stamps read conversation rosters through the port.
-        if let Some(trust) = &self.trust {
+        // `None` keeps the port `build` already gave them.
+        if let (Some(trust), Some(port)) = (&self.trust, &port) {
             self.executor = self.executor.with_stamps(Some(crate::security::Stamps::new(
                 self.principal_id.clone(),
                 Arc::clone(trust),
-                port.clone(),
+                Some(Arc::clone(port)),
             )));
         }
         self.channel_port = port;
@@ -1097,6 +1103,83 @@ mod tests {
         let outsider =
             PeerTurnSurfaceImpl::new(manager, port, peko_subject::PrincipalId("other".into()));
         assert_eq!(outsider.conversation_channel(&session).await, None);
+    }
+
+    /// ADR-078 D2: a conversation's ceiling is its least-trusted member
+    /// other than the principal. A driver built by `build` alone (the
+    /// channel-binding wake, completion wakes, cron origin turns) must
+    /// read the roster too. Before, it had no channel port, so an
+    /// owner-only group stamped untrusted and its reads of the
+    /// principal's own notes went to the policy reviewer (peko-benchmark
+    /// `docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`, pairs 3, 5).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn built_turns_read_conversation_rosters_for_stamps() {
+        use peko_channel::CreateOpts;
+        use peko_tools_core::{Compartment, Trust};
+        let tmp = tempfile::tempdir().unwrap();
+        let (llm, _adapter) = peko_providers::resolver::LlmResolver::mock(
+            peko_providers::mock::MockAdapter::new(),
+            tmp.path().join("models.toml"),
+        )
+        .await;
+        let manager = crate::principal::PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+            Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(llm.clone());
+        let principal = manager
+            .create(test_config("roster", PrincipalRoutingConfig::default()))
+            .await
+            .unwrap();
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        tooling.services().set_channel_port(Arc::clone(&port));
+        let turns = PeerChildTurns::build(
+            &principal,
+            &llm,
+            Arc::new(Observability::new("test")),
+            None,
+            tooling,
+        )
+        .await
+        .unwrap();
+        let stamps = turns.executor.stamps().expect("build installs stamps");
+        let ceiling = |channel: &peko_channel::ChannelId| Compartment::Conversation {
+            channel: channel.as_str().into(),
+        };
+
+        let owner = ActorRef::User("test-owner".into());
+        let review = port
+            .create(&principal.id, CreateOpts::runtime("review"))
+            .await
+            .unwrap();
+        port.invite(&review, &principal.id, &owner).await.unwrap();
+        assert_eq!(stamps.ceiling(&ceiling(&review)).await, Trust::Owner);
+
+        let mixed = port
+            .create(&principal.id, CreateOpts::runtime("mixed"))
+            .await
+            .unwrap();
+        port.invite(&mixed, &principal.id, &owner).await.unwrap();
+        port.invite(
+            &mixed,
+            &principal.id,
+            &ActorRef::User("hub:stranger".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stamps.ceiling(&ceiling(&mixed)).await, Trust::Untrusted);
     }
 
     /// Minimal principal config for persona tests — everything
