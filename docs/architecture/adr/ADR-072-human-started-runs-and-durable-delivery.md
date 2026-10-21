@@ -45,6 +45,11 @@ through ingress.
 Principals therefore cannot set off a chain of automatic replies. A principal
 that wants an answer reads for it (D3).
 
+(Amended 2026-10-21, [ADR-086](ADR-086-peer-posts-bring-the-keepalive-forward.md):
+a post by another principal brings the recipient's attention-gated keepalive
+forward, at least two minutes after its last turn and at most six times an
+hour. The run is still a cron fire, so this rule holds.)
+
 ### D2 — Group channels wake on `@<name>` only
 
 A group channel starts a turn in a member principal's group session only for

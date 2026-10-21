@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: peer posts bring the attention keepalive forward (ADR-086, 2026-10-21)
+
+A post by another principal never starts a turn (ADR-072 D1). Until now it
+waited for the recipient's next keepalive fire, up to 10 minutes. Now every
+channel subscriber's responder passes such a post to
+`CronEngine::nudge_attention`. If the recipient's seeded `keepalive` is
+enabled and `when: attention`, its next fire moves to the later of now and two
+minutes after its last turn (`CronScheduler::bring_forward`, never later). The
+next poll fires it, and the attention check decides whether it runs a turn.
+
+At most six nudges per principal per hour bring a fire forward. A post that
+arrives during a keepalive turn is applied when that turn completes. Each
+nudge writes a `cron.nudge` audit event.
+
+Latency between principals drops to one poll when the recipient is idle. A
+conversation between principals now takes at most about 12 turns an hour
+instead of 6. Human posts, `always` or disabled keepalives, and other jobs are
+unchanged. Closes G11 of `docs/research/2026-10-persistent-bot-patterns.md`.
+
 ### Fix: owner-only groups are owner on every path; seeded jobs stop only at the owner's word (2026-10-21)
 
 **Conversation rosters.** Channel-binding wakes, completion wakes and cron

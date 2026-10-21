@@ -22,6 +22,12 @@
 //!   Principal-authored posts never wake anyone — the responder's own
 //!   reply is one of them — and replies (`parent: Some`) never wake.
 //!   Everything else is read, not pushed.
+//! - **Peer-post nudge** (ADR-086). Every responder is wrapped so a post
+//!   by another principal, on a DM or in a group, brings the recipient's
+//!   attention-gated `keepalive` forward through the cron engine
+//!   ([`PeerPostNudge`]). It starts no run itself: the keepalive fires on
+//!   the next poll, at least two minutes after its last turn and within
+//!   an hourly budget, and the attention check decides whether it runs.
 //!
 //! ## The group wake
 //!
@@ -757,6 +763,68 @@ impl BoundTurnDriver for PeerTurnDriver {
 }
 
 // ---------------------------------------------------------------------------
+// Peer-post nudge (ADR-086)
+// ---------------------------------------------------------------------------
+
+/// What a post by another principal pokes (ADR-086): the daemon's cron
+/// engine, which brings the recipient's attention keepalive forward. It
+/// starts no run itself, so ADR-072 D1 holds.
+#[async_trait]
+pub(crate) trait PeerPostNudge: Send + Sync {
+    async fn peer_posted(&self, principal: &PrincipalId, channel: &ChannelId);
+}
+
+/// The nudge target, bound after construction: the supervisor exists
+/// before the cron engine does.
+pub(crate) type PeerNudgeSlot = Arc<std::sync::OnceLock<Arc<dyn PeerPostNudge>>>;
+
+/// Wraps a channel's responder: a post by another principal nudges the
+/// recipient's keepalive, then the inner responder sees the event as
+/// before.
+struct PeerPostNudger {
+    inner: Arc<dyn ChannelResponder>,
+    port: Arc<dyn ChannelPort>,
+    slot: PeerNudgeSlot,
+}
+
+impl PeerPostNudger {
+    /// Whether `ctx.event` is a post by a principal other than the one
+    /// this subscriber acts for.
+    async fn is_peer_post(&self, ctx: &RespondCtx) -> bool {
+        let ChannelEvent::Posted { author, .. } = &ctx.event else {
+            return false;
+        };
+        let Ok(author @ ActorRef::Principal(_)) = ActorRef::from_str(author) else {
+            return false;
+        };
+        let me = ActorRef::from(&ctx.principal);
+        self.port.actor_info(&author).await.identity_key
+            != self.port.actor_info(&me).await.identity_key
+    }
+}
+
+#[async_trait]
+impl ChannelResponder for PeerPostNudger {
+    async fn consider_response(&self, ctx: RespondCtx) -> peko_channel::Result<()> {
+        if let Some(nudge) = self.slot.get() {
+            if self.is_peer_post(&ctx).await {
+                nudge.peer_posted(&ctx.principal, &ctx.channel).await;
+            }
+        }
+        self.inner.consider_response(ctx).await
+    }
+}
+
+/// Wrap `inner` so peer posts reach the nudge in `slot` once it is set.
+pub(crate) fn with_peer_nudge(
+    inner: Arc<dyn ChannelResponder>,
+    port: Arc<dyn ChannelPort>,
+    slot: PeerNudgeSlot,
+) -> Arc<dyn ChannelResponder> {
+    Arc::new(PeerPostNudger { inner, port, slot })
+}
+
+// ---------------------------------------------------------------------------
 // select_responder — the per-channel wiring decision
 // ---------------------------------------------------------------------------
 
@@ -839,6 +907,10 @@ pub(crate) struct ChannelBindingSupervisor {
     /// The daemon's streaming-run registry, so responder turns are
     /// stoppable like ingress turns. `None` outside the daemon.
     streaming_runs: Option<StreamingRuns>,
+    /// ADR-086: where peer posts nudge the recipient's keepalive. Set by
+    /// [`Self::set_peer_nudge`] once the cron engine exists; subscribers
+    /// spawned earlier read it at each event.
+    peer_nudge: PeerNudgeSlot,
 }
 
 impl ChannelBindingSupervisor {
@@ -860,7 +932,13 @@ impl ChannelBindingSupervisor {
             spawned: std::sync::Mutex::new(HashSet::new()),
             drivers: tokio::sync::RwLock::new(HashMap::new()),
             streaming_runs: None,
+            peer_nudge: Arc::default(),
         }
+    }
+
+    /// Bind the peer-post nudge (ADR-086). Only the first call binds.
+    pub(crate) fn set_peer_nudge(&self, nudge: Arc<dyn PeerPostNudge>) {
+        let _ = self.peer_nudge.set(nudge);
     }
 
     /// Register responder turns in the daemon's streaming-run registry
@@ -962,7 +1040,11 @@ impl ChannelBindingSupervisor {
             }
         };
 
-        let responder = self.responder_for(&principal, &channel).await;
+        let responder = with_peer_nudge(
+            self.responder_for(&principal, &channel).await,
+            Arc::clone(&self.port),
+            Arc::clone(&self.peer_nudge),
+        );
         let sub = ChannelSubscriber::new(
             channel,
             principal.id.clone(),
@@ -1923,6 +2005,77 @@ mod tests {
             Arc::new(resolver),
             Arc::new(driver),
         )
+    }
+
+    /// ADR-086: the responder wrapper nudges on another principal's
+    /// posts only: not on the principal's own, nor on a human's (those
+    /// reach it through ingress or the group wake).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_nudge_fires_only_for_other_principals_posts() {
+        struct Recorder(std::sync::Mutex<Vec<(PrincipalId, ChannelId)>>);
+        #[async_trait]
+        impl PeerPostNudge for Recorder {
+            async fn peer_posted(&self, principal: &PrincipalId, channel: &ChannelId) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((principal.clone(), channel.clone()));
+            }
+        }
+        let (store, _tmp) = test_store("peer-nudge");
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let me = pid("prin_self");
+        let peer = ActorRef::Principal("prin_peer".into());
+        let channel = store
+            .create(&me, CreateOpts::runtime("crew"))
+            .await
+            .unwrap();
+        store.invite(&channel, &me, &peer).await.unwrap();
+        store
+            .invite(&channel, &me, &ActorRef::User("alice".into()))
+            .await
+            .unwrap();
+
+        let recorder = Arc::new(Recorder(std::sync::Mutex::default()));
+        let slot: PeerNudgeSlot = Arc::default();
+        let responder = with_peer_nudge(
+            Arc::new(NoopChannelResponder),
+            Arc::clone(&port),
+            Arc::clone(&slot),
+        );
+        let deliver = |author: ActorRef| {
+            let store = Arc::clone(&store);
+            let channel = channel.clone();
+            let me = me.clone();
+            let responder = Arc::clone(&responder);
+            async move {
+                let line = store
+                    .post(&channel, &author, PostMsg::root("news"))
+                    .await
+                    .unwrap();
+                let (_, event) = store
+                    .peek_with_ids(&channel, &peko_channel::Checkpoint::default())
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .rev()
+                    .find(|(id, _)| *id == line)
+                    .unwrap();
+                responder
+                    .consider_response(respond_ctx(&me, &channel, &line, event))
+                    .await
+                    .unwrap();
+            }
+        };
+
+        // Before the cron engine binds, nothing is nudged.
+        deliver(peer.clone()).await;
+        let _ = slot.set(Arc::clone(&recorder) as Arc<dyn PeerPostNudge>);
+        deliver(ActorRef::from(&me)).await;
+        deliver(ActorRef::User("alice".into())).await;
+        assert!(recorder.0.lock().unwrap().is_empty());
+        deliver(peer).await;
+        assert_eq!(*recorder.0.lock().unwrap(), vec![(me, channel)]);
     }
 
     /// Group wake end-to-end: a user root post on a group channel
