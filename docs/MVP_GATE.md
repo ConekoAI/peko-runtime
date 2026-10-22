@@ -1,6 +1,6 @@
 # MVP Launch Gate
 
-**Status:** Draft — 2026-09-29
+**Status:** Draft — 2026-09-29; status re-verified 2026-10-22 on `master` @ `2471f6fd`
 **Purpose:** This repo has no definition of "done" for MVP. This document is the
 gate: every box below must be checked (or explicitly waived with a recorded
 reason) before the project stops using "pre-launch" as a license to break wire
@@ -9,30 +9,70 @@ formats, and before the first public release is cut.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
+## Status at a glance (2026-10-22)
+
+| Gate | Done | Blocking now |
+|---|---|---|
+| 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
+| 1. Distribution | 3 / 6 | No release ever cut; clean-machine install unverified |
+| 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
+| 3. Docs | 2 / 4 | Getting-started teaches a repo build, not the release |
+| 4. CI | 1 / 4 | Nothing has run on a release commit yet; real-LLM tier needs 3 launch models |
+| 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
+| 6. Security | 1 / 2 | Accepted gaps not in the user's guide |
+| **Total** | **12 / 26** | |
+
+Between 2026-09-30 and 2026-10-22 no gate item moved; the ~80 commits in
+that stretch were feature and fix work (ADR-072 to ADR-086). Gate 0 was
+settled on 2026-10-22.
+
 ---
 
 ## 0. Scope declarations (record a decision, then enforce it)
 
-These are currently unstated assumptions. Write the answer into this file.
+All four decided by the owner on 2026-10-22.
 
-- [ ] **Windows is out of MVP scope** (or in). If out: say so in `README.md`,
-      remove/narrow the Windows CI tier, and mark Windows named-pipe support
-      (ADR-038) + the `peko_workflow` SDK Windows port as post-MVP. If in:
-      gate 4 must include a green Windows run.
-- [ ] **pekohub-side enforcement is out of MVP scope.** Single-public-DID
-      exposure (ADR-056 §5) and the hub DB migrate-chain baseline live in the
-      hub repo; MVP ships with them unenforced, documented as hub-side
-      follow-ups.
-- [ ] **Replay-on-reconnect is a declared MVP gap.** Cross-runtime channel
-      fan-out is push-only; offline peers miss posts (CHANGELOG "Phase 12b
-      accepted gap"). Confirm this is acceptable for MVP and document it in
-      the user's guide.
-- [ ] **LLM providers for launch are named.** CI runs no real-LLM tier; the
-      vendor-neutral local tier (`make test-integration-llm`, configured by
-      `LLM_*` env vars) is the verification path. List which providers/models
-      are launch-supported and verified with it.
+- [x] **Windows is out of MVP scope** (decided 2026-10-22).
+      Launch targets are the four release artifacts (linux x64/arm64,
+      darwin x64/arm64).
+      - Done: README and user's guide state the supported platforms, and
+        `unit-windows` keeps running nightly but is non-blocking
+        (`continue-on-error` in `integration.yml`).
+      - Post-MVP: Windows named-pipe support (ADR-038) and the `peko_workflow`
+        SDK Windows port.
+      - The one Windows test still failing every night,
+        `security::ledger::dispatch_tests::a_failing_command_is_an_error_with_its_exit_code`,
+        no longer gates. It is still worth fixing. (The four failures this
+        gate used to list now pass.)
+- [x] **pekohub-side enforcement shipped; nothing hub-side gates MVP**
+      (decided 2026-10-22). This item used to read "out of MVP scope, ships
+      unenforced". Both pieces have since landed in pekohub:
+      - The hub refuses a second public or unlisted instance of one DID with
+        a 409 (ADR-056 D7).
+      - It keeps one online copy per principal (ADR-081, pekohub #44 / #45).
+      - Its drizzle migration chain starts at `0000_baseline.sql`.
+- [x] **Cross-runtime delivery gap accepted for MVP** (decided 2026-10-22).
+      ADR-072 D6 replaced the push-only fan-out with a durable outbox: the
+      source runtime resends each envelope (on backoff, on reconnect and after
+      a restart) until the peer confirms it. The remaining gap is accepted:
+      a message arrives only if both runtimes are online at the same time
+      within 30 days, and there is no hub store-and-forward.
+      - Done: documented in `docs/user-guide/USERS_GUIDE.md`
+        (Known Limitations); the CHANGELOG "Phase 12b accepted gap" entry is
+        marked superseded by ADR-072 D6.
+- [x] **Launch models are named** (decided 2026-10-22). Support is by wire
+      format, not by vendor (the preset gallery is retired). One launch model
+      per format; each must pass `make test-integration-llm` on the release
+      commit (gate 4).
 
----
+      | Format | Launch model | Verified |
+      |---|---|---|
+      | `anthropic_messages` | MiMo v2.6 Flash (`mimo-v2.6-flash`, Xiaomi endpoint) | peko-benchmark live runs, October 2026; real-LLM tier not yet run |
+      | `openai_responses` | An OpenAI model, named when its run is recorded | not yet |
+      | `openai_completions` | An OpenAI-compatible endpoint, named when its run is recorded | not yet |
+
+      Record the model id and date in this table when each run passes. Only
+      then list a model as verified in user-facing docs.
 
 ## 1. Distribution — a stranger can install and run Peko
 
@@ -42,6 +82,8 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **First release cut.** `git tag v<version>` triggers
       `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
       darwin x64/arm64) build and publish successfully.
+      *2026-10-22: still none; `gh release list` is empty and `release.yml`
+      has never run.*
 - [x] **`install.sh` fixed** (2026-09-29). No longer writes a config full of
       retired concepts to `~/.config/peko/` (a path nothing reads);
       quick start teaches `peko model add --key` / `peko daemon start` /
@@ -55,10 +97,14 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **Clean-machine install verified.** On a fresh macOS and a fresh Linux
       box (or container): run `install.sh`, follow the printed quick start,
       create a principal, send it a message, get a reply. No repo checkout,
-      no cargo, no undocumented steps.
+      no cargo, no undocumented steps. *Blocked on the first release.*
 - [ ] **`python3` prerequisite declared.** The `Workflow` builtin (ADR-061)
       shells out to `python3` on PATH; either declare it in the install docs
       or make the tool's absence-mode graceful and documented.
+      *2026-10-22: half done. The absence mode is graceful: `Workflow`
+      returns "`python3` not found on PATH — install Python 3"
+      (`tools/builtin/workflow.rs`). It is still undocumented in README,
+      getting-started, the user's guide and `install.sh`.*
 
 ## 2. Version bookkeeping — the version means something
 
@@ -66,9 +112,11 @@ Currently the primary install path is dead: no release has ever been cut, and
       (source of truth: `peko-rs/core/Cargo.toml`, per AGENTS.md §1). The
       CHANGELOG's `1.0.0-rc1` header is annotated as a never-tagged
       pre-rename label; the MVP release version is picked at release time.
-- [ ] **`[Unreleased]` folded.** Four months of entries (2026-05-14 →
-      2026-09-27), including breaking wire changes (ADR-058), are cut into a
-      named release section with the breaking changes called out at the top.
+- [ ] **`[Unreleased]` folded.** Five months of entries (2026-05-14 →
+      2026-10-22), including breaking wire changes (ADR-058, ADR-073,
+      ADR-081), are cut into a named release section with the breaking
+      changes called out at the top. *2026-10-22: `[Unreleased]` is
+      ~5,000 lines.*
 - [ ] **First git version tag exists** (only `pre-f2-foldback` exists today).
 
 ## 3. Docs tell the truth
@@ -82,22 +130,28 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **Getting-started + tutorial walk end-to-end** against the release
       artifact (not a repo build): `docs/getting-started/` both files, every
       command pasted from real output per docs/README.md's contribution rule.
+      *2026-10-22: `GETTING_STARTED.md` still starts from
+      `cargo build --release` / `./target/release/peko`. It needs an
+      install-from-release path first.*
 - [ ] **ADR-064 terminology sweep complete** — `role` vs `agent` vs
       `principal` consistent across README, user's guide, CLI reference, and
-      the compiled-in default role file.
+      the compiled-in default role file. *2026-10-22 spot check: no retired
+      `peko agent|principal|cron|persona` commands remain in README,
+      getting-started or the user's guide. The tutorial is still named
+      `TUTORIAL_BUILDING_FIRST_AGENT.md`; the full sweep is not done.*
 
 ## 4. CI is green on every tier in scope
 
 - [ ] **Linux tiers green** on the release commit: `lint`,
       `lint-workspace`, `unit-linux`, `integration` (mock-LLM Docker tier).
-- [ ] **Windows tier resolved per gate 0** — either green (fix the 4 failing
-      tests: `test_parallel_tool_execution_overlaps_in_time`,
-      `principals_have_isolated_session_stores`,
-      `workflow::output_is_capped_to_tail`,
-      `workflow::path_guard_refuses_absolute_path`) or the tier is removed
-      with Windows declared out of scope.
-- [ ] **Real-LLM tier green** (`make test-integration-llm`) on at least one
-      launch provider, on the release commit.
+      *2026-10-22: all four green on the latest master push (`2471f6fd`);
+      no release commit yet.*
+- [x] **Windows tier resolved per gate 0** (2026-10-22). Windows is out of
+      MVP scope; `unit-windows` stays as a non-blocking nightly. The four
+      failures listed here earlier now pass; one ledger test still fails
+      (see gate 0).
+- [ ] **Real-LLM tier green** (`make test-integration-llm`) on each of the
+      three launch models named in gate 0, on the release commit.
 - [ ] **`make docker-up && make test-integration && make docker-down`**
       passes from a clean clone using only documented steps.
 
@@ -105,8 +159,12 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 The last human e2e field report is 2026-08-13 (historical reports moved to
 `peko-benchmark/reports/field-history/` when the `scripts/e2e/` harness was
-retired on 2026-09-30); workflows, kb/, genesis, the tiered prompt, and the
-role terminology all landed after it. Field/capability testing now lives in
+retired on 2026-09-30). Since then the runtime has gained or replaced:
+workflows, kb/, genesis, the tiered prompt and role terminology, plus actor
+identity (ADR-073, ADR-081), the trust floor (ADR-078), the tool ledger
+(ADR-079), nightly memory (ADR-080, ADR-085), channel bindings (ADR-082),
+quiet ticks (ADR-083), goals as plans (ADR-084) and peer nudges (ADR-086).
+Field/capability testing now lives in
 the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
 - [ ] **One non-technical-user session** against the release artifact:
@@ -119,17 +177,23 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 - [ ] **peko-benchmark suite run** against the release artifact: all tasks
       in the repo's `tasks/` pass (or failures are classified and waived
       in writing), per its README methodology (pinned model, n ≥ 3 reps).
+      *2026-10-22: no run against a release artifact yet. The most recent
+      runs used debug builds of master: the responsibility rerun 3
+      (`13dced92`, n=10) met 21/30 obligations, the same as OpenClaw, at
+      about 1.9× OpenClaw's cost per run.*
 
 ## 6. Security baseline is the shipped state
 
-- [ ] **ADR-058 (origin-signed messaging) marked Accepted** — it is
-      implemented and its same-day review findings 1–4 are fixed, but the ADR
-      index still says *Draft*.
+- [x] **ADR-058 (origin-signed messaging) marked Accepted** (2026-09-16 in
+      the ADR; the `docs/README.md` index row corrected 2026-10-22).
 - [ ] **Accepted security gaps written down in the user's guide**, not just
       in ADRs: runtime identity key at rest (ADR-032 follow-up), hub can read
       relayed payloads (ADR-035, pending ADR-058 D8), async task state is
       ephemeral across restarts (ADR-063 non-goal), loopback UDP fallback is
-      unauthenticated same-host trust (ADR-058 D6).
+      unauthenticated same-host trust (ADR-058 D6). Also add the ledger's
+      limit: it is tamper-evident, not tamper-proof, because a run with
+      `Bash` shares the OS user (ADR-079). *2026-10-22: none of these
+      appear in `docs/user-guide/`.*
 
 ---
 
@@ -137,17 +201,25 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
 Recorded here so they stop being ambiguous "follow-ups":
 
-- Windows support (pending gate 0 decision)
-- Replay-on-reconnect for cross-runtime channels
+- Windows support, including named pipes (ADR-038) and the `peko_workflow`
+  SDK Windows port (out of scope per gate 0)
+- Hub store-and-forward for runtimes never online together (the rest of
+  replay-on-reconnect shipped as the ADR-072 D6 outbox)
 - Hub-blind E2E encryption (ADR-058 D8), delegated authorization
-- pekohub-side single-DID exposure enforcement
-- Agent-facing memory tool / dream machinery (ADR-054)
+- Agent-facing memory tool (ADR-054); memory retrieval/embeddings; a forget
+  primitive (G9 in `docs/research/2026-10-persistent-bot-patterns.md`)
 - Per-session budget attribution; quota-reading tool
 - Offline/headless compaction
-- `@mention` group wakes; per-member group stop (ADR-049)
+- Per-member group stop (ADR-049)
 - Durable `ExecuteTool` result spill-to-file (ADR-061 phase 2)
 - Runtime key encryption at rest (ADR-034/032 follow-up), admin token
   rotation, syslog forwarding (ADR-046 follow-ups)
+
+Removed from this list since 2026-09-29 because they shipped anyway:
+pekohub single-DID exposure enforcement (ADR-056 D7, ADR-081), dream
+machinery (ADR-080 rev 3, ADR-085), and `@mention` group wakes (ADR-082).
+Shipping non-gating work while gate items stand still is the pattern to
+avoid until the tag exists.
 
 ---
 

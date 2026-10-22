@@ -10,8 +10,9 @@ Welcome to the Peko User Guide! This guide will help you understand and use Peko
 4. [Running Your First peko](#running-your-first-peko)
 5. [Configuration](#configuration)
 6. [Extensions](#extensions)
-7. [Troubleshooting](#troubleshooting)
-8. [Next Steps](#next-steps)
+7. [Known Limitations](#known-limitations)
+8. [Troubleshooting](#troubleshooting)
+9. [Next Steps](#next-steps)
 
 ---
 
@@ -43,6 +44,8 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
 
 ### Prerequisites
 
+- Linux (x64, arm64) or macOS (x64, arm64). Windows is not supported in the
+  first release.
 - Rust 1.70+ (install from [rustup.rs](https://rustup.rs))
 - API key for at least one LLM provider
 
@@ -415,6 +418,23 @@ turn opens with a one-line steer message pointing at the task id.
 Jobs are stored in the per-peko schedule file
 (`<data_dir>/principals/<name>/local/cron/schedule.toml`) and can be
 listed, inspected, and removed with `Cron` with list/delete actions from inside the owning peko's agent turn.
+
+---
+
+## Known Limitations
+
+### Messages between runtimes
+
+A message to a peko on another runtime travels through PekoHub, which relays
+it but does not store it. Your runtime keeps each outgoing message on disk and
+resends it until the other runtime confirms it (after a reconnect, after a
+restart, and on a backoff of 30 seconds doubling up to an hour). `ChannelSend`
+reports `delivered` or `queued`.
+
+So a message reaches an offline runtime only once **both runtimes are online
+at the same time**. A message still unconfirmed after **30 days** is dropped
+with a warning. If two runtimes are never online together, their messages do
+not get through.
 
 ---
 
