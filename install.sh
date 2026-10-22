@@ -87,36 +87,28 @@ install_binary() {
         exit 1
     }
     
-    # Find the binary (might be in subdir)
-    local binary_path
-    if [ -f "${tmpdir}/peko" ]; then
-        binary_path="${tmpdir}/peko"
-    elif [ -f "${tmpdir}/target/release/peko" ]; then
-        binary_path="${tmpdir}/target/release/peko"
-    else
-        binary_path=$(find "$tmpdir" -name "peko" -type f | head -1)
-    fi
+    # The archive holds two binaries. `peko` starts the daemon from the
+    # `peko-daemon` beside it, so both must land in the same directory.
+    local bin
+    for bin in peko peko-daemon; do
+        if [ ! -f "${tmpdir}/${bin}" ]; then
+            echo -e "${RED}Could not find ${bin} in the archive${NC}"
+            rm -rf "$tmpdir"
+            exit 1
+        fi
+        chmod +x "${tmpdir}/${bin}"
+    done
     
-    if [ -z "$binary_path" ]; then
-        echo -e "${RED}Could not find peko binary in archive${NC}"
-        rm -rf "$tmpdir"
-        exit 1
-    fi
-    
-    # Make executable
-    chmod +x "$binary_path"
-    
-    # Install binary
     echo -e "${BLUE}Installing to ${INSTALL_DIR}...${NC}"
     if [ -w "$INSTALL_DIR" ]; then
-        mv "$binary_path" "${INSTALL_DIR}/peko"
+        mv "${tmpdir}/peko" "${tmpdir}/peko-daemon" "${INSTALL_DIR}/"
     else
         echo -e "${YELLOW}Requesting sudo access to install to ${INSTALL_DIR}${NC}"
-        sudo mv "$binary_path" "${INSTALL_DIR}/peko"
+        sudo mv "${tmpdir}/peko" "${tmpdir}/peko-daemon" "${INSTALL_DIR}/"
     fi
     
     rm -rf "$tmpdir"
-    echo -e "${GREEN}✓ Peko v${version} installed to ${INSTALL_DIR}/peko${NC}"
+    echo -e "${GREEN}✓ Peko v${version} installed to ${INSTALL_DIR}/peko (and peko-daemon)${NC}"
 }
 
 # Install systemd service (Linux only)
@@ -133,19 +125,21 @@ install_systemd_service() {
     
     echo -e "${BLUE}Installing systemd service...${NC}"
     
-    # Create service file
-    if [ -w "/etc/systemd/system" ]; then
-        cat > /etc/systemd/system/peko.service <<EOF
+    # A template unit: `peko@<user>` runs the daemon as that user. The
+    # daemon stays in the foreground so systemd supervises the process
+    # itself rather than a launcher that exits at once.
+    local unit
+    unit=$(cat <<EOF
 [Unit]
-Description=Peko Agent Runtime
+Description=Peko Agent Runtime (%i)
 Documentation=https://github.com/ConekoAI/peko-runtime
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=%I
-ExecStart=${INSTALL_DIR}/peko daemon start
+User=%i
+ExecStart=${INSTALL_DIR}/peko daemon start --foreground
 ExecStop=${INSTALL_DIR}/peko daemon stop
 Restart=always
 RestartSec=10
@@ -155,28 +149,12 @@ StartLimitBurst=3
 [Install]
 WantedBy=multi-user.target
 EOF
+)
+    if [ -w "/etc/systemd/system" ]; then
+        printf '%s\n' "$unit" > /etc/systemd/system/peko@.service
     else
         echo -e "${YELLOW}Requesting sudo access to install systemd service${NC}"
-        sudo tee /etc/systemd/system/peko.service > /dev/null <<EOF
-[Unit]
-Description=Peko Agent Runtime
-Documentation=https://github.com/ConekoAI/peko-runtime
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=%I
-ExecStart=${INSTALL_DIR}/peko daemon start
-ExecStop=${INSTALL_DIR}/peko daemon stop
-Restart=always
-RestartSec=10
-StartLimitInterval=60s
-StartLimitBurst=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
+        printf '%s\n' "$unit" | sudo tee /etc/systemd/system/peko@.service > /dev/null
     fi
     
     sudo systemctl daemon-reload 2>/dev/null || true
