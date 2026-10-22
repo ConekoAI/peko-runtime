@@ -239,6 +239,11 @@ print_post_install() {
     echo "  Runtime home: ${PEKO_HOME_DIR} (models.toml, vault, pekos)"
     echo "  Optional tuning: see config.example.toml in the repo"
     echo ""
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${YELLOW}Note:${NC} python3 is not on PATH. The Workflow tool needs it;"
+        echo "  everything else works without it."
+        echo ""
+    fi
     echo -e "${BLUE}Documentation:${NC}"
     echo "  https://github.com/ConekoAI/peko-runtime#readme"
     echo ""

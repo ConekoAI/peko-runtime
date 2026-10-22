@@ -71,6 +71,10 @@ the wire model id it expects, and — unless it is a keyless local endpoint — 
 API key. The key is stored in the encrypted vault (OS keychain) when you add the
 model; the runtime does not read provider keys from environment variables.
 
+Optional: Python 3 (`python3` on PATH) for the `Workflow` tool, which runs
+workflows the peko writes. Without it, `Workflow` returns an error and
+everything else works.
+
 ### Build
 
 ```bash
