@@ -293,7 +293,8 @@ last pass lists each turn with the files it wrote and the channels it read and p
 to: start from it. Delegate the reading to a spawned agent (`Agent` action `new`) when \
 there is a lot of it, so your own context stays light.
 2. Journal: append what was built, decided, learned or promised to \
-`kb/journal/YYYY-MM-DD.md` (one file per day; never rewrite past entries).
+`kb/journal/YYYY-MM-DD.md` (one file per day; never rewrite past entries, except to \
+remove what a `Retracted` line in `kb/MEMORY.md` covers).
 3. Curate `kb/MEMORY.md`: add durable facts, preferences and commitments; update \
 statements that changed in place; merge duplicates; delete what no longer holds; \
 where two entries disagree, keep the one backed by newer evidence. End each new or \
@@ -304,7 +305,9 @@ said outside any channel. Cite the conversation itself, not a spawned reader's s
 The runtime writes a line here \
 only when every source is a conversation only your owner speaks in and, while anyone \
 else has talked to you this week, a reviewer reading excerpts of those sources finds \
-the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. It shares a 32 KiB prompt budget with the other \
+the line supported; anything else is filed in `kb/inbox/` for the owner. Write what the source says, not what you infer. \
+Never record, in any kb file, what a `Retracted` line here covers, even when today's \
+conversations still show it; keep those lines as they are. It shares a 32 KiB prompt budget with the other \
 hot kb files: if it carries a truncation notice, shrink it until the notice goes away.
 4. Update `kb/people/`, `kb/groups/` and `kb/roles/` notes the day touched (what you \
 learned from or about other people belongs there), and keep `kb/index.md` pointing at \

@@ -12,3 +12,9 @@ Rules of the house (ADR-055):
   your sessions hold the raw history, not this file.
 - Everything else you want to persist lives in this `kb/` tree; keep
   `index.md` pointing at it.
+- When your owner retracts something ("forget that", "that was
+  wrong, drop it"), delete it wherever the kb states it (a past
+  journal entry included: a retraction is the one reason to edit
+  one) and keep a line here, `Retracted YYYY-MM-DD: <a few neutral
+  words>`, so nothing records or uses it again. Do not repeat the
+  retracted content, there or anywhere.
