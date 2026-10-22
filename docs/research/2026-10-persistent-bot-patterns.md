@@ -1,6 +1,6 @@
 # Persistent-bot patterns: Meta Muse and xAI Grok Bot vs. Peko
 
-**Date:** 2026-10-14 · **Status:** research note (not an ADR)
+**Date:** 2026-10-14 · **Status:** research note (not an ADR) · **Followed by:** [round 2](2026-10-persistent-bots-round2-gaps-and-roadmap.md) (2026-10-22: adds Dots and Duet; product gaps and roadmap)
 
 ## 0. Source quality
 
