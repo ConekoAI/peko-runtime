@@ -14,17 +14,18 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | Gate | Done | Blocking now |
 |---|---|---|
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
-| 1. Distribution | 3 / 6 | No release ever cut; clean-machine install unverified |
+| 1. Distribution | 4 / 6 | No release ever cut; clean-machine install unverified |
 | 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
 | 3. Docs | 2 / 4 | Getting-started teaches a repo build, not the release |
 | 4. CI | 1 / 4 | Nothing has run on a release commit yet; real-LLM tier needs 3 launch models |
 | 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
-| 6. Security | 1 / 2 | Accepted gaps not in the user's guide |
-| **Total** | **12 / 26** | |
+| 6. Security | 2 / 2 | — |
+| **Total** | **14 / 26** | |
 
 Between 2026-09-30 and 2026-10-22 no gate item moved; the ~80 commits in
 that stretch were feature and fix work (ADR-072 to ADR-086). Gate 0 was
-settled on 2026-10-22.
+settled on 2026-10-22. Later that day the `python3` prerequisite (gate 1) and
+the accepted security gaps (gate 6) were written into the user-facing docs.
 
 ---
 
@@ -98,13 +99,13 @@ Currently the primary install path is dead: no release has ever been cut, and
       box (or container): run `install.sh`, follow the printed quick start,
       create a principal, send it a message, get a reply. No repo checkout,
       no cargo, no undocumented steps. *Blocked on the first release.*
-- [ ] **`python3` prerequisite declared.** The `Workflow` builtin (ADR-061)
+- [x] **`python3` prerequisite declared** (2026-10-22). The `Workflow` builtin (ADR-061)
       shells out to `python3` on PATH; either declare it in the install docs
       or make the tool's absence-mode graceful and documented.
-      *2026-10-22: half done. The absence mode is graceful: `Workflow`
-      returns "`python3` not found on PATH — install Python 3"
-      (`tools/builtin/workflow.rs`). It is still undocumented in README,
-      getting-started, the user's guide and `install.sh`.*
+      The absence mode is graceful: `Workflow` returns "`python3` not
+      found on PATH — install Python 3" (`tools/builtin/workflow.rs`).
+      README, getting-started and the user's guide list it as an optional
+      prerequisite, and `install.sh` prints a note when it is missing.
 
 ## 2. Version bookkeeping — the version means something
 
@@ -186,14 +187,21 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
 - [x] **ADR-058 (origin-signed messaging) marked Accepted** (2026-09-16 in
       the ADR; the `docs/README.md` index row corrected 2026-10-22).
-- [ ] **Accepted security gaps written down in the user's guide**, not just
+- [x] **Accepted security gaps written down in the user's guide**
+      (2026-10-22, `USERS_GUIDE.md` → Known Limitations → Security limits), not just
       in ADRs: runtime identity key at rest (ADR-032 follow-up), hub can read
       relayed payloads (ADR-035, pending ADR-058 D8), async task state is
       ephemeral across restarts (ADR-063 non-goal), loopback UDP fallback is
       unauthenticated same-host trust (ADR-058 D6). Also add the ledger's
       limit: it is tamper-evident, not tamper-proof, because a run with
-      `Bash` shares the OS user (ADR-079). *2026-10-22: none of these
-      appear in `docs/user-guide/`.*
+      `Bash` shares the OS user (ADR-079).
+      - The runtime identity key is no longer a gap. It is held in the
+        encrypted vault, and `identity.toml` keeps only public metadata
+        (`identity/src/runtime.rs`).
+      - Added: runs acting for the owner are never reviewed, scheduled runs
+        included, so a scheduled run can use a side-effecting MCP tool
+        unasked (`security/judge.rs`; G14 in
+        `docs/research/2026-10-persistent-bots-round2-gaps-and-roadmap.md`).
 
 ---
 

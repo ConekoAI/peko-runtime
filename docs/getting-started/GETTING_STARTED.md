@@ -11,6 +11,9 @@ Get up and running with Peko in under 5 minutes.
   `anthropic_messages`, `openai_completions`, or `openai_responses` — hosted
   or self-hosted. You need its base URL, the wire model id it expects, and an
   API key (local endpoints that need no key are fine too).
+- **Optional: Python 3** (`python3` on PATH) for the `Workflow` tool, which
+  runs workflows the peko writes. Without it, `Workflow` returns an error and
+  everything else works.
 
 ---
 

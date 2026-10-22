@@ -48,6 +48,9 @@ Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to
   first release.
 - Rust 1.70+ (install from [rustup.rs](https://rustup.rs))
 - API key for at least one LLM provider
+- Optional: Python 3 (`python3` on PATH) for the `Workflow` tool, which runs
+  workflows the peko writes. Without it, `Workflow` returns an error and
+  everything else works.
 
 ### Building from Source
 
@@ -435,6 +438,50 @@ So a message reaches an offline runtime only once **both runtimes are online
 at the same time**. A message still unconfirmed after **30 days** is dropped
 with a warning. If two runtimes are never online together, their messages do
 not get through.
+
+### Security limits
+
+Peko is a personal runtime. It trusts the operating-system user it runs as.
+The limits below are known and accepted for this release.
+
+**Runs acting for you are not reviewed.** The policy reviewer, and the
+`approve <id>` / `deny <id>` questions it sends you, apply only to runs
+acting for someone else: guests in a conversation, or other pekos. Runs
+acting for you are never reviewed. These include the scheduled `keepalive`
+and nightly `memory` runs.
+
+So if a peko has an MCP server that can send email, post, delete or pay, a
+scheduled run can use it without asking you. Instructions in the peko's
+files are guidance, not enforcement. Connect only tools you are willing to
+let the peko use on its own.
+
+**The tool ledger is tamper-evident, not tamper-proof.** Every tool call is
+recorded in a hash-chained ledger: `peko audit ledger` reads it and
+`peko audit verify` checks it. `verify` detects edited, deleted or truncated
+entries.
+
+A run with `Bash` runs as your user. It could rewrite the ledger, the global
+audit log and the checkpoints together, and nothing outside your account
+anchors the chain yet.
+
+**PekoHub can read relayed messages.** Messages between runtimes are signed
+by the peko that sent them, so the hub cannot forge or alter them. They are
+not encrypted end to end, though. The hub terminates TLS, so it could read
+messages between runtimes and chats from Hub web visitors.
+
+**Background tasks do not survive a restart.** A task started with `Async`
+that is still running when the daemon stops is lost. Cron jobs are saved to
+disk and resume after a restart, so use a cron job for work that must
+survive one.
+
+**The UDP fallback trusts any local process.** The CLI normally reaches the
+daemon over a Unix socket in a `0700` directory with `0600` permissions. On
+Linux the daemon also rejects messages from a different user id.
+
+If the socket cannot be created, the daemon falls back to UDP on
+`127.0.0.1:11435`, and it logs `falling back to UDP` when it does. Any
+process on the machine can reach the daemon on that port. On a shared
+machine, fix the socket problem instead of running on the fallback.
 
 ---
 
