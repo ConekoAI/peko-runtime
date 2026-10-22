@@ -62,6 +62,9 @@ Peko is a Rust-based multi-peko runtime: local AI pekos with DID identity, peko-
 
 ### Prerequisites
 
+**Supported platforms:** Linux (x64, arm64) and macOS (x64, arm64). Windows is
+not supported in the first release.
+
 You need an LLM endpoint that speaks one of the three supported wire formats
 (`anthropic_messages`, `openai_completions`, `openai_responses`), its base URL,
 the wire model id it expects, and — unless it is a keyless local endpoint — an

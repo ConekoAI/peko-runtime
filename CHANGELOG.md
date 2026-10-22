@@ -3421,6 +3421,9 @@ bespoke signed-envelope RPC stack is deleted.
   fanned out while the peer runtime is offline is not re-delivered on
   reconnect (the caller's copy is durable; the await times out with a
   structured error). Replay-on-reconnect is a follow-up.
+  *Superseded by ADR-072 D6: a durable outbox now resends until the peer
+  runtime confirms; only runtimes never online together within 30 days
+  remain unserved (an accepted MVP gap, `docs/MVP_GATE.md` gate 0).*
 
 ##### Removed (prelaunch, no migration)
 - `TunnelMessage::PrincipalToPrincipal{Request,Response}` envelopes,
