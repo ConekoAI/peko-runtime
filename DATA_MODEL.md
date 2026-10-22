@@ -2006,7 +2006,11 @@ unread summary means by "since you last read". A session's first look
 at a channel adopts the newest line as its mark, unless the channel was
 opened after the session was created: then it is unread from its first
 post. Both files
-share the atomic tmp+fsync+rename save convention.
+share the atomic tmp+fsync+rename save convention. Each member's
+subscriber writes only its own `cursors.json` entry, merged into the
+file under its lock (`ChannelCursors::save_member`), and never moves a
+numeric cursor backwards; temp file names carry the pid and a random
+suffix. The shape is unchanged.
 
 `attention.json` (ADR-072 D4a) holds, per session, the posts by other
 principals the digest has shown but the session has not answered — each an

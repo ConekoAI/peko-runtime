@@ -13,10 +13,20 @@
 //!
 //! ## Atomic-write convention
 //!
-//! Mirror of `peko-rs/plan/src/storage.rs:309-321` — write to a
-//! pid-suffixed tmp file, fsync, rename over the destination. This is
-//! the same pattern `peko_cron`, `peko_session`, and `peko_plan` use,
-//! so channels slot in without inventing a new convention.
+//! Mirror of `peko-rs/plan/src/storage.rs:309-321` — write to a tmp
+//! file, fsync, rename over the destination. The tmp name carries the
+//! pid and a random suffix, so two writers in one process never share
+//! it.
+//!
+//! ## One file, many members
+//!
+//! Every member's subscriber shares the channel's file and holds its
+//! own in-memory copy. A subscriber persists only its own entry
+//! ([`ChannelCursors::save_member`]), merged into the file under its
+//! lock. Saving a whole in-memory map let the last writer drop every
+//! other member's cursor, and a restart then replayed the channel's
+//! history to them (peko-benchmark
+//! `docs/MEMORY_HEARTBEAT_ROUND5_MIMO_2026-10-22.md`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +37,10 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::port::{ChannelError, Result, TaskId};
+
+/// How long a cursor save waits for the file's lock. Saves are one small
+/// read-modify-write, so a holder past this is wedged, not slow.
+const CURSOR_LOCK_TIMEOUT_MS: u64 = 10_000;
 
 // ---------------------------------------------------------------------------
 // Cursors file shape
@@ -93,8 +107,45 @@ impl ChannelCursors {
         }
     }
 
-    /// Persist cursors atomically. Write to a pid-suffixed tmp file in
-    /// the same directory, fsync, rename over the destination.
+    /// Persist `principal`'s cursor alone: under the file's lock, reload
+    /// the file, set this member's entry, and write it back. Other
+    /// members' entries are kept as they are on disk. A numeric cursor
+    /// never moves backwards. An unreadable file is replaced by one
+    /// holding this entry.
+    pub async fn save_member(
+        channel_dir: &Path,
+        principal: &PrincipalId,
+        task_id: &TaskId,
+    ) -> Result<()> {
+        fs::create_dir_all(channel_dir).await?;
+        let path = Self::path_in(channel_dir);
+        let _guard = peko_fs_persistence::FileLock::acquire(&path, CURSOR_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Cursor(format!("lock {}: {e}", path.display())))?;
+        let mut on_disk = match Self::load(channel_dir).await {
+            Ok(cursors) => cursors,
+            Err(e) => {
+                tracing::warn!(?e, "unreadable channel cursors; rewriting them");
+                Self::new()
+            }
+        };
+        let behind = on_disk.get(principal).is_some_and(|existing| {
+            matches!(
+                (existing.parse::<u64>(), task_id.parse::<u64>()),
+                (Ok(old), Ok(new)) if old >= new
+            )
+        });
+        if behind {
+            return Ok(());
+        }
+        on_disk.set(principal.clone(), task_id.clone());
+        on_disk.save(channel_dir).await
+    }
+
+    /// Persist the whole map atomically: write a uniquely named tmp file
+    /// in the same directory, fsync, rename over the destination. A
+    /// subscriber uses [`Self::save_member`] instead, so it never
+    /// overwrites other members' entries.
     ///
     /// **Convention mirror:** `peko-rs/plan/src/storage.rs:309-321`.
     /// Channels do not invent a new write path.
@@ -103,7 +154,8 @@ impl ChannelCursors {
         fs::create_dir_all(channel_dir).await?;
 
         let pid = std::process::id();
-        let tmp = channel_dir.join(format!(".cursors.json.{pid}.tmp"));
+        let unique = uuid::Uuid::new_v4().simple();
+        let tmp = channel_dir.join(format!(".cursors.json.{pid}.{unique}.tmp"));
 
         let bytes = serde_json::to_vec_pretty(self)?;
         {
@@ -164,6 +216,56 @@ mod tests {
         let loaded = ChannelCursors::load(&channel_dir).await.unwrap();
         assert_eq!(loaded.get(&p1), Some(&"node_111".to_string()));
         assert_eq!(loaded.get(&p2), Some(&"node_222".to_string()));
+    }
+
+    /// Members saving at once each keep their own entry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_member_saves_keep_every_member() {
+        let dir = TempDir::new().unwrap();
+        let channel_dir = dir.path().join("chan_many");
+        let members: Vec<_> = (0..8).map(|_| PrincipalId::generate()).collect();
+        let saves = members.iter().enumerate().map(|(i, p)| {
+            let channel_dir = channel_dir.clone();
+            let p = p.clone();
+            tokio::spawn(async move {
+                ChannelCursors::save_member(&channel_dir, &p, &(i + 1).to_string()).await
+            })
+        });
+        for save in saves {
+            save.await.unwrap().unwrap();
+        }
+        let loaded = ChannelCursors::load(&channel_dir).await.unwrap();
+        for (i, p) in members.iter().enumerate() {
+            assert_eq!(loaded.get(p), Some(&(i + 1).to_string()));
+        }
+        let leftover: Vec<_> = std::fs::read_dir(&channel_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftover.is_empty(), "stale tmp files: {leftover:?}");
+    }
+
+    /// A member's stale in-memory map no longer overwrites the others,
+    /// and a numeric cursor never moves backwards.
+    #[tokio::test]
+    async fn member_save_merges_and_never_rewinds() {
+        let dir = TempDir::new().unwrap();
+        let channel_dir = dir.path().join("chan_merge");
+        let (a, b) = (PrincipalId::generate(), PrincipalId::generate());
+        ChannelCursors::save_member(&channel_dir, &a, &"5".to_string())
+            .await
+            .unwrap();
+        ChannelCursors::save_member(&channel_dir, &b, &"3".to_string())
+            .await
+            .unwrap();
+        ChannelCursors::save_member(&channel_dir, &a, &"4".to_string())
+            .await
+            .unwrap();
+        let loaded = ChannelCursors::load(&channel_dir).await.unwrap();
+        assert_eq!(loaded.get(&a), Some(&"5".to_string()));
+        assert_eq!(loaded.get(&b), Some(&"3".to_string()));
     }
 
     #[tokio::test]
