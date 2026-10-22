@@ -275,6 +275,70 @@ async fn subscriber_calls_responder_for_each_new_event() {
 }
 
 // ---------------------------------------------------------------------------
+// Test B2: members share one cursors file
+// ---------------------------------------------------------------------------
+
+/// Two members' subscribers share the channel's `cursors.json`, each with
+/// its own in-memory copy. After both have ticked, a restart (subscribers
+/// rebuilt from the file) must replay nothing to either. Saving a whole
+/// in-memory map let the last writer drop the other's cursor, so a
+/// restart re-delivered the channel's history to it (peko-benchmark
+/// round 5).
+#[tokio::test]
+async fn members_sharing_the_cursor_file_do_not_replay_after_restart() {
+    let (tmp, adapter) = adapter_in_tempdir();
+    let port: Arc<dyn ChannelPort> = as_port(adapter.clone());
+    let alice = PrincipalId::generate();
+    let bob = PrincipalId::generate();
+    let chan = port
+        .create(&alice, CreateOpts::runtime("shared-cursors"))
+        .await
+        .expect("create");
+    port.invite(&chan, &alice, &ActorRef::from(&bob))
+        .await
+        .expect("invite bob");
+    let chan_dir = tmp.path().join("channels").join(chan.as_str());
+    let subscriber = |member: &PrincipalId, cursors: ChannelCursors| {
+        peko_channel::ChannelSubscriber::new(
+            chan.clone(),
+            member.clone(),
+            chan_dir.clone(),
+            port.clone(),
+            Arc::new(CountResponder::default()),
+            peko_channel::cost::noop_meter(),
+            cursors,
+            SubscriptionConfig::default(),
+        )
+    };
+
+    // Boot: both start from the same (empty) file, then tick in turn.
+    let mut a = subscriber(&alice, ChannelCursors::load(&chan_dir).await.unwrap());
+    let mut b = subscriber(&bob, ChannelCursors::load(&chan_dir).await.unwrap());
+    port.post(&chan, &ActorRef::from(&alice), PostMsg::root("one"))
+        .await
+        .expect("post");
+    assert!(!a.tick_once().await.unwrap().is_empty());
+    assert!(!b.tick_once().await.unwrap().is_empty());
+    port.post(&chan, &ActorRef::from(&bob), PostMsg::root("two"))
+        .await
+        .expect("post");
+    assert_eq!(b.tick_once().await.unwrap().len(), 1);
+    assert_eq!(a.tick_once().await.unwrap().len(), 1);
+
+    // Restart: rebuild both from disk. Nothing is new.
+    let mut a = subscriber(&alice, ChannelCursors::load(&chan_dir).await.unwrap());
+    let mut b = subscriber(&bob, ChannelCursors::load(&chan_dir).await.unwrap());
+    assert!(
+        a.tick_once().await.unwrap().is_empty(),
+        "alice replayed history"
+    );
+    assert!(
+        b.tick_once().await.unwrap().is_empty(),
+        "bob replayed history"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test C: push-wake (sprint 3 Phase 10)
 // ---------------------------------------------------------------------------
 

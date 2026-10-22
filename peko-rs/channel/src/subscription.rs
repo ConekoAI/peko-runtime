@@ -180,8 +180,12 @@ impl ChannelSubscriber {
         if !delivered.is_empty() {
             let prior: usize = since.0.parse().unwrap_or(0);
             let high = (prior + delivered.len()).to_string();
-            self.cursors.set(self.principal.clone(), high);
-            if let Err(e) = self.cursors.save(&self.channel_dir).await {
+            self.cursors.set(self.principal.clone(), high.clone());
+            // Only this member's entry: the file is shared with the
+            // channel's other members' subscribers.
+            if let Err(e) =
+                ChannelCursors::save_member(&self.channel_dir, &self.principal, &high).await
+            {
                 tracing::warn!(?e, "channel cursor save failed");
             }
         }

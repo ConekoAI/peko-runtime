@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: channel subscribers no longer replay history after a restart (2026-10-22)
+
+Every member's subscriber shares one `cursors.json` per channel, but each
+saved its whole in-memory map. The last writer dropped the other members'
+cursors. Concurrent saves in one daemon also shared a temp file named only
+by pid. After a restart, the affected members' subscribers re-delivered the
+channel's history. In peko-benchmark round 5
+(`docs/MEMORY_HEARTBEAT_ROUND5_MIMO_2026-10-22.md`), 8–10 old peer posts
+per principal reached the ADR-086 nudger again. That caused 3 spurious
+brought-forward fires and delayed a failed-job turn by about 4 minutes.
+
+Subscribers now save only their own entry with `ChannelCursors::save_member`.
+It merges the entry into the file under its lock and never moves a numeric
+cursor backwards. Temp files are named uniquely. The file shape is unchanged.
+
 ### Feature: peer posts bring the attention keepalive forward (ADR-086, 2026-10-21)
 
 A post by another principal never starts a turn (ADR-072 D1). Until now it
