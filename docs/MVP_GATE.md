@@ -131,9 +131,22 @@ Currently the primary install path is dead: no release has ever been cut, and
         No OpenSSL is needed, the python3 note prints, and HTTPS through
         rustls reaches a provider.*
 
-      *Not yet: a reply from a real model, macOS x86_64 and Linux x86_64,
-      a real fresh machine rather than an isolated home or container, and
-      systemd (the container has none).*
+      *2026-10-23, with a real model: the full quick start passed on both
+      arm64 targets with MiMo v2.6 Flash. The steps were `model add --key`,
+      `model test`, `daemon start`, `create` (waits for genesis), `send` and
+      `log`. The peko answered "17 + 25 = 42." about 3 s after `send`.
+      Genesis took 134 s on Linux and 131 s on macOS, which is slow for a
+      first run.*
+
+      *Not yet: macOS x86_64 and Linux x86_64, a real fresh Mac rather than
+      an isolated home, and systemd (the container has none).*
+
+      *Two daemon warnings showed up on both platforms, to investigate:*
+      - *`completion_wake` fails right after the reply, with "cannot
+        re-attach to session … it is the session you are running in", and
+        leaves the inbox queued.*
+      - *`derive_base_session_key` falls back to `peer:user:default` for a
+        non-peer `ActorRef` (ADR-039).*
 - [x] **`python3` prerequisite declared** (2026-10-22). The `Workflow` builtin (ADR-061)
       shells out to `python3` on PATH; either declare it in the install docs
       or make the tool's absence-mode graceful and documented.
