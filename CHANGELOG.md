@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a conversation reply no longer lands in the trunk's inbox (2026-10-23)
+
+Every subagent run registered its async task with completion delivery and
+wake on. Every production caller already waits for the run and takes the
+result directly: the `Agent` tool, peer ingress turns, cron origin-session
+turns and completion wakes. So each result was delivered twice. The second
+copy went to the caller's inbox and fired a wake.
+
+For a conversation turn the caller is the trunk. After each `peko send`,
+the trunk's inbox therefore got the reply as a "📨 [Helper: Agent]"
+completion, and the trunk read it again at its next turn. The wake that
+followed failed every time ("cannot re-attach to session …: it is the
+session you are running in"), because a turn driver's caller is the trunk
+itself. Both showed up in the rc.2 clean-machine check.
+
+Subagent runs are now quiet (`deliver_completion: false`,
+`wake_on_completion: false`). An `Agent` call that detaches past the
+router's wait is still delivered by the router's own task (ADR-063 D4).
+
 ### Fix: channel subscribers no longer replay history after a restart (2026-10-22)
 
 Every member's subscriber shares one `cursors.json` per channel, but each

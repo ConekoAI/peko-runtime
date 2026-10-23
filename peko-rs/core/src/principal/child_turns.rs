@@ -1182,6 +1182,87 @@ mod tests {
         assert_eq!(stamps.ceiling(&ceiling(&mixed)).await, Trust::Untrusted);
     }
 
+    /// A conversation turn's reply goes to its caller, which already has
+    /// it. Before, every such run also pushed a completion event into the
+    /// trunk's inbox and fired a wake. The wake failed, because the
+    /// trunk is the driver's own caller ("cannot re-attach to session"),
+    /// so the trunk read every reply again at its next turn.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn conversation_turns_deliver_no_completion_to_the_trunk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (llm, adapter) = peko_providers::resolver::LlmResolver::mock(
+            peko_providers::mock::MockAdapter::new(),
+            tmp.path().join("models.toml"),
+        )
+        .await;
+        let manager = crate::principal::PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+            Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(llm.clone());
+        let principal = manager
+            .create(test_config(
+                "quiet-trunk",
+                PrincipalRoutingConfig::default(),
+            ))
+            .await
+            .unwrap();
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        tooling.services().set_channel_port(Arc::clone(&port));
+        let inboxes = manager.shared_inbox_registry();
+        let turns = PeerChildTurns::build(
+            &principal,
+            &llm,
+            Arc::new(Observability::new("test")),
+            Some(Arc::clone(&inboxes)),
+            tooling,
+        )
+        .await
+        .unwrap()
+        .with_channel_port(Some(Arc::clone(&port)));
+
+        let child = turns
+            .ensure_child_ingress(&ActorRef::User("test-owner".into()))
+            .await
+            .unwrap()
+            .child_id;
+        adapter.queue_text("hello back");
+        let stamp = turns
+            .root_stamp(
+                None,
+                &child,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
+        let outcome = turns
+            .drive_turn_streaming(&child, "hello", Arc::new(|_| {}), None, None, stamp)
+            .await
+            .unwrap();
+        assert_eq!(outcome.final_text, "hello back");
+
+        // Delivery runs on the executor's task after the waiter wakes;
+        // give it time to land if it is going to.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let trunk_key = peko_session::inbox_key(&principal.id.0, &trunk_session_id());
+        let queued = match inboxes.peek_inbox(&trunk_key).await {
+            Some(inbox) => inbox.drain_all().await.len(),
+            None => 0,
+        };
+        assert_eq!(queued, 0, "the trunk's inbox got the conversation reply");
+    }
+
     /// Minimal principal config for persona tests — everything
     /// defaulted except `name` and `routing`.
     fn test_config(name: &str, routing: PrincipalRoutingConfig) -> PrincipalConfig {
