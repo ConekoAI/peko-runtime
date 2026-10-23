@@ -99,9 +99,12 @@ Currently the primary install path is dead: no release has ever been cut, and
       systemd unit also became a `peko@.service` template that runs the
       daemon in the foreground.*
 
-      *Next: tag `v0.1.0-rc.2` and repeat; the Linux install is still
-      unverified. The Linux binaries need glibc ≥ 2.35 (built on Ubuntu
-      22.04), so they won't run on Ubuntu 20.04 or Debian 11.*
+      *2026-10-23: `v0.1.0-rc.2` (`3315f045`, run 39877534273): all four
+      builds and `create-release` passed, and the prerelease carries all
+      four archives. The pipeline works. This box stays open until the
+      MVP version itself is tagged. The Linux binaries need glibc ≥ 2.35
+      (built on Ubuntu 22.04), so they won't run on Ubuntu 20.04 or
+      Debian 11.*
 - [x] **`install.sh` fixed** (2026-09-29). No longer writes a config full of
       retired concepts to `~/.config/peko/` (a path nothing reads);
       quick start teaches `peko model add --key` / `peko daemon start` /
@@ -115,7 +118,22 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **Clean-machine install verified.** On a fresh macOS and a fresh Linux
       box (or container): run `install.sh`, follow the printed quick start,
       create a principal, send it a message, get a reply. No repo checkout,
-      no cargo, no undocumented steps. *Blocked on the first release.*
+      no cargo, no undocumented steps.
+      *2026-10-23, rc.2, install half done. Each run fetched `install.sh`
+      from master and the asset from the GitHub release, then ran
+      `--version`, daemon start and status (as `peko-daemon`), a keyless
+      `model add`, `create` (genesis jobs seeded), `list` and daemon stop.
+      All passed on:*
+      - *macOS arm64, in an empty `HOME` with only system directories on
+        `PATH`.*
+      - *Ubuntu 22.04 arm64 in a container, as a non-root user installing
+        to `~/bin`, with only `curl`, `ca-certificates` and `procps` added.
+        No OpenSSL is needed, the python3 note prints, and HTTPS through
+        rustls reaches a provider.*
+
+      *Not yet: a reply from a real model, macOS x86_64 and Linux x86_64,
+      a real fresh machine rather than an isolated home or container, and
+      systemd (the container has none).*
 - [x] **`python3` prerequisite declared** (2026-10-22). The `Workflow` builtin (ADR-061)
       shells out to `python3` on PATH; either declare it in the install docs
       or make the tool's absence-mode graceful and documented.
