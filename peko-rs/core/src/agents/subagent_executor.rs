@@ -2046,13 +2046,20 @@ impl SubagentExecutor {
             timeout_millis: None,
             cleanup_after_delivery: false,
             label: None,
-            wake_on_completion: true,
+            // Every run is awaited (`wait_for_run`), and its waiter hands
+            // the result to the caller: the Agent tool's result, a peer
+            // turn's reply. A call that detaches past the router's wait is
+            // delivered by the router's own task (ADR-063 D4). Delivering
+            // here too repeated each result in the caller's inbox. For
+            // conversation turns, whose caller is the trunk, it also fired
+            // a wake that the trunk refused as a re-entry into itself.
+            wake_on_completion: false,
             principal_root_session_key: None,
             // Subagent runs belong to the spawning principal — stamped so
             // the `Async*` control surface of OTHER principals cannot see
             // or cancel them (P1-4).
             principal_id: self.principal_id.clone(),
-            deliver_completion: true,
+            deliver_completion: false,
             progress: None,
         };
 

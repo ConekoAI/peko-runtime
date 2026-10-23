@@ -458,7 +458,7 @@ audit measured the current tool surface against that need:
 | Per-child spend / budget view | ❌ | quota is per-principal (+ unlimited agent_meter audit counters); no session/subtree attribution, and no built-in tool reads quota state at all |
 | Compact a child without it running | ⚠️ deferred only | `compact` sets a flag consumed at the target's *next run*; no offline/headless compaction exists |
 | Archive a finished subtree | ✅ | with run-permit + subagent-run guards (`session_runtime_impl.rs:376-504`) |
-| Wake on child completion | ✅ | subagent announcements to parent inbox; cron `wake_on_completion` |
+| Wake on child completion | ✅ | an `Agent` call still running past the router's 10-minute wait is delivered to the caller's inbox by the router (ADR-063 D4); awaited runs return their result directly and deliver nothing; cron `wake_on_completion` |
 | Memory organization surface | ⚠️ partial | `kb/` with a budgeted hot set in every prompt (ADR-055) and a daily `memory` maintenance job (ADR-080); no agent-facing memory tool. `PrincipalMemory` (`principal/memory.rs`) is only a session-artifact index for routing |
 
 ## 6. Current state vs. the paradigm — summary
