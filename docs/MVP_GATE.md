@@ -83,8 +83,25 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **First release cut.** `git tag v<version>` triggers
       `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
       darwin x64/arm64) build and publish successfully.
-      *2026-10-22: still none; `gh release list` is empty and `release.yml`
-      has never run.*
+      *2026-10-22: rehearsal tag `v0.1.0-rc.1` (`f8c616c4`) ran
+      `release.yml` for the first time (run 39793287147). Three of the four
+      builds passed. linux-aarch64 failed to cross-compile `openssl-sys`, so
+      nothing was published. Smoke-testing the darwin-arm64 artifact found
+      two more blockers:*
+      - *`install.sh` installed only `peko`, so `peko daemon start` failed
+        ("peko-daemon binary not found next to …/peko").*
+      - *The Linux binaries linked `libssl.so.3`/`libcrypto.so.3` at
+        runtime, via `reqwest` 0.11's default `native-tls`.*
+
+      *All three are fixed on `fix/release-rc1-rehearsal`: a native
+      `ubuntu-22.04-arm` runner, rustls-only `reqwest` (OpenSSL is gone from
+      the tree), and an `install.sh` that installs both binaries. The
+      systemd unit also became a `peko@.service` template that runs the
+      daemon in the foreground.*
+
+      *Next: tag `v0.1.0-rc.2` and repeat; the Linux install is still
+      unverified. The Linux binaries need glibc ≥ 2.35 (built on Ubuntu
+      22.04), so they won't run on Ubuntu 20.04 or Debian 11.*
 - [x] **`install.sh` fixed** (2026-09-29). No longer writes a config full of
       retired concepts to `~/.config/peko/` (a path nothing reads);
       quick start teaches `peko model add --key` / `peko daemon start` /
