@@ -1187,9 +1187,16 @@ mod tests {
     /// trunk's inbox and fired a wake. The wake failed, because the
     /// trunk is the driver's own caller ("cannot re-attach to session"),
     /// so the trunk read every reply again at its next turn.
+    ///
+    /// The turn's run creates an agent identity in the default data dir,
+    /// so this test points `PEKO_HOME` at its tempdir and runs serially
+    /// with the other tests that set it.
     #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
     async fn conversation_turns_deliver_no_completion_to_the_trunk() {
         let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_HOME", tmp.path());
+        peko_identity::init_test_env();
         let (llm, adapter) = peko_providers::resolver::LlmResolver::mock(
             peko_providers::mock::MockAdapter::new(),
             tmp.path().join("models.toml"),
