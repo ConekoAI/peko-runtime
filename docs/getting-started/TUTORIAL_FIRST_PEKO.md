@@ -105,11 +105,11 @@ peko log my-peko --limit 3
 
 ```
 📜 Peko 'my-peko' — peer 'user:local':
-[2026-10-24 T02:52:59.792716] principal:prin_78b7ddf2469f4a7a8c6c227b6e47c905: Set — I'll remind you at 11:54.
+[2026-10-24 T02:52:59.792716] my-peko: Set — I'll remind you at 11:54.
 
 — Mochi
-[2026-10-24 T02:54:59.422261] principal:prin_78b7ddf2469f4a7a8c6c227b6e47c905: ⏰ Stretch time, Sam!
-[2026-10-24 T02:55:04.977600] principal:prin_78b7ddf2469f4a7a8c6c227b6e47c905: Done — reminder sent.
+[2026-10-24 T02:54:59.422261] my-peko: ⏰ Stretch time, Sam!
+[2026-10-24 T02:55:04.977600] my-peko: Done — reminder sent.
 
 — Mochi
 ```

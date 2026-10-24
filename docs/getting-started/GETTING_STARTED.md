@@ -154,7 +154,7 @@ peko log my-peko
 ```
 📜 Peko 'my-peko' — peer 'user:local':
 [2026-10-24 T03:08:59.192521] user:local: Hello, what can you do?
-[2026-10-24 T03:09:12.279966] principal:prin_0c87a26152bb4e82b8a227753c068fae: I'm your personal assistant, running here in peko. In short, I can:
+[2026-10-24 T03:09:12.279966] my-peko: I'm your personal assistant, running here in peko. In short, I can:
 
 **Talk & help think**
 - Answer questions, brainstorm, draft and edit text, summarize things you paste in.
@@ -163,8 +163,9 @@ peko log my-peko
 - Read and write files on this machine — n…
 ```
 
-`user:local` is you, the person at this terminal. The peko appears under its
-local address (`principal:local:<id>` in full; `peko show` prints it).
+`user:local` is you, the person at this terminal. The peko's replies show its
+name. Its full address is `principal:local:<id>` (`peko show` prints it), and
+`peko log --json` carries it in each message's `sender` field.
 
 ---
 

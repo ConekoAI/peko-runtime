@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko log` shows the peko's name on its replies (2026-10-24)
+
+`peko log my-peko` printed the peko's replies under its internal address
+(`principal:prin_27c5…: Hello!`). They now show its name (`my-peko: Hello!`),
+as `peko send` does. Other actors keep their address (`user:local: …`).
+
+Each `peko log --json` message from the peko gains a `senderName` field
+alongside the unchanged `sender`.
+
 ### Fix: edits to `roles/root.md` and `principal.toml` apply without a daemon restart (2026-10-24)
 
 A peko's conversation turns ran on a bundle cached for the daemon's
