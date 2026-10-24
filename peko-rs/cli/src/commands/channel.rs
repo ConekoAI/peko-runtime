@@ -40,7 +40,7 @@ use crate::commands::GlobalPaths;
 pub enum ChannelCommands {
     /// Create a new channel owned by `creator`.
     Create {
-        /// Creator principal name (must exist on disk).
+        /// Creator peko name (must exist on disk).
         creator: String,
         /// Channel display name (free-form string).
         name: String,
@@ -58,12 +58,11 @@ pub enum ChannelCommands {
     Invite {
         /// Channel id (`chan_xxxxxxxx`).
         channel: String,
-        /// Inviter principal name (must already be a member).
+        /// Inviter peko name (must already be a member).
         inviter: String,
-        /// Invitee principal name (must exist on disk), or a
-        /// `user:<id>` ActorRef wire form to invite a user (ADR-049
-        /// Phase 1 — validated by wire form only, no principal
-        /// lookup).
+        /// Invitee peko name (must exist on disk), or a user's actor
+        /// address such as `user:hub:<id>` (ADR-049 Phase 1 — validated
+        /// by form only, no lookup).
         invitee: String,
         /// Output as JSON.
         #[arg(long)]
@@ -74,10 +73,10 @@ pub enum ChannelCommands {
     Post {
         /// Channel id.
         channel: String,
-        /// Sender principal name (must be a member), or `me` to post
+        /// Sender peko name (must be a member), or `me` to post
         /// as your own identity (ADR-057: derived from the
         /// connection — hub user when logged into pekohub, else
-        /// `user:local`). A `user:<id>` sender is refused: user
+        /// `user:local`). A `user:…` sender is refused: user
         /// identities are never specified on the wire.
         sender: String,
         /// Message text.
@@ -113,7 +112,7 @@ pub enum ChannelCommands {
 
     /// List channels where `principal` is a member.
     Ls {
-        /// Principal name.
+        /// Peko name.
         principal: String,
         /// Output as JSON.
         #[arg(long)]
@@ -137,7 +136,7 @@ pub enum ChannelCommands {
     Leave {
         /// Channel id.
         channel: String,
-        /// Principal name (must already be a member).
+        /// Peko name (must already be a member).
         principal: String,
         /// Output as JSON.
         #[arg(long)]

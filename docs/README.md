@@ -11,13 +11,13 @@ Complete documentation for the Peko multi-agent runtime.
 
 ### 🚀 Getting Started
 
-- **[Getting Started Guide](getting-started/GETTING_STARTED.md)** — Build and run your first agent
-- **[Tutorial: Building Your First Agent](getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)** — Step-by-step walkthrough
+- **[Getting Started Guide](getting-started/GETTING_STARTED.md)** — Install Peko and talk to your first peko
+- **[Tutorial: shaping your first peko](getting-started/TUTORIAL_FIRST_PEKO.md)** — Persona, memory, a reminder, a skill, backup
 
 ### 📚 User Guides
 
-- **[User's Guide](user-guide/USERS_GUIDE.md)** — Concepts, sessions, principals, extensions
-- **[CLI Reference](user-guide/CLI_REFERENCE.md)** — Every `peko` command and flag
+- **[User's Guide](user-guide/USERS_GUIDE.md)** — Concepts, configuration, tooling, limits, troubleshooting
+- **[CLI Reference](user-guide/CLI_REFERENCE.md)** — Every `peko` command and flag, generated from `--help`
 
 ### 🏗️ Architecture
 
@@ -52,7 +52,7 @@ docs/
 ├── MVP_GATE.md                      # Draft: MVP launch gate checklist
 ├── getting-started/
 │   ├── GETTING_STARTED.md
-│   └── TUTORIAL_BUILDING_FIRST_AGENT.md
+│   └── TUTORIAL_FIRST_PEKO.md
 ├── user-guide/
 │   ├── USERS_GUIDE.md
 │   └── CLI_REFERENCE.md
