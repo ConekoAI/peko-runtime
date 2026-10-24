@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: models added with `--no-key` run turns (2026-10-24)
+
+A model added with `peko model add --no-key` (`requires_key = false`) passed
+`peko model test`, but every turn on it failed with "No provider
+configured". The resolver correctly produced an empty key for such a model,
+and `Provider::new` then refused the empty key ("API key is required").
+`init_provider` logged that as a warning and ran the agent without a
+provider. So keyless local endpoints (Ollama, llama.cpp and the like) could
+not hold a conversation.
+
+`Provider::new` now accepts an empty key, and the HTTP client sends no auth
+header when the credential is empty, instead of `Authorization: Bearer `.
+Whether a model may go without a key is still decided by
+`LlmResolver::resolve_api_key`: a model that requires a key and has none
+stored fails to build, as before.
+
 ### Fix: `peko export` / `peko import` paths are the user's, and reinstalling through `curl | bash` works (2026-10-24)
 
 **Export and import paths.** The CLI sent export and import paths to the

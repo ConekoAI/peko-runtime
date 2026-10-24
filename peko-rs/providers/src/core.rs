@@ -168,10 +168,10 @@ impl Provider {
                 merged_headers,
             )?
         } else {
-            if api_key.is_empty() {
-                return Err(anyhow::anyhow!("API key is required"));
-            }
-
+            // An empty key means a keyless endpoint (`requires_key =
+            // false`, `peko model add --no-key`); the HTTP client then
+            // sends no auth header. Whether a model may go without a key
+            // is decided earlier, by `LlmResolver::resolve_api_key`.
             let auth = adapter.auth_config(&api_key);
             let mut client = HttpClient::with_headers(
                 adapter.base_url(),
@@ -769,16 +769,17 @@ mod tests {
     #[test]
     fn test_provider_creation() {
         let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
-        // A non-empty key is required even though no real network call is made.
         let result = Provider::new(adapter, "test_key", runtime_options());
         assert!(result.is_ok());
     }
 
+    /// A keyless endpoint builds a provider (the resolver decides
+    /// whether a model may go without a key).
     #[test]
-    fn test_provider_creation_rejects_empty_key() {
+    fn test_provider_creation_accepts_empty_key() {
         let adapter = AnyAdapter::OpenAi(OpenAiAdapter::new());
         let result = Provider::new(adapter, "", runtime_options());
-        assert!(result.is_err(), "empty API key must error on construction");
+        assert!(result.is_ok(), "an empty key is a keyless endpoint");
     }
 
     #[test]

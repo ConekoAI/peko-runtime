@@ -709,6 +709,48 @@ mod tests {
         assert_eq!(key.expose_secret(), "sk-ant-v2");
     }
 
+    /// A model added with `--no-key` (`requires_key = false`) builds a
+    /// provider. Before, `Provider::new` refused the empty key, so every
+    /// turn on a keyless local endpoint failed with "No provider
+    /// configured" while `peko model test` still passed.
+    #[tokio::test]
+    async fn keyless_model_builds_a_provider() {
+        let (_d, cat) = tempdir_catalog().await;
+        let mut cfg = ModelConfig::new(
+            "local",
+            crate::catalog::ApiFormat::OpenaiCompletions,
+            "http://127.0.0.1:11434/v1",
+            "llama-3.1-8b",
+        );
+        cfg.requires_key = false;
+        cat.upsert(cfg).await.unwrap();
+        let r = resolver(cat);
+        let (_provider, choice) = r
+            .build(ResolveRequest {
+                agent_model: Some("local"),
+                ..Default::default()
+            })
+            .await
+            .expect("a keyless model must build a provider");
+        assert_eq!(choice.config.id, "local");
+    }
+
+    /// A model that needs a key and has none stored still fails to build.
+    #[tokio::test]
+    async fn keyed_model_without_a_key_does_not_build() {
+        let (_d, cat) = seeded_catalog().await;
+        let r = resolver(cat);
+        let err = r
+            .build(ResolveRequest {
+                agent_model: Some("openai-gpt-4o"),
+                ..Default::default()
+            })
+            .await
+            .err()
+            .expect("a keyed model with no stored key must not build");
+        assert!(format!("{err:#}").contains("no key for model"), "{err:#}");
+    }
+
     #[tokio::test]
     async fn env_bootstrap_kicks_in_when_no_key() {
         let (_d, cat) = seeded_catalog().await;
