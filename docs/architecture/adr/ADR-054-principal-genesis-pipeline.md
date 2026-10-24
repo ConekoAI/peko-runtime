@@ -138,7 +138,8 @@ loaded principal whose boot state is not `organized`:
 2. Ensure the **one-shot genesis job** exists for principals that have
    not completed genesis (`provisioned`/`defined`/`genesis_pending`
    states): missing or failed jobs are re-armed at boot. Id `genesis`,
-   `At now + 60s`, `delete_after_run`, message
+   `At now + 3s` (just far enough ahead to pass `add_job`'s
+   future-time check; it fires on the next cron poll), `delete_after_run`, message
    = the runtime-authored **genesis brief** — pointing the trunk at
    its own definition and workspace and instructing it to verify,
    survey, and organize (bounded: a setup turn, not a work sprint).

@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko create` no longer waits a minute before the genesis turn (2026-10-24)
+
+The first `peko create` took about 130 seconds even with a model that
+answers in 3. Timed against an instant local model, `create` took 71
+seconds, 60 of them a fixed delay: the genesis job was scheduled 60 seconds
+after the daemon booted, and `create` blocks on it. The delay had no
+purpose.
+
+The genesis job is now due 3 seconds after it is seeded, just enough for
+`add_job` to accept the time as future. It fires on the daemon's next
+5-second cron poll. `create` also checks for completion every 0.5 seconds
+instead of every 2. Against the same instant model, `create` now takes 13–14
+seconds. Most of that is provisioning (identity keys, workspace seeding) and
+daemon start-up. The rest of the time with a real model is the genesis turn
+itself. What genesis does is unchanged.
+
+The boot pass now uses a fresh clock reading for each principal's genesis
+job, so the short delay can't expire while earlier principals are being
+seeded.
+
 ### Fix: no session-key warning on the first `peko send` (2026-10-24)
 
 The first `peko send` to a peko logged `WARN peko_session::key:

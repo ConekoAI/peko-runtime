@@ -869,7 +869,7 @@ async fn boot_principal(
                  `peko log {name}`"
             );
         }
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     println!(
         "🎉 Peko '{name}' is alive (boot state: {state:?}). \

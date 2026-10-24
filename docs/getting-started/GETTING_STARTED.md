@@ -122,8 +122,9 @@ peko daemon start
 peko create my-peko --model my-model
 ```
 
-`create` waits for the peko's first turn, in which it sets itself up. That
-takes a minute or two:
+`create` waits for the peko's first turn, in which it sets itself up. How
+long that takes depends on your model; the turn starts a few seconds after
+the daemon is up:
 
 ```
 Created peko 'my-peko' at ~/.peko/principals/my-peko (model: my-model)
