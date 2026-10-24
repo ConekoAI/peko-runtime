@@ -117,13 +117,15 @@ pub fn safe_filename_component(s: &str) -> String {
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
 ///
-/// After ADR-039, `ActorRef` is an alias for `ActorRef`. The key format
-/// is **byte-stable** for `ActorRef::User`, `ActorRef::Principal`, and
-/// `ActorRef::Visitor` (ADR-058 D5) — these are the valid session peers
-/// (`ActorRef::is_session_peer`).
-/// For `ActorRef::Public`, the function falls back to `peer:user:default`
-/// and logs a warning, so a stray non-peer subject never produces an
-/// orphan key. This is the documented behavior, not a bug.
+/// The key format is **byte-stable** for `ActorRef::User`,
+/// `ActorRef::Principal`, and `ActorRef::Visitor` (ADR-058 D5) — these
+/// are the session peers (`ActorRef::is_session_peer`).
+///
+/// `ActorRef::Public` marks a session with no single peer: the
+/// channel-bound DM and group sessions (`ensure_channel_child`), which
+/// are found by channel binding, not by peer key. They get their own
+/// `peer:public:channel` key, so they never share a key with a real
+/// user.
 #[must_use]
 pub fn derive_base_session_key(agent: &str, peer: &peko_subject::ActorRef) -> String {
     use peko_subject::ActorRef;
@@ -149,13 +151,7 @@ pub fn derive_base_session_key(agent: &str, peer: &peko_subject::ActorRef) -> St
                 sanitize_key_component(&id.to_string())
             )
         }
-        ActorRef::Public => {
-            tracing::warn!(
-                "derive_base_session_key called with non-peer ActorRef {peer}; \
-                 falling back to peer:user:default (ADR-039)"
-            );
-            format!("agent:{agent}:peer:user:default")
-        }
+        ActorRef::Public => format!("agent:{agent}:peer:public:channel"),
     }
 }
 
@@ -287,6 +283,20 @@ mod tests {
         let agent_peer = ActorRef::Principal("helper".into());
         let key = derive_base_session_key("test_agent", &agent_peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
+    }
+
+    #[test]
+    fn channel_sessions_key_apart_from_every_user() {
+        use peko_subject::ActorRef;
+
+        let key = derive_base_session_key("root", &ActorRef::Public);
+        assert_eq!(key, "agent:root:peer:public:channel");
+        assert_ne!(
+            key,
+            derive_base_session_key("root", &ActorRef::User("default".into()))
+        );
+        let parsed = parse_session_key_v2(&key).expect("v2-parseable");
+        assert_eq!(parsed.peer_type, "public");
     }
 
     #[test]

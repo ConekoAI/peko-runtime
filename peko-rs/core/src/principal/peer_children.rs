@@ -161,6 +161,9 @@ pub async fn ensure_channel_child(
         .with_parent(trunk_session_id())
         .with_trigger("spawn")
         .with_title(title);
+    // A channel session has no single peer (a group has many; a DM is
+    // found by its channel binding). `Public` says so and gets its own
+    // session key rather than a real user's.
     let session = manager
         .create_session(agent_name, &ActorRef::Public, options)
         .await?;

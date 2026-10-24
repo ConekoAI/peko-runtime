@@ -582,12 +582,23 @@ fn parse_duration_secs(input: &str) -> Result<u64> {
 
 /// Render one log message to stdout in the default human view.
 fn render_chat_message(message: &PrincipalLogMessage) {
-    println!(
+    println!("{}", format_chat_message(message));
+}
+
+/// One human-readable log line. The peko's own replies show its name
+/// (`my-peko: …`, as `peko send` prints them); every other actor
+/// shows its address.
+fn format_chat_message(message: &PrincipalLogMessage) -> String {
+    let sender = match message.sender_name.as_deref() {
+        Some(name) => name.to_string(),
+        None => message.sender.to_string(),
+    };
+    format!(
         "[{}] {}: {}",
         timestamp_short(&message.timestamp.to_rfc3339()),
-        message.sender,
+        sender,
         truncate(&message.text, 240)
-    );
+    )
 }
 
 /// Strip seconds / sub-seconds from an RFC3339 timestamp for display.
@@ -643,6 +654,22 @@ mod tests {
         assert_eq!(truncate("hello world", 5), "hello…");
         // Non-ASCII should not split mid-codepoint.
         assert_eq!(truncate("héllo wörld", 4), "hél…");
+    }
+
+    #[test]
+    fn format_chat_message_names_the_peko_and_addresses_others() {
+        let mut reply = PrincipalLogMessage::new(
+            peko_auth::ActorRef::User("ignored-when-named".into()),
+            "Hello!",
+            None,
+        );
+        reply.sender_name = Some("my-peko".to_string());
+        let line = format_chat_message(&reply);
+        assert!(line.ends_with("] my-peko: Hello!"), "got {line}");
+
+        let user = PrincipalLogMessage::new(peko_auth::ActorRef::User("local".into()), "hi", None);
+        let line = format_chat_message(&user);
+        assert!(line.ends_with("] user:local: hi"), "got {line}");
     }
 
     #[test]

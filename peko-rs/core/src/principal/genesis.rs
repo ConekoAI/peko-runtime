@@ -68,8 +68,12 @@ pub const KEEPALIVE_JOB_ID: &str = "keepalive";
 /// cadence once it is organized.
 pub const DEFAULT_KEEPALIVE_EVERY_MS: u64 = 600_000;
 
-/// Delay between daemon boot and the one-shot genesis turn.
-pub const GENESIS_DELAY_SECS: u64 = 60;
+/// Delay between seeding the one-shot genesis job and its due time.
+/// Only long enough that the second-truncated `at` is still in the
+/// future when `add_job` validates it; the job then fires on the
+/// daemon's next cron poll. `peko create` blocks on this turn, so any
+/// longer delay is pure waiting for the user.
+pub const GENESIS_DELAY_SECS: u64 = 3;
 
 /// Job id of the daily memory-maintenance turn (ADR-080).
 pub const MEMORY_JOB_ID: &str = crate::security::memory_gate::MEMORY_JOB_ID;
@@ -826,7 +830,9 @@ pub async fn seed_boot_defaults(
             if failed_genesis {
                 scheduler.delete_job(GENESIS_JOB_ID)?;
             }
-            let job = genesis_job(&config_snapshot, now)
+            // Fresh `now`, not the pass-wide one: the short delay must
+            // still be ahead of the clock after earlier principals' IO.
+            let job = genesis_job(&config_snapshot, Utc::now())
                 .with_context(|| format!("genesis job build for '{name}'"))?;
             scheduler
                 .add_job(&job)
@@ -929,14 +935,20 @@ mod tests {
         match &job.schedule {
             ScheduleKind::At { at } => {
                 let parsed = chrono::DateTime::parse_from_rfc3339(at).unwrap();
-                assert_eq!(parsed, now + chrono::Duration::seconds(60));
+                assert_eq!(
+                    parsed,
+                    now + chrono::Duration::seconds(GENESIS_DELAY_SECS as i64)
+                );
             }
             other => panic!("expected At schedule, got {other:?}"),
         }
         // The engine honors the stored `next_run` verbatim — it must
         // match the At instant, not the construction time (an
         // immediate fire defeats the one-shot's delay).
-        assert_eq!(job.next_run, now + chrono::Duration::seconds(60));
+        assert_eq!(
+            job.next_run,
+            now + chrono::Duration::seconds(GENESIS_DELAY_SECS as i64)
+        );
     }
 
     #[test]

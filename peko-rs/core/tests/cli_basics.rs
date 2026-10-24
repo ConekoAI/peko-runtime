@@ -58,7 +58,7 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 //
 // ADR-054 made `principal create` a BLOCKING command (provision → boot →
 // wait for the one-shot genesis turn), so the bare form is neither offline
-// nor fast: it spawns a daemon and waits ≥60s for a genesis turn that
+// nor fast: it spawns a daemon and waits for a genesis turn that
 // needs a reachable model. The ADR's escape hatch for scripts/CI is
 // `--detach`: provisioning (workspace, agents, kb scaffold, identity,
 // cron seeds) still happens synchronously, but the command returns without

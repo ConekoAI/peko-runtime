@@ -4,6 +4,61 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko create` no longer waits a minute before the genesis turn (2026-10-24)
+
+The first `peko create` took about 130 seconds even with a model that
+answers in 3. Timed against an instant local model, `create` took 71
+seconds, 60 of them a fixed delay: the genesis job was scheduled 60 seconds
+after the daemon booted, and `create` blocks on it. The delay had no
+purpose.
+
+The genesis job is now due 3 seconds after it is seeded, just enough for
+`add_job` to accept the time as future. It fires on the daemon's next
+5-second cron poll. `create` also checks for completion every 0.5 seconds
+instead of every 2. Against the same instant model, `create` now takes 13–14
+seconds. Most of that is provisioning (identity keys, workspace seeding) and
+daemon start-up. The rest of the time with a real model is the genesis turn
+itself. What genesis does is unchanged.
+
+The boot pass now uses a fresh clock reading for each principal's genesis
+job, so the short delay can't expire while earlier principals are being
+seeded.
+
+### Fix: no session-key warning on the first `peko send` (2026-10-24)
+
+The first `peko send` to a peko logged `WARN peko_session::key:
+derive_base_session_key called with non-peer ActorRef public; falling back
+to peer:user:default (ADR-039)`. The same warning appeared for each new
+group. A channel session (a DM or group) has no single peer, so it is
+created with `public` as its peer, and the key function borrowed the
+`user:default` key for it.
+
+Channel sessions now get their own `agent:<agent>:peer:public:channel` key,
+with no warning. Nothing looked sessions up by the old key: channel sessions
+are found by their channel binding.
+
+### Fix: `peko update --check` says when there is no stable release yet (2026-10-24)
+
+With only prereleases published, GitHub's `releases/latest` returns 404 and
+`peko update --check` said "Failed to query GitHub API — Make sure you're
+connected to the internet". A 404 now says no stable release is published
+yet and points to the releases page. The connection hint is kept for real
+network failures. Other HTTP errors (a rate limit, for example) report their
+status code.
+
+The version is now read from the response's `tag_name` with a JSON parser.
+The old parser never found it and always reported the latest version as
+`vlatest`.
+
+### Fix: `peko log` shows the peko's name on its replies (2026-10-24)
+
+`peko log my-peko` printed the peko's replies under its internal address
+(`principal:prin_27c5…: Hello!`). They now show its name (`my-peko: Hello!`),
+as `peko send` does. Other actors keep their address (`user:local: …`).
+
+Each `peko log --json` message from the peko gains a `senderName` field
+alongside the unchanged `sender`.
+
 ### Fix: edits to `roles/root.md` and `principal.toml` apply without a daemon restart (2026-10-24)
 
 A peko's conversation turns ran on a bundle cached for the daemon's

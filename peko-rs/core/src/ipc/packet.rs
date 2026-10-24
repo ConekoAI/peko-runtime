@@ -1026,6 +1026,11 @@ pub struct PrincipalLogMessage {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    /// Display name of the sender when it is the peko whose log is
+    /// being read (its own replies). `None` for every other actor —
+    /// they render by address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_name: Option<String>,
 }
 
 impl PrincipalLogMessage {
@@ -1042,6 +1047,7 @@ impl PrincipalLogMessage {
             timestamp: chrono::Utc::now(),
             text: text.into(),
             correlation_id,
+            sender_name: None,
         }
     }
 }

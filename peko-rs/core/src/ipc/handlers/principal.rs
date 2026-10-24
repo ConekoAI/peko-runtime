@@ -3454,27 +3454,61 @@ async fn resolve_log_thread(
     })
 }
 
+/// The principal whose log is being read, in the forms its own channel
+/// rows can carry.
+struct LogSelf {
+    /// Legacy raw-id author (`prin_…`).
+    raw_author: String,
+    /// The principal's channel address (`principal:local:prin_…`, or its
+    /// Hub address once registered) — the author form ADR-081 posts use.
+    address: String,
+    /// Sender reported for the principal's rows.
+    subject: ActorRef,
+    /// Display name rendered for the principal's rows.
+    name: String,
+}
+
+impl LogSelf {
+    async fn of(principal: &Principal, port: &Arc<dyn ChannelPort>) -> Self {
+        let address = port
+            .actor_info(&ActorRef::from(&principal.id))
+            .await
+            .address;
+        Self {
+            raw_author: principal.id.to_string(),
+            address,
+            subject: ActorRef::Principal((principal.did().await).into()),
+            name: principal.name().await,
+        }
+    }
+}
+
 /// Map a `Posted` channel event onto the `PrincipalLogMessage` chat
 /// shape: the principal's raw-id author becomes
-/// `ActorRef::Principal(did)`, anything else parses as a ActorRef wire
+/// `ActorRef::Principal(did)`, anything else parses as an ActorRef wire
 /// form with a `ActorRef::User` fallback (mirrored `x@runtime` authors).
-/// Unparseable timestamps surface as "now".
+/// The principal's own rows (raw id or channel address) also carry its
+/// name as `sender_name`, so `peko log` shows `my-peko:` rather than an
+/// address. Unparseable timestamps surface as "now".
 fn map_posted_to_log_message(
     id: String,
     author: &str,
     at: &str,
     text: String,
-    principal_author: &str,
-    principal_subject: &ActorRef,
+    me: &LogSelf,
 ) -> PrincipalLogMessage {
     let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_else(|_| Utc::now());
-    let sender = if author == principal_author {
-        principal_subject.clone()
+    let (sender, own) = if author == me.raw_author {
+        (me.subject.clone(), true)
     } else {
-        ActorRef::from_str(author).unwrap_or(ActorRef::User(author.into()))
+        (
+            ActorRef::from_str(author).unwrap_or(ActorRef::User(author.into())),
+            author == me.address,
+        )
     };
+    let sender_name = own.then(|| me.name.clone());
     PrincipalLogMessage {
         schema_version: PRINCIPAL_LOG_SCHEMA_VERSION,
         id,
@@ -3482,6 +3516,7 @@ fn map_posted_to_log_message(
         timestamp: parsed_at,
         text,
         correlation_id: None,
+        sender_name,
     }
 }
 
@@ -3541,8 +3576,7 @@ async fn read_principal_log(
     // map to messages, and `--since` filters — so the fill loop
     // walks further back until the page is full or the log is
     // exhausted (bounded, so a hostile filter can't pin the daemon).
-    let principal_author = principal.id.to_string();
-    let principal_subject = ActorRef::Principal((principal.did().await).into());
+    let me = LogSelf::of(&principal, &port).await;
     // Optional search predicates: case-insensitive text substring +
     // exact raw-author match. Both apply while paging, so a filtered
     // read keeps walking older pages until the page fills or the log
@@ -3604,14 +3638,8 @@ async fn read_principal_log(
                     continue;
                 }
             }
-            let message = map_posted_to_log_message(
-                format!("chan_{line_num}"),
-                &author,
-                &at,
-                text,
-                &principal_author,
-                &principal_subject,
-            );
+            let message =
+                map_posted_to_log_message(format!("chan_{line_num}"), &author, &at, text, &me);
             // The `since` cutoff admits unparseable timestamps (surfaced
             // as "now" by the mapper — now ≥ cutoff).
             if let Some(cut) = cutoff {
@@ -3773,8 +3801,7 @@ async fn run_principal_log_watch(
             return Ok(());
         }
     };
-    let principal_author = principal.id.to_string();
-    let principal_subject = ActorRef::Principal((principal.did().await).into());
+    let me = LogSelf::of(principal, &port).await;
     let mut replayed: Vec<(String, String, String)> = Vec::new();
     for (line, event) in events {
         let ChannelEvent::Posted {
@@ -3790,14 +3817,8 @@ async fn run_principal_log_watch(
             continue;
         }
         replayed.push((author.clone(), at.clone(), text.clone()));
-        let message = map_posted_to_log_message(
-            format!("chan_{line_num}"),
-            &author,
-            &at,
-            text,
-            &principal_author,
-            &principal_subject,
-        );
+        let message =
+            map_posted_to_log_message(format!("chan_{line_num}"), &author, &at, text, &me);
         let packet = ResponsePacket::PrincipalLogAppended {
             request_id,
             message,
@@ -3837,8 +3858,7 @@ async fn run_principal_log_watch(
                         &author,
                         &at,
                         text,
-                        &principal_author,
-                        &principal_subject,
+                        &me,
                     );
                     let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
                     if send_response(sink, packet).await.is_err() {
@@ -3880,6 +3900,43 @@ async fn run_principal_log_watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn posted_rows_name_the_principal_and_address_everyone_else() {
+        let me = LogSelf {
+            raw_author: "prin_abc".into(),
+            address: "principal:local:prin_abc".into(),
+            subject: ActorRef::Principal("did:peko:abc".into()),
+            name: "my-peko".into(),
+        };
+        let row = |author: &str| {
+            map_posted_to_log_message(
+                "chan_1".into(),
+                author,
+                "2026-10-24T10:00:00Z",
+                "Hello!".into(),
+                &me,
+            )
+        };
+
+        // ADR-081 posts carry the channel address; `sender` stays the
+        // parsed address (unchanged `--json`), plus the name.
+        let own = row("principal:local:prin_abc");
+        assert_eq!(
+            own.sender,
+            ActorRef::from_str("principal:local:prin_abc").unwrap()
+        );
+        assert_eq!(own.sender_name.as_deref(), Some("my-peko"));
+
+        let legacy = row("prin_abc");
+        assert_eq!(legacy.sender, me.subject);
+        assert_eq!(legacy.sender_name.as_deref(), Some("my-peko"));
+
+        let user = row("user:local");
+        assert_eq!(user.sender_name, None);
+        let other = row("principal:local:prin_other");
+        assert_eq!(other.sender_name, None);
+    }
 
     #[test]
     fn extract_agent_names_handles_flat_and_nested_prompts() {
@@ -4329,6 +4386,12 @@ mod tests {
                 page.messages[1].sender,
                 ActorRef::Principal(peko_subject::Route::local(fx.principal.id.0.clone())),
                 "the principal's raw-id author maps to ActorRef::Principal"
+            );
+            assert_eq!(page.messages[0].sender_name, None);
+            assert_eq!(
+                page.messages[1].sender_name,
+                Some(fx.principal.name().await),
+                "the principal's own rows carry its name"
             );
             assert_eq!(page.messages[1].text, "answer 0");
             assert_eq!(
