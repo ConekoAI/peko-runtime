@@ -16,11 +16,11 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
 | 1. Distribution | 4 / 6 | No release ever cut; clean-machine install unverified |
 | 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
-| 3. Docs | 2 / 4 | Getting-started teaches a repo build, not the release |
+| 3. Docs | 3 / 4 | Final walk against the next release candidate |
 | 4. CI | 1 / 4 | Nothing has run on a release commit yet; real-LLM tier needs 3 launch models |
 | 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
 | 6. Security | 2 / 2 | — |
-| **Total** | **14 / 26** | |
+| **Total** | **15 / 26** | |
 
 Between 2026-09-30 and 2026-10-22 no gate item moved; the ~80 commits in
 that stretch were feature and fix work (ADR-072 to ADR-086). Gate 0 was
@@ -179,15 +179,30 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **Getting-started + tutorial walk end-to-end** against the release
       artifact (not a repo build): `docs/getting-started/` both files, every
       command pasted from real output per docs/README.md's contribution rule.
-      *2026-10-22: `GETTING_STARTED.md` still starts from
-      `cargo build --release` / `./target/release/peko`. It needs an
-      install-from-release path first.*
-- [ ] **ADR-064 terminology sweep complete** — `role` vs `agent` vs
+      *2026-10-24: both rewritten around `install.sh`. The tutorial is now
+      `TUTORIAL_FIRST_PEKO.md`: persona, memory, a reminder, a skill, and
+      export/import.*
+      - *Getting-started's install and quick start were recorded against
+        the rc.2 artifact. Its `show` / `create` / `stop` / `log` output
+        was re-recorded on the docs branch build, because the branch
+        changes those strings.*
+      - *The tutorial was run end to end on the branch build with MiMo
+        v2.6 Flash. Export/import was checked between two isolated
+        homes.*
+      - *Still open: one walk of both files against the next release
+        candidate, which will carry the branch's string and path fixes.*
+- [x] **ADR-064 terminology sweep complete** (2026-10-24) — `role` vs `agent` vs
       `principal` consistent across README, user's guide, CLI reference, and
-      the compiled-in default role file. *2026-10-22 spot check: no retired
-      `peko agent|principal|cron|persona` commands remain in README,
-      getting-started or the user's guide. The tutorial is still named
-      `TUTORIAL_BUILDING_FIRST_AGENT.md`; the full sweep is not done.*
+      the compiled-in default role file.
+      - *README and the user's guide are rewritten. Retired material is
+        gone: capability grants, the extension architecture, `did:peko:`,
+        `[children]`, the Docker section, `-U/--user`, `list --long` and
+        `system update`.*
+      - *`CLI_REFERENCE.md` is generated from `--help` by
+        `scripts/gen_cli_reference.py`.*
+      - *User-facing CLI help and output say peko / role.*
+      - *The root role's description and `RoleCatalog` wording say role.*
+      - *Internal and wire names keep `principal` (ADR-059).*
 
 ## 4. CI is green on every tier in scope
 

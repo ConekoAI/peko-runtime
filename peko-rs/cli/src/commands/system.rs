@@ -97,7 +97,7 @@ pub async fn handle_system(
         }
         SystemCommands::Info => {
             println!("ℹ️  Peko {}", env!("CARGO_PKG_VERSION"));
-            println!("  Lightweight multi-agent runtime");
+            println!("  Persistent AI agents (pekos) you own");
             Ok(())
         }
         SystemCommands::Doctor { fix } => {

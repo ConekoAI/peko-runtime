@@ -2,7 +2,7 @@
 //!
 //! A peko (ADR-059 user-facing term; internal type: `Principal`) is a
 //! top-level AI actor that owns identity, memory, intent, governance,
-//! capabilities, and thin Markdown agent prompts. The verbs here are
+//! and thin Markdown role files (ADR-064). The verbs here are
 //! flattened to the top level (`peko create`, `peko list`, ...).
 
 use std::io::IsTerminal;
@@ -38,9 +38,9 @@ pub enum PrincipalCommands {
     /// waits for the trunk's first self-turn to complete. Pass
     /// `--detach` for fire-and-forget (scripts/CI).
     ///
-    /// Re-defining later = edit the peko's `principal.toml`
-    /// directly (presence = visibility, ADR-050 — the next turn picks
-    /// it up).
+    /// Re-defining later = edit the peko's `principal.toml` and
+    /// `roles/root.md` directly, then restart the daemon, which reads
+    /// both when it starts.
     Create {
         /// Peko name
         name: String,
@@ -55,9 +55,9 @@ pub enum PrincipalCommands {
 
         /// Path to a seed `principal.toml` carrying the peko's
         /// full definition: `[identity]`, `[intent]`, `preferred_model_id`,
-        /// `[capabilities]`, `[[permissions]]`, `exposure`, `quota`, and
-        /// an optional inline `persona` (Markdown body for the root
-        /// agent prompt). Unspecified fields take runtime defaults.
+        /// `[[permissions]]`, `exposure`, `quota`, and an optional
+        /// inline `persona` (Markdown body for the root role, seeded
+        /// as `roles/root.md`). Unspecified fields take runtime defaults.
         /// `id`, `did`, and `boot_state` in the seed are ignored —
         /// a fresh identity is always generated. TOML note: top-level
         /// keys (`preferred_model_id`, `persona`) must appear BEFORE
@@ -70,9 +70,8 @@ pub enum PrincipalCommands {
 
         /// Force a destructive re-create. Without `--force`,
         /// `peko create <existing>` refuses with a clear
-        /// error — protects identity, agents, memory, and session
-        /// history from a one-keystroke wipe (see Bug 2 in
-        /// scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
+        /// error — protects identity, roles, memory, and session
+        /// history from a one-keystroke wipe.
         /// With `--force`, the existing peko is removed first —
         /// its workspace, roles/, memory/, and session history are
         /// all wiped before the new peko is written. There is
@@ -100,18 +99,18 @@ pub enum PrincipalCommands {
         wait_timeout: u64,
     },
 
-    /// Register this local principal for Hub access (private by default).
+    /// Register this peko for Hub access (private by default).
     Register {
         name: String,
         #[arg(long)]
         public: bool,
     },
-    /// Remove the Hub route and retain the local principal.
+    /// Remove the peko's Hub route and keep it locally.
     Unregister { name: String },
     /// List pekos
     List,
 
-    /// Show peko configuration and agent prompts
+    /// Show a peko's configuration and roles
     Show {
         /// Peko name
         name: String,
@@ -859,7 +858,7 @@ async fn boot_principal(
         }
         if std::time::Instant::now() > deadline {
             anyhow::bail!(
-                "genesis turn did not complete within {wait_timeout}s. The principal is \
+                "genesis turn did not complete within {wait_timeout}s. The peko is \
                  fully seeded — it will genesis at the next daemon boot; watch with \
                  `peko log {name}`"
             );
@@ -867,7 +866,7 @@ async fn boot_principal(
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     };
     println!(
-        "🎉 Principal '{name}' is alive (boot state: {state:?}). \
+        "🎉 Peko '{name}' is alive (boot state: {state:?}). \
          Talk to it: peko send {name} \"…\" — inspect it: peko log {name}"
     );
 
@@ -1100,12 +1099,12 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     // pinned configured model so users can confirm their override took
     // effect without trawling config files.
     let model_line = match preferred_model_id {
-        Some(id) => format!("{id} (per-principal)"),
+        Some(id) => format!("{id} (pinned to this peko)"),
         None => "(none — run `peko model add` and pin a model)".to_string(),
     };
     println!("  Model: {model_line}");
 
-    println!("  Agents:");
+    println!("  Roles:");
     for (agent_name, prompt) in &principal.agent_prompts {
         let desc = prompt
             .frontmatter
@@ -1134,6 +1133,9 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
     } else {
         println!("  Catalog:");
         for (kind, (total, enabled)) in &by_kind {
+            // Role templates are catalogued under the internal kind
+            // `agent`; users know them as roles (ADR-064).
+            let kind = if *kind == "agent" { "role" } else { kind };
             println!("    - {kind}: {enabled}/{total} enabled");
         }
     }
@@ -1164,9 +1166,25 @@ async fn remove_principal(name: &str, yes: bool, paths: &GlobalPaths, json: bool
     Ok(())
 }
 
+/// Resolve a path the user typed against the CLI's working directory.
+/// The daemon runs in its own directory, so a relative path sent as-is
+/// would land wherever the daemon happened to be started.
+fn absolute_from_cwd(path: &str) -> Result<String> {
+    let path = std::path::Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("cannot read the current directory")?
+            .join(path)
+    };
+    Ok(absolute.display().to_string())
+}
+
 async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
+    let output = absolute_from_cwd(&output.unwrap_or_else(|| format!("{name}.peko")))?;
     let client = DaemonClient::connect().await?;
-    let response = client.principal_export(name, output).await?;
+    let response = client.principal_export(name, Some(output)).await?;
 
     match response {
         ResponsePacket::PrincipalExported {
@@ -1190,6 +1208,8 @@ async fn import_principal(
     force: bool,
     _yes: bool,
 ) -> Result<()> {
+    let file_path = absolute_from_cwd(file_path)?;
+    let file_path = file_path.as_str();
     let client = DaemonClient::connect().await?;
 
     // Always preview first. The preview is read-only and surfaces bundled
@@ -1294,9 +1314,9 @@ fn render_import_preview(preview: &PrincipalImportPreview) {
     }
     println!("{}", preview.inventory.render());
     if preview.agents.is_empty() {
-        println!("  Agents:      (none)");
+        println!("  Roles:       (none)");
     } else {
-        println!("  Agents:");
+        println!("  Roles:");
         for agent in &preview.agents {
             println!("    - {agent}");
         }
@@ -1687,6 +1707,22 @@ mod tests {
     use super::*;
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
+
+    /// Export and import paths reach the daemon absolute, so a relative
+    /// path means the user's directory, not the daemon's.
+    #[test]
+    fn typed_paths_resolve_against_the_cli_working_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            absolute_from_cwd("my-peko.peko").unwrap(),
+            cwd.join("my-peko.peko").display().to_string()
+        );
+        assert_eq!(
+            absolute_from_cwd("backups/x.peko").unwrap(),
+            cwd.join("backups/x.peko").display().to_string()
+        );
+        assert_eq!(absolute_from_cwd("/tmp/x.peko").unwrap(), "/tmp/x.peko");
+    }
     use peko_auth::Permission;
 
     #[test]

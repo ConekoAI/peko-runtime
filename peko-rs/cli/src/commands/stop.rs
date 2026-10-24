@@ -21,11 +21,13 @@ use std::str::FromStr;
 #[derive(Args, Clone, Debug)]
 #[command(disable_version_flag = true)]
 pub struct StopArgs {
-    /// Principal name
+    /// Peko name
+    #[arg(value_name = "PEKO")]
     pub principal: String,
 
     /// Stop the run on this peer's thread instead of your own (owner
-    /// only). Accepts the wire format `user:<id>` or `principal:<did>`.
+    /// only). Accepts an actor address: `user:local`, `user:hub:<id>`,
+    /// `principal:local:<id>` or `principal:hub:<id>`.
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 }
@@ -47,7 +49,7 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
         ResponsePacket::Done { success, error, .. } => {
             if success {
                 println!(
-                    "Stopped run on thread '{thread}' with principal '{}'",
+                    "Stopped run on thread '{thread}' with peko '{}'",
                     args.principal
                 );
             } else if error
@@ -57,7 +59,7 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
                 // Idempotent stop: nothing in flight is a notice, not
                 // a failure (scripting-friendly exit 0).
                 println!(
-                    "No running turn on thread '{thread}' with principal '{}'",
+                    "No running turn on thread '{thread}' with peko '{}'",
                     args.principal
                 );
             } else {

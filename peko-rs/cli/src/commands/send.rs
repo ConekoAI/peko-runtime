@@ -36,7 +36,8 @@ use tracing::info;
 #[derive(Args, Clone, Debug)]
 #[command(disable_version_flag = true)]
 pub struct SendArgs {
-    /// Principal name
+    /// Peko name
+    #[arg(value_name = "PEKO")]
     pub principal: String,
 
     /// Message to send (optional if --file or --stdin is used)
@@ -50,8 +51,8 @@ pub struct SendArgs {
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
 
-    /// When the principal is busy (message queued onto the in-flight
-    /// run), block until the principal's next reply on the thread
+    /// When the peko is busy (message queued onto the in-flight
+    /// run), block until the peko's next reply on the thread
     /// instead of exiting right after the queued notice
     #[arg(long)]
     pub wait: bool,

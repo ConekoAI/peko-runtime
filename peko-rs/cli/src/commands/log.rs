@@ -46,12 +46,13 @@ use std::str::FromStr;
 #[derive(Args)]
 #[command(disable_version_flag = true)]
 pub struct LogCommand {
-    /// Principal name (required)
-    #[arg(value_name = "PRINCIPAL")]
+    /// Peko name (required)
+    #[arg(value_name = "PEKO")]
     pub principal: String,
 
-    /// Specific peer's thread (`user:<id>` or `principal:<did>`).
-    /// Defaults to the principal's owner.
+    /// Specific peer's thread, as an actor address: `user:local`,
+    /// `user:hub:<id>`, `principal:local:<id>` or `principal:hub:<id>`.
+    /// Defaults to the peko's owner.
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 

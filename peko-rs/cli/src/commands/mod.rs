@@ -40,7 +40,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "peko")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "Lightweight multi-agent runtime")]
+#[command(about = "Peko: persistent AI agents (pekos) you own")]
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:
   peko daemon start                          # Start the daemon
@@ -88,7 +88,7 @@ pub enum Commands {
     /// Peko lifecycle management (ADR-059)
     ///
     /// A peko is the user-facing AI actor: identity, memory, intent,
-    /// governance, capabilities, and thin Markdown agent prompts.
+    /// governance, and thin Markdown role files.
     /// The lifecycle verbs live directly at the top level —
     /// `peko create`, `peko list`, `peko export`, ... — because
     /// `peko send` / `peko log` / `peko stop` already address a peko
@@ -109,8 +109,8 @@ pub enum Commands {
     /// The run cancels at the next agentic boundary and a
     /// `⏹ stopped by user` marker is posted to the thread. Idempotent:
     /// with no run in flight it reports "no running turn" and exits 0.
-    /// Use `--peer user:<id>` (owner only) to stop another peer's
-    /// thread.
+    /// Use `--peer <address>` (owner only), such as `user:hub:<id>`,
+    /// to stop another peer's thread.
     Stop(stop::StopArgs),
 
     /// Read a peko's activity (owner-root view by default)
@@ -140,7 +140,7 @@ pub enum Commands {
     #[command(subcommand)]
     System(system::SystemCommands),
 
-    /// Daemon management (for cron job execution)
+    /// Daemon management (the background process that runs your pekos)
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
 
