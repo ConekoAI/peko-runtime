@@ -187,6 +187,7 @@ Arguments:
 Options:
   -n, --name <NAME>              Rename the imported peko
   -f, --force                    Overwrite an existing local peko
+      --rotate-keys              Import as a new actor: new keys, DID, and local ID. Use it to import a copy of a peko this runtime already hosts (with `--name` when the package's name is taken)
 ```
 
 ## `peko permit`

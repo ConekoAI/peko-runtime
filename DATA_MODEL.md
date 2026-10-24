@@ -342,8 +342,11 @@ fields are ignored rather than interpreted as grants. Governance has no
 auto_grant_tools field and AgentConfig has no enable_model_list field.
 Inbound `permissions` remain the authorization policy for peer access.
 
-`principal_import` carries file path, optional name, force, and optional expected
-manifest checksum. `principal_import_previewed` carries snapshot metadata,
+`principal_import` carries file path, optional name, force, optional expected
+manifest checksum, and `rotate_keys` (default `false`). `principal_import_preview`
+carries file path, optional name, force, and `rotate_keys`; without `rotate_keys`
+it refuses a snapshot of an actor hosted here before showing the inventory.
+`principal_import_previewed` carries snapshot metadata,
 roles (`agents`), executable inventory, checksum, validation errors and warnings.
 The retired `selected_capabilities`, `required_capabilities`, and `extensions`
 fields are omitted from serialization; unknown legacy JSON fields are ignored.
@@ -3186,6 +3189,11 @@ source-qualified local route. Import localizes routes of the destination runtime
 replaces a source-local owner with `user:local` everywhere, rebinds that owner's DM
 session to the new pair ID, reuses a former local ID by actor key (never the
 snapshot's), and refuses a key already hosted here unless keys are rotated.
+A rotated import (`peko import --rotate-keys`) is a new actor: new signing key and
+DID, actor key, and local ID, no Hub registration, `LocalOnly` exposure. It keeps
+the owner, grants, contacts, and sessions, rebinds the owner's DM session to the
+new key's pair ID, and does not restore `local/channels.json`, whose rosters name
+the old key.
 
 Cron `created_by` trust is re-derived from the creator's current trust when a job
 fires and only lowered.

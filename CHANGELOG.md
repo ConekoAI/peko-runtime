@@ -24,6 +24,24 @@ a half-written file.
 
 The docs and `peko create --help` no longer say to restart after editing.
 
+### Fix: `peko import --rotate-keys` exists (2026-10-24)
+
+Importing a snapshot of a peko this runtime already hosts is refused (ADR-081
+D6), and the error said to import with `--rotate-keys` to make a new actor.
+The flag did not exist: `peko import` had only `--name` and `--force`.
+
+`peko import <file> --rotate-keys [--name <new>]` now imports the snapshot as
+a new actor with new keys, DID, actor key and local ID. It has no Hub
+registration and starts `LocalOnly`. It keeps the owner, grants, contacts,
+sessions and workspace. The owner's conversation moves to the new actor's DM.
+Channel memberships (`local/channels.json`) are not restored, since their
+rosters name the old key.
+
+The refusal now comes at preview, before the inventory is printed. When the
+package's name is the hosted peko's own name, the error names
+`--rotate-keys --name <new-name>` or `--force`. The `principal_import_preview`
+and `principal_import` IPC requests gained `rotate_keys` (default `false`).
+
 ### Fix: models added with `--no-key` run turns (2026-10-24)
 
 A model added with `peko model add --no-key` (`requires_key = false`) passed

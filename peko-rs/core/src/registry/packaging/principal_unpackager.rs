@@ -221,19 +221,8 @@ impl PrincipalUnpackager {
         crate::common::identifiers::validate_agent_name(&name)
             .map_err(|e| anyhow::anyhow!("[unsafe_name] {e}"))?;
 
-        // ADR-081 D6 step 1 / D7: one actor is hosted at most once per
-        // runtime. A second copy of a hosted key is refused before any write;
-        // rotating keys makes a new actor instead.
         if !options.rotate_keys {
-            if let Some(key) = snapshot_config.actor_key.as_deref() {
-                if let Some(hosted) = self.hosted_name_for_key(key, &name)? {
-                    anyhow::bail!(
-                        "This principal is already hosted here as '{hosted}'. A runtime \
-                         hosts one copy of an actor; import with --rotate-keys to make \
-                         a new actor instead."
-                    );
-                }
-            }
+            self.refuse_hosted_copy(snapshot_config.actor_key.as_deref(), &name, options.force)?;
         }
 
         // Preflight before installing keys or writing any snapshot payload.
@@ -264,7 +253,8 @@ impl PrincipalUnpackager {
                     .join(&name)
                     .join("principal.toml")
                     .exists(),
-            "Principal already exists locally. Use --force to overwrite."
+            "Principal '{name}' already exists locally. Use --force to overwrite it, \
+             or --name <new-name> to import beside it."
         );
         let inventory = super::inventory::ExecutableInventory::from_files(&manifest.did, &files);
         if let Some(audit) = &options.observability {
@@ -389,6 +379,9 @@ impl PrincipalUnpackager {
                 .await?;
         }
         // ADR-081 D5: the principal's contact book and membership record.
+        // A rotated import is a new actor: it keeps what the old one knew
+        // (contacts) but none of its memberships, whose rosters name the
+        // old key. The owner's DM is still rebound below, to the new key.
         let local_root = PathResolver::with_dirs(
             self.config_dir.clone(),
             self.data_dir.clone(),
@@ -404,6 +397,9 @@ impl PrincipalUnpackager {
             ),
             ("local/channels.json", "channels.json"),
         ] {
+            if options.rotate_keys && path == "local/channels.json" {
+                continue;
+            }
             if let Some(bytes) = files.get(path) {
                 tokio::fs::create_dir_all(&local_root).await?;
                 tokio::fs::write(local_root.join(file), bytes).await?;
@@ -725,15 +721,64 @@ impl PrincipalUnpackager {
         Ok(())
     }
 
-    /// The hosted principal (other than `target`, which `--force` may
-    /// replace) whose immutable actor key is `key`.
-    fn hosted_name_for_key(&self, key: &str, target: &str) -> anyhow::Result<Option<String>> {
+    /// ADR-081 D6 step 1 / D7: refuse a snapshot of an actor this runtime
+    /// already hosts. The import preview calls this too, so the refusal
+    /// comes before the inventory; the import checks again before any write.
+    /// `force` lets the snapshot replace the hosted copy at `target` itself.
+    pub fn ensure_not_hosted(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        target: &str,
+        force: bool,
+    ) -> anyhow::Result<()> {
+        let Some(bytes) = files.get("config/principal.toml") else {
+            return Ok(());
+        };
+        let config: PrincipalConfig = toml::from_str(std::str::from_utf8(bytes)?)?;
+        self.refuse_hosted_copy(config.actor_key.as_deref(), target, force)
+    }
+
+    /// One actor is hosted at most once per runtime; rotating keys makes a
+    /// new actor instead.
+    fn refuse_hosted_copy(
+        &self,
+        key: Option<&str>,
+        target: &str,
+        force: bool,
+    ) -> anyhow::Result<()> {
+        let Some(key) = key else {
+            return Ok(());
+        };
+        let Some(hosted) = self.hosted_name_for_key(key, force.then_some(target))? else {
+            return Ok(());
+        };
+        let fix = if hosted == target {
+            format!(
+                "import with --rotate-keys --name <new-name> to make a new actor, \
+                 or with --force to replace '{hosted}'"
+            )
+        } else {
+            "import with --rotate-keys to make a new actor instead".to_string()
+        };
+        anyhow::bail!(
+            "This principal is already hosted here as '{hosted}'. A runtime hosts one \
+             copy of an actor; {fix}."
+        )
+    }
+
+    /// The hosted principal (other than `replaced`, which `--force` is
+    /// about to overwrite) whose immutable actor key is `key`.
+    fn hosted_name_for_key(
+        &self,
+        key: &str,
+        replaced: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
         let Ok(entries) = std::fs::read_dir(self.config_dir.join("principals")) else {
             return Ok(None);
         };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == target {
+            if replaced == Some(name.as_str()) {
                 continue;
             }
             let Ok(text) = std::fs::read_to_string(entry.path().join("principal.toml")) else {
@@ -1599,6 +1644,70 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("already hosted here"), "{err}");
+        assert!(err.to_string().contains("--rotate-keys"), "{err}");
+        let err = PrincipalUnpackager::new(&out, dst_config.clone(), dst_data.clone())
+            .ensure_not_hosted(
+                &PrincipalUnpackager::new(&out, dst_config.clone(), dst_data.clone())
+                    .inspect_detailed()
+                    .await
+                    .unwrap()
+                    .1,
+                "mover",
+                false,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("--rotate-keys --name"),
+            "same name: preview names both flags: {err}"
+        );
+
+        // With rotated keys the same snapshot makes a second, distinct actor.
+        let copy = PrincipalUnpackager::new(&out, dst_config.clone(), dst_data.clone())
+            .import(PrincipalImportOptions {
+                new_name: Some("mover-two".into()),
+                rotate_keys: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let copy_config: PrincipalConfig =
+            toml::from_str(&std::fs::read_to_string(&copy.config_path).unwrap()).unwrap();
+        assert!(copy.keys_rotated);
+        assert_ne!(copy.did, moved.did, "new signing DID");
+        assert_ne!(copy_config.actor_key, restored.actor_key, "new actor key");
+        assert_ne!(copy_config.id, restored.id, "new local ID");
+        assert_eq!(copy_config.owner, restored.owner, "same owner");
+        assert_eq!(copy_config.exposure, peko_auth::Exposure::LocalOnly);
+        let copy_local = dst_data.join("principals/mover-two/local");
+        assert_eq!(
+            crate::principal::contacts::ContactBook::in_local_root(&copy_local)
+                .list()
+                .unwrap(),
+            vec![contact.clone()],
+            "contacts are knowledge and carry over"
+        );
+        assert!(
+            !copy_local.join("channels.json").exists(),
+            "memberships belong to the old key"
+        );
+        let copy_dm = peko_channel::dm_channel_id(
+            copy_config.actor_key.as_deref().unwrap(),
+            &format!("local@{DST}"),
+        );
+        let copy_sessions = peko_session::SessionManager::new()
+            .with_sessions_dir_internal(copy_local.join("sessions"))
+            .list_all_sessions(false)
+            .await
+            .unwrap();
+        assert_eq!(
+            copy_sessions[0].channel_id.as_deref(),
+            Some(copy_dm.as_str()),
+            "the owner's conversation moves to the new actor's DM"
+        );
+        assert!(
+            dst_config.join("principals/mover/principal.toml").exists(),
+            "the hosted copy is untouched"
+        );
 
         // Back home, the local grant and policy section revive.
         let home_config = tmp.path().join("home/config");
