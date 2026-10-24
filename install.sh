@@ -241,8 +241,18 @@ main() {
         current_version=$(peko --version 2>/dev/null | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' || echo "unknown")
         echo -e "${YELLOW}Peko is already installed (v${current_version})${NC}"
         echo ""
-        read -p "Reinstall/Update anyway? (y/N) " -n 1 -r
-        echo
+        # Under `curl ... | bash`, stdin is this script, so ask on the
+        # terminal. With no terminal at all (CI, containers), go ahead.
+        if [ -t 0 ]; then
+            read -p "Reinstall/Update anyway? (y/N) " -n 1 -r
+            echo
+        elif { : </dev/tty; } 2>/dev/null; then
+            read -p "Reinstall/Update anyway? (y/N) " -n 1 -r </dev/tty
+            echo
+        else
+            echo "No terminal to ask on; reinstalling."
+            REPLY=y
+        fi
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             echo "Installation cancelled"
             exit 0

@@ -28,7 +28,7 @@ pub enum QuotaCommands {
     /// accept it instead of renaming `status` so existing scripts
     /// (`peko quota status <name>`) keep working.
     List {
-        /// Principal name (or peer id when `--peer` is set)
+        /// Peko name (or peer id when `--peer` is set)
         name: String,
         /// Query a peer's quota instead of a principal's
         #[arg(long)]
@@ -40,7 +40,7 @@ pub enum QuotaCommands {
     /// F20: pass `--peer` to query a peer's quota instead of a
     /// principal's. The `name` is then interpreted as a peer id.
     Status {
-        /// Principal name (or peer id when `--peer` is set)
+        /// Peko name (or peer id when `--peer` is set)
         name: String,
         /// Query a peer's quota instead of a principal's
         #[arg(long)]
@@ -57,7 +57,7 @@ pub enum QuotaCommands {
     /// interpreted as a peer id and the config is persisted to
     /// `<config_dir>/peers/<peer_id>/peer.toml`.
     Set {
-        /// Principal name (or peer id when `--peer` is set)
+        /// Peko name (or peer id when `--peer` is set)
         name: String,
         /// Input token limit per window (omit to keep current)
         #[arg(long)]
@@ -83,7 +83,7 @@ pub enum QuotaCommands {
     ///
     /// F20: pass `--peer` to reset a peer's quota.
     Reset {
-        /// Principal name (or peer id when `--peer` is set)
+        /// Peko name (or peer id when `--peer` is set)
         name: String,
         /// Reset a peer's quota instead of a principal's
         #[arg(long)]

@@ -53,7 +53,7 @@ pub enum AuditCommands {
         /// Filter: only events whose `event_type` starts with this prefix.
         #[arg(long = "type", value_name = "PREFIX")]
         event_type: Option<String>,
-        /// Filter: only events whose caller matches this principal name
+        /// Filter: only events whose caller matches this peko name
         /// (or whose `details.principal_name` matches).
         #[arg(short, long)]
         principal: Option<String>,
