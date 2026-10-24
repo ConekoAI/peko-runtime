@@ -1,0 +1,46 @@
+name: Release Smoke Test
+
+# Installs a published release with install.sh on each supported platform
+# and runs the quick start against a local fake model
+# (scripts/ci/release_smoke.sh). Called by release.yml after a tag's
+# release is published; can also be run by hand against any release.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release version or tag (e.g. v0.1.0-rc.3)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version or tag (e.g. v0.1.0-rc.3)'
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+          - platform: linux-aarch64
+            os: ubuntu-22.04-arm
+          - platform: macos-x86_64
+            os: macos-15-intel
+          - platform: macos-aarch64
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the release
+        run: scripts/ci/release_smoke.sh install "${{ inputs.version }}" "$HOME/peko-bin"
+
+      - name: Run the quick start
+        run: scripts/ci/release_smoke.sh check "$HOME/peko-bin"
