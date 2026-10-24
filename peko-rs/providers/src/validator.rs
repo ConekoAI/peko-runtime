@@ -34,11 +34,15 @@ use crate::transport::client::{AuthConfig, HttpClient};
 
 /// How long to wait for the ping before giving up.
 ///
-/// 5 seconds is enough for every supported provider on a healthy
-/// connection; Ollama on a cold start is the slowest realistic case.
-/// Anything longer means the user's network or the provider is
-/// genuinely broken — we want to surface that fast.
-const VALIDATOR_TIMEOUT_SECS: u64 = 5;
+/// A first request pays for DNS, TCP and TLS setup, and a distant
+/// endpoint or a local model loading cold can take well over 5 s to
+/// answer one. At 5 s, `peko model test` timed out on half of the runs
+/// against a working endpoint in another region. 30 s tolerates that
+/// and is still far below the 300 s an agent turn waits
+/// (`factory::PROVIDER_TIMEOUT_SECS`).
+const VALIDATOR_TIMEOUT_SECS: u64 = 30;
+// Keep the floor: shorter waits failed against working, distant endpoints.
+const _: () = assert!(VALIDATOR_TIMEOUT_SECS >= 30);
 
 /// The result of a single live credential ping.
 ///
@@ -83,6 +87,16 @@ impl Validator {
     pub async fn test(
         config: &ModelConfig,
         api_key: Option<&SecretString>,
+    ) -> CredentialTestOutcome {
+        Self::test_within(config, api_key, VALIDATOR_TIMEOUT_SECS).await
+    }
+
+    /// [`Self::test`] with an explicit timeout, so tests need not wait
+    /// the full [`VALIDATOR_TIMEOUT_SECS`].
+    async fn test_within(
+        config: &ModelConfig,
+        api_key: Option<&SecretString>,
+        timeout_secs: u64,
     ) -> CredentialTestOutcome {
         // Pre-flight: empty base URL means the user never configured
         // one (e.g. azure-openai's default template). Don't even try
@@ -146,7 +160,7 @@ impl Validator {
         let client = match HttpClient::with_headers(
             config.base_url.clone(),
             auth,
-            VALIDATOR_TIMEOUT_SECS,
+            timeout_secs,
             extra_headers,
         ) {
             Ok(c) => c,
@@ -163,10 +177,10 @@ impl Validator {
 
         let outcome = match config.api_format {
             ApiFormat::OpenaiCompletions | ApiFormat::OpenAiResponses => {
-                ping_openai_compat(&client).await
+                ping_openai_compat(&client, timeout_secs).await
             }
             ApiFormat::AnthropicMessages => {
-                ping_anthropic_messages(&client, &config.model_id).await
+                ping_anthropic_messages(&client, &config.model_id, timeout_secs).await
             }
         };
 
@@ -226,7 +240,7 @@ fn build_adapter(config: &ModelConfig) -> AnyAdapter {
 /// need the count for the success message). If the body shape is
 /// unexpected we still report success — the important signal is that
 /// the server returned 2xx and accepted the key.
-async fn ping_openai_compat(client: &HttpClient) -> CredentialTestOutcome {
+async fn ping_openai_compat(client: &HttpClient, timeout_secs: u64) -> CredentialTestOutcome {
     #[derive(Deserialize)]
     struct ListModels {
         data: Option<Vec<serde_json::Value>>,
@@ -247,7 +261,7 @@ async fn ping_openai_compat(client: &HttpClient) -> CredentialTestOutcome {
                 model_used: None,
             }
         }
-        Err(e) => map_error(e),
+        Err(e) => map_error(e, timeout_secs),
     }
 }
 
@@ -257,7 +271,11 @@ async fn ping_openai_compat(client: &HttpClient) -> CredentialTestOutcome {
 /// `max_tokens: 1`. This costs ~$0.0001 per click on Claude — we
 /// surface the model id used in `model_used` so the UI can warn the
 /// user about the charge.
-async fn ping_anthropic_messages(client: &HttpClient, model: &str) -> CredentialTestOutcome {
+async fn ping_anthropic_messages(
+    client: &HttpClient,
+    model: &str,
+    timeout_secs: u64,
+) -> CredentialTestOutcome {
     let body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": "ping"}],
@@ -280,7 +298,7 @@ async fn ping_anthropic_messages(client: &HttpClient, model: &str) -> Credential
             http_status: Some(200),
             model_used: Some(model_owned),
         },
-        Err(e) => map_error(e),
+        Err(e) => map_error(e, timeout_secs),
     }
 }
 
@@ -290,9 +308,22 @@ async fn ping_anthropic_messages(client: &HttpClient, model: &str) -> Credential
 /// `"HTTP error {code}: {body}"` and connection-level failures
 /// surface as plain `anyhow` chains. We do best-effort status
 /// extraction so the UI can show "HTTP 401" inline.
-fn map_error(err: anyhow::Error) -> CredentialTestOutcome {
+fn map_error(err: anyhow::Error, timeout_secs: u64) -> CredentialTestOutcome {
     let msg = err.to_string();
     let http_status = extract_http_status(&msg);
+
+    // A timeout says nothing about the key or the settings, only that
+    // the endpoint did not answer in time. Say so, instead of passing
+    // through a transport error that reads like a broken setup.
+    if http_status.is_none() && is_timeout(&err) {
+        return CredentialTestOutcome {
+            ok: false,
+            message: timeout_message(timeout_secs),
+            latency_ms: 0,
+            http_status: None,
+            model_used: None,
+        };
+    }
 
     let message = match http_status {
         Some(401) => format!(
@@ -328,6 +359,25 @@ fn map_error(err: anyhow::Error) -> CredentialTestOutcome {
         http_status,
         model_used: None,
     }
+}
+
+/// Whether `err` is the request timing out (rather than a refused
+/// connection, a DNS failure or an HTTP error).
+fn is_timeout(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    })
+}
+
+/// The verdict for a ping that got no reply in time.
+fn timeout_message(timeout_secs: u64) -> String {
+    format!(
+        "no reply within {timeout_secs}s. The endpoint was too slow to answer, so \
+         the key and settings were not checked. Run the test again; a peko's turns wait up \
+         to 300s"
+    )
 }
 
 /// Pull the `NNN` out of an `"HTTP error NNN: ..."` chain. Returns
@@ -598,6 +648,48 @@ mod tests {
         assert!(!outcome.ok);
         assert_eq!(outcome.http_status, None);
         assert!(!outcome.message.is_empty());
+    }
+
+    /// An endpoint that accepts the connection but never answers is
+    /// reported as slow, not as a broken setup.
+    #[tokio::test]
+    async fn timeout_says_the_endpoint_was_slow() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accept and hold the connection without ever replying.
+        let _hold = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+
+        let entry = make_entry(
+            "openai",
+            ApiFormat::OpenaiCompletions,
+            format!("http://{addr}"),
+            "gpt-5",
+            true,
+        );
+        let key = SecretString::new("sk-test".to_string().into());
+
+        let outcome = Validator::test_within(&entry, Some(&key), 1).await;
+
+        assert!(!outcome.ok);
+        assert_eq!(outcome.http_status, None);
+        assert!(
+            outcome.message.starts_with("no reply within 1s."),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("were not checked"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            !outcome.message.contains("error sending request"),
+            "{}",
+            outcome.message
+        );
     }
 
     #[tokio::test]
