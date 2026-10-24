@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: no session-key warning on the first `peko send` (2026-10-24)
+
+The first `peko send` to a peko logged `WARN peko_session::key:
+derive_base_session_key called with non-peer ActorRef public; falling back
+to peer:user:default (ADR-039)`. The same warning appeared for each new
+group. A channel session (a DM or group) has no single peer, so it is
+created with `public` as its peer, and the key function borrowed the
+`user:default` key for it.
+
+Channel sessions now get their own `agent:<agent>:peer:public:channel` key,
+with no warning. Nothing looked sessions up by the old key: channel sessions
+are found by their channel binding.
+
 ### Fix: `peko update --check` says when there is no stable release yet (2026-10-24)
 
 With only prereleases published, GitHub's `releases/latest` returns 404 and

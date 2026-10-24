@@ -146,7 +146,8 @@ Currently the primary install path is dead: no release has ever been cut, and
         re-attach to session … it is the session you are running in", and
         leaves the inbox queued.*
       - *`derive_base_session_key` falls back to `peer:user:default` for a
-        non-peer `ActorRef` (ADR-039).*
+        non-peer `ActorRef` (ADR-039).* Fixed 2026-10-24: channel sessions
+        get their own `peer:public:channel` key and log no warning.
 - [x] **`python3` prerequisite declared** (2026-10-22). The `Workflow` builtin (ADR-061)
       shells out to `python3` on PATH; either declare it in the install docs
       or make the tool's absence-mode graceful and documented.
