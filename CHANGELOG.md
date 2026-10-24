@@ -4,6 +4,40 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko export` / `peko import` paths are the user's, and reinstalling through `curl | bash` works (2026-10-24)
+
+**Export and import paths.** The CLI sent export and import paths to the
+daemon unresolved, so a relative path, including export's default
+`<name>.peko`, was resolved in the daemon's working directory. The package
+landed wherever the daemon had been started. The CLI now resolves these
+paths against its own working directory before sending them.
+
+**Reinstalling.** `install.sh` read its "Reinstall/Update anyway?" answer
+from stdin. Under the documented `curl … | bash`, stdin is the script
+itself, so reinstalling over an existing install exited 1 without doing
+anything. It now asks on `/dev/tty`, and reinstalls when there is no
+terminal (CI, containers).
+
+### Docs and CLI wording: install-first docs, ADR-064 / ADR-059 terms (2026-10-24)
+
+- **Docs.** Getting-started, the tutorial (now `TUTORIAL_FIRST_PEKO.md`), the
+  user's guide and README now start from `install.sh`. Their command
+  output is pasted from real runs. Retired material is gone: capability
+  grants, the extension architecture, `[children]`, `did:peko:`, and flags
+  that no longer exist.
+- **CLI reference.** `CLI_REFERENCE.md` is generated from `--help` by
+  `scripts/gen_cli_reference.py`.
+- **CLI help and output.** These say peko and role:
+  - `peko show` prints "Roles:" and lists the `role` catalog kind.
+  - `create` ends with "Peko '<name>' is alive".
+  - `send`, `stop` and `log` take `<PEKO>`.
+  - `--peer` documents the actor-address forms (`user:local`,
+    `user:hub:<id>`, `principal:local:<id>`, `principal:hub:<id>`).
+  - `create --help` says to restart the daemon after editing
+    `principal.toml` or `roles/root.md`.
+- **Root role.** The compiled-in root role's description and `RoleCatalog`
+  line say role.
+
 ### Fix: a conversation reply no longer lands in the trunk's inbox (2026-10-23)
 
 Every subagent run registered its async task with completion delivery and

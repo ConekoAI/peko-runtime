@@ -1,426 +1,374 @@
-# Peko User Guide
+# Peko User's Guide
 
-Welcome to the Peko User Guide! This guide will help you understand and use Peko effectively.
+This guide explains how Peko works and how to configure and extend your
+pekos. To install Peko and create your first peko, start with
+[Getting Started](../getting-started/GETTING_STARTED.md).
 
-## Table of Contents
+## Contents
 
 1. [What is Peko?](#what-is-peko)
 2. [Installation](#installation)
-3. [Core Concepts](#core-concepts)
-4. [Running Your First peko](#running-your-first-peko)
-5. [Configuration](#configuration)
-6. [Extensions](#extensions)
-7. [Known Limitations](#known-limitations)
-8. [Troubleshooting](#troubleshooting)
-9. [Next Steps](#next-steps)
+3. [Core concepts](#core-concepts)
+4. [Configuration](#configuration)
+5. [Tools, roles, skills and MCP servers](#tools-roles-skills-and-mcp-servers)
+6. [Scheduling](#scheduling)
+7. [Other people and other pekos](#other-people-and-other-pekos)
+8. [Known Limitations](#known-limitations)
+9. [Troubleshooting](#troubleshooting)
+10. [Next steps](#next-steps)
 
 ---
 
 ## What is Peko?
 
-Peko 🐱 is a lightweight multi-agent runtime written in Rust. It allows you to:
+Peko is a runtime for **pekos**: persistent AI agents that you own and run
+on your own machine. A peko keeps its identity, memory and ongoing work
+between conversations. It keeps working in the background, on a schedule
+and when other pekos message it. It talks to any LLM endpoint that speaks
+the Anthropic Messages, OpenAI Chat Completions or OpenAI Responses wire
+format, hosted or local.
 
-- Run autonomous AI pekos locally
-- Connect pekos to any LLM endpoint that speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses wire format (hosted or local)
-- Manage persistent conversation memory automatically
-- Orchestrate tools, skills, MCP servers, and gateways through a unified extension system
-
-### Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Lightweight** | Small binary, starts quickly |
-| **Standalone** | Works without external services |
-| **Peko-Centric** | A peko is the top-level actor you create and chat with |
-| **Persistent Memory** | JSONL-based session storage managed automatically per peko |
-| **Owner-Root Activity Feed** | `peko log <PRINCIPAL>` reads the owner's thread — including cron wakes and async completions — without exposing the session abstraction |
-| **DID Identity** | ed25519-based decentralized identifiers |
-| **Extensions** | Unified Extension Architecture for skills, MCP, tools, channels, hooks |
-| **Cron Scheduling** | Schedule recurring and one-time tasks, scoped to a peko and run as its owner (operator/advanced) |
+| | |
+|---|---|
+| **Yours** | Each peko is a directory of plain files you can read, edit, back up and move to another machine (`peko export` / `peko import`) |
+| **Persistent** | Its memory lives in `kb/` as Markdown, kept up to date by a nightly maintenance run |
+| **Background work** | A daemon runs scheduled jobs and checks in on open work, and calls no model when nothing is waiting |
+| **Any model** | Bring any endpoint in a supported wire format; each peko is pinned to one configured model |
+| **Accountable** | Every tool call is recorded in a per-peko ledger (`peko audit ledger`) |
+| **Multi-party** | Pekos and people talk in channels; other people only see their own conversation |
 
 ---
 
 ## Installation
 
-### Prerequisites
-
-- Linux (x64, arm64) or macOS (x64, arm64). Windows is not supported in the
-  first release.
-- Rust 1.70+ (install from [rustup.rs](https://rustup.rs))
-- API key for at least one LLM provider
-- Optional: Python 3 (`python3` on PATH) for the `Workflow` tool, which runs
-  workflows the peko writes. Without it, `Workflow` returns an error and
-  everything else works.
-
-### Building from Source
-
 ```bash
-# Clone the repository
-git clone https://github.com/coneko/peko
-cd peko
-
-# Build in release mode
-cargo build --release
-
-# The binary is now available at:
-./target/release/peko
+curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
 ```
 
-### Verify Installation
+Supported platforms are macOS (Apple silicon or Intel) and Linux (x86_64
+or arm64, glibc 2.35+, such as Ubuntu 22.04+ or Debian 12+). Windows is not
+supported in this release. The installer puts `peko` and `peko-daemon` in
+`/usr/local/bin`; `--install-dir <dir>` picks another directory and
+`--version <version>` a specific release. Before the first stable release,
+pass a release candidate's version, such as `--version 0.1.0-rc.2`.
 
-```bash
-./target/release/peko --version
+Optional: Python 3 (`python3` on `PATH`) for the `Workflow` tool, which
+runs workflows the peko writes. Without it, `Workflow` returns an error and
+everything else works.
 
-./target/release/peko --help
-```
+To build from source instead, see the [README](../../README.md).
 
 ---
 
-## Core Concepts
+## Core concepts
 
-### Peko
+### Pekos
 
-A **Peko** is the top-level AI actor in Peko. It owns:
+A peko is the top-level actor you create and talk to. It has:
 
-- **Identity** — A unique DID (decentralized identifier)
-- **Configuration** — Settings including capability grants, provider hints, and governance
-- **Memory** — Conversation history stored as JSONL, managed automatically per peer
-- **Agent Prompts** — Thin Markdown files that shape the peko's behavior
-- **Extensions** — Allowed tools, skills, MCP servers, and gateways
+- **An identity.** A local address such as
+  `principal:local:prin_27c5ce3ed64141eab1b4fedc96cdd534`, a signing key
+  (`did:key:…`), and an optional PekoHub registration. `peko show` prints
+  all three.
+- **An owner.** The person it works for. On your machine that is you, as
+  `user:local`.
+- **A definition**, in `principal.toml`.
+- **Roles** in `roles/`: Markdown templates that its agents run as.
+- **Memory** in `kb/`.
+- **Tooling**: built-in tools, plus skills, MCP servers and hooks in its
+  workspace.
 
-You interact with a peko through `peko send` (post to your
-thread), `peko stop` (halt the running turn), and `peko log` (read or
-follow the thread).
+The word "principal" still appears in file and directory names
+(`principal.toml`, `~/.peko/principals/`) and in addresses. It means the
+same thing as peko.
 
-### DID (Decentralized Identifier)
+### Roles and agents
 
-Every peko gets a unique identifier like:
+A **role** is a Markdown file under `roles/`. An **agent** is a live run of
+the model working as one role in one session. Every peko starts with two
+roles:
 
-```
-did:peko:local:default:abc123def456
-```
+- `roles/root.md`: the root role. It supervises the peko's standing work
+  and holds its conversations. Edit it to change how your peko behaves, then
+  restart the daemon: the daemon reads the root role when it starts.
+- `roles/primary.md`: a general-purpose role the peko can start helper
+  agents as.
 
-Format: `did:peko:{scope}:{tenant}:{identifier}`
+Add a role by dropping a new `roles/<name>.md` file in place. The peko sees
+it in its role catalog on its next turn and can delegate work to it with the
+`Agent` tool.
 
-- **Scope**: `local`, `tenant`, or `global`
-- **Tenant**: Organization or namespace
-- **Identifier**: Unique hash-based ID
+### Conversations and the log
 
-### Session
+You talk to a peko with `peko send`, and read the conversation with
+`peko log`. Each person who talks to a peko gets their own conversation.
+Behind the scenes a conversation is a session, which is stored, paged and
+compacted automatically. There is deliberately no session command.
 
-A Session is the implementation noun for one peer's running conversation
-with a peko. Sessions are stored as JSONL files under the
-peko's workspace, created automatically when a peer first sends,
-resumed on every subsequent send from the same peer, and compacted
-when context pressure demands. Sessions are an internal storage
-detail — they are deliberately **not** exposed as a CLI command:
+- `peko send <peko> "…"` drives the conversation. If the peko is already
+  working on a turn for you, the message joins that turn at its next step;
+  `--wait` blocks until the reply.
+- `peko stop <peko>` stops the turn it is running for you. It is safe to run
+  when nothing is running.
+- `peko log <peko>` reads your conversation. `--watch` follows it live,
+  `--search`, `--since` and `--limit` filter it, and `--peer <address>`
+  reads someone else's conversation with this peko.
 
-- `peko send <PRINCIPAL> "…"` — drive a conversation. If a turn is
-  already running on the thread, the message is queued and folds into
-  it at the next step; `--wait` blocks for the reply.
-- `peko stop <PRINCIPAL>` — soft-stop the running turn on your thread
-  (idempotent: nothing running → friendly notice, exit 0).
-- `peko log <PRINCIPAL>` — read the **owner-root view** of activity
-  (the conversation running on the owner's behalf, plus any background
-  work the owner is entitled to see: cron wakes, async-task
-  completions, etc.). `--watch` follows the thread live.
-- `peko log <PRINCIPAL> --peer <X>` — read peer `X`'s thread. Only
-  peer `X` itself or the peko's owner can request this; other
-  peers cannot snoop on each other (see ADR-042 for the full
-  privacy contract). The same rule governs `peko stop --peer <X>` and
-  `peko log --watch --peer <X>`.
+From this terminal you are the owner, so you can read and stop any of the
+peko's conversations (`--peer user:hub:<id>`, `--peer
+principal:local:<id>`). People who reach the peko some other way, through
+PekoHub for example, only ever see their own conversation.
 
-**There is no `peko session` command and there will never be one.** The
-Peko is an integral actor; sessions are storage, not state that
-the user names, lists, or routes through. Operators who need to inspect
-raw session files read them directly from the peko's workspace.
+### Memory
 
-#### Privacy gate (ADR-042)
+A peko's memory is Markdown in `kb/`:
 
-The default `peko log <PRINCIPAL>` invocation (no `--peer`) returns
-the **owner-root view**, which is special: it is only readable by the
-peko's owner. The privacy contract is enforced strictly, and
-applies identically to `peko log --watch` and `peko stop`:
+| Path | What it holds |
+|---|---|
+| `kb/MEMORY.md` | Long-term facts, preferences and commitments; included in every turn |
+| `kb/index.md` | A map of the rest of `kb/`; included in every turn |
+| `kb/CONVENTIONS.md` | Standing rules for how the peko works; included in every turn |
+| `kb/journal/` | A dated journal |
+| `kb/people/`, `kb/groups/`, `kb/roles/` | Notes about people, groups and roles, read when relevant |
+| `kb/dreams/` | Nightly reflections on how it worked; never included in turns |
+| `kb/inbox/` | Changes other people's conversations proposed to protected files |
 
-| Caller | Command | Result |
-|---|---|---|
-| peko's owner | `peko log <P>` | OK — owner-root view |
-| peko's owner | `peko log <P> --peer user:<any>` | OK — owner can audit any peer thread |
-| peko's owner | `peko stop <P> --peer user:<any>` | OK — owner can stop any peer's run |
-| Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:bob` | OK — peer self-read |
-| Peer `user:bob` with `Chat` grant | `peko log <P> --watch --peer user:bob` | OK — peer self-watch |
-| Peer `user:bob` with `Chat` grant | `peko stop <P> --peer user:bob` | OK — peer stops their own run |
-| Peer `user:bob` with `Chat` grant | `peko log <P>` (no `--peer`) | **rejected** — owner-root is not bob's view |
-| Peer `user:bob` with `Chat` grant | `peko log <P> --peer user:alice` | **rejected** — bob cannot read alice's thread |
-| Peer `user:bob` with `Chat` grant | `peko stop <P> --peer user:alice` | **rejected** — bob cannot stop alice's run |
-| Stranger (no `Chat` grant) | any `peko log …` / `peko stop …` | **rejected** |
+Once a day, during a quiet stretch, the peko reviews the day's
+conversations, writes its journal, and updates `MEMORY.md`. Each line that
+nightly pass adds to `MEMORY.md` or `CONVENTIONS.md` names its sources, and a
+reviewer model checks the line against them before it is written.
 
-Concretely, a non-owner caller must pass `--peer <self>` (e.g.
-`--peer user:bob`) to read or stop anything; the default form is
-owner-only. There is no flag that widens access. If a future ADR wants
-asymmetric read/write grants (e.g. a broadcast peer that can read but
-not chat), a `ReadLog` permission variant will be designed and
-documented there.
+You can edit `kb/` directly. To make the peko forget something, ask it to:
+it removes the content and keeps a dated `Retracted` line in `MEMORY.md`, so
+the nightly pass does not learn it again. The original messages stay in its
+conversation history, its channel logs and its tool ledger.
 
-See [ADR-042](../architecture/adr/ADR-042-no-external-session-concept.md)
-for the underlying contract and the rationale for keeping it strict,
-and [ADR-048](../architecture/adr/ADR-048-channel-native-cli-surface.md)
-for the send/stop/log surface built on it.
+### The daemon and background work
 
----
+The daemon (`peko daemon start`) runs your pekos in the background.
 
-## Running Your First Peko
+Every peko starts with two scheduled jobs:
+- **`keepalive`**, every 10 minutes. It runs a turn only when something
+  waits on the peko (a message it has not answered, a plan step that is due,
+  a failed job) or its last turn is an hour old. Otherwise it calls no
+  model.
+- **`memory`**, once a day in a quiet stretch.
 
-### 1. Add a Model
-
-Models are added generically — there are no built-in vendor presets. Supply
-the endpoint's wire format, base URL, and wire model id:
-
-```bash
-./target/release/peko model add --id my-model \
-    --api-format openai_completions \
-    --base-url https://llm.example.com/v1 \
-    --model <wire-model-id> \
-    --key "<your-api-key>"
-```
-
-`--api-format` is one of `anthropic_messages`, `openai_completions`, or
-`openai_responses`. `--key` stores the API key in the encrypted vault (OS
-keychain); `~/.peko/models.toml` keeps only a reference. Use `--no-key` for
-local endpoints that need no key. Provider keys are never read from
-environment variables.
-
-### 2. Verify the Model
-
-```bash
-./target/release/peko model test my-model
-```
-
-### 3. Create a Peko
-
-```bash
-./target/release/peko create my-principal --model my-model
-```
-
-### 4. Send a Message
-
-```bash
-./target/release/peko send my-principal "Hello, what can you do?"
-```
-
-You'll see the peko's response streamed to your terminal.
+A message from another peko brings the next keepalive check forward.
 
 ---
 
 ## Configuration
 
-### Peko Configuration
+### `principal.toml`
 
-Pekos are configured via `principal.toml` stored in the peko's workspace.
-
-Example `principal.toml`:
-
-```toml
-name = "my-principal"
-description = "A helpful assistant"
-
-# Optional per-peko provider override. Most pekos should
-# omit this and use the global catalog default.
-# preferred_provider_id = "openai"
-# preferred_model_id = "gpt-4o-mini"
-
-# Capability grants — the single source of truth for what this peko
-# may do. See `peko capability grant --help`.
-[capabilities]
-grants = ["tool:Bash", "tool:Read", "tool:Write"]
-```
-
-#### Standing named children
-
-A peko can declare **standing children** — named subagent sessions
-that persist for the peko's lifetime and are resumed by name (e.g.
-`/memory`):
+Each peko's definition lives in `~/.peko/principals/<name>/principal.toml`.
+A freshly created peko has:
 
 ```toml
-[children.memory]
-subagent_type = "archivist"        # required
-description = "Long-term memory"   # optional; used as the session title
+name = "my-peko"
+id = "prin_3f395cab3a1d47509770a80662dd0c73"
+did = "did:key:z6Mkf3dns43Xy69Z8FVfk2kufpEggyHVHC5rH35N4UzrK8BC"
+actor_key = "5d2b62e5-25f1-4c64-8a22-cd305ad1ff16"
+exposure = "private"
+boot_state = "genesis_pending"
+permissions = []
+preferred_model_id = "dummy"
+
+[owner]
+kind = "user"
+id = "local"
+
+[identity]
+
+[intent]
+goals = []
+values = []
+preferences = []
+
+[governance]
+ledger_retention_days = 90
+max_running_agents = 20
+
+[routing]
+recall_top_k = 5
+max_router_iterations = 5
 ```
 
-Each table key is the child's name (1–64 chars, no `/`, no surrounding
-whitespace). At startup the runtime ensures each declared child exists as
-a session under the peko's root — creating it without running any
-LLM turn if missing, or leaving it untouched when it already exists.
-Standing children are exempt from idle-session pruning. Inside the
-peko, the `Agent` tool's `new` action with a matching `name`
-attaches to the standing session (keeping its full history) instead of
-spawning a fresh one; `subagent_type` must match the declaration.
+The fields you are most likely to change:
 
-### Environment Variables
+- **`preferred_model_id`**: the configured model the peko runs on (see
+  `peko model list`). `peko send --model <id>` overrides it for one message.
+- **`[intent]`**: its goals, values and preferences, in plain language.
+- **`[governance]`**: how long its tool ledger is kept, and how many agents
+  it may run at once.
+- **`permissions`**: who may do what. Change them with `peko permit` and
+  `peko revoke` rather than by hand (see
+  [Other people and other pekos](#other-people-and-other-pekos)).
 
-| Variable | Description |
-|----------|-------------|
-| `RUST_LOG` | Logging level (debug, info, warn, error) |
-| `PEKO_CONFIG_DIR` | Configuration directory override |
-| `PEKO_DATA_DIR` | Data directory override |
+Leave `id`, `did`, `actor_key` and `[owner]` alone: they are the peko's
+identity. Run `peko daemon restart` after editing the file so its
+conversations pick up the change.
 
-Model API keys are **not** read from environment variables — they live in
-the encrypted vault (OS keychain). Store them with `peko model add --key`
-or `peko credential set llm <model-id> --kind api_key`.
+### `POLICY.md`
 
-### Configuration Priority
+`POLICY.md` holds your plain-language rules for what the peko may do for
+anyone other than you. When someone else's conversation asks for a
+sensitive action, a separate reviewer model checks it against these rules,
+without seeing the conversation. Anything unclear is sent to you; reply
+`approve <id>` or `deny <id>`. Add a section per person, headed by their
+address:
 
-1. Command-line arguments (highest)
-2. Environment variables
-3. Config file values
-4. Defaults (lowest)
+```markdown
+## user:hub:<uuid> (Alice)
+- May read and edit anything under projects/acme/.
+- Never touch finances/.
+```
+
+The front matter sets which model reviews, whether replies to other people
+are reviewed too (`review_replies`), and when scheduled memory writes are
+checked against their sources (`memory_review`). Only your own runs can
+edit `POLICY.md`, `principal.toml` and the always-included `kb/` files;
+anyone else's changes to them become proposals in `kb/inbox/`.
+
+### Models and keys
+
+```bash
+peko model add --id <id> --api-format <format> --base-url <url> \
+    --model <wire-model-id> --key "<your-api-key>"
+peko model list
+peko model show <id>
+peko model test <id>
+peko model remove <id>
+```
+
+Models are added generically: there are no vendor presets. `--api-format`
+is one of `anthropic_messages`, `openai_completions` or `openai_responses`.
+The catalog is `~/.peko/models.toml`; keys live in the encrypted vault, never
+in a plain file, and are never read from environment variables. Use
+`--no-key` for a local endpoint without a key, and
+`peko credential set llm <id> --kind api_key` to replace a stored key.
+
+### Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `PEKO_HOME` | Put all runtime state under this one directory instead of the defaults |
+| `PEKO_CONFIG_DIR`, `PEKO_DATA_DIR`, `PEKO_CACHE_DIR` | Override one directory each |
+| `PEKO_MASTER_PASSPHRASE` | Passphrase for the vault when no OS keychain is available (servers, containers, systemd) |
+| `PEKO_UNLOCK_METHOD` | `auto` (default), `passphrase` or `keychain`: asserts which kind of vault this process expects |
+| `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`) |
+
+The vault uses the OS keychain when one is available. Without one, set
+`PEKO_MASTER_PASSPHRASE` before the first `peko model add`, and keep it set
+for the daemon. To move an existing vault between the two,
+stop the daemon and run `peko vault migrate --to passphrase` (or
+`--to keychain`).
 
 ---
 
-## Tooling (Workspace Plugins)
+## Tools, roles, skills and MCP servers
 
-> **ADR-047 (2026-08-25).** The legacy "Unified Extension Architecture"
-> and `peko ext *` CLI were retired. Tooling — tools, skills, MCP
-> servers, hooks, and opaque plugins — now lives directly in the
-> peko's workspace. See
-> [PRINCIPAL_WORKSPACE.md](../architecture/PRINCIPAL_WORKSPACE.md) for
-> the full layout and migration steps.
+Every peko has the same 23 built-in tools: files and shell (`Read`, `Write`,
+`Edit`, `Glob`, `Grep`, `Bash`), delegation (`Agent`, `RoleCatalog`,
+`Skill`), its own sessions, channels and contacts, plans and tasks,
+scheduling (`Cron`), background work (`Async`), models (`ModelList`,
+`ModelCall`), workflows, MCP and its tool ledger (`ToolLog`). See
+[builtin-tools.md](../architecture/builtin-tools.md) for each tool's
+contract.
 
-The peko workspace at `~/.peko/principals/<name>/` is the canonical
-trust boundary for tooling.
+Everything else is plain files in the peko's workspace. There is no install
+command: add a file to add a capability, delete it to remove one.
 
-### List Installed Tooling
+| Directory | Holds |
+|---|---|
+| `roles/<name>.md` | Roles (see [Roles and agents](#roles-and-agents)) |
+| `skills/<id>/SKILL.md` | Skills: instructions the peko loads when a task calls for them ([format](../architecture/SKILLS.md)) |
+| `mcp/<id>/server.json` | MCP servers |
+| `hooks/<id>/hook.toml` | Hooks that run before or after tool calls and turns |
+| `workflows/` | Scripts the peko writes for the `Workflow` tool |
 
-Tooling is plain files — list the workspace directories directly:
+New roles and skills are visible to the peko on its next turn. MCP server
+definitions are re-read before each model request, so a new server's tools
+appear without a restart. For a server that uses OAuth, ask the peko to
+authenticate it: the `MCP` tool's `authenticate` action returns a link to
+open in your browser. See the [MCP quick start](../mcp/QUICK_START.md).
 
-```bash
-ls ~/.peko/principals/<name>/{tools,skills,mcp,hooks,plugins}/
-peko show <name>          # catalog summary
-```
+There are no per-tool grants. What a run can use depends on whom it acts
+for:
 
-### Install a Plugin
-
-Copy the tooling into the workspace (ADR-050 — there is no install CLI):
-
-```bash
-cp ./my-tool.toml        ~/.peko/principals/<name>/tools/<id>/tool.toml
-cp -r ./my-skill         ~/.peko/principals/<name>/skills/<id>/   # contains SKILL.md
-cp ./server.json         ~/.peko/principals/<name>/mcp/<id>/server.json
-cp ./hook.toml           ~/.peko/principals/<name>/hooks/<id>/hook.toml
-```
-
-New `agents/` and `skills/` files appear in the peko's system
-prompt on the next agentic iteration — no restart required.
-
-### Grant/Revoke Capabilities
-
-Access to installed tooling is controlled by capability grants, edited
-directly in the peko's `principal.toml` — there is no grant CLI
-(ADR-050):
-
-```toml
-# ~/.peko/principals/<name>/principal.toml
-[capabilities]
-# Fresh pekos ship wildcard grants that allow everything:
-# grants = ["tool:*", "agent:*", "skill:*", ...]
-# Replace the wildcards with specific grants to restrict the peko:
-grants = ["tool:Read", "tool:Bash", "skill:docker"]
-```
-
-Capabilities are typed grant strings such as `tool:<tool-name>`,
-`skill:<skill-id>`, `agent:<agent-type>`, or `mcp:<server-id>`; a
-trailing `*` matches by prefix. Skills specifically are plain
-`SKILL.md` files under `skills/` — see
-[Skills](../architecture/SKILLS.md) for format and authoring.
-
-### MCP Servers
-
-MCP (Model Context Protocol) servers live in the peko workspace
-under `~/.peko/principals/<name>/mcp/<server-id>/server.json`:
-
-```bash
-# MCP servers live in the principal's workspace — install by copying
-# the manifest in (there is no install CLI, ADR-050)
-mkdir -p ~/.peko/principals/<name>/mcp/<server-id>
-cp <server-path>/server.json ~/.peko/principals/<name>/mcp/<server-id>/server.json
-```
-
-If the peko's `[capabilities].grants` in `principal.toml` have been
-restricted, add an `mcp:<server-id>` grant there to allow the server.
-
-No `start` / `stop` / `restart` / `status` step is required — the
-runtime discovers MCP servers at peko boot.
+- **You:** everything.
+- **People you have marked `trusted`:** the full tool surface, with sensitive
+  calls checked against `POLICY.md`.
+- **Anyone else:** no `Bash` and no MCP servers (except ones marked
+  `untrusted_ok`), and file tools only inside the peko's workspace.
 
 ---
 
-## Cron Scheduling
+## Scheduling
 
-The daemon can run scheduled jobs on behalf of a peko. Each job is
-scoped to exactly one peko by DID and executes as that peko's
-owner, so it reuses the same `peko send` permission path and session memory.
+Ask your peko in plain language: "remind me at 9am tomorrow to call Sam",
+or "every weekday at 8, summarize my open plans". It schedules the work
+with its `Cron` tool and can list, change, pause, trigger and delete jobs
+the same way. There is no `peko cron` command.
 
-Cron is now an **internal peko tool** (like Bash, Session). Operators
-interact with schedules by asking the peko itself to manage them via
-the `Cron` tool with create/list/delete/update/trigger/history actions. Every
-principal can use registered tools; schedules remain owned by their principal.
-The `peko cron` CLI was retired.
+A job either **starts a turn** with a message, in the conversation that
+created it, or **calls one tool** with fixed parameters. Schedules:
 
-Supported schedules:
+| Field | Schedule |
+|---|---|
+| `delay` | Once, after a duration (`90s`, `5m`, `1h`, `1d`) |
+| `at` | Once, at an RFC 3339 time |
+| `interval_ms` | Every N milliseconds (at least 60000 for a message job) |
+| `cron` | A 5-field cron expression, in `timezone` (the machine's by default) |
+| `idle_ms` | Once each time nobody has talked to the peko for that long |
 
-- **Cron expression** — standard 6-field cron (`sec min hour dom mon dow`)
-- **One-time `at`** — RFC3339 timestamp (one-shot; auto-deleted)
-- **Interval `every`** — fixed millisecond interval
-- **Idle** — fires after the peko has had no user activity for N minutes
+A recurring message job can also set `when`:
+- **`always`** (the default) runs every fire.
+- **`attention`** runs a turn only when something waits on the peko.
+- **`quiet`** waits for a 4-hour lull, at most 12 hours.
 
-### SpawnTool attribution: `wake_on_completion` and `timeout_secs`
-
-`Agent`-cron entries can opt into two attributes per fire:
-
-| Attribute | Default | What it does |
-|-----------|---------|--------------|
-| `wake_on_completion` | `false` for cron-spawned runs (`true` for natural agent spawns) | When `true`, the executor posts a `SteeringMessage` into the peko's root inbox saying "Your N:NN cron job `{name}` completed. You can check details with the Async tool with action="output"." |
-| `timeout_secs` | `7200` (2h) for everyone | Per-run timeout. The cron tool overrides per call. |
-
-If the fire is an `Agent` tool run, the spawned session transcript
-appears automatically in the peko's session list.
-
-### Example: daily Peko digest
-
-Send a message to your peko asking it to schedule the digest. From
-inside an agent turn (or as a user invoking the peko's chat):
+For example, the call a peko makes for a daily digest:
 
 ```text
 Cron {
   action: "create",
-  interval_ms: 86400000,
-  tool: "Agent",
-  params: { prompt: "Summarize my open tasks and today's priorities.", role: "root", path: "daily-digest" },
-  label: "daily-digest"
+  cron: "0 8 * * 1-5",
+  message: "Summarize my open plans and today's priorities.",
+  label: "weekday-digest"
 }
 ```
 
-### Example: nightly shell command
+Jobs are saved per peko and survive daemon restarts. `Cron` with
+`action: "history"` shows a job's recent runs.
 
-Inside an agent turn:
+---
 
-```text
-Cron {
-  action: "create",
-  tool: "Bash",
-  params: { command: "echo nightly-backup && /opt/backup/run.sh" },
-  wake_on_completion: true,
-  timeout_secs: 3600,
-  interval_ms: 86400000
-}
-```
+## Other people and other pekos
 
-On fire the daemon runs `Bash { command: ... }` on behalf of your
-peko. Because `wake_on_completion=true`, the peko's next
-turn opens with a one-line steer message pointing at the task id.
+Each conversation a peko has is its own compartment. A run for one person
+only sees that conversation.
 
-Jobs are stored in the per-peko schedule file
-(`<data_dir>/principals/<name>/local/cron/schedule.toml`) and can be
-listed, inspected, and removed with `Cron` with list/delete actions from inside the owning peko's agent turn.
+- **Permissions.** `peko permit <peko> <address> <permission>` grants a
+  permission, `peko revoke` takes it away, and `peko permissions <peko>`
+  lists them. Permissions include `chat`, `manage_settings` and `trusted`.
+  `trusted` gives that person's conversations the full tool surface,
+  including the shell. Addresses look like `user:hub:<id>`,
+  `principal:local:<id>`, `principal:hub:<id>` or `public`.
+- **Invites.** `peko invite <peko>` mints a signed link for one person;
+  `peko revoke-invite` cancels it.
+- **PekoHub.** `peko register <peko>` registers the peko on PekoHub so
+  people and pekos on other machines can reach it. It is private by
+  default; `--public` lists it. `peko unregister` removes the route and
+  keeps the peko.
+- **Groups.** Pekos create and manage group channels with their `Channel`
+  tool. Only a request from you creates a group or invites someone outright.
+  From a trusted person's conversation the request waits for your approval;
+  from anyone else's it is refused. `peko channel` offers the same
+  operations from the command line.
+- **Other pekos.** A peko messages people and other pekos with
+  `ChannelSend`. A message from another peko never starts a turn on its own.
+  The recipient reads it at its next check, which arrives within minutes.
 
 ---
 
@@ -487,59 +435,51 @@ machine, fix the socket problem instead of running on the fallback.
 
 ## Troubleshooting
 
-### Peko Won't Respond
+### The peko doesn't respond
 
-**Problem:** peko fails to respond to messages.
+- The daemon is running: `peko daemon status` (start it with
+  `peko daemon start`).
+- The peko exists: `peko list`.
+- It has a model: `peko show <peko>` prints `Model:`.
+- The model and its key work: `peko model test <model-id>`.
+- The daemon log, `~/.peko/logs/daemon.log`, says what went wrong.
 
-**Solution:**
-- Check the peko exists: `peko list`
-- Check a model is configured: `peko model list`
-- Live-test the model and its stored key: `peko model test <model-id>`
-- Check the peko configuration: `peko show my-principal`
+### Key errors
 
-### API Key Errors
+- `peko model show <model-id>`: a missing `credential_id` means no key is
+  stored for the model.
+- `peko credential list --namespace llm` lists stored keys.
+- `peko credential set llm <model-id> --kind api_key` replaces a key in
+  place; leave out `--material` to be prompted for it.
+- `peko model test <model-id>` checks the endpoint accepts it.
 
-**Problem:** "Failed to create provider" or API errors.
+On a server or in a container, set `PEKO_MASTER_PASSPHRASE` (see
+[Environment variables](#environment-variables)).
 
-**Solution:**
-- Check the model's credential wiring: `peko model show <model-id>` (a
-  missing `credential_id` means no key is stored for it)
-- List stored keys: `peko credential list --namespace llm`
-- Replace a stored key in place: `peko credential set llm <model-id> --kind api_key`
-  (omit `--material` for a hidden prompt)
-- Live-test the endpoint: `peko model test <model-id>`
-- Check the key has sufficient credits
-- Verify network connectivity to the provider
+### A change to `roles/root.md` doesn't show up
 
-### Memory Issues
-
-**Problem:** Conversation history appears missing or corrupted.
-
-**Solution:**
-- Memory compaction is automatic; send another message to resume the current session
-- Inspect the peko workspace with `peko show my-principal`
-
-### Getting Help
+The daemon reads the root role and `principal.toml` when it starts, so
+restart it after editing either one:
 
 ```bash
-# Show help
-./target/release/peko --help
+peko daemon restart
+```
 
-# Show command-specific help
-./target/release/peko --help
-./target/release/peko send --help
-# peko ext and the per-category install CLI were retired (ADR-047 / ADR-050) —
-# workspace tooling is managed as plain files; see PRINCIPAL_WORKSPACE.md
+New files under `roles/` and `skills/` do not need a restart: they show up in
+the peko's catalogs on its next turn.
+
+### Getting help
+
+```bash
+peko --help
+peko <command> --help
 ```
 
 ---
 
-## Next Steps
+## Next steps
 
-- Read the [CLI Reference](CLI_REFERENCE.md) for all commands
-- Read the [peko Workspace](../architecture/PRINCIPAL_WORKSPACE.md) to understand where tooling lives (ADR-047)
-- Read the [Tutorial: Building Your First Agent](../getting-started/TUTORIAL_BUILDING_FIRST_AGENT.md)
-
----
-
-*Built with 🐱 by the Peko team*
+- [Tutorial: shaping your first peko](../getting-started/TUTORIAL_FIRST_PEKO.md)
+- [CLI Reference](CLI_REFERENCE.md): every command
+- [Peko workspace](../architecture/PRINCIPAL_WORKSPACE.md): the workspace layout in detail
+- [Built-in tools](../architecture/builtin-tools.md): what each tool does
