@@ -462,6 +462,7 @@ impl DaemonClient {
         file_path: impl Into<String>,
         name: Option<String>,
         force: bool,
+        rotate_keys: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalImportPreview {
@@ -469,6 +470,7 @@ impl DaemonClient {
             file_path: file_path.into(),
             name,
             force,
+            rotate_keys,
         };
         self.request_response(packet).await
     }
@@ -480,6 +482,7 @@ impl DaemonClient {
         name: Option<String>,
         force: bool,
         expected_manifest_checksum: Option<String>,
+        rotate_keys: bool,
     ) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalImport {
@@ -488,6 +491,7 @@ impl DaemonClient {
             name,
             force,
             expected_manifest_checksum,
+            rotate_keys,
         };
         self.request_response(packet).await
     }
