@@ -185,8 +185,7 @@ my-peko/
 ```
 
 A **role** is a Markdown template that a live agent runs as. To change how
-your peko behaves, edit `roles/root.md`, then run `peko daemon restart`: the daemon reads the
-root role when it starts. See the [User's Guide](../user-guide/USERS_GUIDE.md) for
+your peko behaves, edit `roles/root.md`: the edit applies to its next turn. See the [User's Guide](../user-guide/USERS_GUIDE.md) for
 roles, skills, MCP servers and memory.
 
 `peko show` summarizes it:

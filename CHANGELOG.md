@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: edits to `roles/root.md` and `principal.toml` apply without a daemon restart (2026-10-24)
+
+A peko's conversation turns ran on a bundle cached for the daemon's
+lifetime, which kept the root role and model it was built with. The trunk's
+router kept them too, and the daemon never re-read `principal.toml` after
+loading it. An edit to either file showed up only after
+`peko daemon restart`.
+
+Each turn now re-reads both. `principal.toml` is read again when its
+modified time or size changes. `name`, `id`, `did`, `actor_key` and
+`[owner]` keep their loaded values until a restart, because runtime state
+is keyed by them. A changed `preferred_model_id` resolves a new provider.
+When the root role can't be read (mid-save, deleted), the turn keeps the
+last good role. When `principal.toml` no longer parses, the peko keeps its
+loaded config. Both cases log a warning. The daemon now writes
+`principal.toml` atomically (temp file, then rename), so a turn never reads
+a half-written file.
+
+The docs and `peko create --help` no longer say to restart after editing.
+
 ### Fix: `peko export` / `peko import` paths are the user's, and reinstalling through `curl | bash` works (2026-10-24)
 
 **Export and import paths.** The CLI sent export and import paths to the
@@ -33,8 +53,6 @@ terminal (CI, containers).
   - `send`, `stop` and `log` take `<PEKO>`.
   - `--peer` documents the actor-address forms (`user:local`,
     `user:hub:<id>`, `principal:local:<id>`, `principal:hub:<id>`).
-  - `create --help` says to restart the daemon after editing
-    `principal.toml` or `roles/root.md`.
 - **Root role.** The compiled-in root role's description and `RoleCatalog`
   line say role.
 

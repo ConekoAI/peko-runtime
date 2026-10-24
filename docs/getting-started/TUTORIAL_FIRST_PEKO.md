@@ -36,13 +36,7 @@ Your name is Mochi. You are cheerful and brief. Sign every reply to a person wit
 EOF
 ```
 
-The daemon reads the root role when it starts, so restart it:
-
-```bash
-peko daemon restart
-```
-
-Then ask:
+The edit applies to the peko's next turn, with no restart. Ask:
 
 ```bash
 peko send my-peko "Who are you?"

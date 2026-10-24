@@ -89,8 +89,8 @@ the model working as one role in one session. Every peko starts with two
 roles:
 
 - `roles/root.md`: the root role. It supervises the peko's standing work
-  and holds its conversations. Edit it to change how your peko behaves, then
-  restart the daemon: the daemon reads the root role when it starts.
+  and holds its conversations. Edit it to change how your peko behaves: the
+  edit applies to the peko's next turn.
 - `roles/primary.md`: a general-purpose role the peko can start helper
   agents as.
 
@@ -207,8 +207,8 @@ The fields you are most likely to change:
   [Other people and other pekos](#other-people-and-other-pekos)).
 
 Leave `id`, `did`, `actor_key` and `[owner]` alone: they are the peko's
-identity. Run `peko daemon restart` after editing the file so its
-conversations pick up the change.
+identity: the daemon keeps their loaded values until it restarts. Other
+edits apply to the peko's next turn.
 
 ### `POLICY.md`
 
@@ -458,15 +458,19 @@ On a server or in a container, set `PEKO_MASTER_PASSPHRASE` (see
 
 ### A change to `roles/root.md` doesn't show up
 
-The daemon reads the root role and `principal.toml` when it starts, so
-restart it after editing either one:
+Edits to `roles/root.md` and `principal.toml` apply to the peko's next turn,
+with no restart. If one doesn't:
 
-```bash
-peko daemon restart
-```
+- A turn that is already running keeps the role it started with. Send the
+  next message after it finishes.
+- When `principal.toml` no longer parses, or `roles/root.md` can't be read,
+  the peko keeps what it had and the daemon log, `~/.peko/logs/daemon.log`,
+  says why.
+- `name`, `id`, `did`, `actor_key` and `[owner]` keep their loaded values
+  until `peko daemon restart`.
 
-New files under `roles/` and `skills/` do not need a restart: they show up in
-the peko's catalogs on its next turn.
+New files under `roles/` and `skills/` show up in the peko's catalogs on its
+next turn too.
 
 ### Getting help
 

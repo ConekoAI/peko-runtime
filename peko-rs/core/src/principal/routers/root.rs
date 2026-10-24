@@ -115,13 +115,12 @@ pub fn root_session_id_for_channel(kind: &crate::principal::router::ChannelKind)
 pub struct RootRouter {
     memory: Arc<dyn PrincipalMemory>,
     resolver: Option<Arc<LlmResolver>>,
-    root_prompt: AgentPrompt,
+    /// The root role the last turn ran. Each turn re-reads the role
+    /// file ([`Self::current_root_prompt`]) and keeps this one when the
+    /// file cannot be read. The model comes per message from
+    /// `RouterContext::preferred_model_id`.
+    root_prompt: StdRwLock<AgentPrompt>,
     workspace_path: PathBuf,
-    /// Per-Principal configured model preference from `principal.toml`.
-    /// When `Some`, it is used for any LLM call routed through this
-    /// Principal's root agent. When `None`, the resolver will error
-    /// unless a per-message override is supplied.
-    principal_model_id: Option<String>,
     /// Caller principal DID for outbound `principal_send` envelopes.
     /// Resolved at factory creation time from
     /// `PrincipalConfig::did` / `Principal::did().await`; copied into
@@ -145,11 +144,6 @@ pub struct RootRouter {
 impl RootRouter {
     /// Create a new root router for the given Principal workspace.
     ///
-    /// `principal_model_id` is the value from
-    /// `PrincipalConfig::preferred_model_id`. Pass `None` only when the
-    /// caller intends to supply a per-message override; otherwise
-    /// resolution will fail with "no model configured".
-    ///
     /// `principal_caller_did` is the principal's stable DID used as
     /// `caller_principal_did` on the wire for `principal_send`.
     /// `caller_runtime_id` is set later via
@@ -161,16 +155,14 @@ impl RootRouter {
         resolver: Option<Arc<LlmResolver>>,
         root_prompt: AgentPrompt,
         workspace_path: PathBuf,
-        principal_model_id: Option<String>,
         principal_caller_did: Option<String>,
         plan_port: Arc<dyn peko_plan::PlanPort>,
     ) -> Self {
         Self {
             memory,
             resolver,
-            root_prompt,
+            root_prompt: StdRwLock::new(root_prompt),
             workspace_path,
-            principal_model_id,
             principal_caller_did,
             caller_runtime_id: StdRwLock::new(None),
             plan_port,
@@ -197,11 +189,37 @@ impl RootRouter {
         self.caller_runtime_id.read().ok().and_then(|g| g.clone())
     }
 
+    /// The root role as `roles/root.md` (or the `[routing]` override)
+    /// reads now, so an edit applies to the next trunk turn. A file that
+    /// cannot be read (mid-save, deleted) keeps the last good role.
+    fn current_root_prompt(&self, ctx: &RouterContext) -> AgentPrompt {
+        let roles_dir = self.workspace_path.join("roles");
+        match crate::principal::factory::DefaultPrincipalRouterFactory::try_resolve_root_agent_prompt(
+            &ctx.routing,
+            &roles_dir,
+        ) {
+            Ok(prompt) => {
+                *self.root_prompt.write().expect("root_prompt lock poisoned") = prompt.clone();
+                prompt
+            }
+            Err(e) => {
+                tracing::warn!(
+                    principal = %ctx.principal_id,
+                    "cannot read the root role; this turn keeps the one it had: {e:#}"
+                );
+                self.root_prompt
+                    .read()
+                    .expect("root_prompt lock poisoned")
+                    .clone()
+            }
+        }
+    }
+
     /// Build a `PrincipalContext` from the router's already-resolved
     /// state plus the per-call `RouterContext` (which carries the
     /// per-message pieces: inbox registry, session-creation lock, the
     /// current allowed extensions snapshot, and the principal's runtime id).
-    fn build_context(&self, ctx: &RouterContext) -> PrincipalContext {
+    fn build_context(&self, ctx: &RouterContext, root_prompt: &AgentPrompt) -> PrincipalContext {
         ctx.tooling
             .agent_runs()
             .for_principal(&ctx.principal_id)
@@ -212,7 +230,7 @@ impl RootRouter {
             Arc::clone(&ctx.inbox_registry),
             Arc::clone(&ctx.session_creation_lock),
             self.resolver.clone(),
-            self.principal_model_id.clone(),
+            ctx.preferred_model_id.clone(),
             // Per-message configured model override from `RouterContext`
             // so the resolver classifies the resolution as
             // `ResolveSource::ExplicitOverride` when `peko send --model`
@@ -223,7 +241,7 @@ impl RootRouter {
             Arc::clone(&self.plan_port),
             Arc::clone(&ctx.tooling),
         );
-        principal_ctx.set_root_prompt(self.root_prompt.clone());
+        principal_ctx.set_root_prompt(root_prompt.clone());
         // Phase 4b: bind caller identity so `send_peer` is
         // registered on the principal's agents. The DID is the
         // principal's stable identifier (set in the factory from
@@ -284,10 +302,11 @@ impl PrincipalRouter for RootRouter {
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
-        let principal_ctx = self.build_context(&ctx);
+        let root_prompt = self.current_root_prompt(&ctx);
+        let principal_ctx = self.build_context(&ctx, &root_prompt);
 
         let response = run_root_agent_prompt(
-            &self.root_prompt,
+            &root_prompt,
             peer,
             user_text,
             pre_user_messages,
@@ -336,10 +355,11 @@ impl PrincipalRouter for RootRouter {
         let available_agents: Vec<AgentPromptSummary> = ctx.available_agents.clone();
         let user_text = ctx.message.clone();
         let pre_user_messages = recalled_context_messages(&ctx.recalled_context);
-        let principal_ctx = self.build_context(&ctx);
+        let root_prompt = self.current_root_prompt(&ctx);
+        let principal_ctx = self.build_context(&ctx, &root_prompt);
 
         let response = run_root_agent_prompt_streaming(
-            &self.root_prompt,
+            &root_prompt,
             peer,
             user_text,
             pre_user_messages,

@@ -200,7 +200,7 @@ during the run. `peko quota status <NAME>` shows current spend.
 ```bash
 peko daemon start                         # Start the background daemon
 peko daemon status
-peko daemon restart                       # Also re-reads roles/root.md and principal.toml
+peko daemon restart
 peko daemon stop
 
 peko runtime register --api-key <KEY>     # Link this runtime and its local user to PekoHub
@@ -232,8 +232,8 @@ install command: add a file to add a capability.
 | **Workflows** | `workflows/*.py` | Scripts the peko writes for the `Workflow` tool (ADR-061) |
 | **Built-in tools** | Native code | 23 tools: files, shell, agents, sessions, channels, plans, cron, MCP, ledger |
 
-New roles and skills appear on the peko's next turn. Edits to the root role
-(`roles/root.md`) apply after `peko daemon restart`.
+New roles and skills appear on the peko's next turn, and so do edits to the
+root role (`roles/root.md`) and `principal.toml`.
 
 Workspace hooks bind to six points: `PreToolUse`, `PostToolUse`, `Stop`,
 `AfterAgent`, `PromptSection` and `SessionContextBuild`. Handlers run in

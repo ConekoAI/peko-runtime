@@ -103,7 +103,6 @@ impl PrincipalRouterFactory for DefaultPrincipalRouterFactory {
             resolver,
             prompt,
             workspace_path.to_path_buf(),
-            config.preferred_model_id.clone(),
             principal_caller_did,
             plan_port,
         ))
@@ -122,16 +121,26 @@ impl DefaultPrincipalRouterFactory {
         config: &PrincipalConfig,
         roles_dir: &std::path::Path,
     ) -> crate::principal::agent_prompt::AgentPrompt {
+        Self::try_resolve_root_agent_prompt(&config.routing, roles_dir)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Self::resolve_root_agent_prompt`] without the panic: turn-time
+    /// re-reads (a root role edited while the daemon runs) keep the
+    /// role they already have when the file is mid-save or broken.
+    pub fn try_resolve_root_agent_prompt(
+        routing: &crate::principal::PrincipalRoutingConfig,
+        roles_dir: &std::path::Path,
+    ) -> anyhow::Result<crate::principal::agent_prompt::AgentPrompt> {
         // 1. Explicit override from principal.toml.
-        if let Some(ref path) = config.routing.root_prompt {
-            match crate::principal::agent_prompt::load_agent_prompt(path) {
-                Ok(prompt) => return prompt,
-                Err(e) => panic!(
+        if let Some(ref path) = routing.root_prompt {
+            return crate::principal::agent_prompt::load_agent_prompt(path).map_err(|e| {
+                anyhow::anyhow!(
                     "[routing].root_prompt is set but unreadable: {}: {e}. \
                      Fix or remove the override — there is no hidden fallback.",
                     path.display()
-                ),
-            }
+                )
+            });
         }
 
         // 2. Workspace-relative Markdown. Check both layouts so users
@@ -146,25 +155,24 @@ impl DefaultPrincipalRouterFactory {
         ];
         for candidate in &workspace_candidates {
             if candidate.exists() {
-                return crate::principal::agent_prompt::load_agent_prompt(candidate)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "workspace root role file {} is unreadable: {e}. \
+                return crate::principal::agent_prompt::load_agent_prompt(candidate).map_err(|e| {
+                    anyhow::anyhow!(
+                        "workspace root role file {} is unreadable: {e}. \
                              Fix or remove it — there is no hidden fallback.",
-                            candidate.display()
-                        )
-                    });
+                        candidate.display()
+                    )
+                });
             }
         }
 
         // 3. No root role file — fail loudly with remediation.
-        panic!(
+        Err(anyhow::anyhow!(
             "No root role prompt found for this principal: expected {} or {} \
              (or set `[routing].root_prompt` in principal.toml). Seed one with \
              `peko create` / restart the daemon (the boot pass stamps the \
              compiled-in default), or write roles/root.md by hand.",
             workspace_candidates[0].display(),
             workspace_candidates[1].display(),
-        )
+        ))
     }
 }

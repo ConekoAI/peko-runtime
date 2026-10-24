@@ -67,7 +67,7 @@ Create a new peko and block until it is alive (ADR-054)
 
 One command for the whole genesis pipeline: provisions the workspace (P0), seeds the definition (P1 — from `--seed` when given, defaults otherwise), makes sure the daemon is running and knows the peko, schedules the genesis turn (P2), and waits for the trunk's first self-turn to complete. Pass `--detach` for fire-and-forget (scripts/CI).
 
-Re-defining later = edit the peko's `principal.toml` and `roles/root.md` directly, then restart the daemon, which reads both when it starts.
+Re-defining later = edit the peko's `principal.toml` and `roles/root.md` directly; edits apply to the peko's next turn.
 
 Usage: peko create [OPTIONS] <NAME>
 
