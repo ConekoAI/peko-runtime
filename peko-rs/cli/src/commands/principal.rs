@@ -151,6 +151,12 @@ pub enum PrincipalCommands {
         #[arg(short, long)]
         force: bool,
 
+        /// Import as a new actor: new keys, DID, and local ID. Use it to
+        /// import a copy of a peko this runtime already hosts (with
+        /// `--name` when the package's name is taken).
+        #[arg(long)]
+        rotate_keys: bool,
+
         /// Deprecated: imports display an inventory and proceed directly
         #[arg(long, hide = true)]
         yes: bool,
@@ -300,8 +306,9 @@ pub async fn handle_principal(
             file_path,
             name,
             force,
+            rotate_keys,
             yes,
-        } => import_principal(&file_path, name, force, yes).await,
+        } => import_principal(&file_path, name, force, rotate_keys, yes).await,
         PrincipalCommands::Permit {
             name,
             subject,
@@ -1206,6 +1213,7 @@ async fn import_principal(
     file_path: &str,
     name: Option<String>,
     force: bool,
+    rotate_keys: bool,
     _yes: bool,
 ) -> Result<()> {
     let file_path = absolute_from_cwd(file_path)?;
@@ -1215,12 +1223,12 @@ async fn import_principal(
     // Always preview first. The preview is read-only and surfaces bundled
     // role prompts, executable manifests, skills, and validation issues.
     let preview = client
-        .principal_import_preview(file_path, name.clone(), force)
+        .principal_import_preview(file_path, name.clone(), force, rotate_keys)
         .await?;
 
     let preview = decode_preview_response(preview, "import")?;
 
-    render_import_preview(&preview);
+    render_import_preview(&preview, rotate_keys);
 
     if !preview.validation_errors.is_empty() {
         anyhow::bail!(
@@ -1234,6 +1242,7 @@ async fn import_principal(
             name,
             force,
             Some(preview.manifest_checksum.clone()),
+            rotate_keys,
         )
         .await?;
 
@@ -1242,6 +1251,9 @@ async fn import_principal(
             name, config_path, ..
         } => {
             println!("Imported peko '{name}' at {config_path}");
+            if rotate_keys {
+                println!("  New actor with new keys; `peko show {name}` lists its ID and DID.");
+            }
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -1304,11 +1316,18 @@ fn decode_preview_response(
     }
 }
 
-fn render_import_preview(preview: &PrincipalImportPreview) {
+fn render_import_preview(preview: &PrincipalImportPreview, rotate_keys: bool) {
     println!("Peko import preview:");
     println!("  Name:        {}", preview.name);
     println!("  Peko version: {}", preview.version);
-    println!("  DID:         {}", preview.did);
+    if rotate_keys {
+        println!(
+            "  DID:         new (--rotate-keys; package has {})",
+            preview.did
+        );
+    } else {
+        println!("  DID:         {}", preview.did);
+    }
     if let Some(desc) = &preview.description {
         println!("  Description: {desc}");
     }
@@ -1848,6 +1867,7 @@ mod tests {
                 name,
                 force,
                 yes,
+                ..
             }) => {
                 assert_eq!(file_path, "/tmp/pkg.peko");
                 assert_eq!(name, Some("renamed".to_string()));
@@ -1864,8 +1884,34 @@ mod tests {
             .expect("should parse import without --yes");
 
         match cli.command {
-            Commands::Peko(PrincipalCommands::Import { yes, .. }) => {
+            Commands::Peko(PrincipalCommands::Import {
+                yes, rotate_keys, ..
+            }) => {
                 assert!(!yes);
+                assert!(!rotate_keys);
+            }
+            _other => panic!("expected flattened top-level import command"),
+        }
+    }
+
+    #[test]
+    fn principal_import_parses_rotate_keys() {
+        let cli = Cli::try_parse_from([
+            "peko",
+            "import",
+            "/tmp/pkg.peko",
+            "--rotate-keys",
+            "--name",
+            "copy",
+        ])
+        .expect("should parse import with --rotate-keys");
+
+        match cli.command {
+            Commands::Peko(PrincipalCommands::Import {
+                name, rotate_keys, ..
+            }) => {
+                assert!(rotate_keys);
+                assert_eq!(name.as_deref(), Some("copy"));
             }
             _other => panic!("expected flattened top-level import command"),
         }

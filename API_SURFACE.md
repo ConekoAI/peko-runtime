@@ -330,6 +330,12 @@ ids, and executable file paths. `principal.snapshot_import` records this invento
 severity before writes; the CLI prints it before import without a confirmation
 prompt. The boot-time drift canary remains.
 
+`DaemonClient::{principal_import_preview, principal_import}` take a trailing
+`rotate_keys: bool`, and `peko import` has `--rotate-keys`.
+`PrincipalUnpackager::ensure_not_hosted(files, target, force)` refuses a snapshot
+whose actor key is already hosted here (`force` lets it replace the copy at
+`target`); the preview calls it, and the import repeats the check before writes.
+
 ADR-076: `SkillRuntime` resolves only ordinary workspace definitions. The
 `Skill` tool remains principal-owned; discovery cache identity includes the
 workspace path. `tools::builtin::skill::{MAX_SKILL_FILE_BYTES, MAX_SKILL_BODY_BYTES, read_skill_file}`

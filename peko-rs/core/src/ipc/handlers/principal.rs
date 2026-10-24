@@ -497,10 +497,17 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 file_path,
                 name,
-                force: _,
+                force,
+                rotate_keys,
             } => {
-                match preview_principal_import(host, std::path::Path::new(&file_path), name.clone())
-                    .await
+                match preview_principal_import(
+                    host,
+                    std::path::Path::new(&file_path),
+                    name.clone(),
+                    force,
+                    rotate_keys,
+                )
+                .await
                 {
                     Ok(preview) => {
                         let response = ResponsePacket::PrincipalImportPreviewed {
@@ -533,6 +540,7 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 force,
                 expected_manifest_checksum,
+                rotate_keys,
             } => {
                 // The `name` field is the caller's chosen rename for an
                 // imported principal; it flows into filesystem paths
@@ -558,6 +566,7 @@ impl RequestHandler for PrincipalHandler {
                     name.clone(),
                     force,
                     expected_manifest_checksum,
+                    rotate_keys,
                 )
                 .await
                 {
@@ -3238,6 +3247,8 @@ async fn preview_principal_import(
     host: &dyn PrincipalHost,
     file_path: &std::path::Path,
     new_name: Option<String>,
+    force: bool,
+    rotate_keys: bool,
 ) -> anyhow::Result<PrincipalImportPreview> {
     let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
         file_path,
@@ -3245,6 +3256,10 @@ async fn preview_principal_import(
         host.data_dir(),
     );
     let (manifest, files, validation) = unpackager.inspect_detailed().await?;
+    if !rotate_keys {
+        let target = new_name.as_deref().unwrap_or(&manifest.name);
+        unpackager.ensure_not_hosted(&files, target, force)?;
+    }
 
     let inventory =
         crate::registry::packaging::ExecutableInventory::from_files(&manifest.did, &files);
@@ -3281,6 +3296,7 @@ async fn import_principal_package(
     new_name: Option<String>,
     force: bool,
     expected_manifest_checksum: Option<String>,
+    rotate_keys: bool,
 ) -> anyhow::Result<crate::registry::packaging::PrincipalImportResult> {
     let unpackager = crate::registry::packaging::PrincipalUnpackager::new(
         file_path,
@@ -3293,6 +3309,7 @@ async fn import_principal_package(
     // writes use ownership checks through RuntimeAuthority.
     let opts = crate::registry::packaging::PrincipalImportOptions {
         new_name,
+        rotate_keys,
         force,
         expected_manifest_checksum,
         caller_subject: caller.subject().clone(),

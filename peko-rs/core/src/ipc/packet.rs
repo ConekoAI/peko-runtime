@@ -603,6 +603,10 @@ pub enum RequestPacket {
         force: bool,
         #[serde(default)]
         expected_manifest_checksum: Option<String>,
+        /// Import as a new actor: fresh keys, DID, actor key and local ID
+        /// (ADR-081 D6 step 1).
+        #[serde(default)]
+        rotate_keys: bool,
     },
 
     /// Preview a `.peko` package before importing it.
@@ -613,6 +617,10 @@ pub enum RequestPacket {
         name: Option<String>,
         #[serde(default)]
         force: bool,
+        /// Without it, a snapshot of an actor hosted here is refused at
+        /// preview, before the inventory is shown.
+        #[serde(default)]
+        rotate_keys: bool,
     },
 
     #[serde(rename = "principal_grant_permission")]
@@ -3684,6 +3692,7 @@ mod tests {
             file_path: "/tmp/test.peko".to_string(),
             name: Some("renamed".to_string()),
             force: false,
+            rotate_keys: true,
         };
         let bytes = req.to_bytes().unwrap();
         let json = std::str::from_utf8(&bytes).unwrap();
@@ -3698,11 +3707,13 @@ mod tests {
                 file_path,
                 name,
                 force,
+                rotate_keys,
             } => {
                 assert_eq!(request_id, 303);
                 assert_eq!(file_path, "/tmp/test.peko");
                 assert_eq!(name, Some("renamed".to_string()));
                 assert!(!force);
+                assert!(rotate_keys);
             }
             _ => panic!("Wrong variant"),
         }
@@ -3774,12 +3785,14 @@ mod tests {
         match &request {
             RequestPacket::PrincipalImport {
                 expected_manifest_checksum,
+                rotate_keys,
                 ..
             } => {
                 assert_eq!(
                     expected_manifest_checksum.as_deref(),
                     Some("sha256:preview")
                 );
+                assert!(!rotate_keys, "older clients import without rotating");
             }
             _ => panic!("wrong packet"),
         }
