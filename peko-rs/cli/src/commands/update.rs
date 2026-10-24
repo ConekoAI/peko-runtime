@@ -15,10 +15,22 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     // Query GitHub for latest version
     let latest_version = match query_latest_version().await {
         Ok(v) => v,
-        Err(e) => {
+        Err(ReleaseQueryError::NoStableRelease) => {
+            println!("ℹ️  No stable release is published yet, only prereleases.");
+            println!("   Download a prerelease from:");
+            println!("   https://github.com/{GITHUB_REPO}/releases");
+            return Ok(());
+        }
+        Err(ReleaseQueryError::Network(e)) => {
             eprintln!("❌ Failed to check for updates: {e}");
             eprintln!("   Make sure you're connected to the internet");
             eprintln!("   You can also manually download from:");
+            eprintln!("   https://github.com/{GITHUB_REPO}/releases");
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to check for updates: {e}");
+            eprintln!("   You can manually download from:");
             eprintln!("   https://github.com/{GITHUB_REPO}/releases");
             return Ok(());
         }
@@ -61,42 +73,88 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Why the latest-release query produced no version.
+#[derive(Debug, PartialEq, Eq)]
+enum ReleaseQueryError {
+    /// `releases/latest` is 404: the repo has no published
+    /// non-prerelease release (prereleases are skipped by that endpoint).
+    NoStableRelease,
+    /// GitHub answered with another non-success status (rate limit, …).
+    Http(u16),
+    /// curl could not reach GitHub at all.
+    Network(String),
+    /// A 2xx body without a usable `tag_name`.
+    BadResponse(String),
+}
+
+impl std::fmt::Display for ReleaseQueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoStableRelease => write!(f, "no stable release published"),
+            Self::Http(code) => write!(f, "GitHub API returned HTTP {code}"),
+            Self::Network(e) => write!(f, "could not reach the GitHub API: {e}"),
+            Self::BadResponse(e) => write!(f, "unexpected GitHub API response: {e}"),
+        }
+    }
+}
+
+/// Marker curl prints after the body (`-w`) so the status code can be
+/// split off stdout.
+const HTTP_CODE_MARKER: &str = "\n__peko_http_code__:";
+
 /// Query GitHub for latest version
-async fn query_latest_version() -> Result<String> {
+async fn query_latest_version() -> Result<String, ReleaseQueryError> {
     let api_url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
 
-    // Use curl to query the GitHub API
+    // Use curl to query the GitHub API. No `-f`: an HTTP error status
+    // must reach us as a status code, not as a curl failure that looks
+    // like a network problem.
+    let write_out = format!("{HTTP_CODE_MARKER}%{{http_code}}");
     let output = Command::new("curl")
         .args([
-            "-fsSL",
+            "-sSL",
             "--max-time",
             "10",
             "-H",
             "Accept: application/vnd.github.v3+json",
+            "-w",
+            &write_out,
             &api_url,
         ])
         .output()
-        .context("Failed to run curl. Is it installed?")?;
+        .map_err(|e| ReleaseQueryError::Network(format!("failed to run curl: {e}")))?;
 
     if !output.status.success() {
-        anyhow::bail!("Failed to query GitHub API");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ReleaseQueryError::Network(stderr.trim().to_string()));
     }
 
-    let response = String::from_utf8(output.stdout)?;
+    parse_latest_release(&String::from_utf8_lossy(&output.stdout))
+}
 
-    // Parse tag_name from JSON response
-    // Expected: {"tag_name": "v1.2.3", ...}
-    let version = response
-        .split('"')
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find(|w| w[0] == "tag_name")
-        .and_then(|w| w.get(2))
-        .copied()
-        .unwrap_or("latest")
-        .trim_start_matches('v');
+/// Split curl's stdout (body + `HTTP_CODE_MARKER` + status) and pull
+/// the version out of a successful `releases/latest` response.
+fn parse_latest_release(stdout: &str) -> Result<String, ReleaseQueryError> {
+    let (body, code) = stdout
+        .rsplit_once(HTTP_CODE_MARKER)
+        .ok_or_else(|| ReleaseQueryError::BadResponse("missing HTTP status".to_string()))?;
+    let code: u16 = code
+        .trim()
+        .parse()
+        .map_err(|_| ReleaseQueryError::BadResponse(format!("bad HTTP status {code:?}")))?;
+    match code {
+        200..=299 => {}
+        404 => return Err(ReleaseQueryError::NoStableRelease),
+        other => return Err(ReleaseQueryError::Http(other)),
+    }
 
-    Ok(version.to_string())
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| ReleaseQueryError::BadResponse(e.to_string()))?;
+    let tag = json
+        .get("tag_name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ReleaseQueryError::BadResponse("no tag_name".to_string()))?;
+    Ok(tag.trim_start_matches('v').to_string())
 }
 
 /// Perform the actual update
@@ -270,4 +328,47 @@ fn detect_platform() -> Result<String> {
     };
 
     Ok(format!("{os}-{arch}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn curl_stdout(body: &str, code: u16) -> String {
+        format!("{body}{HTTP_CODE_MARKER}{code}")
+    }
+
+    #[test]
+    fn latest_release_404_means_no_stable_release() {
+        let body = r#"{"message":"Not Found","status":"404"}"#;
+        assert_eq!(
+            parse_latest_release(&curl_stdout(body, 404)),
+            Err(ReleaseQueryError::NoStableRelease)
+        );
+    }
+
+    #[test]
+    fn latest_release_other_status_is_not_a_network_error() {
+        assert_eq!(
+            parse_latest_release(&curl_stdout(r#"{"message":"rate limited"}"#, 403)),
+            Err(ReleaseQueryError::Http(403))
+        );
+    }
+
+    #[test]
+    fn latest_release_200_yields_tag_without_v() {
+        let body = r#"{"tag_name": "v0.1.0", "name": "v0.1.0", "prerelease": false}"#;
+        assert_eq!(
+            parse_latest_release(&curl_stdout(body, 200)),
+            Ok("0.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_release_200_without_tag_is_bad_response() {
+        assert!(matches!(
+            parse_latest_release(&curl_stdout("{}", 200)),
+            Err(ReleaseQueryError::BadResponse(_))
+        ));
+    }
 }

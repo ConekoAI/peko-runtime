@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko update --check` says when there is no stable release yet (2026-10-24)
+
+With only prereleases published, GitHub's `releases/latest` returns 404 and
+`peko update --check` said "Failed to query GitHub API — Make sure you're
+connected to the internet". A 404 now says no stable release is published
+yet and points to the releases page. The connection hint is kept for real
+network failures. Other HTTP errors (a rate limit, for example) report their
+status code.
+
+The version is now read from the response's `tag_name` with a JSON parser.
+The old parser never found it and always reported the latest version as
+`vlatest`.
+
 ### Fix: `peko log` shows the peko's name on its replies (2026-10-24)
 
 `peko log my-peko` printed the peko's replies under its internal address
