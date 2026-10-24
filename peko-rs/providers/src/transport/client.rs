@@ -298,14 +298,17 @@ impl HttpClient {
 
         let mut request = self.inner.request(method, &url);
 
-        // Add authentication
+        // Add authentication. An empty credential is a keyless endpoint
+        // (`requires_key = false`): send no auth header at all rather
+        // than an empty `Bearer`.
         match &self.auth {
-            AuthConfig::Bearer { token } => {
+            AuthConfig::Bearer { token } if !token.is_empty() => {
                 request = request.header("Authorization", format!("Bearer {token}"));
             }
-            AuthConfig::Header { name, value } => {
+            AuthConfig::Header { name, value } if !value.is_empty() => {
                 request = request.header(name, value);
             }
+            AuthConfig::Bearer { .. } | AuthConfig::Header { .. } => {}
         }
 
         // Add extra headers
@@ -474,6 +477,37 @@ mod tests {
             AuthConfig::Bearer { token } => assert_eq!(token, "test_token"),
             _ => panic!("Expected Bearer auth"),
         }
+    }
+
+    /// Keyless endpoints get no auth header; keyed ones get theirs.
+    #[test]
+    fn empty_credentials_send_no_auth_header() {
+        let request = |auth| {
+            HttpClient::new("http://127.0.0.1:1", auth, 30)
+                .unwrap()
+                .build_request(reqwest::Method::POST, "/v1/chat/completions")
+                .build()
+                .unwrap()
+        };
+        let keyless = request(AuthConfig::Bearer {
+            token: String::new(),
+        });
+        assert!(keyless.headers().get("Authorization").is_none());
+        let keyless_header = request(AuthConfig::Header {
+            name: "x-api-key".into(),
+            value: String::new(),
+        });
+        assert!(keyless_header.headers().get("x-api-key").is_none());
+
+        let keyed = request(AuthConfig::Bearer {
+            token: "sk-test".into(),
+        });
+        assert_eq!(keyed.headers()["Authorization"], "Bearer sk-test");
+        let keyed_header = request(AuthConfig::Header {
+            name: "x-api-key".into(),
+            value: "sk-ant".into(),
+        });
+        assert_eq!(keyed_header.headers()["x-api-key"], "sk-ant");
     }
 
     #[test]
