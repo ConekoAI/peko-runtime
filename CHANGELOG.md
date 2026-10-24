@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko model test` waits 30 s and reports a slow endpoint as slow (2026-10-24)
+
+`peko model test` gave up after 5 s. A first request also pays for DNS,
+TCP and TLS setup, and against a working endpoint in another region the test
+timed out on 3 of the last 6 runs (MVP gate 1). It then printed the raw
+transport error ("error sending request … operation timed out"), which reads
+like a broken setup.
+
+The test now waits 30 s, still well under the 300 s an agent turn waits. A
+timeout says what happened: "no reply within 30s. The endpoint was too slow
+to answer, so the key and settings were not checked. Run the test again;
+a peko's turns wait up to 300s". It still exits non-zero. Other connection
+failures (refused, DNS, TLS) keep their underlying message.
+
 ### Fix: `peko create` no longer waits a minute before the genesis turn (2026-10-24)
 
 The first `peko create` took about 130 seconds even with a model that
