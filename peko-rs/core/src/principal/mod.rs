@@ -116,9 +116,82 @@ pub struct Principal {
     /// Reached via `principal.plan_port`; no separate `AppState`
     /// plumbing needed (plans are per-principal, not runtime-global).
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
+    /// `principal.toml` as it was (modified time, length) when `config`
+    /// last matched it. [`Self::reload_config_if_changed`] re-reads the
+    /// file only when this differs.
+    config_file_stamp: std::sync::Mutex<Option<ConfigFileStamp>>,
+}
+
+/// What [`Principal::reload_config_if_changed`] compares to notice an
+/// edit to `principal.toml`.
+type ConfigFileStamp = (std::time::SystemTime, u64);
+
+fn config_file_stamp(path: &std::path::Path) -> Option<ConfigFileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 impl Principal {
+    /// The stamp of `<workspace>/principal.toml` right now, for the
+    /// constructor: the config being installed is the one on disk.
+    fn current_config_file_stamp(
+        workspace_path: &std::path::Path,
+    ) -> std::sync::Mutex<Option<ConfigFileStamp>> {
+        std::sync::Mutex::new(config_file_stamp(&workspace_path.join("principal.toml")))
+    }
+
+    /// Adopt hand edits to `principal.toml` while the daemon runs: when
+    /// the file changed since `config` last matched it, read it again.
+    /// Turn builders call this first, so an edit applies to the next
+    /// turn without a restart.
+    ///
+    /// The identity fields (`name`, `id`, `did`, `actor_key`, `[owner]`)
+    /// keep their loaded values: runtime state is keyed by them. A file
+    /// that no longer parses keeps the loaded config and is reported
+    /// once per edit.
+    pub async fn reload_config_if_changed(&self) {
+        let path = self.workspace_path.join("principal.toml");
+        let Some(stamp) = config_file_stamp(&path) else {
+            return;
+        };
+        {
+            let mut seen = self
+                .config_file_stamp
+                .lock()
+                .expect("config_file_stamp lock poisoned");
+            if *seen == Some(stamp) {
+                return;
+            }
+            *seen = Some(stamp);
+        }
+        let parsed = match tokio::fs::read_to_string(&path).await {
+            Ok(text) => toml::from_str::<PrincipalConfig>(&text).map_err(anyhow::Error::from),
+            Err(e) => Err(e.into()),
+        };
+        let mut edited = match parsed {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!(
+                    principal = %self.id,
+                    path = %path.display(),
+                    "principal.toml changed but cannot be read; keeping the loaded config: {e:#}"
+                );
+                return;
+            }
+        };
+        let model = {
+            let mut config = self.config.write().await;
+            edited.name = config.name.clone();
+            edited.id = config.id.clone();
+            edited.did = config.did.clone();
+            edited.actor_key = config.actor_key.clone();
+            edited.owner = config.owner.clone();
+            *config = edited;
+            config.preferred_model_id.clone()
+        };
+        self.mcp.set_model(model);
+    }
+
     /// The stable DID. New Principals always generate a real identity at
     /// creation time, so this normally returns the configured DID.
     pub async fn did(&self) -> PrincipalDID {

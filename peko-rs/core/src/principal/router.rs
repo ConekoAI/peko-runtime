@@ -76,6 +76,10 @@ pub struct RouterContext {
     pub available_agents: Vec<AgentPromptSummary>,
     pub intent: PrincipalIntentConfig,
     pub governance: PrincipalGovernanceConfig,
+    /// The principal's `preferred_model_id` as of this message (read
+    /// per message, so an edit to `principal.toml` applies without a
+    /// restart).
+    pub preferred_model_id: Option<String>,
     /// Shared inbox registry so the router can wire the root agent
     /// to the same inbox the Principal boundary pushes steering messages into.
     pub inbox_registry: Arc<InboxRegistry>,
@@ -125,6 +129,7 @@ impl std::fmt::Debug for RouterContext {
             .field("available_agents", &self.available_agents)
             .field("intent", &self.intent)
             .field("governance", &self.governance)
+            .field("preferred_model_id", &self.preferred_model_id)
             .field("inbox_registry", &"<InboxRegistry>")
             .field("session_creation_lock", &"<Mutex>")
             .field("observability", &self.observability)
@@ -152,6 +157,7 @@ impl Clone for RouterContext {
             available_agents: self.available_agents.clone(),
             intent: self.intent.clone(),
             governance: self.governance.clone(),
+            preferred_model_id: self.preferred_model_id.clone(),
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: Arc::clone(&self.session_creation_lock),
             observability: self.observability.clone(),

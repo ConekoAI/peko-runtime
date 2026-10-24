@@ -33,6 +33,16 @@
 //! prompt body replaces the root persona for all peer-facing turns;
 //! unresolvable roles warn and fall back to the root persona.
 //!
+//! ## Live definition
+//!
+//! The bundle is cached for the principal's lifetime, but its persona
+//! and model are not: every turn re-reads `principal.toml`
+//! ([`Principal::reload_config_if_changed`]) and the root role, and
+//! re-resolves the provider when `preferred_model_id` changed. An edit
+//! to either file applies to the next turn without a daemon restart. A
+//! root role that cannot be read at turn time (mid-save, deleted) keeps
+//! the last one that could.
+//!
 //! ## Registry key (cross-guard)
 //!
 //! Every executor of a principal registers runs in that principal's task
@@ -81,8 +91,18 @@ pub(crate) fn peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
 ) -> AgentConfig {
+    try_peer_child_agent_config(config, workspace_path).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// [`peer_child_agent_config`] without the panic on a missing or
+/// unreadable root role, for the turn-time re-read.
+fn try_peer_child_agent_config(
+    config: &PrincipalConfig,
+    workspace_path: &std::path::Path,
+) -> Result<AgentConfig> {
     let roles_dir = workspace_path.join("roles");
-    let mut prompt = DefaultPrincipalRouterFactory::resolve_root_agent_prompt(config, &roles_dir);
+    let mut prompt =
+        DefaultPrincipalRouterFactory::try_resolve_root_agent_prompt(&config.routing, &roles_dir)?;
     // ADR-052 D3: opt-in T1 role for peer-facing turns.
     if let Some(role) = config.routing.peer_agent.as_deref() {
         match crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir) {
@@ -93,7 +113,10 @@ pub(crate) fn peer_child_agent_config(
             ),
         }
     }
-    build_agent_config(&prompt, config.preferred_model_id.clone())
+    Ok(build_agent_config(
+        &prompt,
+        config.preferred_model_id.clone(),
+    ))
 }
 
 /// The trust source of test bundles built from parts: everyone is the
@@ -192,6 +215,24 @@ pub(crate) struct PeerChildTurns {
     /// the principal active when they start and end. `None` outside
     /// the daemon.
     idle_detector: Option<Arc<peko_cron::IdleDetector>>,
+    /// Where each turn re-reads the persona and model from. `None` only
+    /// for test bundles built from parts, which run `executor` as is.
+    live: Option<LiveDefinition>,
+}
+
+/// The principal a bundle was built for and the persona and model its
+/// last turn ran, so the next turn can pick up edits (see "Live
+/// definition" in the module docs).
+struct LiveDefinition {
+    principal: std::sync::Weak<Principal>,
+    llm_resolver: Arc<peko_providers::LlmResolver>,
+    current: tokio::sync::Mutex<CurrentDefinition>,
+}
+
+struct CurrentDefinition {
+    agent_config: AgentConfig,
+    model: Option<String>,
+    provider: Arc<peko_providers::Provider>,
 }
 
 impl PeerChildTurns {
@@ -207,11 +248,12 @@ impl PeerChildTurns {
     /// (tests and non-daemon contexts).
     pub(crate) async fn build(
         principal: &Arc<Principal>,
-        llm_resolver: &peko_providers::LlmResolver,
+        llm_resolver: &Arc<peko_providers::LlmResolver>,
         observability: Arc<Observability>,
         inbox_registry: Option<Arc<peko_session::InboxRegistry>>,
         tooling: Arc<crate::tools::runtime::ToolingRuntime>,
     ) -> Result<Self> {
+        principal.reload_config_if_changed().await;
         let (name, owner, agent_config, preferred_model_id) = {
             let config = principal.config.read().await;
             tooling
@@ -271,9 +313,18 @@ impl PeerChildTurns {
         // Charge peer-child turns against the principal's meter, like
         // any other subagent run (F39).
         .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
-        .with_provider(provider)
+        .with_provider(Arc::clone(&provider))
         // Persona inheritance — see module docs.
-        .with_agent_config(agent_config);
+        .with_agent_config(agent_config.clone());
+        let live = LiveDefinition {
+            principal: Arc::downgrade(principal),
+            llm_resolver: Arc::clone(llm_resolver),
+            current: tokio::sync::Mutex::new(CurrentDefinition {
+                agent_config,
+                model: preferred_model_id,
+                provider,
+            }),
+        };
         executor.set_caller_principal_did(principal.did().await.0);
         let trust: Arc<dyn crate::security::TrustSource> =
             Arc::new(crate::principal::trust::PrincipalTrust::new(principal));
@@ -328,6 +379,7 @@ impl PeerChildTurns {
             dm_lock: None,
             idle_detector: None,
             trust: Some(trust),
+            live: Some(live),
         })
     }
 
@@ -359,6 +411,7 @@ impl PeerChildTurns {
             dm_lock: None,
             idle_detector: None,
             trust: Some(trust),
+            live: None,
         }
     }
 
@@ -668,6 +721,62 @@ impl PeerChildTurns {
         outcome
     }
 
+    /// The executor for the next turn: the cached one with the persona
+    /// and provider the principal's files define now (see "Live
+    /// definition" in the module docs). Fails only when a changed
+    /// `preferred_model_id` does not resolve, as it would at build.
+    async fn turn_executor(&self) -> Result<SubagentExecutor> {
+        let Some(live) = &self.live else {
+            return Ok(self.executor.clone());
+        };
+        let Some(principal) = live.principal.upgrade() else {
+            return Ok(self.executor.clone());
+        };
+        principal.reload_config_if_changed().await;
+        let (agent_config, model, max_running_agents) = {
+            let config = principal.config.read().await;
+            (
+                try_peer_child_agent_config(&config, &principal.workspace_path),
+                config.preferred_model_id.clone(),
+                config.governance.max_running_agents,
+            )
+        };
+        self.executor
+            .tooling()
+            .agent_runs()
+            .for_principal(&self.principal_id)
+            .set_limit(max_running_agents);
+        let mut current = live.current.lock().await;
+        match agent_config {
+            Ok(mut agent_config) => {
+                // The name keys sessions and the registry; only the
+                // role's text is live.
+                agent_config.name = self.agent_name.clone();
+                current.agent_config = agent_config;
+            }
+            Err(e) => tracing::warn!(
+                principal = %self.principal_id,
+                "cannot read the root role; this turn keeps the one it had: {e:#}"
+            ),
+        }
+        if model != current.model {
+            let (provider, _choice) = live
+                .llm_resolver
+                .build(peko_providers::resolver::ResolveRequest {
+                    agent_model: model.as_deref(),
+                    ..Default::default()
+                })
+                .await?;
+            current.provider = provider;
+            current.model = model;
+        }
+        Ok(self
+            .executor
+            .clone()
+            .with_provider(Arc::clone(&current.provider))
+            .with_agent_config(current.agent_config.clone()))
+    }
+
     async fn drive_turn(
         &self,
         session_id: &str,
@@ -718,7 +827,8 @@ impl PeerChildTurns {
             ..ExecutionConfig::default()
         };
         let mut outcome = self
-            .executor
+            .turn_executor()
+            .await?
             .resume_streaming(
                 message,
                 session_id,
@@ -1504,6 +1614,7 @@ mod tests {
             dm_lock,
             trust: None,
             idle_detector: None,
+            live: None,
         }
     }
 

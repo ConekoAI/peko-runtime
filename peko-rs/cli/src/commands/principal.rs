@@ -39,8 +39,7 @@ pub enum PrincipalCommands {
     /// `--detach` for fire-and-forget (scripts/CI).
     ///
     /// Re-defining later = edit the peko's `principal.toml` and
-    /// `roles/root.md` directly, then restart the daemon, which reads
-    /// both when it starts.
+    /// `roles/root.md` directly; edits apply to the peko's next turn.
     Create {
         /// Peko name
         name: String,

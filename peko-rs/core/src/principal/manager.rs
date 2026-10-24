@@ -148,7 +148,9 @@ pub struct PrincipalManager {
     /// (`PeerChildTurns`), built lazily on first peer ingress and
     /// cached for the principal's lifetime. The bundle owns the
     /// persona-carrying `SubagentExecutor` + the session manager the
-    /// principal's peer children live in. Build failures (no
+    /// principal's peer children live in. The persona and model are
+    /// re-read at every turn (`PeerChildTurns::turn_executor`), so
+    /// caching the bundle never pins them. Build failures (no
     /// resolvable model) surface per call; nothing is cached on
     /// error so a config fix takes effect on the next message.
     peer_child_turns: tokio::sync::RwLock<
@@ -568,6 +570,7 @@ impl PrincipalManager {
             mcp,
             id: id.clone(),
             config: RwLock::new(config),
+            config_file_stamp: Principal::current_config_file_stamp(&layout.shared.root),
             workspace_path: layout.shared.root.clone(),
             memory,
             router,
@@ -719,6 +722,7 @@ impl PrincipalManager {
             mcp,
             id: id.clone(),
             config: RwLock::new(config),
+            config_file_stamp: Principal::current_config_file_stamp(&workspace_path),
             workspace_path,
             memory,
             router,
@@ -1030,9 +1034,17 @@ impl PrincipalManager {
     ) -> Result<(), PrincipalManagerError> {
         let toml =
             toml::to_string(config).map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-        tokio::fs::write(workspace_path.join("principal.toml"), toml)
-            .await
-            .map_err(PrincipalManagerError::Io)
+        // Write-then-rename: turns re-read principal.toml when it
+        // changes (`Principal::reload_config_if_changed`) and must
+        // never see a half-written file.
+        let path = workspace_path.join("principal.toml");
+        let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        tokio::fs::write(&temp_path, toml).await?;
+        if let Err(error) = tokio::fs::rename(&temp_path, &path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Mint the principal's DID identity. Returns the DID string.
@@ -1331,6 +1343,8 @@ impl PrincipalManager {
         channel: ChannelContext,
         override_model: Option<String>,
     ) -> Result<RouterContext, PrincipalManagerError> {
+        // Hand edits to principal.toml apply to this message.
+        principal.reload_config_if_changed().await;
         // Enforce Principal-level permissions before any routing or session work.
         let resource = {
             let config = principal.config.read().await;
@@ -1365,7 +1379,7 @@ impl PrincipalManager {
             })
             .collect();
 
-        let (available_agents, routing, intent, governance, principal_name) = {
+        let (available_agents, routing, intent, governance, preferred_model_id, principal_name) = {
             let config = principal.config.read().await;
             // ADR-066 P2: presence = spawnability — every role file in
             // the workspace is enabled.
@@ -1385,6 +1399,7 @@ impl PrincipalManager {
                 config.routing.clone(),
                 config.intent.clone(),
                 config.governance.clone(),
+                config.preferred_model_id.clone(),
                 config.name.clone(),
             )
         };
@@ -1401,6 +1416,7 @@ impl PrincipalManager {
             available_agents,
             intent,
             governance,
+            preferred_model_id,
             inbox_registry: Arc::clone(&self.inbox_registry),
             session_creation_lock: self.session_creation_lock(principal.id.clone()).await,
             observability: self.observability.clone(),
@@ -4029,6 +4045,223 @@ mod tests {
             .expect("child JSONL exists");
         assert!(jsonl.contains("stream me"));
         assert_no_retired_root_jsonl(&sessions_dir);
+    }
+
+    // ===================================================================
+    // Live definition: edits to roles/root.md and principal.toml apply
+    // to the next turn without a daemon restart.
+    // ===================================================================
+
+    /// Whether the last recorded LLM request carried `text` anywhere in
+    /// its messages (the system prompt holds the root role).
+    fn last_request_contains(adapter: &MockAdapter, text: &str) -> bool {
+        let requests = adapter.recorded_requests();
+        let last = requests.last().expect("a request was recorded");
+        format!("{:?}", last.messages).contains(text)
+    }
+
+    /// Append `text` to the principal's root role, as a person editing
+    /// the file would.
+    async fn append_to_root_role(principal: &Principal, text: &str) {
+        let path = principal.workspace_path.join("roles").join("root.md");
+        let mut body = tokio::fs::read_to_string(&path).await.expect("root role");
+        body.push_str(&format!("\n{text}\n"));
+        tokio::fs::write(&path, body).await.unwrap();
+    }
+
+    /// Set `preferred_model_id` in the principal's `principal.toml` on
+    /// disk, as a person editing the file would.
+    async fn set_model_on_disk(principal: &Principal, model: &str) {
+        let path = principal.workspace_path.join("principal.toml");
+        let mut doc: toml::Value =
+            toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        doc.as_table_mut()
+            .unwrap()
+            .insert("preferred_model_id".into(), model.into());
+        tokio::fs::write(&path, toml::to_string(&doc).unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// A conversation's turn bundle is cached for the principal's
+    /// lifetime. Before, it kept the root role and model it was built
+    /// with, so an edit to either file showed up only after a daemon
+    /// restart.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn conversation_turns_pick_up_root_role_and_model_edits() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let peer = ActorRef::User("alice".into());
+        let send = |message: &'static str| {
+            let manager = Arc::clone(&manager);
+            let id = id.clone();
+            let peer = peer.clone();
+            async move {
+                manager
+                    .receive_streaming(
+                        id,
+                        peer,
+                        message.to_string(),
+                        cli_channel(),
+                        Box::new(|_| {}),
+                        None,
+                    )
+                    .await
+            }
+        };
+        let marker = "Always sign off as the edited root role.";
+
+        adapter.queue_text("first");
+        send("one").await.expect("first turn");
+        assert!(!last_request_contains(&adapter, marker));
+
+        append_to_root_role(&principal, marker).await;
+        adapter.queue_text("second");
+        send("two").await.expect("second turn");
+        assert!(
+            last_request_contains(&adapter, marker),
+            "the turn after the edit must carry the new root role"
+        );
+
+        // A model the catalog does not have: the next turn resolves no
+        // provider, where the stale cached one would have answered.
+        set_model_on_disk(&principal, "not-a-configured-model").await;
+        adapter.queue_text("fourth");
+        let before = adapter.recorded_requests().len();
+        let err = send("three").await.expect_err("unknown model must fail");
+        assert!(
+            format!("{err:?}").contains("no model configured"),
+            "{err:?}"
+        );
+        assert_eq!(adapter.recorded_requests().len(), before);
+        assert_eq!(
+            principal.config.read().await.preferred_model_id.as_deref(),
+            Some("not-a-configured-model")
+        );
+
+        set_model_on_disk(&principal, "mock").await;
+        let response = send("four").await.expect("model restored");
+        assert!(response.content.contains("fourth"), "{}", response.content);
+        assert!(last_request_contains(&adapter, marker));
+    }
+
+    /// The trunk (cron and owner turns in `root:self`) reads the root
+    /// role and model per turn too.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn trunk_turns_pick_up_root_role_and_model_edits() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let tick = || {
+            manager.receive_trunk(
+                id.clone(),
+                "tick".to_string(),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+            )
+        };
+        let marker = "Trunk edit: check the inbox first.";
+
+        adapter.queue_text("first");
+        tick().await.expect("first trunk turn");
+        assert!(!last_request_contains(&adapter, marker));
+
+        append_to_root_role(&principal, marker).await;
+        adapter.queue_text("second");
+        tick().await.expect("second trunk turn");
+        assert!(
+            last_request_contains(&adapter, marker),
+            "the trunk turn after the edit must carry the new root role"
+        );
+
+        set_model_on_disk(&principal, "not-a-configured-model").await;
+        adapter.queue_text("third");
+        let before = adapter.recorded_requests().len();
+        let err = tick().await.expect_err("unknown model must fail");
+        assert!(
+            format!("{err:?}").contains("No provider configured"),
+            "{err:?}"
+        );
+        assert_eq!(adapter.recorded_requests().len(), before);
+    }
+
+    /// A root role that cannot be read at turn time (mid-save, deleted)
+    /// keeps the last good one instead of failing the turn.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn missing_root_role_keeps_the_last_good_one() {
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let marker = "Last good root role.";
+        append_to_root_role(&principal, marker).await;
+        let peer = ActorRef::User("alice".into());
+
+        adapter.queue_text("first");
+        manager
+            .receive_streaming(
+                id.clone(),
+                peer.clone(),
+                "one".into(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
+            .await
+            .expect("first turn");
+        assert!(last_request_contains(&adapter, marker));
+
+        tokio::fs::remove_file(principal.workspace_path.join("roles").join("root.md"))
+            .await
+            .unwrap();
+        adapter.queue_text("second");
+        manager
+            .receive_streaming(
+                id,
+                peer,
+                "two".into(),
+                cli_channel(),
+                Box::new(|_| {}),
+                None,
+            )
+            .await
+            .expect("a missing root role must not fail the turn");
+        assert!(last_request_contains(&adapter, marker));
+    }
+
+    /// A `principal.toml` that no longer parses keeps the loaded config.
+    /// Identity fields keep their loaded values even when the file
+    /// changes them.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn config_reload_keeps_identity_and_survives_bad_edits() {
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let path = principal.workspace_path.join("principal.toml");
+        let loaded = principal.config.read().await.clone();
+
+        tokio::fs::write(&path, "this is = = not toml")
+            .await
+            .unwrap();
+        principal.reload_config_if_changed().await;
+        assert_eq!(
+            principal.config.read().await.preferred_model_id,
+            loaded.preferred_model_id
+        );
+
+        let mut edited = loaded.clone();
+        edited.name = "renamed".into();
+        edited.id = Some(PrincipalId::generate());
+        edited.preferred_model_id = Some("other".into());
+        tokio::fs::write(&path, toml::to_string(&edited).unwrap())
+            .await
+            .unwrap();
+        principal.reload_config_if_changed().await;
+        let config = principal.config.read().await;
+        assert_eq!(config.preferred_model_id.as_deref(), Some("other"));
+        assert_eq!(config.name, loaded.name);
+        assert_eq!(config.id, loaded.id);
+        assert_eq!(config.did, loaded.did);
     }
 
     // ===================================================================
