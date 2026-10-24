@@ -9,18 +9,21 @@ formats, and before the first public release is cut.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
-## Status at a glance (2026-10-22)
+## Status at a glance (2026-10-24)
 
 | Gate | Done | Blocking now |
 |---|---|---|
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
-| 1. Distribution | 4 / 6 | No release ever cut; clean-machine install unverified |
+| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.3 is the latest candidate) |
 | 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
-| 3. Docs | 3 / 4 | Final walk against the next release candidate |
+| 3. Docs | 4 / 4 | — |
 | 4. CI | 1 / 4 | Nothing has run on a release commit yet; real-LLM tier needs 3 launch models |
 | 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
 | 6. Security | 2 / 2 | — |
-| **Total** | **15 / 26** | |
+| **Total** | **17 / 26** | |
+
+2026-10-24: rc.3 is published and smoke-tested on all four platforms; gates 1
+and 3 moved to 5/6 and 4/4.
 
 Between 2026-09-30 and 2026-10-22 no gate item moved; the ~80 commits in
 that stretch were feature and fix work (ADR-072 to ADR-086). Gate 0 was
@@ -83,6 +86,10 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **First release cut.** `git tag v<version>` triggers
       `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
       darwin x64/arm64) build and publish successfully.
+      *2026-10-24: `v0.1.0-rc.3` (`e432b82b`, run 40081459392) built,
+      published and passed the new smoke job on all four platforms. The
+      pipeline is proven. This box closes with the MVP version's own tag.*
+
       *2026-10-22: rehearsal tag `v0.1.0-rc.1` (`f8c616c4`) ran
       `release.yml` for the first time (run 39793287147). Three of the four
       builds passed. linux-aarch64 failed to cross-compile `openssl-sys`, so
@@ -115,7 +122,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       Verified parse-clean via `PekoConfig`'s new serde defaults.
 - [x] **`release.yml` release notes fixed** (2026-09-29) — quick start no
       longer teaches the retired `peko agent create` flow.
-- [ ] **Clean-machine install verified.** On a fresh macOS and a fresh Linux
+- [x] **Clean-machine install verified** (2026-10-24, v0.1.0-rc.3). On a fresh macOS and a fresh Linux
       box (or container): run `install.sh`, follow the printed quick start,
       create a principal, send it a message, get a reply. No repo checkout,
       no cargo, no undocumented steps.
@@ -138,8 +145,24 @@ Currently the primary install path is dead: no release has ever been cut, and
       Genesis took 134 s on Linux and 131 s on macOS, which is slow for a
       first run.*
 
-      *Not yet: macOS x86_64 and Linux x86_64, a real fresh Mac rather than
-      an isolated home, and systemd (the container has none).*
+      *2026-10-24, rc.3, all four platforms. `release.yml` now ends with
+      `release-smoke.yml`. On fresh GitHub runners (`ubuntu-22.04`,
+      `ubuntu-22.04-arm`, `macos-15-intel`, `macos-latest`), it installs the
+      published release with `install.sh` and runs the quick start against a
+      local fake model: `model add --no-key`, `model test`, `daemon start`,
+      `create`, `send` (reply checked), `log`, `export`. All four passed on
+      the rc.3 tag (run 40081459392).*
+
+      *The gate 3 walk (below) repeated the quick start with MiMo v2.6 Flash
+      on macOS arm64 and Ubuntu 22.04 arm64. `create` took 61–82 s, down
+      from about 130 s after #504.*
+
+      *Not covered: the systemd unit, and a real model on x86_64 (the smoke
+      job uses the fake model there).*
+
+      *Finding: `peko model test` gives up after 5 s. Against MiMo's endpoint
+      it timed out on 3 of the last 6 runs, while every following call to the
+      same endpoint worked.*
 
       *Two daemon warnings showed up on both platforms, to investigate:*
       - *`completion_wake` fails right after the reply, with "cannot
@@ -177,7 +200,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       "retained for historical reference" blocks removed.
 - [x] **`Makefile` doc reference fixed** (2026-09-29) — points at
       `docs/testing/MANUAL_TEST_PLAN.md`.
-- [ ] **Getting-started + tutorial walk end-to-end** against the release
+- [x] **Getting-started + tutorial walk end-to-end** (2026-10-24, v0.1.0-rc.3) against the release
       artifact (not a repo build): `docs/getting-started/` both files, every
       command pasted from real output per docs/README.md's contribution rule.
       *2026-10-24: both rewritten around `install.sh`. The tutorial is now
@@ -190,8 +213,18 @@ Currently the primary install path is dead: no release has ever been cut, and
       - *The tutorial was run end to end on the branch build with MiMo
         v2.6 Flash. Export/import was checked between two isolated
         homes.*
-      - *Still open: one walk of both files against the next release
-        candidate, which will carry the branch's string and path fixes.*
+      - *2026-10-24, final walk against the v0.1.0-rc.3 artifact. Both
+        files were followed as written, with MiMo v2.6 Flash, on macOS arm64
+        (isolated home) and Ubuntu 22.04 arm64 (container). The install was
+        the documented `curl … | bash -s -- --version 0.1.0-rc.3
+        --install-dir ~/.local/bin`, and every step passed: create,
+        send/log (replies show the peko's name), show, stop, the persona
+        edit (applied with no restart, #502), memory in `kb/MEMORY.md`, the
+        2-minute reminder (fired), the haiku skill, export into the caller's
+        directory, and import in a second home. There the imported peko
+        answered "Your name is Sam", so its memory travelled with it. The
+        pasted output matches rc.3, so no doc changes were needed. The one
+        failure was `model test` timing out (see gate 1).*
 - [x] **ADR-064 terminology sweep complete** (2026-10-24) — `role` vs `agent` vs
       `principal` consistent across README, user's guide, CLI reference, and
       the compiled-in default role file.
