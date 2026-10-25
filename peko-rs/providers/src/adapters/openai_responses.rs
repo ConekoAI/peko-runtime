@@ -194,7 +194,7 @@ impl OpenAiResponsesAdapter {
             }
             MessageRole::Tool => {
                 let call_id = msg.tool_call_id.clone().unwrap_or_default();
-                let output = extract_text_content(&msg.content);
+                let output = super::tool_message_text(&msg.content);
                 vec![ResponsesInputItem::FunctionCallOutput { call_id, output }]
             }
         }
@@ -603,28 +603,25 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
             "response.function_call_arguments.delta" => {
                 if let Some(delta) = chunk.delta {
                     let idx = chunk.output_index.map(|i| i as usize).unwrap_or(0);
-                    if let Some(item_id) = chunk.item_id.as_deref() {
-                        // First time we see this call: register id
-                        // *and* fold the first arg fragment into the
-                        // buffer — the server sends the arg delta
-                        // stream starting from the very first
-                        // chunk, so dropping it loses the start of
-                        // the JSON.
-                        let is_new = self.tool_call_accumulator.is_new_call(idx, item_id);
-                        let _ = self.tool_call_accumulator.accumulate(
-                            idx,
-                            Some(item_id.to_string()),
-                            None,
-                            Some(delta.clone()),
-                        );
-                        if is_new {
-                            return Ok(Some(StreamEvent::ToolCallStart { content_index: idx }));
-                        }
-                        return Ok(Some(StreamEvent::ToolCallDelta {
-                            content_index: idx,
-                            delta,
-                        }));
+                    // Deltas belong to the call at `output_index`. Their
+                    // `item_id` is the item's id (`fc_…`), not the call's
+                    // `call_id` (`call_…`) that `output_item.added`
+                    // registered, so it only names the call when no
+                    // `added` event came first. Fragments only append:
+                    // completing the call here would drop it from the
+                    // buffer before `output_item.done`.
+                    let opened = self.tool_call_accumulator.append_arguments(
+                        idx,
+                        chunk.item_id.clone(),
+                        &delta,
+                    );
+                    if opened {
+                        return Ok(Some(StreamEvent::ToolCallStart { content_index: idx }));
                     }
+                    return Ok(Some(StreamEvent::ToolCallDelta {
+                        content_index: idx,
+                        delta,
+                    }));
                 }
                 Ok(None)
             }
@@ -651,6 +648,12 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
                 if let Some(item) = chunk.item {
                     if item.item_type == "function_call" {
                         let idx = chunk.output_index.map(|i| i as usize).unwrap_or(0);
+                        // The finished item carries the complete
+                        // arguments; prefer them to the reassembled
+                        // deltas.
+                        if let Some(arguments) = item.arguments.filter(|a| !a.is_empty()) {
+                            self.tool_call_accumulator.set_arguments(idx, arguments);
+                        }
                         // Some servers only carry name/id in the
                         // `done` event; register anything we missed.
                         // `accumulate` returns the completed call
@@ -962,6 +965,10 @@ struct ResponsesStreamItem {
     call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    /// Complete arguments of a `function_call` item; present in
+    /// `output_item.done` (empty in `output_item.added`).
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1122,6 +1129,24 @@ mod tests {
         assert_eq!(input[2]["call_id"], "c1");
         assert_eq!(input[2]["name"], "Read");
         assert_eq!(input[2]["arguments"], serde_json::to_string(&args).unwrap());
+    }
+
+    /// A tool result as the engine builds it (`LlmMessage::tool_result`)
+    /// reaches `function_call_output.output`. Before, the output was empty.
+    #[test]
+    fn engine_tool_result_reaches_function_call_output() {
+        let adapter = make_adapter();
+        let messages = vec![
+            user_msg("read it"),
+            LlmMessage::tool_result("c1", "Read", "TOOL_TEST_SECRET_123", false),
+        ];
+        let (_, body) = adapter
+            .build_request("gpt-test", &messages, None, &options_default(), false)
+            .unwrap();
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[1]["type"], "function_call_output");
+        assert_eq!(input[1]["call_id"], "c1");
+        assert_eq!(input[1]["output"], "TOOL_TEST_SECRET_123");
     }
 
     #[test]
@@ -1419,6 +1444,79 @@ mod tests {
         match ev {
             StreamEvent::TextDelta { delta, .. } => assert_eq!(delta, "Hi"),
             other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    /// The event sequence a real Responses server sends (recorded from
+    /// MiMo; OpenAI's has the same shape): a reasoning item at index 0,
+    /// the call at index 1, `output_item.added` with the call's `call_id`,
+    /// argument deltas keyed by the item's own id (`fc_…`), then
+    /// `output_item.done` with the complete arguments. Before, the deltas'
+    /// differing id replaced the call's identity and the last fragment
+    /// completed and dropped the call, so it ended with empty arguments.
+    fn replay(adapter: &OpenAiResponsesAdapter, events: &[&str]) -> Vec<StreamEvent> {
+        events
+            .iter()
+            .filter_map(|e| adapter.parse_sse_event("gpt-test", e).unwrap())
+            .collect()
+    }
+
+    fn real_server_tool_call_events(done_carries_arguments: bool) -> Vec<String> {
+        let done_args = if done_carries_arguments {
+            r#","arguments":"{\"path\": \"tool_test.txt\"}""#
+        } else {
+            ""
+        };
+        vec![
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#.to_string(),
+            r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","name":"Read","call_id":"call_1","arguments":"","id":"fc_1"}}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_1","delta":"{\"path\": "}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_1","delta":"\"tool_test.txt\""}"#.to_string(),
+            r#"{"type":"response.function_call_arguments.delta","output_index":1,"item_id":"fc_1","delta":"}"}"#.to_string(),
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}"#.to_string(),
+            format!(r#"{{"type":"response.output_item.done","output_index":1,"item":{{"type":"function_call","name":"Read","call_id":"call_1","id":"fc_1"{done_args}}}}}"#),
+        ]
+    }
+
+    fn the_one_tool_call(events: &[StreamEvent]) -> (String, String, serde_json::Value) {
+        let ends: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolCallEnd {
+                    tool_call:
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        },
+                    ..
+                } => Some((id.clone(), name.clone(), arguments.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ends.len(),
+            1,
+            "expected exactly one ToolCallEnd: {events:?}"
+        );
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolCallStart { .. }))
+            .count();
+        assert_eq!(starts, 1, "expected exactly one ToolCallStart: {events:?}");
+        ends.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn real_server_tool_call_keeps_its_arguments_and_call_id() {
+        for done_carries_arguments in [true, false] {
+            let adapter = make_adapter();
+            let events = real_server_tool_call_events(done_carries_arguments);
+            let refs: Vec<&str> = events.iter().map(String::as_str).collect();
+            let (id, name, arguments) = the_one_tool_call(&replay(&adapter, &refs));
+            assert_eq!(id, "call_1", "the call keeps its call_id");
+            assert_eq!(name, "Read");
+            assert_eq!(arguments, json!({"path": "tool_test.txt"}));
         }
     }
 

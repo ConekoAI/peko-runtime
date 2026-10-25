@@ -113,6 +113,33 @@ impl ToolCallAccumulator {
 
     /// Check if a tool call at the given index is new (not yet in buffer).
     #[must_use]
+    /// Append an argument fragment to the call at `index` without
+    /// completing it. Returns whether this fragment opened the call (no
+    /// entry at `index` yet); `id` is recorded only in that case, so a
+    /// later fragment keyed by a different id cannot replace the call's
+    /// identity.
+    pub fn append_arguments(&self, index: usize, id: Option<String>, fragment: &str) -> bool {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            let opened = !buffer.contains_key(&index);
+            let entry = buffer.entry(index).or_default();
+            if opened {
+                entry.id = id;
+            }
+            entry.arguments.push_str(fragment);
+            return opened;
+        }
+        false
+    }
+
+    /// Replace the arguments of the call at `index` with a complete
+    /// string the server sent (so a fragment lost or duplicated in the
+    /// delta stream cannot corrupt them).
+    pub fn set_arguments(&self, index: usize, arguments: String) {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            buffer.entry(index).or_default().arguments = arguments;
+        }
+    }
+
     pub fn is_new_call(&self, index: usize, id: &str) -> bool {
         if let Ok(buffer) = self.buffer.lock() {
             !buffer.contains_key(&index)
@@ -295,6 +322,23 @@ fn extract_text_content(blocks: &[ContentBlock]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+/// The text of a tool-role message. The engine wraps a tool's output in a
+/// `ToolResult` block (`LlmMessage::tool_result`), so the text lives
+/// inside it; top-level `Text` blocks are kept too. The OpenAI wire
+/// formats carry this as a plain string (Chat Completions `content`,
+/// Responses `function_call_output.output`).
+fn tool_message_text(blocks: &[ContentBlock]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for block in blocks {
+        match block {
+            ContentBlock::ToolResult { content, .. } => parts.push(extract_text_content(content)),
+            ContentBlock::Text { text } => parts.push(text.clone()),
+            _ => {}
+        }
+    }
+    parts.join("\n")
 }
 
 /// Type-erased adapter enum for concrete provider cores.
