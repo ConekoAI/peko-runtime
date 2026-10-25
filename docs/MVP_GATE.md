@@ -9,7 +9,7 @@ formats, and before the first public release is cut.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
-## Status at a glance (2026-10-24)
+## Status at a glance (2026-10-25)
 
 | Gate | Done | Blocking now |
 |---|---|---|
@@ -17,7 +17,7 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.3 is the latest candidate) |
 | 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 1 / 4 | Nothing has run on a release commit yet; real-LLM tier needs 3 launch models |
+| 4. CI | 1 / 4 | Re-run on the release commit (real-LLM tier green on all three formats at `91f7e024`) |
 | 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
 | 6. Security | 2 / 2 | — |
 | **Total** | **17 / 26** | |
@@ -64,19 +64,28 @@ All four decided by the owner on 2026-10-22.
       - Done: documented in `docs/user-guide/USERS_GUIDE.md`
         (Known Limitations); the CHANGELOG "Phase 12b accepted gap" entry is
         marked superseded by ADR-072 D6.
-- [x] **Launch models are named** (decided 2026-10-22). Support is by wire
-      format, not by vendor (the preset gallery is retired). One launch model
-      per format; each must pass `make test-integration-llm` on the release
-      commit (gate 4).
+- [x] **Wire-format adapters are verified against a real API** (decided
+      2026-10-25, replacing "launch models are named" from 2026-10-22).
+      Support is by wire format, not by vendor, and no models are named as
+      launch models. Each adapter must pass the real-LLM tier (gate 4)
+      against a real endpoint that speaks that format. Any provider will
+      do; the endpoint used is recorded below.
 
-      | Format | Launch model | Verified |
+      | Format | Endpoint used | Real-LLM tier |
       |---|---|---|
-      | `anthropic_messages` | MiMo v2.6 Flash (`mimo-v2.6-flash`, Xiaomi endpoint) | peko-benchmark live runs, October 2026; real-LLM tier not yet run |
-      | `openai_responses` | An OpenAI model, named when its run is recorded | not yet |
-      | `openai_completions` | An OpenAI-compatible endpoint, named when its run is recorded | not yet |
+      | `anthropic_messages` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/anthropic` | ✅ 2026-10-25, `91f7e024` |
+      | `openai_completions` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/v1` | ✅ 2026-10-25, `91f7e024` |
+      | `openai_responses` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/v1` | ✅ 2026-10-25, `91f7e024` |
 
-      Record the model id and date in this table when each run passes. Only
-      then list a model as verified in user-facing docs.
+      MiMo serves all three formats for the same model, so one account
+      covers every adapter.
+
+      The first run (on `07c9362b`) failed `native_tool_call` on both
+      OpenAI formats, which found two adapter bugs:
+      - Tool output reached the model empty.
+      - Responses tool-call arguments were dropped.
+
+      Both are fixed in `91f7e024`.
 
 ## 1. Distribution — a stranger can install and run Peko
 
@@ -249,7 +258,13 @@ Currently the primary install path is dead: no release has ever been cut, and
       failures listed here earlier now pass; one ledger test still fails
       (see gate 0).
 - [ ] **Real-LLM tier green** (`make test-integration-llm`) on each of the
-      three launch models named in gate 0, on the release commit.
+      three wire formats against a real endpoint (gate 0), on the release
+      commit.
+
+      *2026-10-25: all three green on `91f7e024` against MiMo v2.6 Flash:
+      `cli_providers` 2/2, `tunnel_integration` 6/6, and
+      `daemon::e2e_tests::tunnel_e2e` 1/1 per format. Re-run on the release
+      commit to close.*
 - [ ] **`make docker-up && make test-integration && make docker-down`**
       passes from a clean clone using only documented steps.
 
