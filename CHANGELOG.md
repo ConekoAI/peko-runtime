@@ -4,7 +4,119 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Fix: tool calls work on OpenAI-format endpoints (2026-10-25)
+## [0.1.0] - unreleased
+
+> **Draft (2026-10-25).** The first public release. The version and date
+> are set when the release is tagged. Release candidates `v0.1.0-rc.1` to
+> `v0.1.0-rc.4` were cut from this line. This section folds everything
+> since the untagged pre-release builds of 2026-03 to 2026-05 (under
+> *Pre-release history* below); the entry-by-entry log follows the summary.
+
+Peko 0.1.0 runs **pekos**: persistent AI agents that you own. Each one has
+an identity, memory, roles, rules and tooling in one directory of plain
+files. A daemon keeps it working on a schedule and between conversations,
+and it talks with people and other pekos over channels. It works with any
+model that speaks the Anthropic Messages, OpenAI Chat Completions or OpenAI
+Responses wire format.
+
+### Breaking changes
+
+Pre-release builds promised no compatibility, and these changes have no
+migration path unless one is stated.
+
+- **CLI surface.** The peko lifecycle verbs are top-level: `peko create`,
+  `list`, `show`, `export`, `import`, `permit`, `revoke` and so on
+  (ADR-059). The `peko principal …` namespace is gone; scripts that use it
+  must drop the `principal` word.
+  - **Talking to a peko** is `peko send` / `peko stop` / `peko log`
+    (ADR-048).
+  - **Retired command trees:** `peko cron` (now the peko's own `Cron`
+    tool; PR #364), `peko ext`, `peko capability`, `peko agent|persona|tool|
+    hook|skill|mcp` (ADR-047, ADR-050), `peko team`, and the registry
+    `push` / `pull` / `search` commands (ADR-066 P5). There is no
+    `peko session` command (ADR-042).
+- **Packages.** `.peko` is the only package format: a flat manifest with a
+  SHA-256 file inventory (ADR-056, ADR-066 P5).
+  - `.principal`, `.agent` and `.team` are retired.
+  - Legacy OCI snapshots cannot be imported; re-export them from the
+    runtime that made them.
+  - A runtime holds one copy of a peko; `peko import --rotate-keys` makes
+    a new one (ADR-081).
+- **Identity and addresses.** Every actor has a local id and an optional
+  Hub id. Addresses are `user:local`, `user:hub:<id>`,
+  `principal:local:<id>` and `principal:hub:<id>` (ADR-073, ADR-077,
+  ADR-081).
+  - A principal has exactly one owner and keeps its contacts.
+  - PekoHub access is `peko runtime register` followed by
+    `peko register <peko>`, with one online copy per principal (ADR-081).
+- **Cross-runtime messaging.** Messages are origin-signed, and
+  registration uses proof of possession (ADR-058). Peers must run 0.1.0
+  on both ends. The old A2A RPC stack, `send_peer` and the chat-log CLI
+  are gone; channels carry every conversation (sprints 3–5, ADR-049).
+  Delivery is a durable outbox with resend until confirmed (ADR-072 D6).
+- **Models.** Models are added generically with
+  `peko model add --api-format <format> --base-url … --model …`
+  (ADR-068). Vendor presets and the template gallery are gone.
+  - Keys live only in the encrypted vault and are never read from
+    environment variables.
+  - A peko is pinned to one configured model; there is no runtime
+    default.
+- **Workspace layout.** Role templates live in `roles/<name>.md`, not
+  `agents/`; existing workspaces are moved at boot (ADR-064).
+  - Capabilities are plain files in the workspace (ADR-050), and memory
+    lives in `kb/` (ADR-055).
+  - Capability grants in `principal.toml` are ignored: there is no
+    capability gate (ADR-066 D1). What a run may do now depends on whom
+    it acts for (ADR-078).
+- **Trust floor.** Runs acting for anyone but the owner get no `Bash` or
+  MCP and keep their file tools inside the workspace. Their writes to
+  protected files become proposals, and their sensitive calls go to the
+  policy reviewer (ADR-078).
+- **Retired surfaces.** Chat-gateway adapters such as Discord and Slack
+  (sprint 9), universal tools and the `peko-tool` Python SDK (ADR-062),
+  the extension capability gate and registry client (ADR-066), session
+  chapters (round 7) and the session archive flag.
+- **Configuration.** Only `~/.peko/peko.toml` (`[provider.retry]`) and
+  `~/.peko/config.toml` (`[compaction]`) are read; see
+  `config.example.toml`.
+
+### Highlights
+
+- **Install and run.** `install.sh` installs release archives for macOS
+  and Linux (x86_64 and arm64). Each release is smoke-tested on all four
+  platforms.
+- **Wire-format adapters verified against a real API.** Anthropic
+  Messages, OpenAI Chat Completions and OpenAI Responses all pass the
+  real-LLM tier.
+- **Memory that names its sources.** A nightly pass journals the day,
+  curates `kb/MEMORY.md` and reflects into `kb/dreams/`. A reviewer model
+  checks each sourced line against its sources (ADR-080, ADR-085).
+- **Background work without idle cost.** Cron jobs, attention-gated
+  keepalives that call no model when nothing waits (ADR-083), goals as
+  plans with check-ins (ADR-084), and peer posts that bring the keepalive
+  forward (ADR-086).
+- **Channels.** Direct and group channels, an explicit kind, bindings and
+  wake policy, and groups that pekos manage themselves (ADR-049, ADR-082).
+- **Accountability.** A hash-chained per-peko tool ledger (ADR-079), and
+  `POLICY.md` with owner approvals (ADR-078).
+- **Agent-authored workflows** (`Workflow`, `ModelCall`; ADR-061) and
+  workspace hooks (ADR-047, ADR-066 P4).
+
+### Upgrading from a pre-release build
+
+There is no automatic upgrade:
+- A `.peko` package exported by a build that writes the flat manifest
+  (ADR-066 P5, 2026-10-02 or later) imports into 0.1.0. Pekos from older
+  builds must be created again with `peko create`.
+- A model catalog from before format-based models (ADR-068, 2026-10-05)
+  must be rebuilt with `peko model add`.
+
+### Detailed changes
+
+The entries below are in reverse chronological order, as they were
+recorded.
+
+#### Fix: tool calls work on OpenAI-format endpoints (2026-10-25)
 
 On `openai_completions` and `openai_responses` models, every tool result
 reached the model empty. The engine wraps a tool's output in a `ToolResult`
@@ -37,7 +149,7 @@ Deltas now only append, keyed by `output_index`. The call keeps its
 prefers the complete `arguments` the finished item carries. A replay of
 MiMo's recorded event sequence is now a unit test.
 
-### Fix: `peko model test` waits 30 s and reports a slow endpoint as slow (2026-10-24)
+#### Fix: `peko model test` waits 30 s and reports a slow endpoint as slow (2026-10-24)
 
 `peko model test` gave up after 5 s. A first request also pays for DNS,
 TCP and TLS setup, and against a working endpoint in another region the test
@@ -51,7 +163,7 @@ to answer, so the key and settings were not checked. Run the test again;
 a peko's turns wait up to 300s". It still exits non-zero. Other connection
 failures (refused, DNS, TLS) keep their underlying message.
 
-### Fix: `peko create` no longer waits a minute before the genesis turn (2026-10-24)
+#### Fix: `peko create` no longer waits a minute before the genesis turn (2026-10-24)
 
 The first `peko create` took about 130 seconds even with a model that
 answers in 3. Timed against an instant local model, `create` took 71
@@ -71,7 +183,7 @@ The boot pass now uses a fresh clock reading for each principal's genesis
 job, so the short delay can't expire while earlier principals are being
 seeded.
 
-### Fix: no session-key warning on the first `peko send` (2026-10-24)
+#### Fix: no session-key warning on the first `peko send` (2026-10-24)
 
 The first `peko send` to a peko logged `WARN peko_session::key:
 derive_base_session_key called with non-peer ActorRef public; falling back
@@ -84,7 +196,7 @@ Channel sessions now get their own `agent:<agent>:peer:public:channel` key,
 with no warning. Nothing looked sessions up by the old key: channel sessions
 are found by their channel binding.
 
-### Fix: `peko update --check` says when there is no stable release yet (2026-10-24)
+#### Fix: `peko update --check` says when there is no stable release yet (2026-10-24)
 
 With only prereleases published, GitHub's `releases/latest` returns 404 and
 `peko update --check` said "Failed to query GitHub API — Make sure you're
@@ -97,7 +209,7 @@ The version is now read from the response's `tag_name` with a JSON parser.
 The old parser never found it and always reported the latest version as
 `vlatest`.
 
-### Fix: `peko log` shows the peko's name on its replies (2026-10-24)
+#### Fix: `peko log` shows the peko's name on its replies (2026-10-24)
 
 `peko log my-peko` printed the peko's replies under its internal address
 (`principal:prin_27c5…: Hello!`). They now show its name (`my-peko: Hello!`),
@@ -106,7 +218,7 @@ as `peko send` does. Other actors keep their address (`user:local: …`).
 Each `peko log --json` message from the peko gains a `senderName` field
 alongside the unchanged `sender`.
 
-### Fix: edits to `roles/root.md` and `principal.toml` apply without a daemon restart (2026-10-24)
+#### Fix: edits to `roles/root.md` and `principal.toml` apply without a daemon restart (2026-10-24)
 
 A peko's conversation turns ran on a bundle cached for the daemon's
 lifetime, which kept the root role and model it was built with. The trunk's
@@ -126,7 +238,7 @@ a half-written file.
 
 The docs and `peko create --help` no longer say to restart after editing.
 
-### Fix: `peko import --rotate-keys` exists (2026-10-24)
+#### Fix: `peko import --rotate-keys` exists (2026-10-24)
 
 Importing a snapshot of a peko this runtime already hosts is refused (ADR-081
 D6), and the error said to import with `--rotate-keys` to make a new actor.
@@ -144,7 +256,7 @@ package's name is the hosted peko's own name, the error names
 `--rotate-keys --name <new-name>` or `--force`. The `principal_import_preview`
 and `principal_import` IPC requests gained `rotate_keys` (default `false`).
 
-### Fix: models added with `--no-key` run turns (2026-10-24)
+#### Fix: models added with `--no-key` run turns (2026-10-24)
 
 A model added with `peko model add --no-key` (`requires_key = false`) passed
 `peko model test`, but every turn on it failed with "No provider
@@ -160,7 +272,7 @@ Whether a model may go without a key is still decided by
 `LlmResolver::resolve_api_key`: a model that requires a key and has none
 stored fails to build, as before.
 
-### Fix: `peko export` / `peko import` paths are the user's, and reinstalling through `curl | bash` works (2026-10-24)
+#### Fix: `peko export` / `peko import` paths are the user's, and reinstalling through `curl | bash` works (2026-10-24)
 
 **Export and import paths.** The CLI sent export and import paths to the
 daemon unresolved, so a relative path, including export's default
@@ -174,7 +286,7 @@ itself, so reinstalling over an existing install exited 1 without doing
 anything. It now asks on `/dev/tty`, and reinstalls when there is no
 terminal (CI, containers).
 
-### Docs and CLI wording: install-first docs, ADR-064 / ADR-059 terms (2026-10-24)
+#### Docs and CLI wording: install-first docs, ADR-064 / ADR-059 terms (2026-10-24)
 
 - **Docs.** Getting-started, the tutorial (now `TUTORIAL_FIRST_PEKO.md`), the
   user's guide and README now start from `install.sh`. Their command
@@ -192,7 +304,7 @@ terminal (CI, containers).
 - **Root role.** The compiled-in root role's description and `RoleCatalog`
   line say role.
 
-### Fix: a conversation reply no longer lands in the trunk's inbox (2026-10-23)
+#### Fix: a conversation reply no longer lands in the trunk's inbox (2026-10-23)
 
 Every subagent run registered its async task with completion delivery and
 wake on. Every production caller already waits for the run and takes the
@@ -211,7 +323,7 @@ Subagent runs are now quiet (`deliver_completion: false`,
 `wake_on_completion: false`). An `Agent` call that detaches past the
 router's wait is still delivered by the router's own task (ADR-063 D4).
 
-### Fix: channel subscribers no longer replay history after a restart (2026-10-22)
+#### Fix: channel subscribers no longer replay history after a restart (2026-10-22)
 
 Every member's subscriber shares one `cursors.json` per channel, but each
 saved its whole in-memory map. The last writer dropped the other members'
@@ -226,7 +338,7 @@ Subscribers now save only their own entry with `ChannelCursors::save_member`.
 It merges the entry into the file under its lock and never moves a numeric
 cursor backwards. Temp files are named uniquely. The file shape is unchanged.
 
-### Feature: peer posts bring the attention keepalive forward (ADR-086, 2026-10-21)
+#### Feature: peer posts bring the attention keepalive forward (ADR-086, 2026-10-21)
 
 A post by another principal never starts a turn (ADR-072 D1). Until now it
 waited for the recipient's next keepalive fire, up to 10 minutes. Now every
@@ -245,7 +357,7 @@ conversation between principals now takes at most about 12 turns an hour
 instead of 6. Human posts, `always` or disabled keepalives, and other jobs are
 unchanged. Closes G11 of `docs/research/2026-10-persistent-bot-patterns.md`.
 
-### Fix: owner-only groups are owner on every path; seeded jobs stop only at the owner's word (2026-10-21)
+#### Fix: owner-only groups are owner on every path; seeded jobs stop only at the owner's word (2026-10-21)
 
 **Conversation rosters.** Channel-binding wakes, completion wakes and cron
 origin turns built their turn driver without the channel port. Their stamps
@@ -269,7 +381,7 @@ Genesis and scheduled turns can still retune those jobs in place (#477). In the
 same rerun, pair 10's genesis deleted the nightly `memory` job, and nothing
 noticed (`peko_cron::seeded_job_refusal`, ADR-080 D1 amended).
 
-### Fix: one slow provider call no longer disables a cron worker (2026-10-20)
+#### Fix: one slow provider call no longer disables a cron worker (2026-10-20)
 
 In the peko-benchmark responsibility rerun 2
 (`docs/RESPONSIBILITY_MASTER_RERUN2_MIMO_2026-10-20.md`, pairs 1 and 4), a
@@ -299,7 +411,7 @@ Neither `skipped` nor `interrupted` moves `consecutive_failures`
 (`peko_cron::status_resets_failures`), and neither wakes the attention
 heartbeat as a failed job.
 
-### Fix: an interval run that overran its slot catches up once (2026-10-19)
+#### Fix: an interval run that overran its slot catches up once (2026-10-19)
 
 When an `Every` run finished on or past its next slot, completion moved
 `next_run` to the first future slot, so a turn ending 5 s late lost a whole
@@ -317,7 +429,7 @@ back to back. `cron.result` gains `catch_up`, and `skipped_interval_slots`
 no longer counts the caught-up slot. The `Cron` tool description says that
 a turn always longer than its interval now runs back to back.
 
-### Fix: `ChannelSend` accepts a post's `msg_id` as `parent` (2026-10-19)
+#### Fix: `ChannelSend` accepts a post's `msg_id` as `parent` (2026-10-19)
 
 ChannelRead shows each post's line `id` next to its stable `msg_id`, and a
 reply's `reply_to` in the `msg_` form. `ChannelSend` took only the numeric line
@@ -328,7 +440,7 @@ An id that is not in the channel is refused with a pointer to both forms. The
 error appeared in 6 retained ledgers across peko-benchmark memory/heartbeat
 rounds 2–4 (`docs/MEMORY_HEARTBEAT_ROUND4_MIMO_2026-10-18.md`).
 
-### Fix: a provider call cut off by the client deadline is retried (2026-10-19)
+#### Fix: a provider call cut off by the client deadline is retried (2026-10-19)
 
 The retry classifiers (`BodyStringClassifier` and the legacy
 `RetryableError::is_retryable`) now treat "timed out" as transient.
@@ -341,7 +453,7 @@ stream stalled until the 300 s client deadline and a principal's genesis
 failed outright with `Stream error: request or response body error:
 operation timed out`.
 
-### Fix: unchanged plans no longer wake the attention heartbeat every tick (2026-10-18)
+#### Fix: unchanged plans no longer wake the attention heartbeat every tick (2026-10-18)
 
 ADR-084 D2 is amended. A ready or in-progress step now wakes an
 attention-gated job only when its plan changed after the job's last turn.
@@ -361,7 +473,7 @@ genesis had pinned it to a fixed hour in the host's zone. The tick text is
 stored when a job is seeded, so it reaches only newly seeded keepalives. The
 wake rule applies to every attention-gated job.
 
-### Fix: a malformed reviewer answer is asked once more (2026-10-18)
+#### Fix: a malformed reviewer answer is asked once more (2026-10-18)
 
 ADR-085 D2 is amended. Any reviewer answer that leaves a hot-memory entry
 without a finding is retried once. A cut-off answer gets 4× the budget, as
@@ -378,7 +490,7 @@ unreadable. One was `<tool_call><function思った><r><r>…`, the other
 `<n>: unsupported - …`. Because ADR-080 D4 holds the whole write when any entry
 is unchecked, one of them held 13 entries, 7 of them correct owner facts.
 
-### Fix: the hot-memory reviewer gets usable evidence and room to answer (2026-10-17)
+#### Fix: the hot-memory reviewer gets usable evidence and room to answer (2026-10-17)
 
 Observed on MiMo v2.6 Flash in two live nightly evaluations (peko-benchmark
 `docs/MEMORY_HEARTBEAT_MIMO_2026-10-16.md` and
@@ -440,7 +552,7 @@ principal with a guest. ADR-085 D2 is amended.
   and is not changed here. Verdict quality on MiMo with the new evidence is
   not yet measured live.
 
-### Fix: channel read marks and waiting lists are per principal (2026-10-17)
+#### Fix: channel read marks and waiting lists are per principal (2026-10-17)
 
 Observed on MiMo with all principals in one daemon (peko-benchmark
 `reports/20261017T081529Z-memory-heartbeat-attention`,
@@ -498,7 +610,7 @@ woke `lean` within 30–330 s.
   All three fail with raw keying. The first fails at "A's digest must not
   consume B's posts".
 
-### Fix: principals retune their seeded cron jobs in place (2026-10-17)
+#### Fix: principals retune their seeded cron jobs in place (2026-10-17)
 
 Observed on MiMo (peko-benchmark `reports/2026101612*`, report
 `docs/MEMORY_HEARTBEAT_MIMO_2026-10-16.md`). The genesis brief and the
@@ -546,7 +658,7 @@ derived `when: attention` and its trunk `target`.
   Lock files are advisory, so a non-Rust editor of the schedule file bypasses
   them.
 
-### Fix: the hot-memory gate never applies a write in part (ADR-080 D4, 2026-10-17)
+#### Fix: the hot-memory gate never applies a write in part (ADR-080 D4, 2026-10-17)
 
 Observed on MiMo v2.6 Flash (peko-benchmark
 `reports/20261016T124529Z-memory-heartbeat-nightly`, `20261016T132006Z…/rep1`).
@@ -591,7 +703,7 @@ falsely held 13 correct owner facts.
   conversations is not screened either. Deletions by a scheduled run are
   still not screened (ADR-080 D4 screens additions only).
 
-### Fix: trunk run admission and inbox are per principal (2026-10-17)
+#### Fix: trunk run admission and inbox are per principal (2026-10-17)
 
 - The daemon-wide `InboxRegistry` (run permits and steering/completion
   inboxes) was keyed by session id, and the trunk id
@@ -624,7 +736,7 @@ falsely held 13 correct owner facts.
   fallback key `default` (runs with no session key) is still shared across
   principals.
 
-### Memory claims reviewed against their sources (ADR-085, 0.1.0, 2026-10-16)
+#### Memory claims reviewed against their sources (ADR-085, 0.1.0, 2026-10-16)
 
 - A scheduled owner run's sourced lines for `kb/MEMORY.md` or
   `kb/CONVENTIONS.md` that pass the ADR-080 source check now also go to a
@@ -646,7 +758,7 @@ falsely held 13 correct owner facts.
   ClaimCheck, claims, review_prompt, parse_review, hold_unsupported,
   best_excerpts}`; `ledger::read::turns`.
 
-### Goals as plans, and check-ins (ADR-084, 0.1.0, 2026-10-16)
+#### Goals as plans, and check-ins (ADR-084, 0.1.0, 2026-10-16)
 
 - Plan steps take `checkAt` (`Plan` `create` nodes, `add_step`, `mark_step`):
   an RFC 3339 time or a duration from now (`90m`, `2d`); an empty string in
@@ -662,7 +774,7 @@ falsely held 13 correct owner facts.
   tick text mentions `checkAt`.
 - `PlanPort::set_node_check_at`; `PlanRecord::{due_check_ins, active_nodes}`.
 
-### Nightly dream (ADR-080 rev 3, 0.1.0, 2026-10-16)
+#### Nightly dream (ADR-080 rev 3, 0.1.0, 2026-10-16)
 
 - The memory brief adds two steps after the bookkeeping. **Reflect** on how the
   principal worked (what went well or badly, the owner's corrections, repeated
@@ -683,7 +795,7 @@ falsely held 13 correct owner facts.
   `memory` job carries it. A `memory` job still carrying the runtime's marker
   and no `when` is read the same way, without its schedule being rewritten.
 
-### Quiet ticks (ADR-083, 0.1.0, 2026-10-16)
+#### Quiet ticks (ADR-083, 0.1.0, 2026-10-16)
 
 - Cron message jobs take `when` (`always` / `attention`; `Cron` `create` /
   `update`). An `attention` job runs a due fire's turn only when something
@@ -697,7 +809,7 @@ falsely held 13 correct owner facts.
   rewritten. `when: always` restores every tick. The tick text explains this.
 - The channel digest can count what it would show without consuming it.
 
-### Memory maintenance hardening (ADR-080 rev 2, 0.1.0, 2026-10-16)
+#### Memory maintenance hardening (ADR-080 rev 2, 0.1.0, 2026-10-16)
 
 - A cron-started owner run that writes `kb/MEMORY.md` with `Write` / `Edit`
   must end each added line with `(source: …)` (a session path or id, or
@@ -714,7 +826,7 @@ falsely held 13 correct owner facts.
   refused when the job is saved. `CronRuntime::update_job` now takes a
   `JobPatch`.
 
-### Channel kinds, bindings, and principal group management (ADR-082, 0.1.0, 2026-10-16)
+#### Channel kinds, bindings, and principal group management (ADR-082, 0.1.0, 2026-10-16)
 
 - A channel's `kind` (`dm` / `group`) is stored in `meta.json` instead of being
   inferred from `passive_binding`, which is removed (with `peko channel create
@@ -740,7 +852,7 @@ falsely held 13 correct owner facts.
 - `Contacts list` and `ChannelRead` results add the channel `kind` and the
   caller's `wake` beside its session `binding`.
 
-### ADR-081 review fixes (0.1.0, 2026-10-16)
+#### ADR-081 review fixes (0.1.0, 2026-10-16)
 
 - Only the linked copy receives: a runtime leaves a channel's traffic
   unacknowledged when none of its local members is reachable over Hub, and a
@@ -761,7 +873,7 @@ falsely held 13 correct owner facts.
   re-announces. Registering under another account needs that account's consent
   on Hub.
 
-### Typed actor references (ADR-081 §3 follow-ups, 0.1.0, 2026-10-15)
+#### Typed actor references (ADR-081 §3 follow-ups, 0.1.0, 2026-10-15)
 
 - `Subject` is replaced by `ActorRef` (`User | Principal | Visitor (Route) | Public`)
   with a typed `Route::{Local { id, runtime }, Hub(id)}`: scope is a type, no
@@ -778,7 +890,7 @@ falsely held 13 correct owner facts.
 - `ActorInfo.registration` is `peko_channel::Registration` (`local_only`,
   `private`, `public`, `registered` on the wire, unchanged).
 
-### Legacy identity pieces retired (ADR-081 phase 5, 0.1.0, 2026-10-15)
+#### Legacy identity pieces retired (ADR-081 phase 5, 0.1.0, 2026-10-15)
 
 - `principal.toml` no longer stores a `hub_id` copy; the actor registry is the
   only source (`PrincipalManager::hub_id_of`), and IPC summaries and
@@ -794,7 +906,7 @@ falsely held 13 correct owner facts.
   remain as follow-ups); ADR-078's owner row, DATA_MODEL, API_SURFACE,
   builtin-tools, the CLI reference, and the README describe the new model.
 
-### One online copy (ADR-081 phase 4, 0.1.0, 2026-10-15)
+#### One online copy (ADR-081 phase 4, 0.1.0, 2026-10-15)
 
 - When Hub moves a principal's online link to another runtime it sends
   `principal_unlinked`; this runtime's copy keeps its identity and history but
@@ -811,7 +923,7 @@ falsely held 13 correct owner facts.
   from a new runtime are accepted only when the directory confirms the link,
   and the membership row follows.
 
-### Contacts and owner travel with the principal (ADR-081 phase 3, 0.1.0, 2026-10-15)
+#### Contacts and owner travel with the principal (ADR-081 phase 3, 0.1.0, 2026-10-15)
 
 - Learned contacts are the principal's own: they live in its Local tier
   (`local/contacts.json`) with each actor's immutable key and routes, and the
@@ -839,7 +951,7 @@ falsely held 13 correct owner facts.
   `kind:hub:<id>`, or `public`; bare names (which never matched an actor) are
   refused.
 
-### One runtime identity; the runtime registers with its local user (ADR-081 phase 2, 0.1.0, 2026-10-15)
+#### One runtime identity; the runtime registers with its local user (ADR-081 phase 2, 0.1.0, 2026-10-15)
 
 - The runtime has one identity: the vault-held `did:key` in
   `runtime/identity.toml` signs the tunnel handshake, registration, invite
@@ -860,7 +972,7 @@ falsely held 13 correct owner facts.
 - A principal can register only when its owner has a Hub account, and
   announces carry that owner to Hub.
 
-### One identity rule and one owner (ADR-081 phase 1, 0.1.0, 2026-10-15)
+#### One identity rule and one owner (ADR-081 phase 1, 0.1.0, 2026-10-15)
 
 - Every authorization decision compares actors through one function, the
   actor registry's immutable key (`ActorKeys`, `ChannelPort::key_of`):
@@ -887,7 +999,7 @@ falsely held 13 correct owner facts.
 - CLI unit tests take the passphrase vault process-wide (a `ctor` hook), so
   no test can reach the OS keychain by forgetting `init_credentials`.
 
-### Contacts and rosters scoped to the run's conversation (0.1.0, 2026-10-15)
+#### Contacts and rosters scoped to the run's conversation (0.1.0, 2026-10-15)
 
 - `Contacts` follows the ADR-078 acting-for stamp. A run acting for anyone
   but the owner now lists only its own actor and its own conversation's
@@ -900,7 +1012,7 @@ falsely held 13 correct owner facts.
   non-owner (and unstamped) runs only their own conversation. Before, it put
   every channel's roster into every run's context.
 
-### Stale docs and dead session helpers (0.1.0, 2026-10-15)
+#### Stale docs and dead session helpers (0.1.0, 2026-10-15)
 
 - Docs brought in line with the current runtime: PEKO.md (per-run reach
   under ADR-078 instead of the subtree rule, the actual `Agent` / `Session`
@@ -917,7 +1029,7 @@ falsely held 13 correct owner facts.
 - `SharedLayout::mcps_dir` (`<principal>/mcps`, created but never read) is now
   `mcp_dir` (`<principal>/mcp`), the directory the MCP service scans.
 
-### Reliable idle schedules (0.1.0, 2026-10-15)
+#### Reliable idle schedules (0.1.0, 2026-10-15)
 
 - `Idle` cron jobs now measure quiet time from people talking to the
   principal: an ingress turn (CLI, Hub webchat, tunnel, IPC, group
@@ -940,7 +1052,7 @@ falsely held 13 correct owner facts.
   test builds. A core test run on its own could otherwise raise an OS
   keychain prompt when it built an agent.
 
-### Daily memory maintenance (0.1.0, 2026-10-15)
+#### Daily memory maintenance (0.1.0, 2026-10-15)
 
 - ADR-080: the boot pass seeds one daily `memory` job (every 24 hours, trunk
   `Send`) into every principal's schedule, once. Its brief has the trunk
@@ -953,7 +1065,7 @@ falsely held 13 correct owner facts.
   deletes or replaces is never re-created. The daily job does not count as
   the keepalive heartbeat.
 
-### Plans are owner-only (0.1.0, 2026-10-15)
+#### Plans are owner-only (0.1.0, 2026-10-15)
 
 - ADR-078: the `Plan` tool is refused to every run not acting for the owner
   and left out of that run's wire catalog. Plans carry no compartment, so a
@@ -964,7 +1076,7 @@ falsely held 13 correct owner facts.
   `<acting-for>` block tells trusted and untrusted runs they have no plans;
   they track conversation work with the session-scoped `Task` tool.
 
-### Open plans in every owner run (0.1.0, 2026-10-15)
+#### Open plans in every owner run (0.1.0, 2026-10-15)
 
 - Open plans now ride a change-detected `## Open plans` tail section in
   every owner run — the trunk, the owner's own conversations, and their
@@ -980,7 +1092,7 @@ falsely held 13 correct owner facts.
   (no callers), the router's plan injection, and the never-built
   `ContextInjectionKind::{Memory, File, Todo, Plan}` variants.
 
-### Channel posts wait until answered (0.1.0, 2026-10-15)
+#### Channel posts wait until answered (0.1.0, 2026-10-15)
 
 - ADR-072 D4a: another principal's post no longer disappears from the
   session context once shown. The digest files it in the session's waiting
@@ -992,7 +1104,7 @@ falsely held 13 correct owner facts.
 - `read_marks.json` updates now hold a file lock; concurrent sessions on one
   channel could drop each other's marks.
 
-### Shared hot kb budget (0.1.0, 2026-10-14)
+#### Shared hot kb budget (0.1.0, 2026-10-14)
 
 - ADR-055 rev 3: the hot kb set — `kb/MEMORY.md`, `kb/CONVENTIONS.md`,
   `kb/index.md`, and the group and role notes — renders under one 32 KiB
@@ -1011,7 +1123,7 @@ falsely held 13 correct owner facts.
   (`PrincipalMemoryConfig` and friends, `DelegationGrant`). Legacy tables
   are ignored on load and not written back.
 
-### Per-principal tool ledger (0.1.0, 2026-10-14)
+#### Per-principal tool ledger (0.1.0, 2026-10-14)
 
 - ADR-079: every tool call a principal makes — agent turns, subagents, MCP,
   Workflow callbacks, background bodies, cron jobs, approved replays — is
@@ -1043,7 +1155,7 @@ falsely held 13 correct owner facts.
   `tool.call` / `tool.result` session events, and the policy reviewer's
   exemption for a nonexistent `Sleep` tool.
 
-### Dead protocol helpers and runtime install roots removed (0.1.0, 2026-10-14)
+#### Dead protocol helpers and runtime install roots removed (0.1.0, 2026-10-14)
 
 - Delete `framework::protocols::shared::process_transport`
   (`ProcessConfig`, `ProcessTransport`, `ProcessTransportBuilder`,
@@ -1059,7 +1171,7 @@ falsely held 13 correct owner facts.
   `{data_dir}/runtime/extensions` and `{data_dir}/runtime/mcps` directories.
   Existing copies of those directories are left on disk.
 
-### MCP prompt-context provider seam removed (0.1.0, 2026-10-14)
+#### MCP prompt-context provider seam removed (0.1.0, 2026-10-14)
 
 - Delete the engine's unbound `{{mcp_context}}` seam:
   `McpPromptContextProvider`, `EmptyMcpPromptContextProvider`,
@@ -1074,7 +1186,7 @@ falsely held 13 correct owner facts.
   `{{mcp_context}}` marker; existing workspace copies still render cleanly
   because unknown markers are stripped.
 
-### Legacy MCP stack removed (0.1.0, 2026-10-14)
+#### Legacy MCP stack removed (0.1.0, 2026-10-14)
 
 - Delete the pre-ADR-075 shared-manager MCP path, which had no production
   caller: `extensions/mcp/runtime/` (`McpClientRegistry`,
@@ -1097,7 +1209,7 @@ falsely held 13 correct owner facts.
   `framework::protocols::shared::proxy_utils`. The service proxy resolves
   reserved runtime fields directly from `ToolContext`.
 
-### Acting-for stamps and the trust floor (0.1.0, 2026-10-14)
+#### Acting-for stamps and the trust floor (0.1.0, 2026-10-14)
 
 - Implement ADR-078. Every run carries a runtime-minted `ActingFor` stamp
   (whom it acts for, at owner / trusted / untrusted trust), minted at ingress,
@@ -1121,7 +1233,7 @@ falsely held 13 correct owner facts.
   repeat at most every 15 minutes, and are capped at 5 per conversation.
   Recreate pre-existing jobs other than the seeded ones.
 
-### Local and Hub actor identities (0.1.0, 2026-10-14)
+#### Local and Hub actor identities (0.1.0, 2026-10-14)
 
 - Implement ADR-077: local actors have a local ID, registered local principals
   have both IDs, and remote principals, users, and visitors have only a Hub ID.
@@ -1137,7 +1249,7 @@ falsely held 13 correct owner facts.
 - Use scoped Hub user grants in the tunnel E2E fixture so private chat tests
   match authenticated bridge callers under ADR-077.
 
-### Principal skill isolation and portability (0.1.0, 2026-10-13)
+#### Principal skill isolation and portability (0.1.0, 2026-10-13)
 
 - Scope skill discovery caches by workspace and use the same non-link lookup
   policy for catalogs and invocation. Refresh workspace tools and hooks when
@@ -1157,7 +1269,7 @@ falsely held 13 correct owner facts.
 - Resolve native Bash on Windows through PATH or Git installations, excluding
   the WSL launcher that cannot honor native workspace paths.
 
-### Principal-owned MCP (0.1.0, 2026-10-13)
+#### Principal-owned MCP (0.1.0, 2026-10-13)
 
 - Implement ADR-075: each principal shares its own MCP connections, scoped vault
   credentials, catalog cache, model and quota across all sessions. Retire the
@@ -1177,7 +1289,7 @@ falsely held 13 correct owner facts.
 - Bind opt-in sampling to the actual owner model/meter, remove secret trace
   values, and cover local stdio/HTTP/OAuth/SSE fixtures without live accounts.
 
-### CI integration tier (0.1.0, 2026-10-13)
+#### CI integration tier (0.1.0, 2026-10-13)
 
 - Run offline CLI, permission IPC, snapshot, streaming and credential tests in
   the native Linux job; native-only test edits no longer start the Docker tier.
@@ -1188,7 +1300,7 @@ falsely held 13 correct owner facts.
 - Check mock response sequencing directly over HTTP. Real-provider tests stay
   in the local opt-in tier; the tunnel lib slice targets only the core package.
 
-### Contacts fixes and coverage (0.1.0, 2026-10-13)
+#### Contacts fixes and coverage (0.1.0, 2026-10-13)
 
 - Scope Contacts discovery to the caller, its current channel participants, and
   its durably learned principal contacts. Another principal's cached Hub contact
@@ -1199,7 +1311,7 @@ falsely held 13 correct owner facts.
   authenticated/anonymous lookups, malformed responses, and contact persistence
   across restarts and concurrent profile updates.
 
-### Dual actor identities (ADR-073, 2026-10-13)
+#### Dual actor identities (ADR-073, 2026-10-13)
 
 - Give every actor a stable local ID and optional verified Hub ID; resolve either
   scoped reference consistently in Contacts, channel membership, sends and reads.
@@ -1216,7 +1328,7 @@ falsely held 13 correct owner facts.
   rotation creates a new local actor. Synchronize remote group additions and leaves,
   and enforce private chat grants on both DM and group ingress.
 
-### Tool function review (2026-10-11)
+#### Tool function review (2026-10-11)
 
 - Fix every foreground tool call being capped at five minutes: the
   dispatcher returned a "still running" receipt after 300 s, but the
@@ -1288,7 +1400,7 @@ falsely held 13 correct owner facts.
   The dispatcher's in-memory replay cache, which would have silenced a
   resend after a lost receipt, is removed.
 
-### SessionCache removed (2026-10-11)
+#### SessionCache removed (2026-10-11)
 
 - Delete `SessionCache`, an 803-line in-memory `SessionRuntime` that only
   tests used (it shipped in production and reimplemented copy / move / delete
@@ -1299,7 +1411,7 @@ falsely held 13 correct owner facts.
   raw keys the real runtime refuses, and `history` of a missing session
   returned zero messages where production errors.
 
-### Mutation testing of the remaining tools (2026-10-11)
+#### Mutation testing of the remaining tools (2026-10-11)
 
 - Fix a prompt-catalog entry dropped for space vanishing silently: the
   workflows and skills catalogs (8 KB each) added their "more in <dir>/ — list
@@ -1315,7 +1427,7 @@ falsely held 13 correct owner facts.
   single-price `priced` filter, and non-matching `contains`. Plan, Session
   (tool and caller resolution) and Task had no surviving mutants.
 
-### Tool contracts: loop-level and mutation testing (2026-10-10)
+#### Tool contracts: loop-level and mutation testing (2026-10-10)
 
 - Fix background commands failing in runs without a workspace: an empty
   workspace was copied into the background task's dispatch and injected as
@@ -1340,7 +1452,7 @@ falsely held 13 correct owner facts.
   called with. (Skill, Session, Workflow, Plan, Task and ModelList are not yet
   mutation-tested.)
 
-### Bounded tool output (2026-10-10)
+#### Bounded tool output (2026-10-10)
 
 - Fix background `Bash` keeping the start of long output: the result held the
   first 100 KB of each stream, so `Async output` + `tail_lines` (the workflow
@@ -1357,7 +1469,7 @@ falsely held 13 correct owner facts.
 - Cover ModelCall judgment-endpoint failures (HTTP error excerpt, malformed
   replies, no charge) and ChannelRead's 1..1000 `limit` clamp.
 
-### Built-in tools tested against production backends (2026-10-10)
+#### Built-in tools tested against production backends (2026-10-10)
 
 - Cover the daemon's cron backend (`DaemonCronAdapter`, previously untested at
   every tier) behind the real `Cron` tool: owner resolution across principals'
@@ -1369,7 +1481,7 @@ falsely held 13 correct owner facts.
   executor (`new` and `compact`); the duplicate `SubagentRunView` and its
   no-op projection are collapsed into one type.
 
-### Built-in tool review fixes (2026-10-10)
+#### Built-in tool review fixes (2026-10-10)
 
 - Fix orphaned processes: stopping or timing out `Bash`, a Skill
   dynamic-context command, or a `Workflow` script killed only the direct
@@ -1393,7 +1505,7 @@ falsely held 13 correct owner facts.
 - Cover Session argument errors, every ModelList capability filter, Write's
   mode/encoding rejection, and Skill's refusal of non-bash fenced blocks.
 
-### Built-in tool coverage, round 4 (2026-10-09)
+#### Built-in tool coverage, round 4 (2026-10-09)
 
 - Fix unbounded background-task progress: the 64 KiB cap on a task's live
   progress buffer lived only in an uncalled registry method, so a chatty
@@ -1410,7 +1522,7 @@ falsely held 13 correct owner facts.
 - Cover task-file records and the daemon's task-file cleanup, and the Agent
   tool's argument contract for every action.
 
-### Built-in tool coverage, round 3 (2026-10-09)
+#### Built-in tool coverage, round 3 (2026-10-09)
 
 - Fix Plan steps with unresolvable dependencies: a malformed `dependsOn` id was
   silently dropped (the step could start early) and an id not in the plan was
@@ -1438,7 +1550,7 @@ falsely held 13 correct owner facts.
   empty-DID check, an unused `TestSkillRuntime` and `SkillRuntime::skill_exists`,
   and `TodoStatus::as_str`/`Display`.
 
-### One task registry per principal (2026-10-09)
+#### One task registry per principal (2026-10-09)
 
 - Fix the async task janitor, which purged an executor nothing used: finished
   tasks were never removed from the registries that hold them (including a
@@ -1452,7 +1564,7 @@ falsely held 13 correct owner facts.
 - Delete the process-wide agent-name registry map and its scan-everything
   helpers; the Async surface reads only the caller's own registry.
 
-### Built-in tool coverage, round 2 (2026-10-09)
+#### Built-in tool coverage, round 2 (2026-10-09)
 
 - Fix same-runtime `ChannelSend` to another principal double-posting every
   request after the first: principal peer slugs took the DID's first 16
@@ -1482,7 +1594,7 @@ falsely held 13 correct owner facts.
   entrances stream live output and stop kills the process. Foreground calls'
   routing entries no longer appear in `Async list` unless they detach.
 
-### Vendor-neutral model setup docs (2026-10-09)
+#### Vendor-neutral model setup docs (2026-10-09)
 
 - Rewrite user-facing model setup (README, GETTING_STARTED, tutorial,
   USERS_GUIDE, CLI_REFERENCE, MANUAL_TEST_PLAN, DATA_MODEL, install scripts,
@@ -1499,7 +1611,7 @@ falsely held 13 correct owner facts.
 - Correct the resolver module docs, which described a nonexistent
   `--bootstrap-env-keys` flag for CI/headless deployments.
 
-### Vendor-neutral real-LLM tier and nightly CI cleanup (2026-10-09)
+#### Vendor-neutral real-LLM tier and nightly CI cleanup (2026-10-09)
 
 - Remove the real-LLM job from CI; the nightly run is unit (Linux/Windows) plus
   mock-LLM integration. `make test-integration-llm` stays as a local, opt-in tier.
@@ -1515,7 +1627,7 @@ falsely held 13 correct owner facts.
   Makefile slices whose test files no longer exist (pekohub/registry
   integration, cli_agent_signature).
 
-### Built-in tool test foundation (2026-10-09)
+#### Built-in tool test foundation (2026-10-09)
 
 - Fix Cron history for fired one-shot jobs: the ownership check consulted only
   live jobs, so a reaped `at`/`delay` job's retained runs were unreachable by id.
@@ -1533,7 +1645,7 @@ falsely held 13 correct owner facts.
   verifies files and persisted tool results; delete the core_tools stub. Run the
   mock-LLM tier for built-in tool source changes; add `make coverage`.
 
-### Agent and Session schema cohesion (2026-10-08)
+#### Agent and Session schema cohesion (2026-10-08)
 
 - Use strict action variants and cached direct-call validation for Agent/Session;
   caller-aware adapters share their static contracts and validate before binding.
@@ -1546,7 +1658,7 @@ falsely held 13 correct owner facts.
 - Remove the dummy Session metadata runtime and unused Agent _timeout injection.
   Correct Agent guidance to inspect Session.status.parent_session.
 
-### Domain tool actions (2026-10-08)
+#### Domain tool actions (2026-10-08)
 
 - Consolidate Task, Plan, Cron, and Async into four tools with explicit actions;
   the native catalog now has 19 names. Remove the former per-action wire names
@@ -1561,7 +1673,7 @@ falsely held 13 correct owner facts.
 - Align the mock sequence assertion with Cron's create payload, removing its
   obsolete agent_id expectation.
 
-### Exact tool contracts and unfiltered availability (2026-10-08)
+#### Exact tool contracts and unfiltered availability (2026-10-08)
 
 - Remove old tool-name and argument aliases: Session/ModelList/RoleCatalog,
   Agent.role, Session.agent_name, and Session.title are the supported spellings.
@@ -1579,7 +1691,7 @@ falsely held 13 correct owner facts.
   Route repeated mock turns by their first persisted user message and select
   the current CLI peer session and spawned role session explicitly.
 
-### Explicit built-in installation lifetimes (2026-10-08)
+#### Explicit built-in installation lifetimes (2026-10-08)
 
 - Centralize built-in factories and scope/phase inventory in tools::installation.
   Fill missing runtime defaults atomically without replacing configured instances.
@@ -1596,7 +1708,7 @@ falsely held 13 correct owner facts.
   registration stability, late tunnel connection, and role-file refresh regressions
   (ADR-069).
 
-### Consistent built-in tool contracts (2026-10-08)
+#### Consistent built-in tool contracts (2026-10-08)
 
 - Advertise all 37 built-ins with exact PascalCase wire names, including Session,
   ModelList, RoleCatalog, and all seven Plan tools; MCP names remain server-defined.
@@ -1610,7 +1722,7 @@ falsely held 13 correct owner facts.
   creating-session cron delivery. Add inventory, schema-validation, exact-name,
   workspace-dispatch, and hidden-depth regressions.
 
-### Bounded output-limit continuation (2026-10-08)
+#### Bounded output-limit continuation (2026-10-08)
 
 - Preserve partial answers and completed tool results when a response reaches
   its output limit. Offer at most two continuation prompts per run requesting
@@ -1620,7 +1732,7 @@ falsely held 13 correct owner facts.
   Added actual-loop regressions for partial-answer continuation, bounded
   exhaustion, and a completed Write alongside an empty Write recovered later.
 
-### Preserve Anthropic streaming termination (2026-10-07)
+#### Preserve Anthropic streaming termination (2026-10-07)
 
 - Retain nested message-delta stop reasons alongside usage and emit them at
   message_stop. Previously output-limited and tool-use streams were reported as
@@ -1629,7 +1741,7 @@ falsely held 13 correct owner facts.
   cover usage, legacy reasons, terminal emission, and interrupted-stream reset.
   Tool execution and retry policy are unchanged.
 
-### Truthful manual cron run identifiers (2026-10-07)
+#### Truthful manual cron run identifiers (2026-10-07)
 
 - Reserve and persist a cron run before returning its ID from CronTrigger.
   Previously the trigger returned a fresh UUID while execution stored another,
@@ -1639,7 +1751,7 @@ falsely held 13 correct owner facts.
   Added a red-before/green-after history identity regression and concurrent
   admission/coalesced-trigger coverage.
 
-### Addressable trunk session reads (2026-10-07)
+#### Addressable trunk session reads (2026-10-07)
 
 - Return `sess:/` for the trunk in session listings and prompt context. The
   previous `sess:/<trunk UUID>` display address was rejected by the resolver,
@@ -1648,7 +1760,7 @@ falsely held 13 correct owner facts.
   Added a real session-tool list → history/status/scoped-list regression from
   a child caller, reproduced failing before the fix.
 
-### Principal context on child turns (2026-10-07)
+#### Principal context on child turns (2026-10-07)
 
 - Preserve the principal name when reconstructing a child agent's shared
   executor. Peer-ingress, spawned and resumed turns previously retained the
@@ -1657,7 +1769,7 @@ falsely held 13 correct owner facts.
   the same context. Added actual Workflow execution through spawned and
   streaming-resumed mock-provider agent loops.
 
-### Observable nominal cron intervals (2026-10-07)
+#### Observable nominal cron intervals (2026-10-07)
 
 - CronCreate explains that same-job runs do not overlap and overdue interval
   slots are skipped after completion. The authored interval does not guarantee
@@ -1667,7 +1779,7 @@ falsely held 13 correct owner facts.
   dispatch proving an open run coalesces and completion advances without replay.
   The existing scheduling policy is preserved.
 
-### Isolated concurrent provider streams (2026-10-07)
+#### Isolated concurrent provider streams (2026-10-07)
 
 - Give cloned API adapters independent tool-call accumulators and Anthropic
   pending usage. Overlapping supervisor/worker streams previously shared mutable
@@ -1677,13 +1789,13 @@ falsely held 13 correct owner facts.
   interleaved adapter coverage and concurrent HTTP/SSE coverage proving original
   tool ids/names/arguments and per-response usage survive overlapping calls.
 
-### Truthful scheduled-tool cost guidance (2026-10-07)
+#### Truthful scheduled-tool cost guidance (2026-10-07)
 
 - CronCreate no longer promises that a scheduled tool call has no LLM cost.
   Dispatch uses fixed parameters without a scheduler model call, while invoked
   tools such as Agent can call models and consume the principal's quota.
 
-### Truthful cron reconciliation (2026-10-07)
+#### Truthful cron reconciliation (2026-10-07)
 
 - A running cron row whose attached task disappears from the process-local
   async registry now closes as failed with an unknown/partial-outcome warning,
@@ -1693,7 +1805,7 @@ falsely held 13 correct owner facts.
   Recovery does not replay uncertain effects. Added persisted restart coverage
   proving partial effects survive and a subsequent due tool tick can execute.
 
-### Interrupted cron tool recovery (2026-10-07)
+#### Interrupted cron tool recovery (2026-10-07)
 
 - Extend first-open recovery to abandoned SpawnTool runs without an attached
   async task id. A restart during the completion wait previously left these
@@ -1705,7 +1817,7 @@ falsely held 13 correct owner facts.
 - Added persisted-history coverage and a model-free tool execution regression
   proving a later due fire can run after recovery.
 
-### Interrupted cron Send recovery (2026-10-06)
+#### Interrupted cron Send recovery (2026-10-06)
 
 - On first opening a principal's schedule in a new daemon, finalize abandoned
   Send runs as failed. Previously a restart during a supervision turn left
@@ -1718,7 +1830,7 @@ falsely held 13 correct owner facts.
   unchanged disabled schedules, successful subsequent firing, and live-run
   preservation through an alternate identity spelling.
 
-### Runtime context and memory locations (2026-10-06)
+#### Runtime context and memory locations (2026-10-06)
 
 - Render the built-in session context once per change. It previously also
   appeared under a custom `session_context` heading, adding duplicate prompt
@@ -1736,7 +1848,7 @@ falsely held 13 correct owner facts.
   without a workspace placeholder previously omitted the location; relative
   notes landed in the tools' default directory instead of the principal kb.
 
-### Unix IPC assignment size (2026-10-06)
+#### Unix IPC assignment size (2026-10-06)
 
 - Enlarge the CLI Unix datagram send buffer and the daemon receive buffer,
   allowing request packets up to the existing 60 KB protocol limit. macOS's
@@ -1749,7 +1861,7 @@ falsely held 13 correct owner facts.
   successful create no longer retries locally and reports a collision; daemon
   errors and uncertain request failures also stop without local re-execution.
 
-### Streaming quota durability and daemon shutdown (2026-10-05)
+#### Streaming quota durability and daemon shutdown (2026-10-05)
 
 - Streamed LLM usage persists its token, request, cache and cost counters before
   being forwarded to the engine. Charges that exceed a quota are also persisted,
@@ -1761,7 +1873,7 @@ falsely held 13 correct owner facts.
 - Added streamed-usage reload, quota exhaustion, concurrent persistence and real
   subprocess signal-shutdown regressions, using isolated passphrase vaults.
 
-### API-format model configuration (ADR-068, 2026-10-05)
+#### API-format model configuration (ADR-068, 2026-10-05)
 
 - Removed the embedded vendor/model preset catalog and vendor convenience constructors.
 - `model add` uses explicit API format, base URL, and wire model id; a configured
@@ -1775,14 +1887,14 @@ falsely held 13 correct owner facts.
 - Replaced vendor environment-key aliases with mechanically derived bootstrap
   names; normal credential resolution remains vault-backed.
 
-### Windows path and output regressions (2026-10-03)
+#### Windows path and output regressions (2026-10-03)
 
 - Workflow refuses Windows rooted and drive-relative paths before resolving
   scripts under the principal's workflows directory.
 - Session isolation and dispatcher audit tests use native paths; workflow tail
   assertions accept Python's Windows line endings without changing captured output.
 
-### CLI test credential isolation (2026-10-03)
+#### CLI test credential isolation (2026-10-03)
 
 - CLI test fixtures explicitly select passphrase vault unlock: core is linked
   without `cfg(test)`, so setting a master passphrase alone could still probe
@@ -1791,7 +1903,7 @@ falsely held 13 correct owner facts.
 - Added a dependency-path vault regression and set passphrase mode in CI for
   test-spawned CLI/daemon processes.
 
-### Genesis completion and prompt recovery (2026-10-03)
+#### Genesis completion and prompt recovery (2026-10-03)
 
 - `create` now requires finalized successful genesis history and a persisted
   `organized` marker. A reaped or missing one-shot no longer implies success;
@@ -1807,7 +1919,7 @@ falsely held 13 correct owner facts.
 - Updated genesis workspace paths and the default root role's supervision,
   delegation, and cron instructions; added lifecycle and prompt regressions.
 
-### Principal-wide agent run admission (ADR-067, 2026-10-03)
+#### Principal-wide agent run admission (ADR-067, 2026-10-03)
 
 - Replaced delegation depth restrictions and executor-local concurrency caps
   with atomic admission shared by all live agent runs of one principal.
@@ -1820,7 +1932,7 @@ falsely held 13 correct owner facts.
 - Added admission, lifetime, principal-isolation, deep-delegation, configuration
   and cron regression coverage; updated API/data/tool docs.
 
-### Pure workspace tooling: contract fold and cleanup (ADR-066 P6, 2026-10-02)
+#### Pure workspace tooling: contract fold and cleanup (ADR-066 P6, 2026-10-02)
 
 - Deleted `peko-extension-api` and moved live tooling ports to the engine,
   inbox/completion/session contracts to session, task statuses and paths to
@@ -1834,7 +1946,7 @@ falsely held 13 correct owner facts.
   unknown JSON fields remain tolerated. Updated architecture/API/data/tool
   docs and dependency rules: 20 crates, 69 forbidden edges.
 
-### Pure workspace tooling: local snapshot packaging (ADR-066 P5, 2026-10-02)
+#### Pure workspace tooling: local snapshot packaging (ADR-066 P5, 2026-10-02)
 
 - Replaced OCI snapshot layers and signatures with a flat `manifest.toml`
   containing metadata and a path-to-SHA-256 inventory in an ordinary tar.gz.
@@ -1852,7 +1964,7 @@ falsely held 13 correct owner facts.
   their IPC packets/client methods, and obsolete registry/signature tests.
   Seeds remain plain TOML; PekoHub login and peer transport are unchanged.
 
-### Pure workspace tooling: workspace hook dispatcher (ADR-066 P4, 2026-10-02)
+#### Pure workspace tooling: workspace hook dispatcher (ADR-066 P4, 2026-10-02)
 
 - Replaced `HookRegistry` and the hook-point zoo with six principal-owned
   workspace hook points, run in registration order. Each handler soft-fails
@@ -1868,7 +1980,7 @@ falsely held 13 correct owner facts.
 - Removed inert agent-init/shutdown and compaction/session-state hooks;
   compaction uses the built-in backend directly. Removed the landed P3 WIP patch.
 
-### Pure workspace tooling: funnel split (ADR-066 P3, 2026-10-02)
+#### Pure workspace tooling: funnel split (ADR-066 P3, 2026-10-02)
 
 - Replaced `ExtensionCore` and its process-global accessors with an
   explicitly shared `ToolingRuntime`: `ToolCatalog`, `ToolDispatcher`,
@@ -1883,21 +1995,21 @@ falsely held 13 correct owner facts.
 - Migrated singleton-dependent tests to explicitly constructed runtimes.
 
 
-### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
+#### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
 
 - Deleted capability gates for tool visibility/execution, roles, skills,
   subagents, and imports. Presence makes workspace tooling available.
 - Cross-principal writes now compare filesystem ownership and fail closed
   with a durable Security audit event. Legacy grants warn once and are dropped.
 
-### Pure workspace tooling: async host cleanup (ADR-066 P1, 2026-10-01)
+#### Pure workspace tooling: async host cleanup (ADR-066 P1, 2026-10-01)
 
 - Moved async execution and session inbox to `async_exec`. Deleted the inert
   extension store, discovery/storage, adapter trait, configuration services,
   and tool execution service; re-homed live principal tooling and catalog glue.
 
 
-### Iteration cap removed from the agentic loop (2026-09-30)
+#### Iteration cap removed from the agentic loop (2026-09-30)
 
 The agentic loop's hard-coded `max_iterations = 10` ceiling
 (`peko_engine::AgenticLoop`) is gone. A live benchmark run (peko-benchmark,
@@ -1921,7 +2033,7 @@ footer's `iterations=N`).
   (`Iteration N.` — no "of max", no wrap-up warnings); the placeholder
   itself is retained so existing templates keep rendering.
 
-### `scripts/e2e/` retired — field testing moved to peko-benchmark (2026-09-30)
+#### `scripts/e2e/` retired — field testing moved to peko-benchmark (2026-09-30)
 
 The manual shell field-test harness (`scripts/e2e/flows|lib|run-case.sh`)
 is removed; curated, graded capability testing now lives in the sibling
@@ -1929,7 +2041,7 @@ is removed; curated, graded capability testing now lives in the sibling
 2026-08-13) moved with it to `peko-benchmark/reports/field-history/`.
 `docs/MVP_GATE.md` gate 5 updated accordingly.
 
-### Per-file workspace locks for cross-agent Write/Edit (ADR-065) (2026-09-29)
+#### Per-file workspace locks for cross-agent Write/Edit (ADR-065) (2026-09-29)
 
 Multiple agents sharing one runtime could concurrently `Write`/`Edit`
 the same workspace file — the F33 `ParallelGate` only serializes within
@@ -1949,7 +2061,7 @@ one agent's runtime, so cross-agent races silently lost updates
 - Known limit, documented in ADR-065: `Bash` mutations bypass
   workspace locks.
 
-### Legacy cleanup pass — retired surfaces, aliases, and doc drift (2026-09-29)
+#### Legacy cleanup pass — retired surfaces, aliases, and doc drift (2026-09-29)
 
 Pre-launch sweep removing dead code left over from retired features,
 deleting the last deprecated CLI aliases, and bringing user-facing docs
@@ -2032,7 +2144,7 @@ back in line with the code.
 - CHANGELOG `1.0.0-rc1` header annotated: the label was never tagged or
   released; the workspace version has remained `0.1.0` throughout.
 
-### Async task subsystem consolidation — delivery gap closed, dead IPC path deleted (2026-09-27)
+#### Async task subsystem consolidation — delivery gap closed, dead IPC path deleted (2026-09-27)
 
 Fixes and consolidation from the 2026-09-27 async tool-calling review
 (ADR-063; ADR-020/ADR-040 baseline). Follow-up pass, same day: closed the
@@ -2126,7 +2238,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   text names the real `AsyncOutput` tool instead of the nonexistent
   `TaskOutput` (P2-7).
 
-### Service-layer session DTOs aligned with the tool-side identity model (2026-09-26)
+#### Service-layer session DTOs aligned with the tool-side identity model (2026-09-26)
 
 - `session_info::SessionInfo`: the `id` field renamed to `session_id`
   (wire shape unchanged — the serde rename was redundant); gains `slug`,
@@ -2139,7 +2251,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   CLI JSON consumers reading `label` must read `title`.
 - `HistoryEvent` (the desktop wire contract) is untouched.
 
-### Per-session FIFO page retention (`page_limit`, 2026-09-26)
+#### Per-session FIFO page retention (`page_limit`, 2026-09-26)
 
 - **`SessionEntry.page_limit` + `pruned_pages`** — a per-session cap on
   closed compaction pages (ADR-051). When a boundary closes a page and
@@ -2165,7 +2277,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   an in-memory index view; see `Session::prune_overflow`).
 
 
-### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
+#### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
 
 - **The `archived` flag is removed end-to-end** — `SessionEntry.archived`,
   `SessionManager::set_session_archived`, the `session` tool's
@@ -2189,7 +2301,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   literally. The target's own compaction sequence advances past the
   appended boundary (`SessionManager::set_compaction_count`).
 
-### Retired universal tools (ADR-062, 2026-09-25)
+#### Retired universal tools (ADR-062, 2026-09-25)
 
 - **Removed the universal tool system** — the JSON-RPC-over-stdio
   protocol, `UniversalToolAdapter`, and the
@@ -2226,7 +2338,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   stays for reading legacy `.peko` packages — snapshots still
   ship/restore a workspace `tools/` directory as plain, inert files.
 
-### Retired the `peko-tool` Python SDK (2026-09-25)
+#### Retired the `peko-tool` Python SDK (2026-09-25)
 
 - **Removed `sdks/python/peko_tool`** (the `@tool(...)` decorator SDK, ~570
   LOC + 2 examples). It had not been meaningfully changed since the
@@ -2247,7 +2359,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   three places).
 - `sdks/python/peko_workflow` (ADR-061) is unrelated and unchanged.
 
-### Async* per-call parent-session stamping (ADR-061 follow-up, 2026-09-24)
+#### Async* per-call parent-session stamping (ADR-061 follow-up, 2026-09-24)
 
 - **`AsyncSpawn` stamps the parent session per call.** `SpawnRequest` gains
   `parent_session_id: Option<String>`, filled by `AsyncSpawnTool` from
@@ -2260,7 +2372,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   dispatches. Async* lookups/status/output read the task record, so they
   inherit the per-call stamp.
 
-### Dead session-key machinery removed (ADR-061 follow-up, 2026-09-24)
+#### Dead session-key machinery removed (ADR-061 follow-up, 2026-09-24)
 
 - Removed `derive_session_key`, `SessionScope`, `SessionKeyContext`,
   `ChatType`, and `scope_from_key` from `peko_session::key` — no production
@@ -2268,7 +2380,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   session ids). `parse_session_key`, the v2 peer/overlay helpers, and the
   key/filename sanitizers stay. `API_SURFACE.md` marks the removals.
 
-### Caller-aware `session` tool on the `ExecuteTool` path (ADR-061, 2026-09-23)
+#### Caller-aware `session` tool on the `ExecuteTool` path (ADR-061, 2026-09-23)
 
 - **New `CallerAwareSessionTool`** (`tools::builtin::session::caller_aware`)
   — the `session` builtin with per-call caller resolution. Daemon mode
@@ -2290,7 +2402,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   scoped to the right principal, and working ownership guards; tokenless /
   no-node calls keep the dangling fail-closed behavior.
 
-### Caller-aware workflow runs (ADR-061, 2026-09-23)
+#### Caller-aware workflow runs (ADR-061, 2026-09-23)
 
 - **Run tokens now carry the calling session node.** `RunTokenEntry` gains
   `caller_session_id: Option<String>` — the canonical session UUID of the
@@ -2309,7 +2421,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   automatically (their `ctx.session_id` is already the resolved id). The
   entry is in-memory only — not a wire change.
 
-### ADR-061 phase 2b — `Workflow` runner, run tokens, `workflows/` catalog (2026-09-23)
+#### ADR-061 phase 2b — `Workflow` runner, run tokens, `workflows/` catalog (2026-09-23)
 
 - **New built-in tool: `Workflow`** (gated by `tool:Workflow`) — runs an
   agent-authored Python file from `<workspace>/workflows/` as a subprocess
@@ -2348,7 +2460,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
 - Wire shapes and the env contract are documented in `DATA_MODEL.md`
   §13½ + §13⅞; the tool is catalogued in `docs/architecture/builtin-tools.md`.
 
-### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
+#### ADR-061 phase 2a — `ModelCall` built-in + `ModelSpec.decisions` (2026-09-23)
 
 - **New built-in tool: `ModelCall`** — the one-shot inference primitive of
   [ADR-061](docs/architecture/adr/ADR-061-agent-authored-workflows.md) D3:
@@ -2394,7 +2506,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
 - Wire shapes documented in `DATA_MODEL.md` §13¾; the tool is catalogued
   in `docs/architecture/builtin-tools.md`.
 
-### ADR-061 phase 1 — `ExecuteTool` IPC for agent-authored workflows (2026-09-22)
+#### ADR-061 phase 1 — `ExecuteTool` IPC for agent-authored workflows (2026-09-22)
 
 - **New IPC variant: `RequestPacket::ExecuteTool`** — synchronous tool
   execution for external (workflow) processes, the attribution-path spike of
@@ -2424,7 +2536,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
 - Wire shape documented in `DATA_MODEL.md` §13½; handler-level attribution
   tests pin the resolve / fail-closed / gate-denied paths.
 
-### Skills as plain files — guidance doc, traversal fix, dead catalog removal (2026-09-18)
+#### Skills as plain files — guidance doc, traversal fix, dead catalog removal (2026-09-18)
 
 - **New doc: `docs/architecture/SKILLS.md`** — the canonical skills
   reference (file format, per-turn `<runtime-context>` catalog, `Skill`
@@ -2461,7 +2573,7 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   the TOML seed only (ADR-060); `DATA_MODEL.md` §14.2 points at
   `SKILLS.md` for the current format.
 
-### ADR-058 D1/D2/D3 — origin-signed cross-runtime messaging (2026-09-16)
+#### ADR-058 D1/D2/D3 — origin-signed cross-runtime messaging (2026-09-16)
 
 Breaking wire change (pre-launch, no compat shim — see
 `docs/architecture/adr/ADR-058-origin-signed-messaging.md`):
@@ -2499,7 +2611,7 @@ Breaking wire change (pre-launch, no compat shim — see
   compromised runtime can no longer speak for principals it does not
   host.
 
-### ADR-058 D4/D5/D6/D7 — PoP registration, typed bridge claims, transport hardening (2026-09-16)
+#### ADR-058 D4/D5/D6/D7 — PoP registration, typed bridge claims, transport hardening (2026-09-16)
 
 - **D4 — directory writes carry proof of possession.** `peko tunnel
   setup` now fetches `POST /v1/runtimes/register-challenge` and
@@ -2547,7 +2659,7 @@ Breaking wire change (pre-launch, no compat shim — see
   `ChannelEvent` wire type is unchanged and `peko log` output is
   unchanged.
 
-### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
+#### Filesystem model: whole-store reach, no GC, no privilege (2026-09-12)
 
 - **The session hierarchy is now purely organizational** — like paths
   on a filesystem, it names sessions but grants nothing and denies
@@ -2584,7 +2696,7 @@ Breaking wire change (pre-launch, no compat shim — see
   deprecation shim): nothing reads `[children]` anymore beyond the
   parse-tolerant capture + load-time warning.
 
-### Default session nodes `/tmp` and `/trash` (2026-09-12)
+#### Default session nodes `/tmp` and `/trash` (2026-09-12)
 
 - **Every new principal is seeded with two ordinary standing sessions**
   under its trunk at creation (`PrincipalManager::create` →
@@ -2608,7 +2720,7 @@ Breaking wire change (pre-launch, no compat shim — see
   plain session already holding `tmp` or `trash` under the trunk
   blocks only that node's seeding (no adoption, no collision error).
 
-### Channel-activity digest in the session-context tail (2026-09-12)
+#### Channel-activity digest in the session-context tail (2026-09-12)
 
 - **Posts that never became wakes now reach the bound agent** — while
   an agent's loop runs, posts land on channels bound to its session
@@ -2638,7 +2750,7 @@ Breaking wire change (pre-launch, no compat shim — see
   `principal::channel_digest::ChannelDigestSessionContextHandler`
   (see API_SURFACE.md, DATA_MODEL.md §5¾).
 
-### Channel `via` attribution on posted events (2026-09-12)
+#### Channel `via` attribution on posted events (2026-09-12)
 
 - **`ChannelEvent::Posted` gains an optional `via` field** — the
   session slug path (e.g. `/user-a/reminder`) of the posting agent
@@ -2662,7 +2774,7 @@ Breaking wire change (pre-launch, no compat shim — see
 - **New public surface** — `ChannelEvent::Posted::via`,
   `PostMsg::via` + `PostMsg::with_via` (see API_SURFACE.md).
 
-### Channel-binding wake collision converts to queued steering (2026-09-12)
+#### Channel-binding wake collision converts to queued steering (2026-09-12)
 
 - **A channel wake that collides with an active run is no longer
   dropped** — when `PassiveBindingResponder`/`GroupWakeResponder` loses
@@ -2693,7 +2805,7 @@ Breaking wire change (pre-launch, no compat shim — see
   crate-internal `BoundTurnDriver` trait, so both DM and group wakes are
   covered (group inputs already carry `{author}: {text}` attribution).
 
-### ADR-052 e2e findings: generated sections for bare prompt bodies + label fix (2026-09-11)
+#### ADR-052 e2e findings: generated sections for bare prompt bodies + label fix (2026-09-11)
 
 - **Frozen prefix gains generated sections for placeholder-free bodies** —
   `render_cache_stable` now appends `## Runtime` / `## Sandbox` /
@@ -2717,7 +2829,7 @@ Breaking wire change (pre-launch, no compat shim — see
   (qualitative prompt dump) + `make test-tiered-prompt`. Cross-run
   notice semantics documented as a follow-up in ADR-052 §4.
 
-### ADR-052 D6: user-defined prompt sections via workspace hooks (2026-09-11)
+#### ADR-052 D6: user-defined prompt sections via workspace hooks (2026-09-11)
 
 - **`PromptSection` bind point for workspace hooks** — a
   `<workspace>/hooks/<id>/hook.toml` may now bind
@@ -2747,7 +2859,7 @@ Breaking wire change (pre-launch, no compat shim — see
   stops producing output retracts once with `_The "<name>" section no
   longer applies._`.
 
-### ADR-052 D5 (second half): AGENTS.md project-context as a T2 tail section (2026-09-11)
+#### ADR-052 D5 (second half): AGENTS.md project-context as a T2 tail section (2026-09-11)
 
 - **Per-run focus directory** — the agentic loop tracks the directory
   the agent most recently touched via a path-bearing tool call
@@ -2775,7 +2887,7 @@ Breaking wire change (pre-launch, no compat shim — see
   section rides the user-role tail (not the frozen prefix) and is
   presence = visibility, same as the workspace catalogs.
 
-### ADR-052 D2/D4/D5: tiered-prompt prototype slices (2026-09-11)
+#### ADR-052 D2/D4/D5: tiered-prompt prototype slices (2026-09-11)
 
 - **D2 — change/removal notices in the tail change-detector** —
   `RuntimeContextState::take_changed` now implements codex-style diff
@@ -2811,7 +2923,7 @@ Breaking wire change (pre-launch, no compat shim — see
   edits to an existing `AGENT.md` / `SKILL.md` invalidate the catalog
   on the next iteration (dir mtime only moved on add/remove).
 
-### ADR-052 D3: opt-in T1 role for peer-facing turns (2026-09-11)
+#### ADR-052 D3: opt-in T1 role for peer-facing turns (2026-09-11)
 
 - **`[routing].peer_agent`** — `principal.toml` gains an optional
   `routing.peer_agent` naming a workspace role file
@@ -2825,7 +2937,7 @@ Breaking wire change (pre-launch, no compat shim — see
   root persona, so a bad value never breaks peer ingress. Shared
   resolver: `principal::agent_prompt::resolve_agent_prompt`.
 
-### ADR-052 D3: named subagents run their own role prompt (2026-09-11)
+#### ADR-052 D3: named subagents run their own role prompt (2026-09-11)
 
 - **Agent tool spawn/resume** — the resolved `<workspace>/agents/<name>.md`
   (or `<name>/AGENT.md`) Markdown body now threads from
@@ -2835,7 +2947,7 @@ Breaking wire change (pre-launch, no compat shim — see
   persona instead of the parent's `AgentConfig` verbatim. Empty bodies fall
   back to the inherited persona; conversation-mode peer turns are unchanged.
 
-### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
+#### Auditability: cache metrics + run iterations on session/quota status (2026-09-10)
 
 - **Session tool `status`** — `UsageStats` gains `cache_read_total`,
   `cache_creation_total`, and `cache_hit_rate` aggregated over the
@@ -2863,7 +2975,7 @@ Breaking wire change (pre-launch, no compat shim — see
   `QuotaSnapshot` carries them, and `peko quota status` prints cache
   read/write lines plus a window cache hit rate.
 
-### Prompt-caching fix: frozen system prompt + tail runtime context (2026-09-10)
+#### Prompt-caching fix: frozen system prompt + tail runtime context (2026-09-10)
 
 The agentic loop rebuilt `messages[0]` every iteration as
 `cache_stable + "\n\n" + volatile_suffix`, and the volatile suffix
@@ -2901,7 +3013,7 @@ OpenAI/DeepSeek automatic prefix caching match from the front).
   catalog is now sorted by tool name, making the request prefix
   byte-stable across iterations.
 
-### Agent-surface E2E fixes (2026-09-06)
+#### Agent-surface E2E fixes (2026-09-06)
 
 Follow-ups from a live end-to-end audit (real LLM, wire-logged):
 
@@ -2942,7 +3054,7 @@ Follow-ups from a live end-to-end audit (real LLM, wire-logged):
 - **ToolSearch** searches the caller's principal catalog (was
   hardcoded system) and applies the documented capability gate.
 
-### Cross-principal isolation + cron ping path (2026-09-07)
+#### Cross-principal isolation + cron ping path (2026-09-07)
 
 Found by the live "annoying principal" E2E (two principals, cron
 `ChannelSend` pings, wire-logged):
@@ -2971,7 +3083,7 @@ Found by the live "annoying principal" E2E (two principals, cron
   agent path) and the cron engine ensure-registers it per principal
   before dispatch.
 
-### Dynamic (LLM-driven) cron jobs (2026-09-07)
+#### Dynamic (LLM-driven) cron jobs (2026-09-07)
 
 - **`CronCreate` accepts `message` again** — a `Send` job that lands in
   the principal's trunk session and runs a full agent turn per fire, so
@@ -2992,7 +3104,7 @@ Found by the live "annoying principal" E2E (two principals, cron
   records a `failed` run (was `"success"` forever, hiding that every
   ping had actually been rejected).
 
-### Session-addressed cron targets (2026-09-07)
+#### Session-addressed cron targets (2026-09-07)
 
 Cron `SpawnTool` jobs can now drive ANY session by path, not just fire
 a fixed tool call:
@@ -3028,7 +3140,7 @@ a recurring `Agent new path="local-user"` job attached to the peer
 child every minute and each in-character reply landed in the user's
 DM channel (`peko log`).
 
-### Agent-manageable cron observability (2026-09-08)
+#### Agent-manageable cron observability (2026-09-08)
 
 Completes the "agents manage their own cron jobs" story (reviewer
 follow-up to PR #364):
@@ -3053,7 +3165,7 @@ agent's need. Verified live: `CronTrigger` on a disabled job fired it
 immediately; `CronHistory` read back both the in-band failure
 (active-run guard, session busy) and the successful fire's output.
 
-### Principal-as-trust-boundary sessions + cron origin (2026-09-08)
+#### Principal-as-trust-boundary sessions + cron origin (2026-09-08)
 
 The session tree is organization, not privilege — any of the
 principal's sessions may address any other, matching what cron fires
@@ -3094,7 +3206,7 @@ prompt; a 90-second "drink water" reminder created from the owner's
 conversation fired into `/local-user` (not the trunk) and the reply
 landed in the DM channel; trunk message count unchanged.
 
-### Peer-ingress conversation mode (2026-09-06)
+#### Peer-ingress conversation mode (2026-09-06)
 
 Peer-ingress turns (`peko send`, Hub webchat, tunnel A2A, channel
 subscribers) now run as conversations instead of one-shot subagent
@@ -3124,12 +3236,12 @@ tasks:
   target `ChannelSend` / cron reminders at the channel that reaches
   the user.
 
-### ADR-051: compaction pages as an addressable archive (2026-09-05, prototype)
+#### ADR-051: compaction pages as an addressable archive (2026-09-05, prototype)
 
 See `docs/architecture/adr/ADR-051-compaction-pages-as-addressable-archive.md`.
 Branch `session-pages`.
 
-#### Added
+##### Added
 - **`peko_session::pages`** — a pure read model that promotes compaction
   boundaries to an addressable page chain: `list_pages` (segment the
   stitched event log at compaction boundaries; page 1 = genesis…first
@@ -3159,7 +3271,7 @@ Branch `session-pages`.
   `pages::render_page_catalog` helper, so both produce identical text
   and the catalog is always current.
 
-#### Changed
+##### Changed
 - **`Agent` tool `compact` action is immediate, not flag-and-defer** —
   `Agent { action: "compact", path, prompt, agent }` starts a
   continuation run on the target session right away; the run
@@ -3173,7 +3285,7 @@ Branch `session-pages`.
   `SessionManager`/`MetadataController`/`SessionView` set/peek/clear
   methods and the `CompactRequestOutcome` DTO went with it.
 
-#### Fixed
+##### Fixed
 - **Session branching now carries compaction limits state** —
   `branch_session_by_id` copies the parent's `compaction_count` /
   `last_compaction_at` / consecutive-auto / consecutive-failure fields
@@ -3183,12 +3295,12 @@ Branch `session-pages`.
   present in the copied history, and the per-session compaction gates
   were silently reset (ADR-051 D2 follow-up).
 
-### Channel search (2026-09-03)
+#### Channel search (2026-09-03)
 
 Channels can finally answer "find that message" without a client-side
 full-log dump.
 
-#### Added
+##### Added
 - **`ChannelPort::search(channel, ChannelQuery)`** — a bounded,
   backward filtered scan over `Posted` events. Predicates: `text`
   (case-insensitive substring), `author` (exact wire-form match),
@@ -3209,7 +3321,7 @@ full-log dump.
   predicates while paging) and `group:<slug>` channels (via the
   `ChannelPeek` search mode). Ignored with `--watch`.
 
-#### Changed
+##### Changed
 - **IPC wire** — `RequestPacket::ChannelPeek` gains `query`/`author`;
   `ResponsePacket::ChannelPeekResult` gains `resume_before`;
   `RequestPacket::PrincipalLog` gains `query`/`author`. All
@@ -3217,12 +3329,12 @@ full-log dump.
 
 ---
 
-### Channel log paging / rotation (2026-09-03)
+#### Channel log paging / rotation (2026-09-03)
 
 Bounds channel log growth: the event log is no longer a single
 ever-growing `events.jsonl`.
 
-#### Changed
+##### Changed
 - **Page rotation** — when an append would push the current page past
   8 MiB (`DEFAULT_ROTATE_BYTES`, overridable via
   `ChannelStore::with_rotate_bytes`), the current page is renamed
@@ -3246,12 +3358,12 @@ ever-growing `events.jsonl`.
 
 ---
 
-### Channel log read/write performance (2026-09-03)
+#### Channel log read/write performance (2026-09-03)
 
 Makes channel reads and writes bounded instead of O(history), and
 gives every surface real cursors.
 
-#### Changed
+##### Changed
 - **O(1) appends** — `ChannelStore::append_event` no longer re-reads
   the whole `events.jsonl` to count newlines on every post; a
   per-log `(line_count, byte_len)` cache (validated against the
@@ -3297,12 +3409,12 @@ gives every surface real cursors.
 
 ---
 
-### Capabilities as workspace files + per-turn prompt catalog (2026-08-30, ADR-050)
+#### Capabilities as workspace files + per-turn prompt catalog (2026-08-30, ADR-050)
 
 Removes the CLI/IPC sugar around workspace capabilities and makes the
 system prompt's agents/skills sections live views of the workspace.
 
-#### Removed
+##### Removed
 - **`peko principal agent|persona|tool|hook|skill|mcp`** — the entire
   per-category extension-management tree (list/install/remove/set/show)
   is gone, along with the `principal_workspace` CLI module. Capabilities
@@ -3315,7 +3427,7 @@ system prompt's agents/skills sections live views of the workspace.
   handler, and the client method. The `persona` config field on
   principals stays.
 
-#### Changed
+##### Changed
 - **Per-turn workspace capability catalog** — the `{{agents}}` and
   `{{skills}}` system-prompt sections moved from the cache-stable prefix
   to the per-turn volatile suffix
@@ -3333,13 +3445,13 @@ system prompt's agents/skills sections live views of the workspace.
   invokes skills via the `Skill` tool). The skills catalog caps at 8 KB,
   then truncates with a pointer to list the directory.
 
-### Channel-native CLI surface: `send` / `stop` / `log` (2026-08-27, ADR-048)
+#### Channel-native CLI surface: `send` / `stop` / `log` (2026-08-27, ADR-048)
 
 Reshapes the user-facing surface around one mental model — "I'm
 messaging a principal on a channel; I don't care whether it's
 mid-run" — and fixes a real run-registry collision bug underneath it.
 
-#### Changed
+##### Changed
 - **`peko send <principal> [msg]`** always posts to the `(principal,
   peer)` thread. If a run is in flight, the message is queued onto the
   session inbox and folds into the running turn at the next agentic
@@ -3380,7 +3492,7 @@ mid-run" — and fixes a real run-registry collision bug underneath it.
 - **E2E scripts**: `--no-stream` swept from all flows under
   `scripts/e2e/flows/` (the flag no longer exists).
 
-#### Removed
+##### Removed
 - **`peko interrupt <request-id> [--steer]`** — replaced by
   `peko stop`; steering as a separate concept is gone (send always
   queues onto a busy thread).
@@ -3393,26 +3505,26 @@ mid-run" — and fixes a real run-registry collision bug underneath it.
 - **`IngressMode::SteerOnly`** — its only caller was the deleted Steer
   arm.
 
-#### Added (IPC)
+##### Added (IPC)
 - `PrincipalStop { name, peer }` → `Done { success, error }`.
 - `PrincipalLogWatch { name, peer, since_cursor }` → stream of
   `PrincipalLogAppended { message }` + `Heartbeat` — the
   privacy-checked sibling of `ChannelEventsWatch` (which stays
   unchanged for peko-desktop).
 
-#### Compatibility
+##### Compatibility
 - peko-desktop: the one-shot `PrincipalSend`/`PrincipalSent` shapes it
   depends on are untouched, including the legacy "Queued…" content on
   the one-shot busy path (only the streaming variant gained the
   `[queued]` signal).
 
-#### Docs
+##### Docs
 - **ADR-048** (channel-native CLI surface) added.
 - CLI_REFERENCE rewritten for `send` / `stop` / `log`; USERS_GUIDE
   privacy table now covers `stop` and `--watch`; README command list
   updated.
 
-### Sprint 9 — Retire chat-gateway adapter; converge ingress paths (2026-08-22)
+#### Sprint 9 — Retire chat-gateway adapter; converge ingress paths (2026-08-22)
 
 Removes the last holdout that bridged out-of-process children to the
 legacy `StatelessAgentService` ingress path. Under the new
@@ -3422,7 +3534,7 @@ already lands in per-peer standing children via
 tunnel/A2A, and bound channels were on this path; the chat-gateway
 adapter was the only remaining legacy producer.
 
-#### Removed
+##### Removed
 - **Chat-gateway adapter framework** (`peko-rs/core/src/extensions/gateway/`,
   ~2000 LOC + archived HTTP-basics fixture). The framework never shipped
   a concrete integration; it only bridged to `StatelessAgentService`.
@@ -3449,7 +3561,7 @@ adapter was the only remaining legacy producer.
   daemon, extension management service, and `peko ext init gateway`
   scaffold.
 
-#### Changed
+##### Changed
 - `peko ext install` no longer accepts `extension_type: "gateway"`
   manifests; `is_valid_type` returns `false`.
 - `BuiltInAdapters::adapters()` count dropped from 7 to 6.
@@ -3459,22 +3571,22 @@ adapter was the only remaining legacy producer.
 - `ChannelType::supports_threads` now returns `false` (no active
   thread-capable channel remains).
 
-#### Docs
+##### Docs
 - **ADR-025 marked Superseded** with pointer to the Agent Session
   Paradigm doc. Sprint 9 closes the chat-gateway architecture
   described there.
 - **README** replaces Discord/Slack references with the current
   ingress surface (CLI + tunnel + bound channels).
 
-### PEKO sprint 3: DM-over-channel unification (2026-08-18)
+#### PEKO sprint 3: DM-over-channel unification (2026-08-18)
 
 Re-founds all peer DM communication on the channel primitive: a peer
 DM is a 1:1 channel with a passive binding to the peer's standing
 child; group channels stay active (cron-read). Phase by phase.
 
-#### Phase 10 — DM channel auto-provisioning + push-wake
+##### Phase 10 — DM channel auto-provisioning + push-wake
 
-##### Added
+###### Added
 - **Peer DM channel auto-provisioning** (`principal/peer_dm.rs`):
   every external ingress path (`peko send` IPC, tunnel A2A
   `receive`/`receive_streaming`, Hub webchat, IPC Steer) funnels
@@ -3504,13 +3616,13 @@ child; group channels stay active (cron-read). Phase by phase.
   `ChannelPort` trait signature changed (`subscribe_events` already
   existed with a no-op default).
 
-#### Phase 11 — local ingress re-routed onto DM channels
+##### Phase 11 — local ingress re-routed onto DM channels
 
 `peko send` (IPC), Hub webchat, and IPC steer now write both
 directions of the conversation to the peer's DM channel; the chat-log
 projections on these paths are deleted.
 
-##### Added
+###### Added
 - **Attributed channel posts**: `ChannelPort::post_attributed`
   (default degrades to `post`) with `ChannelStore` +
   `TunnelChannelPort` overrides — membership/permission checked
@@ -3524,7 +3636,7 @@ projections on these paths are deleted.
   `find_peer_dm_channel` (find-only by binding) +
   `post_peer_dm_inbound` / `post_peer_dm_reply` helpers.
 
-##### Changed (breaking)
+###### Changed (breaking)
 - **Ingress posts to the DM channel, drives the turn itself.** The
   inbound message is posted before the run permit is acquired (a post
   failure rejects dispatch — the persist-before-dispatch invariant);
@@ -3552,12 +3664,12 @@ projections on these paths are deleted.
   the `_ingress` forms). `record_cron_input` stays — cron projection
   is unchanged and keeps `peko-chat-log` alive until Phase 13.
 
-#### Phase 12a — cross-runtime DM channel plumbing + anti-loop rule
+##### Phase 12a — cross-runtime DM channel plumbing + anti-loop rule
 
 Additive only: the new machinery exists and is tested, but nothing
 user-facing switches over yet (12b rewires `send_peer`).
 
-##### Added
+###### Added
 - **DM-aware channel invites**: `TunnelChannelInvite` gains
   `creator_did` + `passive_binding` (both join the signed pre-image).
   The binding value is only a "this is a DM channel" marker — each
@@ -3591,12 +3703,12 @@ user-facing switches over yet (12b rewires `send_peer`).
   Trade-off: threaded human replies (`PostMsg::reply` via
   `ChannelSend`) no longer wake a bound session — root posts only.
 
-#### Phase 12b — `send_peer` + messenger over channels; A2A RPC retired
+##### Phase 12b — `send_peer` + messenger over channels; A2A RPC retired
 
 Principal-to-principal DM now runs over the mirrored DM channel; the
 bespoke signed-envelope RPC stack is deleted.
 
-##### Changed (breaking)
+###### Changed (breaking)
 - **`send_peer` principal branch is channel-based.** Remote targets:
   ensure the caller's DM channel for the peer (first contact fires
   `fanout_dm_invite` with the caller's real DID), post a root message
@@ -3632,7 +3744,7 @@ bespoke signed-envelope RPC stack is deleted.
   runtime confirms; only runtimes never online together within 30 days
   remain unserved (an accepted MVP gap, `docs/MVP_GATE.md` gate 0).*
 
-##### Removed (prelaunch, no migration)
+###### Removed (prelaunch, no migration)
 - `TunnelMessage::PrincipalToPrincipal{Request,Response}` envelopes,
   their dispatcher handlers, and the pending-response machinery
   (`tunnel/a2a_pending.rs`, `tunnel/a2a_audit.rs`; from
@@ -3653,14 +3765,14 @@ bespoke signed-envelope RPC stack is deleted.
 - Integration tests `direct_connection.rs` +
   `direct_transport_policy.rs` (with their `[[test]]` entries).
 
-#### Phase 13 — `peko-chat-log` retired (2026-08-19)
+##### Phase 13 — `peko-chat-log` retired (2026-08-19)
 
 With DM channels as the durable record of every peer conversation
 (Phases 10–12b), the chat-log crate had one writer left (the cron
 `Send` fired-prompt projection) and no readers. It is removed from
 the workspace (22 → 21 members).
 
-##### Changed
+###### Changed
 - **`peko log` row type moved + renamed**: `ChatLogMessage` →
   `peko_core::ipc::packet::PrincipalLogMessage` (+
   `PRINCIPAL_LOG_SCHEMA_VERSION`), serde wire shape byte-identical.
@@ -3673,7 +3785,7 @@ the workspace (22 → 21 members).
 - On-disk `chat_logs/` shards from before this sprint are orphaned
   in place (prelaunch; delete them by hand if you care).
 
-##### Removed
+###### Removed
 - The `peko-chat-log` crate (`ChatLogStore`, `ChatThreadKey`,
   `ChatLogPage`), its workspace membership, the core + CLI dep
   edges, and 17 forbidden-edge rules in
@@ -3685,12 +3797,12 @@ conversation — a peer DM is a 1:1 passive-bound channel, group
 channels stay active (cron-read via `ChannelRead`, post via
 `ChannelSend`), and no parallel per-peer record exists.
 
-### Channel tool reachability fixes (reviewer findings, 2026-08-18)
+#### Channel tool reachability fixes (reviewer findings, 2026-08-18)
 
 The `ChannelRead` / `ChannelSend` built-in tools were wired in but
 unreachable and inert in production; two layered bugs, both fixed.
 
-#### Fixed
+##### Fixed
 - **Missing starter grants** (same shape as the F351 session-tool bug,
   PR #351): `Capabilities::starter_bundle()` now grants
   `tool:ChannelRead` / `tool:ChannelSend`. Without them the capability
@@ -3711,7 +3823,7 @@ unreachable and inert in production; two layered bugs, both fixed.
   `peko_channel::global_channel_port()` with `NoopChannelPort` only as
   the test/standalone fallback.
 
-### PEKO sprint 4: `send_peer` consolidated into `ChannelSend` (2026-08-19)
+#### PEKO sprint 4: `send_peer` consolidated into `ChannelSend` (2026-08-19)
 
 Sprint 4 closes the loop on the sprint 3 design promise: `send_peer` and
 `ChannelSend` now share one delivery mechanism — there is one tool
@@ -3720,7 +3832,7 @@ dispatch branch. The LLM picks the prefix; the runtime owns the
 await / timeout / mirror / exposure-gate / originating-user-gate
 policies.
 
-#### Added
+##### Added
 - **Typed `ChannelId` prefixes** (`peko-protocol`): `chan_<8 base36>`
   (Bare), `principal:<did>` (Principal), `user:<id>` (User),
   `group:<slug>` (Group). Bare form unchanged for backward compat;
@@ -3735,7 +3847,7 @@ policies.
   classic Unix filesystems; `channel_dir_name` replaces `:` with
   `.3A.` for the storage path only. Wire form unchanged.
 
-#### Changed (breaking)
+##### Changed (breaking)
 - **`ChannelSend` is now per-agent** with the caller's principal DID
   bound at construction (mirrors pre-PR `send_peer` shape). The F37
   funnel's `ToolContext` does NOT carry the caller DID, so the tool
@@ -3757,7 +3869,7 @@ policies.
   `peko log` continuity. User / public peers keep the slug-based
   routing id (the user-branch dispatch is messenger-port).
 
-#### Removed (prelaunch, no migration)
+##### Removed (prelaunch, no migration)
 - **`tool:send_peer` capability**: retired outright, no compatibility
   alias. Principals with the legacy grant lose it post-cutover.
   `Capabilities::starter_bundle()` no longer includes the grant;
@@ -3765,7 +3877,7 @@ policies.
   `tool:ChannelSend` with a typed channel id (`chan_*` / `principal:<did>`
   / `user:<id>` / `group:<slug>`) to dispatch.
 
-### PEKO sprint 5: slug-path addressing on the LLM-facing surface (2026-08-20)
+#### PEKO sprint 5: slug-path addressing on the LLM-facing surface (2026-08-20)
 
 Collapses the LLM-facing session-addressing surface to slug paths.
 Three commits land in order: caller-relative slug resolution +
@@ -3773,7 +3885,7 @@ raw-id rejection (commit 1, `96d3e55a`), `name` required at Agent
 spawn + tool-surface grammar update (commit 2, `89ca46d9`), and the
 doc sweep (this commit).
 
-#### Added
+##### Added
 
 - **`peko_session::path::resolve_reference`** — single LLM-facing
   resolver. Three forms accepted: `/a/b/c` (absolute slug path,
@@ -3802,7 +3914,7 @@ doc sweep (this commit).
   via `c.is_ascii_alphanumeric()`, so standing-child slugs do not
   contain `:`.
 
-#### Changed (breaking)
+##### Changed (breaking)
 
 - **Raw session ids are REFUSED** at the LLM-facing tool layer
   (`Agent` `session_key`, all `session` tool `session_key` /
@@ -3822,7 +3934,7 @@ doc sweep (this commit).
   Doc comment now states the deliberate divergence so the next
   reader doesn't "fix" it.
 
-#### Notes
+##### Notes
 
 - `peko_session::path` gained 280 tests (one new
   `resolve_id_or_path_accepts_raw_ids_and_resolves_paths` covers
@@ -3844,7 +3956,7 @@ doc sweep (this commit).
   binding tests (`peko-rs/core/src/daemon/channel_binding.rs:1483-1541`)
   confirm the resolver still maps `/user-a` → canonical child id.
 
-### PEKO sprint 6: opaque UUID session ids, peer is a channel concern (2026-08-20)
+#### PEKO sprint 6: opaque UUID session ids, peer is a channel concern (2026-08-20)
 
 Collapses the engine-internal session id to an opaque UUID and
 moves peer identity out of the session id entirely. The session
@@ -3862,7 +3974,7 @@ Three layers, three shapes:
 | Engine-internal session | opaque UUID | Storage key + parent-chain walk |
 | Peer / routing | channel id (`principal:<did>`, `user:<id>`, `chan_<8>`, `group:<slug>`) | Conversation surface + cross-runtime |
 
-#### Added
+##### Added
 
 - **`peko_session::SessionId`** — newtype around `Uuid`,
   `#[serde(transparent)]`, `Copy`. `SessionMetadata.session_id` and
@@ -3898,7 +4010,7 @@ Three layers, three shapes:
   retired; absolute paths are unambiguous and the tool surface
   already emits them.
 
-#### Changed (breaking)
+##### Changed (breaking)
 
 - **`SessionMetadata.session_id` and `parent_session_id` are
   `SessionId`**, not `String`. Production sites that need the
@@ -3921,7 +4033,7 @@ Three layers, three shapes:
   divergence from the LLM-facing `resolve_reference` is documented
   in `daemon/channel_binding.rs`.
 
-#### Removed (prelaunch, no migration)
+##### Removed (prelaunch, no migration)
 
 - **`trunk_session_id()`** at `peko-rs/core/src/principal/routers/root.rs:67-69`
   — replaced by `find_trunk_session(metas)`. The literal
@@ -3950,7 +4062,7 @@ Three layers, three shapes:
   caller-relative slug resolver; retired alongside the
   caller-relative slug arm.
 
-#### Notes
+##### Notes
 
 - `peko_session::path` lost `looks_like_session_id_heuristic` and
   `resolve_id_or_path_accepts_raw_ids_and_resolves_paths` (sprint 5
@@ -3982,7 +4094,7 @@ Three layers, three shapes:
   Windows; the function is a no-op for the canonical path and
   defensively safe for any non-UUID callers.
 
-### PEKO sprint 2: external ingress off the root (2026-08-17)
+#### PEKO sprint 2: external ingress off the root (2026-08-17)
 
 External traffic (CLI `peko send`, tunnel A2A, Hub webchat) moves off the
 root agent into per-peer standing children of the trunk (`/local-user`,
@@ -3990,7 +4102,7 @@ root agent into per-peer standing children of the trunk (`/local-user`,
 Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
 (prelaunch breaking change — no migration).
 
-#### Changed (breaking)
+##### Changed (breaking)
 - **External ingress lands in per-peer children** (Phase 7). `peko send`,
   tunnel A2A, and Hub webchat spawn-or-continue the peer's standing child
   (`/local-user` for the owner — privileged, whole-store; `/user-x`;
@@ -4009,7 +4121,7 @@ Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
   `originating_peer` resolves via stamped `peer_type`/`peer_id` + the
   parent walk.
 
-#### Added
+##### Added
 - **Peer-child provisioning** (`principal/peer_children.rs`):
   `peer_child_slug` (peer → slug: `user:local` → `local-user`,
   `user:{id}` → `user-{id}`, `principal:{did}` → `principal-{fragment}`)
@@ -4034,7 +4146,7 @@ Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
   the peer-child session id (write side; the read side is peer-keyed and
   unchanged).
 
-#### Fixed
+##### Fixed
 - **Flaky `concurrent_messages_serialize_turns` test** (was failing ~6/8
   full-suite runs): the FIFO assertion raced task spawn order against
   mutex acquisition; now waits for the first turn to start before issuing
@@ -4044,12 +4156,12 @@ Per-peer `root:{peer}` / `root:cron:{owner}` sessions are retired
   …) rewrote the entry through the metadata cache. The peer is now stamped
   on the metadata before caching.
 
-### Agent–session paradigm sprint (2026-08-15)
+#### Agent–session paradigm sprint (2026-08-15)
 
 Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
 `docs/architecture/AGENT_SESSION_PARADIGM.md`.
 
-#### Fixed
+##### Fixed
 - **Maintenance prune no longer destroys protected transcripts.** The
   30-day idle prune now exempts the `root:*` family, `archived`
   sessions, and sessions carrying the new `standing` flag — previously
@@ -4063,7 +4175,7 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   Previously every restart re-observed each channel's full event
   history.
 
-#### Added
+##### Added
 - **`standing` flag** on `SessionMetadata`/`SessionEntry`
   (serde-default false): marks a session as a durable, standing entity —
   exempt from idle pruning. Groundwork for standing named children.
@@ -4122,7 +4234,7 @@ Sprint branch `feat/agent-session-paradigm` closing the gaps mapped in
   unchanged (active polling only). Restart-safe via persisted cursors;
   at-most-once delivery by design.
 
-### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
+#### Round 7: chapters deleted, stable-id paging, session/Agent tool surface (2026-08-13)
 
 The chapter concept was a category error — a session is one agent.
 Session ids are now stable for life; transcript growth is handled by
@@ -4130,7 +4242,7 @@ storage-internal paging, and the tool surface is split honestly:
 `session` does pure storage reads/writes, `Agent` drives anything
 that causes LLM work.
 
-#### Changed
+##### Changed
 - **Stable-id transcript paging.** Session ids never change. When a
   JSONL exceeds `rotate_bytes` it pages in place: `<id>.jsonl` →
   `<id>.N.jsonl` (N chronological, 1 = oldest) and appends continue
@@ -4161,7 +4273,7 @@ that causes LLM work.
   `agents/subagent_executor.rs` branches on `trigger == "spawn"`;
   dropping it is deferred to a follow-up.
 
-#### Removed
+##### Removed
 - **Chapters.** `peko_session::chapters` (`ChapterRequest`,
   `chapters.json`, `chapter_id`), `SessionRuntime::{new_chapter,
   resume_chapter}` + `ChapterChangeOutcome`,
@@ -4172,7 +4284,7 @@ that causes LLM work.
 - **`Agent` tool `resume_session` param** (breaking for tool
   callers). Use `action:"resume"` + `session_key` instead.
 
-### Agent-owned session management — the unified session/run framework (2026-08-09)
+#### Agent-owned session management — the unified session/run framework (2026-08-09)
 
 The "coin model": a **session** is a persisted conversation, a **run**
 is a live agentic process attached to exactly one session. The `Agent`
@@ -4180,7 +4292,7 @@ tool is the generate side; the `session` tool is the persist side. One
 ownership/guard module, one run-permit protocol, and one guarded delete
 path now govern both.
 
-#### Added
+##### Added
 - **`session` tool mutation actions.** Beyond `status`/`list`/`history`:
   `search` (case-insensitive transcript scan), `branch`, `rename`,
   `archive`/`unarchive`, `delete` (subtree-aware, `recursive:true` for
@@ -4235,12 +4347,12 @@ path now govern both.
   of fabricated zeros; the prompt's `SessionSnapshot` carries the real
   session id (`TurnPromptContext.session_id`).
 
-### `send_peer` unification, cron `Notify` delivery, and `delay` (2026-08-08)
+#### `send_peer` unification, cron `Notify` delivery, and `delay` (2026-08-08)
 
 From the round-4 live-verification observations (addendum in
 `scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.md`):
 
-#### Added
+##### Added
 - **`CronCreate` `delay` arg.** Relative one-shot delays (`"90s"`,
   `"5m"`, `"1h"`) resolved to an absolute `at` at registration time —
   the model no longer does RFC3339/timezone arithmetic (the top
@@ -4278,15 +4390,15 @@ From the round-4 live-verification observations (addendum in
   semantics for CLI compatibility.
 - **`MessageSource::Agent`** for agent-pushed notes.
 
-#### Changed
+##### Changed
 - `PrincipalSendTool` → `SendPeerTool`; args `target_principal` →
   `target` (+ optional `label`). No alias — pre-launch.
 
-### Cron/session structural fixes (2026-08-07 round-3 field-test findings F1–F5, P1–P2, U1)
+#### Cron/session structural fixes (2026-08-07 round-3 field-test findings F1–F5, P1–P2, U1)
 
 From `scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.md`:
 
-#### Fixed
+##### Fixed
 - **IPC receiver no longer dies after 60s of silence (F1, critical).**
   `ipc::stream::spawn_receiver` treated the read timeout as fatal and
   exited its loop, leaving every long-lived `DaemonClient` deaf while
@@ -4353,16 +4465,16 @@ From `scripts/e2e/reports/2026-08-07-non-technical-user-subagent-cron-principal.
   whose `next_run` is the far-future sentinel now render `—` instead
   of a raw year-2126 timestamp.
 
-#### Internal
+##### Internal
 - `peko-session`: `add_user_with_source` on the unified session +
   handle; doctest paths fixed (`peko_core::…` → `peko_session::…`,
   stale from the workspace migration).
 
-### Session-integrity + cron hardening (2026-08-07 findings N1–N3)
+#### Session-integrity + cron hardening (2026-08-07 findings N1–N3)
 
 Follow-up to the field-test fix pack below, from its verification pass:
 
-#### Fixed
+##### Fixed
 - **Concurrent writers can no longer brick a session, and already
   bricked sessions recover.** Two halves (finding N1):
   - *Prevention:* the daemon's `PrincipalManager` now shares
@@ -4409,11 +4521,11 @@ Follow-up to the field-test fix pack below, from its verification pass:
 - **`peko cron at` prints the resolved timestamp** in its confirmation
   instead of echoing the raw `--at` input (finding N3).
 
-### Field-test fix pack (2026-08-07 cron/session/IPC findings)
+#### Field-test fix pack (2026-08-07 cron/session/IPC findings)
 
 Fixes from `scripts/e2e/reports/2026-08-07-non-technical-user-cron-session.md`:
 
-#### Fixed
+##### Fixed
 - **Long tool calls no longer kill streaming turns.** The daemon now
   emits `ResponsePacket::Heartbeat` every `HEARTBEAT_INTERVAL_SECS`
   while draining a `PrincipalSendStream` run. Previously any tool call
@@ -4453,7 +4565,7 @@ Fixes from `scripts/e2e/reports/2026-08-07-non-technical-user-cron-session.md`:
   `trigger: "spawn"`; `turn_count` is maintained (bumped per user-role
   message) instead of always reading 0 (Finding 7).
 
-#### Added
+##### Added
 - **Cron CLI ergonomics** (Finding 5): `peko cron every --interval`
   accepts human durations (`30s`, `5m`, `1h`, `1d`) alongside
   `--interval-ms`; `peko cron at --at` accepts relative delays
@@ -4461,11 +4573,11 @@ Fixes from `scripts/e2e/reports/2026-08-07-non-technical-user-cron-session.md`:
   accept `--name <job-name>` (exact match, errors on ambiguity) as an
   alternative to the hex job ID.
 
-### Multi-model subagents (PR #346)
+#### Multi-model subagents (PR #346)
 
 All four phases merged as one squashed commit (`ee4895a6`).
 
-#### Added
+##### Added
 - **Per-spawn model choice.** `AgentTool`'s `model: Option<String>`
   parameter is no longer a no-op — the parent's choice is threaded
   through `SpawnRequest` → `ExecutionConfig.model_override` →
@@ -4503,7 +4615,7 @@ All four phases merged as one squashed commit (`ee4895a6`).
   state persists to `<workspace>/seen_models.json` (atomic write,
   corrupt-file tolerant).
 
-### Chat-session separation (PRs forthcoming)
+#### Chat-session separation (PRs forthcoming)
 
 The runtime now keeps two distinct stores of conversation data,
 matching the data-model split:
@@ -4516,7 +4628,7 @@ matching the data-model split:
   what was actually exchanged. It powers `peko log`, the
   `principal_log` IPC, and the desktop's chat page.
 
-#### Added
+##### Added
 
 - `src/chat_log/` — runtime-owned chat-log domain: `ChatLogStore`,
   `ChatThreadKey`, `ChatLogMessage`, `ChatLogPage`, opaque
@@ -4542,7 +4654,7 @@ matching the data-model split:
   covering `A2a` and `P2p`, `Webhook`) are recorded;
   automation (`Cron`, `FileWatch`) is deliberately excluded.
 
-#### Changed
+##### Changed
 
 - `RequestPacket::PrincipalLog` and `ResponsePacket::PrincipalLog`
   IPC shape. The legacy `events: Vec<HistoryEvent>` array,
@@ -4564,7 +4676,7 @@ matching the data-model split:
   "Load older" paging that walks pages via `nextCursor` and
   dedupes by message id.
 
-#### Notes
+##### Notes
 
 - Pre-launch clean cutover: there is **no** migration path from
   session JSONL to chat log, **no** legacy fallback, and **no**
@@ -4572,13 +4684,13 @@ matching the data-model split:
   chat-log shards only; counterpart views held by other
   principals remain because they are owned by the other principal.
 
-### Claude Code core tool parity (in progress)
+#### Claude Code core tool parity (in progress)
 
 A multi-phase program to align peko's built-in tool names and schemas with
 Claude Code's core tool surface, while preserving peko's daemon-first
 execution, A2A protocol, and extension system.
 
-#### Added
+##### Added
 
 - `docs/architecture/builtin-tools.md` — canonical catalog of built-in tools,
   schemas, and Claude parity status.
@@ -4587,13 +4699,13 @@ execution, A2A protocol, and extension system.
 - Configuration gates `enable_async_tools` and `enable_task_tools` on
   `ToolFactoryConfig` and `BuiltinToolRegistrarConfig`.
 
-#### Upcoming (tracked on `tool-parity-core-subset` branch)
+##### Upcoming (tracked on `tool-parity-core-subset` branch)
 
 - (none — all scoped tools are now in place)
 
-### Architecture cleanup (PRs #153–#156)
+#### Architecture cleanup (PRs #153–#156)
 
-#### Removed
+##### Removed
 
 - Dead code across the engine, IPC, and extension layers (PR #153).
 - The write-only tool-latency metrics/tracing toolkit that was recorded but
@@ -4604,14 +4716,14 @@ execution, A2A protocol, and extension system.
   `tests/tunnel_e2e` is gated behind the feature — run it with
   `cargo test --features test-utils --test tunnel_e2e`.
 
-#### Changed
+##### Changed
 
 - Tidied stale section headers in `src/lib.rs` (PR #154).
 - Marked ADR-027 (unified packaging), ADR-031 (agent team membership), and
   ADR-037 (agent extension bundling) as superseded by ADR-039 / ADR-041, and
   refreshed capability-grant wording (PR #156).
 
-### Added
+#### Added
 
 - Planning-todo family `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate`.
   Todos are stored in a per-session JSONL sidecar
@@ -4621,7 +4733,7 @@ execution, A2A protocol, and extension system.
   `taskId`; `TaskList` accepts an optional `status_filter`. These tools are
   registered per-agent so they resolve to the agent's own session directory.
 
-### Changed
+#### Changed
 
 - **BREAKING**: Split built-in tool `task` into `AsyncSpawn`, `AsyncOutput`,
   `AsyncStop`, `AsyncStatus`, and `AsyncList`. `AsyncSpawn` runs any built-in
@@ -4674,7 +4786,7 @@ execution, A2A protocol, and extension system.
   from "Pekobot" to "Peko". Binary name (`peko`), package layout on disk
   (`config.toml` `app_name = "peko"`), and Python SDK defaults are unaffected.
 
-### Notes
+#### Notes
 
 - Phase 6 cleanup completed: updated `DATA_MODEL.md` with a new "Planning
   Todo Sidecar" section, refreshed `docs/architecture/builtin-tools.md` to
@@ -4688,7 +4800,7 @@ execution, A2A protocol, and extension system.
   to `peko-tool` / `peko_tool`.
 - Historical CHANGELOG entries below are preserved verbatim.
 
-### Cleanup
+#### Cleanup
 
 - **Legacy `a2a_send` references scrubbed from doc comments and docs.** The
   tool itself was fully superseded by `principal_send` (ADR-023 + ADR-039);
@@ -4696,13 +4808,13 @@ execution, A2A protocol, and extension system.
   event kinds `a2a.sent` / `a2a.received` / signature domain `a2a:v1` are
   unchanged. No behavior or wire changes; doc-only.
 
-### Provider catalog & agent decoupling (v3)
+#### Provider catalog & agent decoupling (v3)
 
 This release decouples agent configs from provider/model/API-key
 wiring. Pulled registry agents now work on any host with at least one
 configured provider; secrets never touch plaintext disk.
 
-#### New: runtime-owned provider catalog (`~/.peko/providers.toml`)
+##### New: runtime-owned provider catalog (`~/.peko/providers.toml`)
 
 - `src/providers/catalog.rs` — `ProviderCatalog`, `ProviderCatalogEntry`,
   `ModelInfo`, `ApiFormat`. Loaded on startup, shared via
@@ -4718,7 +4830,7 @@ configured provider; secrets never touch plaintext disk.
 - CLI: `peko provider {list, templates, add, remove, set-default,
   get-default, fetch-models}`.
 
-#### New: secure secret store
+##### New: secure secret store
 
 - `src/common/secret_store.rs` — `SecretStore` trait with two impls:
   - `OsKeychainSecretStore` (production) using the `keyring` crate.
@@ -4734,7 +4846,7 @@ configured provider; secrets never touch plaintext disk.
   once on first run, moves every entry into the keychain, and deletes
   the file.
 
-#### New: agent ↔ provider decoupling
+##### New: agent ↔ provider decoupling
 
 - `AgentConfig.version` is bumped to `"3.0"`.
 - The embedded `provider: ProviderConfig` field is gone (deleted in
@@ -4748,7 +4860,7 @@ configured provider; secrets never touch plaintext disk.
   `Agent::new(config)` continues to work — it falls back to the legacy
   `provider` field so pre-v3 fixtures still compile.
 
-#### Adapter signature refactor (per-call `model_id`)
+##### Adapter signature refactor (per-call `model_id`)
 
 - `ApiAdapter::build_request` now takes `model_id: &str` as the first
   argument. The `model` field is removed from `OpenAiAdapter`,
@@ -4761,7 +4873,7 @@ configured provider; secrets never touch plaintext disk.
   `stream_with_tools(model_id, …)` thread `model_id` into the adapter.
 - `MockAdapter::new()` (no model argument) — model is set per call.
 
-#### Migration (`src/runtime/migration_v3.rs`)
+##### Migration (`src/runtime/migration_v3.rs`)
 
 - `migrate_adr_provider_catalog_v3(resolver)`:
   - Walks `~/.peko/agents/*/config.toml`.
@@ -4775,7 +4887,7 @@ configured provider; secrets never touch plaintext disk.
 - Verified by `legacy_agent_config_gets_v3_and_hints` and
   `empty_state_reports_zero_migrations`.
 
-#### Registry round-trip hardening
+##### Registry round-trip hardening
 
 - `AgentConfig` no longer carries a `provider` field at all (deleted in
   v3-cleanup, PR #44), so the OCI config blob embedded by
@@ -4783,7 +4895,7 @@ configured provider; secrets never touch plaintext disk.
 - Legacy `.agent` packages still in flight are stripped
   defensively: re-hydration reads the v3-clean TOML.
 
-#### Desktop (`peko-desktop`)
+##### Desktop (`peko-desktop`)
 
 - `src-tauri/src/ipc/mod.rs` gains `credential_get`, `credential_set`,
   `credential_delete`, `credential_list` IPC clients that proxy to the
@@ -4795,7 +4907,7 @@ configured provider; secrets never touch plaintext disk.
   PekoHub-token callers (`pekohub.rs`, `registry.rs`) — they will
   follow in a subsequent change.
 
-#### Mid-session model switching
+##### Mid-session model switching
 
 - Between turns only (per the v3 plan). New CLI flag: `peko send
   --provider X --model Y` (or equivalent SDK/IPC parameter). The
@@ -4803,7 +4915,7 @@ configured provider; secrets never touch plaintext disk.
   LLM call within that turn. In-turn provider swap remains out of
   scope (documented as a future ADR).
 
-### Fixed (issue #26) — Add typed `Principal` caller field to `AuditEvent`
+#### Fixed (issue #26) — Add typed `Principal` caller field to `AuditEvent`
 
 The audit event carried caller identity as a free-form `Option<String>`
 (`caller_id`, added by #17), so per-user, per-key, and per-agent audit
@@ -4848,7 +4960,7 @@ serialized as `{kind, id}` so query code can index on the kind tag.
 `PermissionGrant.granted_by` and audit queries on PekoHub itself are
 out of scope (parallel PekoHub issue to follow).
 
-### Added (issue #28) — Per-agent persistent `agent_did` over the tunnel
+#### Added (issue #28) — Per-agent persistent `agent_did` over the tunnel
 
 `Principal::Agent(agent.name)` (from #24 / ADR-039) keys agents by the
 local name — fine in a single-runtime world, but ambiguous across
@@ -4909,7 +5021,7 @@ to a first-class `agent_did` that flows through the tunnel, the
   real `~/.peko`. The in-memory identity is still valid; the next
   production-path call does the real backfill.
 
-### Notes for reviewers
+#### Notes for reviewers
 
 - **Name-fallback semantics (deliberate, see issue #28 comment):**
   when an agent has no `agent_did` yet (legacy config, first run
@@ -4926,7 +5038,7 @@ to a first-class `agent_did` that flows through the tunnel, the
   that ignore the new field will continue to work; PekoHub upgrades
   that want to enforce per-agent matching must include the field.
 
-### Fixed (issue #17) — Plumb hub-attested user identity through the tunnel path
+#### Fixed (issue #17) — Plumb hub-attested user identity through the tunnel path
 
 Pre-#17, the tunnel dispatcher hard-coded the user attribution to the
 literal string `"web"` and `MessageRequest::new` defaulted to
@@ -5004,7 +5116,7 @@ security gap called out in issue #17.
 user's identity is keyed via `sender_id`, which is now correctly
 plumbed. No change needed.
 
-### Fixed (issue #25) — Collapse IPC `(subject_id, subject_type)` into `subject: Principal`
+#### Fixed (issue #25) — Collapse IPC `(subject_id, subject_type)` into `subject: Principal`
 
 The IPC `RequestPacket` variants for grant/revoke
 (`agent_grant_permission`, `agent_revoke_permission`,
@@ -5071,7 +5183,7 @@ shapes through a single `RequestPacket::resolved_subject()` helper.
   `test_resolved_subject_legacy_wire_shape_serde_round_trip`) cover
   the error path and the JSON round-trip.
 
-### Fixed (issue #16) — `peko agent permit` / `pevoke` propagate to PekoHub within ~1s
+#### Fixed (issue #16) — `peko agent permit` / `pevoke` propagate to PekoHub within ~1s
 
 `peko agent permit <agent> <user> chat` and `peko agent revoke <agent>
 <user> chat` now push a fresh `exposure_update` to PekoHub immediately,
@@ -5118,7 +5230,7 @@ feature.
   `tests/scenarios/s4_publish_running_agent_with_permission.rs:68-82`
   is removed and replaced with a pointer to s5 + the issue.
 
-### Fixed (issue #14) — manifest signature verification on import
+#### Fixed (issue #14) — manifest signature verification on import
 
 **`.agent` signature is now verified on unpack.** The packager has always
 signed the manifest with the agent's ed25519 DID key on write
@@ -5192,7 +5304,7 @@ gate is actually usable end-to-end):
   - green: `--allow-unsigned-agent` permits unsigned import
   - byte-stability regression guard pinning `created_at`
 
-### Fixed (issue #8)
+#### Fixed (issue #8)
 
 **Tunnel reconnect cap and degraded-state surfacing.** Previously, when
 PekoHub was permanently unreachable (DNS, network, decommissioned), the
@@ -5216,7 +5328,12 @@ no operator signal that the relay was down.
   `tunnel: { state, reconnect_attempts, last_error, degraded }`.
   `stop_tunnel()` clears the degraded flag and per-attempt state.
 
-## [1.0.0-rc1] - Phase 1 Completion - 2026-05-14
+## Pre-release history (untagged builds, 2026-03 to 2026-05)
+
+None of these builds was tagged or released. Their headings keep the labels
+they were written with, including `1.0.0-rc1` and `0.1.0`.
+
+### [1.0.0-rc1] - Phase 1 Completion - 2026-05-14
 
 > **Version note (2026-09-29):** this section documents the pre-rename
 > *pekobot* Phase 1 milestone. The `1.0.0-rc1` label was never tagged or
@@ -5227,7 +5344,7 @@ no operator signal that the relay was down.
 
 Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agent runtime, unified packaging, registry integration, and CLI have been implemented and verified.
 
-### Phase 1 Summary
+#### Phase 1 Summary
 
 **Runtime Engine:**
 - Turn-based agentic loop with streaming (`StreamOrchestrator`), tool execution, and session persistence
@@ -5280,7 +5397,7 @@ Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agen
 - 60+ PowerShell E2E tests covering agent, session, send, tools, extensions, packaging, cron, A2A, subagent, compaction
 - 0 compiler warnings, 0 clippy warnings
 
-### Deferred to Phase 2
+#### Deferred to Phase 2
 - `system doctor` / `system clean` (stubs remain)
 - `pekobot validate` command
 - `--json` on remaining commands
@@ -5293,33 +5410,33 @@ Phase 1 of the Pekobot runtime is complete. All P0 success criteria for the agen
 
 ---
 
-## [0.1.0] - Team Registry Layer Deduplication (Issue 023) - 2026-05-11
+### [0.1.0] - Team Registry Layer Deduplication (Issue 023) - 2026-05-11
 
 Team registry push/pull now uses content-addressable layers instead of a single opaque blob, enabling cross-team agent deduplication.
 
-### Added
+#### Added
 - **`LayerType::TeamConfig`** — New layer type for team metadata (agent index) in registry manifests
 - **`TeamAgentIndex`** / **`AgentLayerRef`** — Types for the agent → layer digest mapping inside `TeamConfig` layers
 - **`TeamLayerBuilder`** (`src/portable/team_layer_builder.rs`) — Decomposes `.team` archives into content-addressable layers
 - **`TeamLayerReconstructor`** (`src/portable/team_layer_reconstructor.rs`) — Reconstructs agents from registry layers for direct in-memory import
 - **E2E test** — `e2e_tests/packaging/team_registry_dedup.ps1` — Verifies cross-team agent deduplication on mock registry
 
-### Changed
+#### Changed
 - **`handle_team_push`** (`src/commands/team.rs`) — Now decomposes team into `TeamConfig` + per-agent standard layers (`Config`, `Identity`, `Skills`, etc.) instead of storing a single opaque blob. Shared agents across teams are automatically deduplicated via `RegistryClient::check_existing_layers()`.
 - **`handle_team_pull`** (`src/commands/team.rs`) — Now reconstructs agents directly from registry layers without creating a temporary `.team` file. Imports each agent via `Unpackager::import_from_files()`.
 - **`LayerType`** — Now implements `Hash` (required for use as `HashMap` key in layer builders)
 
-### Integration Tests
+#### Integration Tests
 - `portable::team_layer_builder::tests` — 9 tests (basic decomposition, empty team, all layer types, shared content, digest determinism)
 - `portable::team_layer_reconstructor::tests` — 6 tests (roundtrip, missing optional layers, empty index, error handling)
 
 ---
 
-## [0.1.0] - Packaging System (Phases 1–7) - 2026-05-08
+### [0.1.0] - Packaging System (Phases 1–7) - 2026-05-08
 
 Unified packaging layer with content-addressable storage, registry push/pull, and integrity checks.
 
-### Added
+#### Added
 - **`src/portable/`** — Unified packaging layer (merged from `src/image/`)
   - `AgentBuilder` — Build `.agent` packages from source directories with content-addressable layers
   - `AgentRegistry` — Local content-addressable store for layers and manifests
@@ -5334,14 +5451,14 @@ Unified packaging layer with content-addressable storage, registry push/pull, an
   - `pekobot agent pull <ref>` — Pull from registry
   - `pekobot ext export <id> -o <path>` — Export extension to `.ext`
 
-### Changed
+#### Changed
 - **`AgentManifest` clean manifest** — Stripped of `capabilities`, `tools`, `mcp`, `tool_sources`, `memory`. Packaging metadata only. `agent.toml` is the single source of truth.
 - **`src/image/` deleted** — All functionality merged into `src/portable/`
 
-### Removed
+#### Removed
 - `AgentCapability`, `TeamCapabilityConfig`, `CapabilitiesConfig` — Superseded by extension framework
 
-### Integration Tests
+#### Integration Tests
 - `tests/build_integration.rs` — 3 tests (valid build, missing config, layer deduplication)
 - `tests/registry_integration.rs` — 4 tests (manifest roundtrip, blob roundtrip, push+pull, layer skip)
 - `tests/team_integration.rs` — 4 tests (checksums, import validation, checksum mismatch, legacy warn)
@@ -5350,11 +5467,11 @@ Unified packaging layer with content-addressable storage, registry push/pull, an
 
 ---
 
-## [0.1.0] - Documentation Reorganization - 2026-04-11
+### [0.1.0] - Documentation Reorganization - 2026-04-11
 
 Major documentation update to reflect the Unified Extension Architecture (ADR-017) implementation.
 
-### Documentation Restructure ✅
+#### Documentation Restructure ✅
 
 **New Structure:**
 - `docs/executive/` - Executive summaries and overviews
@@ -5369,7 +5486,7 @@ Major documentation update to reflect the Unified Extension Architecture (ADR-01
 - **Extension System Guide** - New comprehensive guide for the unified extension system
 - **Migration Guide** - Consolidated migration documentation
 
-### Archived Documents ✅
+#### Archived Documents ✅
 
 Moved to `docs/archive/`:
 - UNIFIED_ARCHITECTURE_SPEC.md (superseded by new architecture docs)
@@ -5377,7 +5494,7 @@ Moved to `docs/archive/`:
 - LEGACY_CODE_AUDIT.md
 - PHASE1_ROADMAP.md (retired)
 
-### API Changes
+#### API Changes
 
 **New APIs:**
 - `ExtensionCore` - Central hook registry with 22 hook points
@@ -5393,11 +5510,11 @@ Moved to `docs/archive/`:
 
 ---
 
-## [0.1.0] - Phase 1 - 2026-03-18
+### [0.1.0] - Phase 1 - 2026-03-18
 
 Phase 1 establishes the **Core Runtime** including agent image/instance model, daemon with HTTP API, session management, built-in tools, team composition, and event bus.
 
-### Milestone 1: HTTP API Server Foundation ✅
+#### Milestone 1: HTTP API Server Foundation ✅
 
 **Core infrastructure for the daemon HTTP API.**
 
@@ -5408,7 +5525,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - API request/response types with validation
 - Graceful shutdown handling
 
-### Milestone 2: Agent Image and Instance Model ✅
+#### Milestone 2: Agent Image and Instance Model ✅
 
 **Image/instance distinction with filesystem-first agent definition.**
 
@@ -5420,7 +5537,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - Full instance lifecycle API (`POST /agents`, `GET /agents`, `DELETE /agents`)
 - Sessions excluded from images
 
-### Milestone 3: Session Management ✅
+#### Milestone 3: Session Management ✅
 
 **Durable JSONL sessions with atomic writes.**
 
@@ -5432,7 +5549,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - Session state recovery on daemon restart
 - Auto-generated titles from first assistant response
 
-### Milestone 4: Core Runtime and Agentic Loop ✅
+#### Milestone 4: Core Runtime and Agentic Loop ✅
 
 **Turn-based agentic loop with sync/async tool calling.**
 
@@ -5446,7 +5563,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - Watch mode (`--watch`) with file watcher
 - All 4 LLM providers: Anthropic, OpenAI, Ollama, OpenAI-compatible
 
-### Milestone 5: Built-in Tools Completion ✅
+#### Milestone 5: Built-in Tools Completion ✅
 
 **All 13 required built-in tools with sandboxing.**
 
@@ -5471,7 +5588,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - Shell blocking (sh, bash, zsh, cmd, powershell, pwsh)
 - `disabled_tools` config support
 
-### Milestone 6: Custom Tools and MCP Integration ✅
+#### Milestone 6: Custom Tools and MCP Integration ✅
 
 **Custom tool discovery and MCP client support.**
 
@@ -5485,7 +5602,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - MCP server startup failure handling
 - Capability resolution order: built-in → local → MCP
 
-### Milestone 7: Team Runtime and Event Bus ✅
+#### Milestone 7: Team Runtime and Event Bus ✅
 
 **Multi-agent teams with shared services and A2A communication.**
 
@@ -5500,7 +5617,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - `POST /teams/{id}/scale`
 - Unified runtime (no separate team runtime)
 
-### Milestone 8: Outbound Hooks and System Events ✅
+#### Milestone 8: Outbound Hooks and System Events ✅
 
 **Cron, webhook, event, and file_watch hooks.**
 
@@ -5515,7 +5632,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - System event stream `ws://localhost:11435/events`
 - Lifecycle events on system stream
 
-### Milestone 9: Registry and Image Distribution ✅
+#### Milestone 9: Registry and Image Distribution ✅
 
 **Image packaging, push/pull, and registry client.**
 
@@ -5528,7 +5645,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - Registry client with HTTP Basic auth
 - Multiple registry sources in `runtime.toml`
 
-### Milestone 10: CLI Completion and Interfaces ✅
+#### Milestone 10: CLI Completion and Interfaces ✅
 
 **Complete CLI commands and Web UI.**
 
@@ -5542,7 +5659,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - WebSocket service endpoint
 - `--debug` flag for stack traces
 
-### Milestone 11: Security and Hardening ✅
+#### Milestone 11: Security and Hardening ✅
 
 **All security requirements and sandboxing.**
 
@@ -5556,7 +5673,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 - No credential leakage in API responses
 - 831 tests passing including 48 security tests
 
-### Milestone 12: Performance Optimization and Testing ✅
+#### Milestone 12: Performance Optimization and Testing ✅
 
 **Performance targets and end-to-end use cases.**
 
@@ -5579,7 +5696,7 @@ Phase 1 establishes the **Core Runtime** including agent image/instance model, d
 | Concurrent Instances | 50 stable | Framework Ready |
 | Team Deploy | < 30s | Framework Ready |
 
-### Milestone 13: Documentation and Polish ✅
+#### Milestone 13: Documentation and Polish ✅
 
 **Complete documentation and Phase 1 finalization.**
 
