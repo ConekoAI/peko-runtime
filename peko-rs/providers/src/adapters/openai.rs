@@ -61,7 +61,13 @@ impl OpenAiAdapter {
                 // Image block. The array path is OpenAI's
                 // multimodal-input shape per
                 // https://platform.openai.com/docs/guides/vision
-                let content = build_chat_completions_content(&m.content);
+                // A tool message's output sits inside its `ToolResult`
+                // block, which the content builder skips.
+                let content = if m.role == MessageRole::Tool {
+                    Value::String(super::tool_message_text(&m.content))
+                } else {
+                    build_chat_completions_content(&m.content)
+                };
 
                 // Extract tool calls from content blocks
                 let tool_calls: Option<Vec<OpenAiToolCall>> = if m.role == MessageRole::Assistant {
@@ -768,6 +774,32 @@ mod tests {
     use super::*;
     use crate::adapters::ApiAdapter;
     use peko_provider_api::{ServiceTier, ThinkingEffort};
+
+    /// A tool result as the engine builds it (`LlmMessage::tool_result`,
+    /// the output inside a `ToolResult` block) reaches the wire as the tool
+    /// message's content. Before, the content was empty, so a model on a
+    /// Chat Completions endpoint never saw any tool output.
+    #[test]
+    fn tool_result_output_reaches_the_tool_message_content() {
+        let adapter = OpenAiAdapter::new();
+        let messages = vec![
+            LlmMessage::user("read it"),
+            LlmMessage::tool_result("call_1", "Read", "TOOL_TEST_SECRET_123", false),
+        ];
+        let (_, body) = adapter
+            .build_request(
+                "gpt-4o-mini",
+                &messages,
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let tool = &body["messages"][1];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(tool["tool_call_id"], "call_1");
+        assert_eq!(tool["content"], "TOOL_TEST_SECRET_123");
+    }
 
     #[test]
     fn test_adapter_creation() {

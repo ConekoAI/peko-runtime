@@ -4,6 +4,39 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: tool calls work on OpenAI-format endpoints (2026-10-25)
+
+On `openai_completions` and `openai_responses` models, every tool result
+reached the model empty. The engine wraps a tool's output in a `ToolResult`
+block (`LlmMessage::tool_result`), but both adapters built the wire text from
+top-level `Text` blocks only. A Chat Completions tool message went out as
+`content: ""`, and a Responses `function_call_output` as `output: ""`. So an
+agent on those formats called tools and saw nothing back: no file contents,
+not even `echo` output.
+
+Found by the first run of the real-LLM tier against each wire format (MiMo
+v2.6 Flash serves all three). `cli_providers_real_llm_native_tool_call` failed
+on both OpenAI formats and passed on `anthropic_messages`. The adapters' unit
+tests had built tool messages with a top-level `Text` block, a shape the
+engine never sends, so they passed. Both adapters now take the text inside
+`ToolResult` blocks, and new tests use the engine's own `tool_result` shape.
+
+`openai_responses` also lost every tool call's **arguments**. A real server
+registers the call in `output_item.added` under its `call_id` (`call_…`),
+then streams argument deltas keyed by the item's own id (`fc_…`). The
+differing id made the adapter treat the first delta as a new call, which
+replaced the call's identity and emitted a second `ToolCallStart`. The
+fragment that completed the JSON then finished the call and dropped it from
+the buffer, unused. `output_item.done` found nothing and emitted the call
+with `{}` arguments, so the model saw "missing required 'file_path'" on every
+call. This happens against OpenAI's own Responses API as well; the old unit
+test used one id for both and passed.
+
+Deltas now only append, keyed by `output_index`. The call keeps its
+`call_id`, which `function_call_output` must echo. `output_item.done`
+prefers the complete `arguments` the finished item carries. A replay of
+MiMo's recorded event sequence is now a unit test.
+
 ### Fix: `peko model test` waits 30 s and reports a slow endpoint as slow (2026-10-24)
 
 `peko model test` gave up after 5 s. A first request also pays for DNS,
