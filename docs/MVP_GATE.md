@@ -9,18 +9,18 @@ formats, and before the first public release is cut.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
-## Status at a glance (2026-10-25)
+## Status at a glance (2026-10-25, after rc.4)
 
 | Gate | Done | Blocking now |
 |---|---|---|
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
-| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.3 is the latest candidate) |
-| 2. Version bookkeeping | 1 / 3 | `[Unreleased]` unfolded (~5,000 lines); no version tag |
+| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.4 is the latest candidate) |
+| 2. Version bookkeeping | 2 / 3 | No MVP version tag yet (rc tags only) |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 1 / 4 | Re-run on the release commit (real-LLM tier green on all three formats at `91f7e024`) |
-| 5. Field test | 0 / 3 | Last human field test 2026-08-13 |
+| 4. CI | 2 / 4 | Linux tiers and the real-LLM tier re-run on the release commit |
+| 5. Field test | 1 / 3 | Non-technical field test (last one 2026-08-13) |
 | 6. Security | 2 / 2 | — |
-| **Total** | **17 / 26** | |
+| **Total** | **20 / 26** | |
 
 2026-10-24: rc.3 is published and smoke-tested on all four platforms; gates 1
 and 3 moved to 5/6 and 4/4.
@@ -95,6 +95,10 @@ Currently the primary install path is dead: no release has ever been cut, and
 - [ ] **First release cut.** `git tag v<version>` triggers
       `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
       darwin x64/arm64) build and publish successfully.
+      *2026-10-25: `v0.1.0-rc.4` (`c96f1564`, run 40164710554) built,
+      published and passed the smoke job on all four platforms. It adds
+      #506 and #507.*
+
       *2026-10-24: `v0.1.0-rc.3` (`e432b82b`, run 40081459392) built,
       published and passed the new smoke job on all four platforms. The
       pipeline is proven. This box closes with the MVP version's own tag.*
@@ -194,12 +198,20 @@ Currently the primary install path is dead: no release has ever been cut, and
       (source of truth: `peko-rs/core/Cargo.toml`, per AGENTS.md §1). The
       CHANGELOG's `1.0.0-rc1` header is annotated as a never-tagged
       pre-rename label; the MVP release version is picked at release time.
-- [ ] **`[Unreleased]` folded.** Five months of entries (2026-05-14 →
+- [x] **`[Unreleased]` folded** (2026-10-25). Five months of entries (2026-05-14 →
       2026-10-22), including breaking wire changes (ADR-058, ADR-073,
       ADR-081), are cut into a named release section with the breaking
-      changes called out at the top. *2026-10-22: `[Unreleased]` is
-      ~5,000 lines.*
-- [ ] **First git version tag exists** (only `pre-f2-foldback` exists today).
+      changes called out at the top.
+
+      *The CHANGELOG now has an empty `[Unreleased]`, then
+      `[0.1.0] - unreleased` with a summary, breaking changes, highlights
+      and an upgrade note. All 204 entries follow under "Detailed
+      changes". The untagged 2026-03 to 2026-05 sections, two of them also
+      labelled `[0.1.0]`, sit under "Pre-release history". The final tag
+      sets the date.*
+- [ ] **First git version tag exists.** *2026-10-25: release-candidate
+      tags `v0.1.0-rc.1` to `v0.1.0-rc.4` exist. The MVP version's own tag
+      closes this item.*
 
 ## 3. Docs tell the truth
 
@@ -265,8 +277,15 @@ Currently the primary install path is dead: no release has ever been cut, and
       `cli_providers` 2/2, `tunnel_integration` 6/6, and
       `daemon::e2e_tests::tunnel_e2e` 1/1 per format. Re-run on the release
       commit to close.*
-- [ ] **`make docker-up && make test-integration && make docker-down`**
-      passes from a clean clone using only documented steps.
+- [x] **`make docker-up && make test-integration && make docker-down`**
+      passes from a clean clone using only documented steps (2026-10-25,
+      v0.1.0-rc.4).
+
+      *Fresh shallow clones of peko-runtime at `v0.1.0-rc.4` (`c96f1564`)
+      and of pekohub (`be5a27b`) were placed side by side, as
+      `docs/testing/CI.md` describes. The three commands passed as
+      written: 15 suites, 52 tests, 0 failures, in 6 min 27 s including
+      the image and workspace builds. The stack came down cleanly.*
 
 ## 5. Fresh field test on the current surface
 
@@ -287,9 +306,23 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
       harness).
 - [ ] **Zero P0 findings open** from that report (P0 = blocks the core loop:
       can't install, can't converse, loses messages, crashes the daemon).
-- [ ] **peko-benchmark suite run** against the release artifact: all tasks
+- [x] **peko-benchmark suite run** (2026-10-25, v0.1.0-rc.4) against the release artifact: all tasks
       in the repo's `tasks/` pass (or failures are classified and waived
       in writing), per its README methodology (pinned model, n ≥ 3 reps).
+      *2026-10-25: all tasks pass on the v0.1.0-rc.4 artifact (installed
+      with `install.sh`) with MiMo v2.6 Flash, 3 reps each: **12/12**,
+      every score 1.00, every harness run completed, report
+      `reports/20261025T052603Z-rc4-gate5`.*
+
+      | Task | Pass | Mean wall |
+      |---|---|---|
+      | `bugfix/py-cache-invalidation` | 3/3 | 58 s |
+      | `feature/py-md-stats` | 3/3 | 97 s |
+      | `frontend/js-dom-cart` | 3/3 | 50 s |
+      | `testing/py-write-tests` | 3/3 | 94 s |
+
+      *Re-run it if the MVP tag differs from rc.4 in runtime code.*
+
       *2026-10-22: no run against a release artifact yet. The most recent
       runs used debug builds of master: the responsibility rerun 3
       (`13dced92`, n=10) met 21/30 obligations, the same as OpenClaw, at
