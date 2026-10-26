@@ -260,6 +260,7 @@ impl PrincipalPolicyGate {
                     &principal.id.0,
                     &owner,
                     &note,
+                    None,
                     peko_session::events::MessageSource::Agent,
                     Some("approvals"),
                 )

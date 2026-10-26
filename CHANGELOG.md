@@ -4,6 +4,31 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a reminder arrives once, as the reminder (2026-10-26)
+
+A reminder set in conversation showed up in `peko log` like this:
+
+```
+my-peko: 📨 [did:key:z6Mk…] 💧 Hydration check, Sam! Time to drink some water.
+my-peko: Water reminder delivered to Sam. One-shot job fired successfully; nothing further to track.
+```
+
+- **The raw key.** A `ChannelSend` note to a person was labelled with the
+  agent's id when the model gave no label, and that id is a DID. The person
+  now sees the message alone, or a label that means something (an explicit
+  label, a readable agent name, or the runtime's `via …` attribution). The
+  copy in the conversation's session keeps `📨 [agent]`, so the agent there
+  knows the note didn't come from the person. `PeerMessenger::deliver_note`
+  takes an optional `display` text for the DM post.
+- **The bookkeeping.** A message job fires a turn in the conversation that
+  created it, and that turn's reply is posted to the conversation. The turn
+  wasn't told so: it sent the reminder with `ChannelSend`, then replied with
+  a report on the job. When a job fires in a conversation, its message is
+  now framed: the reply is posted as written, so it should be only what the
+  people there should read, with no second `ChannelSend` and no job status.
+  Verified with MiMo v2.6 Flash: each reminder arrived once, as the
+  reminder.
+
 ### Fix: `install.sh` creates a missing install directory (2026-10-26)
 
 With `--install-dir ~/.local/bin` (as `GETTING_STARTED.md` documents) on an
