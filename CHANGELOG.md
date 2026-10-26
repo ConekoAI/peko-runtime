@@ -29,6 +29,17 @@ my-peko: Water reminder delivered to Sam. One-shot job fired successfully; nothi
   Verified with MiMo v2.6 Flash: each reminder arrived once, as the
   reminder.
 
+### Fix: `install.sh` creates a missing install directory (2026-10-26)
+
+With `--install-dir ~/.local/bin` (as `GETTING_STARTED.md` documents) on an
+account where that directory didn't exist yet, `install.sh` asked for `sudo`
+and then failed to move the binaries into the missing directory. Nothing was
+installed. The default `/usr/local/bin` can be missing as well, for example
+on a fresh Apple silicon Mac. The installer now creates the directory, using
+`sudo` only when the user can't. The release smoke job no longer creates the
+directory itself, so it covers this path. Found while dry-running the gate 5
+field-test kit.
+
 ## [0.1.0] - unreleased
 
 > **Draft (2026-10-25).** The first public release. The version and date

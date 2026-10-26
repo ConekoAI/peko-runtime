@@ -21,7 +21,7 @@ die() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 
 cmd_install() {
     local version="${1#v}" dir="$2"
-    mkdir -p "$dir"
+    # Don't create `dir`: install.sh must create a missing install directory.
     step "install.sh --version $version --install-dir $dir"
     bash "$ROOT/install.sh" --version "$version" --install-dir "$dir"
     [ -x "$dir/peko" ] || die "peko not installed in $dir"
