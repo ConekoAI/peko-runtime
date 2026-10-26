@@ -268,20 +268,27 @@ impl ChannelSendTool {
             peko_channel::ActorInfo::from_subject(target, None).address == acting_for.actor;
         let attributed = (!acting_for.is_owner() && !to_actor)
             .then(|| format!("via {} ({})", acting_for.actor, acting_for.trust.as_str()));
-        let label = match &attributed {
-            Some(attributed) => attributed.as_str(),
+        // The label the person sees: the runtime's attribution, else the
+        // model's label, else a readable agent name. An agent id that is a
+        // DID means nothing to a person and is not shown.
+        let shown = match &attributed {
+            Some(attributed) => Some(attributed.as_str()),
             None => label
                 .filter(|l| !l.is_empty())
-                .or(agent_label.filter(|l| !l.is_empty()))
-                .unwrap_or("agent"),
+                .or(agent_label.filter(|l| !l.is_empty() && !l.starts_with("did:"))),
         };
-        let note = format!("📨 [{label}] {message}");
+        // The session copy always carries a label: the agent in that
+        // conversation reads the note as a user-role message and needs to
+        // know it came from an agent, not from the person.
+        let note = format!("📨 [{}] {message}", shown.unwrap_or("agent"));
+        let display = shown.is_none().then_some(message);
         let caller_label = format!("agent {session_id}");
         match messenger
             .deliver_note(
                 principal_id,
                 target,
                 &note,
+                display,
                 MessageSource::Agent,
                 Some(&caller_label),
             )
@@ -1366,6 +1373,8 @@ mod tests {
     #[derive(Default)]
     struct StubMessenger {
         notes: Mutex<Vec<(String, String)>>,
+        /// What the peer would see on the DM channel, per note.
+        displays: Mutex<Vec<String>>,
         /// `Some(false)`: the target has no session; `None`: delivery errors.
         delivered: Option<bool>,
     }
@@ -1386,6 +1395,7 @@ mod tests {
             _principal_id: &str,
             target: &ActorRef,
             note: &str,
+            display: Option<&str>,
             _source: MessageSource,
             _caller_label: Option<&str>,
         ) -> anyhow::Result<bool> {
@@ -1393,6 +1403,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((target.to_string(), note.to_string()));
+            self.displays
+                .lock()
+                .unwrap()
+                .push(display.unwrap_or(note).to_string());
             self.delivered
                 .ok_or_else(|| anyhow::anyhow!("messenger offline"))
         }
@@ -1457,6 +1471,78 @@ mod tests {
         assert_eq!(out["success"], true, "{out}");
         let notes = messenger.notes.lock().unwrap();
         assert!(notes[0].1.contains("[agent]"), "note: {}", notes[0].1);
+    }
+
+    /// A person sees a note without a label when the only label there is
+    /// would be the agent's id (a DID) or the default. The session copy,
+    /// which the agent reads as a user-role message, keeps the cue. An
+    /// explicit label and the runtime's attribution stay visible.
+    #[tokio::test]
+    async fn notes_show_people_only_meaningful_labels() {
+        let target = ActorRef::User("local".into());
+        let did = "did:key:z6MknExampleExampleExample";
+        for (agent_label, label, stamp, session, shown) in [
+            (
+                Some(did),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+                "📨 [agent] hi",
+                "hi",
+            ),
+            (
+                None,
+                None,
+                peko_tools_core::ActingFor::runtime(),
+                "📨 [agent] hi",
+                "hi",
+            ),
+            (
+                Some(did),
+                Some("deploy"),
+                peko_tools_core::ActingFor::runtime(),
+                "📨 [deploy] hi",
+                "📨 [deploy] hi",
+            ),
+            (
+                Some("worker"),
+                None,
+                peko_tools_core::ActingFor::runtime(),
+                "📨 [worker] hi",
+                "📨 [worker] hi",
+            ),
+        ] {
+            let messenger = StubMessenger::delivering();
+            ChannelSendTool::execute_user_target(
+                &messenger,
+                "prin_x",
+                "sess-1",
+                agent_label,
+                label,
+                &target,
+                "hi",
+                &stamp,
+            )
+            .await;
+            assert_eq!(messenger.notes.lock().unwrap()[0].1, session);
+            assert_eq!(messenger.displays.lock().unwrap()[0], shown);
+        }
+
+        // A non-owner run's note to someone else always shows its attribution.
+        let messenger = StubMessenger::delivering();
+        ChannelSendTool::execute_user_target(
+            &messenger,
+            "prin_x",
+            "sess-1",
+            Some(did),
+            None,
+            &target,
+            "hi",
+            &stamp_for("user:hub:bob", peko_tools_core::Trust::Untrusted),
+        )
+        .await;
+        let shown = messenger.displays.lock().unwrap()[0].clone();
+        assert!(shown.starts_with("📨 [via user:hub:bob"), "{shown}");
+        assert!(!shown.contains("did:"), "{shown}");
     }
 
     /// Empty labels are skipped: an explicit label wins, then the agent's

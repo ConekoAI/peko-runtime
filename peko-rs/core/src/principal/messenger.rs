@@ -56,11 +56,16 @@ use crate::principal::manager::PrincipalManager;
 /// JSONL + the DM channel row `peko log` reads) is unchanged.
 #[async_trait::async_trait]
 pub trait PeerMessenger: Send + Sync {
+    /// `note` goes into the peer's conversational session, where the
+    /// agent reads it. `display`, when set, is what the peer sees on
+    /// their DM channel (`peko log`) instead, for a note whose session
+    /// text carries cues meant only for the agent.
     async fn deliver_note(
         &self,
         principal_id: &str,
         target: &ActorRef,
         note: &str,
+        display: Option<&str>,
         source: MessageSource,
         caller_label: Option<&str>,
     ) -> Result<bool>;
@@ -85,6 +90,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
         principal_id: &str,
         target: &ActorRef,
         note: &str,
+        display: Option<&str>,
         source: MessageSource,
         caller_label: Option<&str>,
     ) -> Result<bool> {
@@ -173,7 +179,7 @@ impl PeerMessenger for PrincipalPeerMessenger {
                             .post(
                                 &channel,
                                 &ActorRef::from(&principal.id),
-                                peko_channel::PostMsg::root(note),
+                                peko_channel::PostMsg::root(display.unwrap_or(note)),
                             )
                             .await
                         {
@@ -382,6 +388,7 @@ mod tests {
                 &principal.id.0,
                 &owner,
                 "📨 [root] the report is ready",
+                None,
                 MessageSource::Agent,
                 Some("agent some-session"),
             )

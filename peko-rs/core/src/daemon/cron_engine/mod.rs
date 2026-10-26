@@ -898,11 +898,37 @@ impl CronEngine {
             .await
             {
                 Ok(turns) => {
+                    use crate::agents::subagent_executor::PeerTurnSurface as _;
+                    // PeerChildTurns' own executor deliberately carries no
+                    // peer surface (the ingress driver posts replies
+                    // itself), so the reply is delivered here: the same
+                    // DM projection, once.
+                    let surface = self
+                        .tooling
+                        .upgrade()
+                        .and_then(|core| core.services().channel_port())
+                        .map(|port| {
+                            crate::principal::child_turns::PeerTurnSurfaceImpl::new(
+                                Arc::clone(turns.session_manager()),
+                                port,
+                                principal.id.clone(),
+                            )
+                        });
+                    let channel = match &surface {
+                        Some(surface) => surface.conversation_channel(&origin).await,
+                        None => None,
+                    };
+                    // In a conversation, the reply is what the people
+                    // there read, so the turn has to know that.
+                    let turn_message = match &channel {
+                        Some(_) => conversation_fire_message(job, &message),
+                        None => message.clone(),
+                    };
                     let sink: crate::agents::subagent_executor::AgenticEventSink = Arc::new(|_| {});
                     let outcome = turns
                         .drive_turn_streaming(
                             &origin,
-                            &message,
+                            &turn_message,
                             sink,
                             None,
                             model.clone(),
@@ -911,25 +937,8 @@ impl CronEngine {
                         .await;
                     return match outcome {
                         Ok(outcome) => {
-                            // PeerChildTurns' own executor deliberately
-                            // carries no peer surface (the ingress driver
-                            // posts replies itself), so deliver here —
-                            // the same DM projection, once.
-                            if let Some(core) = self.tooling.upgrade() {
-                                if let Some(port) = core.services().channel_port() {
-                                    let surface =
-                                        crate::principal::child_turns::PeerTurnSurfaceImpl::new(
-                                            Arc::clone(turns.session_manager()),
-                                            port,
-                                            principal.id.clone(),
-                                        );
-                                    use crate::agents::subagent_executor::PeerTurnSurface as _;
-                                    if let Some(channel) =
-                                        surface.conversation_channel(&origin).await
-                                    {
-                                        surface.post_reply(&channel, &outcome.final_text).await;
-                                    }
-                                }
+                            if let (Some(surface), Some(channel)) = (&surface, &channel) {
+                                surface.post_reply(channel, &outcome.final_text).await;
                             }
                             Ok(("success".to_string(), Some(outcome.final_text)))
                         }
@@ -1434,8 +1443,48 @@ pub(crate) async fn resolve_principal(
     pm.find_by_did(&principal_id.0).await
 }
 
+/// The text a cron message job's turn gets when it fires in a
+/// conversation (a session bound to a channel). The turn's reply is
+/// posted to that conversation as written. Without saying so, the model
+/// delivered a reminder twice (once with `ChannelSend`, once as the
+/// reply) and posted job bookkeeping ("reminder delivered, job fired")
+/// to the person.
+fn conversation_fire_message(job: &peko_cron::CronJob, message: &str) -> String {
+    let name = if job.name.is_empty() {
+        &job.id
+    } else {
+        &job.name
+    };
+    format!(
+        "[cron] Your scheduled job `{name}` fired in this conversation. Your reply is posted \
+         here exactly as you write it, so reply with only what the people here should read: \
+         for a reminder, the reminder itself. Don't also send it with ChannelSend, and don't \
+         describe the job or its status.\n\n{message}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    /// A message job that fires in a conversation is told that its reply
+    /// is what the people there read, so it neither sends the reminder a
+    /// second time nor reports on the job.
+    #[test]
+    fn conversation_fires_say_the_reply_is_the_message() {
+        let mut job = recovery_job(PrincipalId("prin_x".into()));
+        job.name = "water".into();
+        let framed = super::conversation_fire_message(&job, "Remind Sam to drink water.");
+        assert!(framed.contains("`water`"), "{framed}");
+        assert!(framed.contains("Your reply is posted"), "{framed}");
+        assert!(
+            framed.contains("Don't also send it with ChannelSend"),
+            "{framed}"
+        );
+        assert!(
+            framed.ends_with("\n\nRemind Sam to drink water."),
+            "{framed}"
+        );
+    }
+
     use super::*;
     use crate::common::paths::PathResolver;
     use crate::engine::tool_runtime::ToolRuntime;
