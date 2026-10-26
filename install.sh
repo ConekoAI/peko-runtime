@@ -100,6 +100,15 @@ install_binary() {
     done
     
     echo -e "${BLUE}Installing to ${INSTALL_DIR}...${NC}"
+    # The directory may not exist yet: `--install-dir ~/.local/bin` on a
+    # fresh account, or /usr/local/bin on a fresh Apple silicon Mac.
+    # Create it, without sudo when the user can.
+    if [ ! -d "$INSTALL_DIR" ]; then
+        if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+            echo -e "${YELLOW}Requesting sudo access to create ${INSTALL_DIR}${NC}"
+            sudo mkdir -p "$INSTALL_DIR"
+        fi
+    fi
     if [ -w "$INSTALL_DIR" ]; then
         mv "${tmpdir}/peko" "${tmpdir}/peko-daemon" "${INSTALL_DIR}/"
     else
