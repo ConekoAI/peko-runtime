@@ -558,27 +558,30 @@ impl Provider {
                         let is_openai_done =
                             matches!(&result, Ok(event) if event.data.trim() == "[DONE]");
 
-                        let output = match result {
+                        // One SSE chunk can yield several events: the one
+                        // `parse_sse_event` returns, then any it queued.
+                        let mut outputs: Vec<anyhow::Result<StreamEvent>> = match result {
                             Ok(event) => {
                                 match adapter.parse_sse_event(&model_id_owned, &event.data) {
-                                    Ok(Some(stream_event)) => Some(Ok(stream_event)),
-                                    Ok(None) => None,
-                                    Err(e) => Some(Err(e)),
+                                    Ok(first) => first.into_iter().map(Ok).collect(),
+                                    Err(e) => vec![Err(e)],
                                 }
                             }
-                            Err(e) => Some(Err(e)),
+                            Err(e) => vec![Err(e)],
                         };
+                        outputs.extend(adapter.take_pending_events().into_iter().map(Ok));
 
-                        let is_done_event =
-                            matches!(&output, Some(Ok(crate::StreamEvent::Done { .. })));
-
-                        if let Some(event) = output {
-                            if tx.send(event).await.is_err() {
+                        let mut is_done_event = false;
+                        let mut closed = false;
+                        for output in outputs {
+                            is_done_event |= matches!(&output, Ok(crate::StreamEvent::Done { .. }));
+                            if tx.send(output).await.is_err() {
+                                closed = true;
                                 break;
                             }
                         }
 
-                        if is_openai_done || is_done_event {
+                        if closed || is_openai_done || is_done_event {
                             break;
                         }
                     }
@@ -607,6 +610,85 @@ mod tests {
             retry_delay_ms: 1000,
             ..Default::default()
         }
+    }
+
+    /// A tool call an OpenAI-format server sends whole in one chunk
+    /// reaches the stream as a completed call, before `Done`.
+    #[tokio::test]
+    async fn a_whole_tool_call_in_one_chunk_reaches_the_stream() {
+        use std::io::{BufRead, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let call = serde_json::json!({"choices":[{"delta":{"role":"assistant","tool_calls":[{
+                "index":0,"id":"call_1","type":"function",
+                "function":{"name":"Bash","arguments":"{\"command\":\"date\"}"}}]},
+                "finish_reason":null}]});
+            let finish = serde_json::json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}});
+            let sse = format!("data: {call}\n\ndata: {finish}\n\ndata: [DONE]\n\n");
+            let mut socket = reader.into_inner();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+                sse.len()
+            )
+            .unwrap();
+        });
+        let provider = Provider::new(
+            AnyAdapter::OpenAi(OpenAiAdapter::new().with_base_url(url)),
+            "test-only-key",
+            runtime_options(),
+        )
+        .unwrap();
+        let mut stream = provider
+            .stream_with_tools("m", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap();
+        let mut events = Vec::new();
+        while let Some(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+                .await
+                .unwrap()
+        {
+            events.push(event.unwrap());
+        }
+        server.join().unwrap();
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolCallEnd { .. }))
+            .expect("the call reaches the stream");
+        let done = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::Done { .. }))
+            .expect("the stream finishes");
+        assert!(end < done);
+        assert!(matches!(
+            &events[done],
+            StreamEvent::Done {
+                stop_reason: crate::StopReason::ToolUse
+            }
+        ));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Usage { total: 5, .. })));
     }
 
     #[tokio::test]
