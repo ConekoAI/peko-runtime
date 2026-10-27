@@ -44,5 +44,7 @@
   {"type": "channel_create", "protocol_version": 1, "request_id": 1, "creator_name": "alice", "name": "team"},
   {"type": "channel_invite", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "inviter_name": "alice", "invitee_name": "bob"},
   {"type": "channel_leave", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice"},
-  {"type": "channel_events_watch", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "since": null}
+  {"type": "channel_events_watch", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "since": null},
+  {"type": "channel_info", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh"},
+  {"type": "channel_set_wake", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice", "wake": "off"}
 ]

@@ -2100,6 +2100,27 @@ the creator's session path) and bind the receiver's own peer child for a
 DM. An invite whose kind disagrees with an existing mirror, or a `dm`
 invite without a pair id, is refused.
 
+IPC exposes the wake policy, never the session: `channel_info { channel }`
+(members only, like `channel_peek`) answers `channel_info_result`, and
+`channel_set_wake { channel, principal_name, wake }` (operator callers,
+the principal's owner, groups only, the principal a member) answers
+`channel_wake_set`:
+
+```json
+{"type": "channel_info_result", "request_id": 1, "channel": "chan_01qwjy2l",
+ "kind": "group", "name": "team",
+ "members": [{"kind": "principal", "id": "prin_alice"}, {"kind": "user", "id": "local"}],
+ "pekos": [{"name": "alice", "local_id": "prin_alice", "wake": "mention"}]}
+
+{"type": "channel_wake_set", "request_id": 1, "channel": "chan_01qwjy2l",
+ "principal_name": "alice", "wake": "off"}
+```
+
+`pekos` lists the member principals hosted on this runtime. A DM's is
+always `human`; a group member without a binding yet reads as `mention`.
+Setting a wake writes the binding first if the principal has none, the
+same as the `Channel` tool's `wake` action.
+
 ### 5¾.2½ `posted` event `via` attribution (2026-09-12)
 
 `posted` lines in `events.jsonl` may carry an optional `via` field:

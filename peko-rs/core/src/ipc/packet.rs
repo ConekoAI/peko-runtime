@@ -836,6 +836,22 @@ pub enum RequestPacket {
     /// the same check via `RuntimeAuthority`.
     #[serde(rename = "channel_pin_to_shared")]
     ChannelPinToShared { request_id: u64, channel: String },
+
+    /// A channel's kind, name, members, and how each peko hosted here
+    /// wakes in it (ADR-082). Members only, like `ChannelPeek`.
+    #[serde(rename = "channel_info")]
+    ChannelInfo { request_id: u64, channel: String },
+
+    /// Set what starts a turn for `principal_name` in a group
+    /// (`human` / `mention` / `off`, ADR-082 D3). Groups only — a DM
+    /// always wakes on human posts — and only the peko's owner.
+    #[serde(rename = "channel_set_wake")]
+    ChannelSetWake {
+        request_id: u64,
+        channel: String,
+        principal_name: String,
+        wake: String,
+    },
 }
 
 impl RequestPacket {
@@ -910,7 +926,9 @@ impl RequestPacket {
             | Self::ChannelMembers { request_id, .. }
             | Self::ChannelList { request_id, .. }
             | Self::ChannelLeave { request_id, .. }
-            | Self::ChannelPinToShared { request_id, .. } => *request_id,
+            | Self::ChannelPinToShared { request_id, .. }
+            | Self::ChannelInfo { request_id, .. }
+            | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
 
@@ -1215,6 +1233,29 @@ pub enum ResponsePacket {
     /// Shared-tier pin acknowledged. `shared_path` is the absolute
     /// Shared root the channel directory was copied to. The Runtime
     /// source dir remains (COPY semantics — see PR-3d plan).
+    /// Response to `ChannelInfo`.
+    #[serde(rename = "channel_info_result")]
+    ChannelInfoResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        kind: peko_protocol::channel::ConversationKind,
+        name: String,
+        members: Vec<peko_subject::ActorRef>,
+        /// The member pekos hosted on this runtime and their wake
+        /// policy. A DM's is always `human`; a group binding not yet
+        /// written reads as the group default, `mention`.
+        pekos: Vec<ChannelPekoWake>,
+    },
+
+    /// Response to `ChannelSetWake`: the policy now stored.
+    #[serde(rename = "channel_wake_set")]
+    ChannelWakeSet {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        principal_name: String,
+        wake: peko_channel::WakePolicy,
+    },
+
     #[serde(rename = "channel_pinned_to_shared")]
     ChannelPinnedToShared {
         request_id: u64,
@@ -1985,6 +2026,14 @@ pub struct ModelPresetInfo {
     pub models: Vec<ModelTemplateInfo>,
 }
 
+/// One peko hosted on this runtime in a `ChannelInfoResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPekoWake {
+    pub name: String,
+    pub local_id: String,
+    pub wake: peko_channel::WakePolicy,
+}
+
 /// Explicit model endpoint settings, matching `peko model add`.
 /// Credentials are stored in the vault; optional metadata is user authored.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2327,7 +2376,9 @@ impl ResponsePacket {
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
             | Self::ChannelLeft { request_id, .. }
-            | Self::ChannelPinnedToShared { request_id, .. } => *request_id,
+            | Self::ChannelPinnedToShared { request_id, .. }
+            | Self::ChannelInfoResult { request_id, .. }
+            | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
 
@@ -2404,6 +2455,8 @@ impl ResponsePacket {
             Self::ChannelListResult { .. } => "ChannelListResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
+            Self::ChannelInfoResult { .. } => "ChannelInfoResult",
+            Self::ChannelWakeSet { .. } => "ChannelWakeSet",
         }
     }
 
