@@ -250,19 +250,7 @@ impl CronEngine {
 
     /// Check for time-based due jobs and execute them.
     pub async fn check_and_run(&self) -> Result<()> {
-        let now = Utc::now();
-
-        // Phase A: aggregate due jobs across all loaded
-        // principals. Each principal's scheduler points at its
-        // typed Local-tier schedule file.
-        let pairs = self.all_schedulers().await;
-        let mut due_jobs: Vec<CronJob> = Vec::new();
-        for (name, scheduler) in &pairs {
-            match scheduler.due_jobs(now) {
-                Ok(mut j) => due_jobs.append(&mut j),
-                Err(e) => warn!("cron due_jobs for {name} failed: {e}"),
-            }
-        }
+        let due_jobs = self.due_jobs(Utc::now()).await;
         if !due_jobs.is_empty() {
             info!("⏰ Found {} job(s) due for execution", due_jobs.len());
             for job in due_jobs {
@@ -280,6 +268,21 @@ impl CronEngine {
             }
         }
         Ok(())
+    }
+
+    /// The time-based jobs due at `now`, across all loaded principals.
+    /// Each principal's scheduler points at its typed Local-tier
+    /// schedule file.
+    async fn due_jobs(&self, now: DateTime<Utc>) -> Vec<CronJob> {
+        let pairs = self.all_schedulers().await;
+        let mut due_jobs: Vec<CronJob> = Vec::new();
+        for (name, scheduler) in &pairs {
+            match scheduler.due_jobs(now) {
+                Ok(mut j) => due_jobs.append(&mut j),
+                Err(e) => warn!("cron due_jobs for {name} failed: {e}"),
+            }
+        }
+        due_jobs
     }
 
     /// Check for idle-triggered jobs and execute if conditions are met.
@@ -370,6 +373,16 @@ impl CronEngine {
         principal_id: &PrincipalId,
         job_id: &str,
     ) -> Result<String> {
+        Ok(self.trigger_job(principal_id, job_id).await?.0)
+    }
+
+    /// `execute_job_for_id`, also returning the spawned execution's
+    /// handle (`None` when the trigger coalesced with a run in flight).
+    async fn trigger_job(
+        &self,
+        principal_id: &PrincipalId,
+        job_id: &str,
+    ) -> Result<(String, Option<tokio::task::JoinHandle<()>>)> {
         // Job ids are unique per principal only (every principal has the
         // seeded `keepalive` and `memory` jobs), so look in the caller's
         // own schedule.
@@ -389,7 +402,7 @@ impl CronEngine {
                 "⏰ Job '{}' already running as run_id={}; coalescing manual trigger",
                 job.name, run.id
             );
-            return Ok(run.id);
+            return Ok((run.id, None));
         }
 
         // Spawn the execution. Same rationale as `check_and_run`:
@@ -398,12 +411,12 @@ impl CronEngine {
         let run_id = run.id.clone();
         let engine = self.clone();
         let job_id_for_log = job.id.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             if let Err(e) = engine.execute_reserved_job(job, run).await {
                 error!("manual-trigger job {job_id_for_log} failed: {e}");
             }
         });
-        Ok(run_id)
+        Ok((run_id, Some(handle)))
     }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
@@ -1881,6 +1894,17 @@ mod tests {
         CronEngine::new(resolver, idle, obs, None, std::sync::Weak::new())
     }
 
+    /// Run the jobs due now and wait for them, as `check_and_run`
+    /// would in the background. Returns how many ran.
+    async fn run_due_jobs(engine: &CronEngine) -> usize {
+        let due = engine.due_jobs(Utc::now()).await;
+        let ran = due.len();
+        for job in due {
+            engine.execute_job(job).await.unwrap();
+        }
+        ran
+    }
+
     async fn setup_principal_manager(tmp: &TempDir) -> Arc<PrincipalManager> {
         let path_resolver = PathResolver::with_dirs(
             tmp.path().join("config"),
@@ -2108,22 +2132,7 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
-        engine.check_and_run().await.unwrap();
-
-        // PR 2: per-job execution is now detached onto a tokio task,
-        // so poll the run history rather than asserting
-        // synchronously. 5s budget is more than enough for the
-        // in-process test setup.
-        let mut success = false;
-        for _ in 0..50 {
-            let runs = scheduler.get_run_history(&job.id, 10).unwrap();
-            if runs.iter().any(|r| r.status == "success") {
-                success = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        assert!(success, "expected the due Send job to land a success row");
+        assert_eq!(run_due_jobs(&engine).await, 1);
 
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         let success = runs.iter().find(|r| r.status == "success");
@@ -2776,19 +2785,8 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
-        engine.check_and_run().await.unwrap();
-
-        // PR 2: per-job execution is now detached onto a tokio task,
-        // so poll the run history until the row is finalized. 5s
-        // budget.
-        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
-        for _ in 0..50 {
-            runs = scheduler.get_run_history(&job.id, 10).unwrap();
-            if !runs.is_empty() && runs[0].status != "running" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        assert_eq!(run_due_jobs(&engine).await, 1);
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
 
         // Exactly ONE run row, closed as success (F3: no duplicate
         // start/completion rows).
@@ -3076,18 +3074,8 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
-        engine.check_and_run().await.unwrap();
-
-        // PR 2: poll until the detached per-job execution finalizes the
-        // run row. 5s budget.
-        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
-        for _ in 0..50 {
-            runs = scheduler.get_run_history(&job.id, 10).unwrap();
-            if !runs.is_empty() && runs[0].status != "running" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        assert_eq!(run_due_jobs(&engine).await, 1);
+        let runs = scheduler.get_run_history(&job.id, 10).unwrap();
         assert_eq!(runs.len(), 1, "expected a single run row, got: {runs:?}");
         assert_eq!(runs[0].status, "success");
         assert!(runs[0].finished_at.is_some());
@@ -3205,21 +3193,9 @@ mod tests {
             .install_scheduler_for_test(&PrincipalId("crony".into()), scheduler.clone())
             .await;
 
-        engine.check_and_run().await.unwrap();
-
-        // PR 2: poll until the one-shot job is reaped. The deletion
-        // happens inside the spawned execution task, so we cannot
-        // assert synchronously anymore.
-        let mut reaped = false;
-        for _ in 0..50 {
-            if scheduler.get_job(&job.id).unwrap().is_none() {
-                reaped = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        assert_eq!(run_due_jobs(&engine).await, 1);
         assert!(
-            reaped,
+            scheduler.get_job(&job.id).unwrap().is_none(),
             "one-shot job must be reaped after its fire regardless of status"
         );
         let runs = scheduler.get_run_history(&job.id, 10).unwrap();
@@ -3507,13 +3483,16 @@ mod tests {
             .expect("the dispatched task is registered in the principal's registry");
         assert_eq!(tasks[0].config.principal_id, principal.id);
 
-        // Poll up to 2s for the steer message to land in the trunk
-        // inbox (the closure runs in the background).
+        // Poll for the steer message to land in the trunk inbox: the
+        // executor pushes it from its own task just after the status
+        // turns terminal, and the inbox has no way to await a push. The
+        // budget is far above a loaded runner's delay; it only bounds a
+        // broken wake.
         let trunk_key = peko_session::inbox_key(
             &principal.id.0,
             &crate::principal::routers::root::trunk_session_id(),
         );
-        for _ in 0..200 {
+        for _ in 0..3000 {
             let trunk_inbox = registry.get_or_create(&trunk_key).await;
             if !trunk_inbox.is_empty().await {
                 let items = trunk_inbox.drain_all().await;
@@ -3825,24 +3804,18 @@ mod tests {
 
         // Manual trigger returns a non-empty run_id immediately.
         let owner = PrincipalId::from_did(&principal.did().await);
-        let run_id = engine.execute_job_for_id(&owner, "job-abc").await.unwrap();
+        let (run_id, execution) = engine.trigger_job(&owner, "job-abc").await.unwrap();
         assert!(!run_id.is_empty());
 
-        // And the work actually happens (poll until finalized).
+        // And the work actually happens: wait for the spawned execution.
         // Sprint 7 Commit D: the original assertion was `status == "success"`
         // (Notify was a no-tool-call delivery). SpawnTool jobs run through
         // `AsyncExecutor` → `ToolingRuntime` → `ToolRuntime` which this test
         // intentionally does not bootstrap, so the job lands on `"failed"`.
         // The plumbing being verified here is `execute_job_for_id` itself —
         // any terminal status other than "running" proves the job fired.
-        let mut runs: Vec<peko_cron::CronRun> = Vec::new();
-        for _ in 0..50 {
-            runs = scheduler.get_run_history("job-abc", 10).unwrap();
-            if !runs.is_empty() && runs[0].status != "running" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        execution.expect("a fresh trigger spawns").await.unwrap();
+        let runs = scheduler.get_run_history("job-abc", 10).unwrap();
         assert_eq!(
             runs.len(),
             1,
@@ -4276,18 +4249,13 @@ mod tests {
             "the keepalive is due"
         );
 
-        engine.check_and_run().await.unwrap();
-        let mut ran = false;
-        for _ in 0..100 {
-            let history = scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap();
-            if history.iter().any(|r| r.status == "success") {
-                ran = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        assert!(run_due_jobs(&engine).await >= 1);
         assert!(
-            ran,
+            scheduler
+                .get_run_history(KEEPALIVE_JOB_ID, 10)
+                .unwrap()
+                .iter()
+                .any(|r| r.status == "success"),
             "the nudged keepalive must run a turn, not a quiet tick: job {:?}, runs {:?}",
             scheduler.get_job(KEEPALIVE_JOB_ID).unwrap(),
             scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap()
