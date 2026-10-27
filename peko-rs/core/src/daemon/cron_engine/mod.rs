@@ -12,7 +12,7 @@ use crate::principal::manager::PrincipalManager;
 use crate::principal::router::{ChannelContext, ChannelKind};
 use crate::tools::runtime::ToolingRuntime;
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use peko_auth::caller::CallerContext;
 use peko_cron::{
     CronJob, CronJobAction, CronRun, CronScheduler, IdleDetector, DEFAULT_MAX_RETRIES,
@@ -284,6 +284,22 @@ impl CronEngine {
 
     /// Check for idle-triggered jobs and execute if conditions are met.
     pub async fn check_idle(&self) -> Result<()> {
+        for job in self.due_idle_jobs(Utc::now()).await {
+            // Detach per-job execution (same rationale as
+            // `check_and_run`).
+            let engine = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = engine.execute_job(job).await {
+                    error!("Failed to execute idle job: {}", e);
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// The `Idle` jobs due at `now`: once per idle stretch, idle long
+    /// enough and not run since the principal was last active.
+    async fn due_idle_jobs(&self, now: DateTime<Utc>) -> Vec<CronJob> {
         use peko_cron::ScheduleKind;
 
         let pairs = self.all_schedulers().await;
@@ -295,12 +311,12 @@ impl CronEngine {
             }
         }
         if idle_jobs.is_empty() {
-            return Ok(());
+            return Vec::new();
         }
 
         debug!("Checking {} idle-triggered jobs", idle_jobs.len());
 
-        let now = chrono::Utc::now();
+        let mut due = Vec::new();
         for job in idle_jobs {
             if let ScheduleKind::Idle { minutes } = &job.schedule {
                 // Activity is keyed by the principal's runtime id; a job
@@ -312,8 +328,6 @@ impl CronEngine {
                         .map_or_else(|| job.principal_id.0.clone(), |p| p.id.0.clone()),
                     None => job.principal_id.0.clone(),
                 };
-                // Once per idle stretch: idle long enough, and not run
-                // since the principal was last active.
                 if self
                     .idle_detector
                     .idle_job_due(&principal_id, *minutes, job.last_run, now)
@@ -323,19 +337,11 @@ impl CronEngine {
                         "⏸️  Principal '{}' idle for {} minutes, executing job '{}'",
                         principal_id, minutes, job.name
                     );
-                    // Detach per-job execution (same rationale as
-                    // `check_and_run`).
-                    let engine = self.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = engine.execute_job(job).await {
-                            error!("Failed to execute idle job: {}", e);
-                        }
-                    });
+                    due.push(job);
                 }
             }
         }
-
-        Ok(())
+        due
     }
 
     // Handle a system event and trigger matching event-triggered jobs.
@@ -2320,7 +2326,9 @@ mod tests {
     /// An `Idle` job fires once per idle stretch: after two hours
     /// without anyone talking to the principal it runs, a second check
     /// does not run it again, and new activity re-arms it. The job keys
-    /// on the DID while activity keys on the runtime id.
+    /// on the DID while activity keys on the runtime id. The test picks
+    /// each `now` and awaits the run itself, so no step waits on the
+    /// clock or on a detached task.
     #[tokio::test(flavor = "multi_thread")]
     async fn idle_job_fires_once_per_idle_stretch() {
         let tmp = TempDir::new().unwrap();
@@ -2328,14 +2336,15 @@ mod tests {
         let workspace = tmp.path().join("principals");
         let principal = create_test_principal(&manager, &workspace, "dozy").await;
         let idle = Arc::new(IdleDetector::new());
-        idle.record_activity_at(&principal.id.0, Utc::now() - Duration::hours(2))
+        let now = Utc::now();
+        idle.record_activity_at(&principal.id.0, now - Duration::hours(2))
             .await;
         let resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
             tmp.path().join("cache"),
         );
-        let scheduler = Arc::new(CronScheduler::new(resolver.cron_schedule("dozy")).unwrap());
+        let scheduler = CronScheduler::new(resolver.cron_schedule("dozy")).unwrap();
         let engine = CronEngine::new(
             resolver,
             Arc::clone(&idle),
@@ -2368,7 +2377,7 @@ mod tests {
         };
         scheduler.add_job(&job).unwrap();
 
-        let finished_runs = |scheduler: &CronScheduler| {
+        let finished_runs = || {
             scheduler
                 .get_run_history(&job.id, 10)
                 .unwrap()
@@ -2376,51 +2385,42 @@ mod tests {
                 .filter(|r| r.finished_at.is_some())
                 .count()
         };
-        let wait_for = |want: usize| {
-            let scheduler = Arc::clone(&scheduler);
+        let due_at = |at| {
+            let engine = engine.clone();
             async move {
-                for _ in 0..50 {
-                    if finished_runs(&scheduler) >= want {
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                panic!("expected {want} finished idle run(s)");
+                engine
+                    .due_idle_jobs(at)
+                    .await
+                    .into_iter()
+                    .map(|j| j.id)
+                    .collect::<Vec<_>>()
             }
         };
 
-        engine.check_idle().await.unwrap();
-        wait_for(1).await;
-        engine.check_idle().await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert_eq!(
-            finished_runs(&scheduler),
-            1,
+        // Idle for two hours: the job is due and runs.
+        let due = engine.due_idle_jobs(now).await;
+        assert_eq!(due.len(), 1, "one idle job due");
+        engine.execute_job(due[0].clone()).await.unwrap();
+        assert_eq!(finished_runs(), 1);
+        let ran = scheduler
+            .get_job(&job.id)
+            .unwrap()
+            .unwrap()
+            .last_run
+            .expect("the run is recorded");
+
+        // Same idle stretch, even hours later: no second run.
+        assert!(
+            due_at(ran + Duration::hours(3)).await.is_empty(),
             "same idle stretch: no second run"
         );
 
-        // Someone spoke after the run, then went quiet for two hours.
-        idle.record_activity_at(&principal.id.0, Utc::now() + Duration::seconds(1))
-            .await;
-        assert!(
-            !idle
-                .idle_job_due(
-                    &principal.id.0,
-                    60,
-                    scheduler.get_job(&job.id).unwrap().unwrap().last_run,
-                    Utc::now()
-                )
-                .await
-        );
-        assert!(
-            idle.idle_job_due(
-                &principal.id.0,
-                60,
-                scheduler.get_job(&job.id).unwrap().unwrap().last_run,
-                Utc::now() + Duration::hours(2)
-            )
-            .await
-        );
+        // Someone spoke after the run: not due until quiet for an hour
+        // again, then it runs once more.
+        let spoke = ran + Duration::seconds(1);
+        idle.record_activity_at(&principal.id.0, spoke).await;
+        assert!(due_at(spoke + Duration::minutes(30)).await.is_empty());
+        assert_eq!(due_at(spoke + Duration::hours(2)).await, ["nap"]);
         drop(principal);
     }
 
