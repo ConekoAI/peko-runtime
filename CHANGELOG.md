@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a streaming send shows the run's tool calls and thinking (2026-10-27)
+
+`principal_send_stream` sent only text chunks and iteration markers; the
+engine's tool and thinking events were dropped before the wire, so a client
+could not show what a peko was doing. Three packets carry them:
+`principal_sent_tool_start`, `principal_sent_tool_end`, and
+`principal_sent_thinking`. The owner gets each call's input and output,
+redacted by the tool ledger's redactor and capped at 1 KiB, and the
+thinking; anyone else gets tool names and status only. `run_summary`'s
+`tool_errors` are now redacted too. Shapes are in `DATA_MODEL.md` §13⅝ and
+pinned for peko-desktop by `ipc/fixtures/desktop_stream_responses.json`.
+
+### Fix: OpenAI-format streams carry reasoning inside the delta (2026-10-27)
+
+DeepSeek and Moonshot/Kimi stream reasoning as
+`choices[0].delta.reasoning_content`. The adapter read reasoning only
+beside the delta (on the choice), so their thinking never reached the
+engine. Both places are read now, the delta first.
+
 ### Feature: IPC reads and sets a peko's wake policy in a group (2026-10-27)
 
 The desktop could not show whether a channel is a DM or a group, or let

@@ -271,6 +271,13 @@ impl ToolDispatcher {
             .cloned()
     }
 
+    /// The redactor applied to ledger records; also used for anything
+    /// else that shows a call's params or result outside the run.
+    #[must_use]
+    pub fn redactor(&self) -> &Arc<Redactor> {
+        &self.redactor
+    }
+
     /// Bind where the ledger redactor learns the runtime's own secrets.
     pub fn set_secret_source(&self, source: Arc<dyn ledger::redact::SecretSource>) {
         self.redactor.set_source(source);

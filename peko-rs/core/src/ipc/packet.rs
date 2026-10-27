@@ -1677,6 +1677,37 @@ pub enum ResponsePacket {
         tool_errors: Vec<ToolErrorEntry>,
     },
 
+    /// A tool call started in a streaming send's run. `input` is a
+    /// short redacted summary of the arguments, sent only when the
+    /// caller is the peko's owner (results and arguments can carry the
+    /// owner's private context).
+    #[serde(rename = "principal_sent_tool_start")]
+    PrincipalSentToolStart {
+        request_id: u64,
+        tool_id: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<String>,
+    },
+
+    /// A tool call finished. `output` is a short redacted excerpt of
+    /// the result, owner only, like `input`.
+    #[serde(rename = "principal_sent_tool_end")]
+    PrincipalSentToolEnd {
+        request_id: u64,
+        tool_id: String,
+        name: String,
+        success: bool,
+        duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+
+    /// A thinking (reasoning) text delta. Owner only: thinking can
+    /// quote the prompt's private sections.
+    #[serde(rename = "principal_sent_thinking")]
+    PrincipalSentThinking { request_id: u64, delta: String },
+
     /// Successor packet emitted when a steering message was queued
     /// during the final-iteration drain of `PrincipalSendStream` and
     /// the predecessor's run has now completed. The runtime drained
@@ -2351,6 +2382,9 @@ impl ResponsePacket {
             | Self::PrincipalSentIteration { request_id, .. }
             | Self::PrincipalSentDone { request_id, .. }
             | Self::PrincipalSentSuccessor { request_id, .. }
+            | Self::PrincipalSentToolStart { request_id, .. }
+            | Self::PrincipalSentToolEnd { request_id, .. }
+            | Self::PrincipalSentThinking { request_id, .. }
             | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
@@ -2429,6 +2463,9 @@ impl ResponsePacket {
             Self::PrincipalSentIteration { .. } => "PrincipalSentIteration",
             Self::PrincipalSentDone { .. } => "PrincipalSentDone",
             Self::PrincipalSentSuccessor { .. } => "PrincipalSentSuccessor",
+            Self::PrincipalSentToolStart { .. } => "PrincipalSentToolStart",
+            Self::PrincipalSentToolEnd { .. } => "PrincipalSentToolEnd",
+            Self::PrincipalSentThinking { .. } => "PrincipalSentThinking",
             Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
@@ -4861,6 +4898,32 @@ mod tests {
             one_shot_json, streaming_json,
             "PrincipalSent and PrincipalSentDone must have distinct wire shapes"
         );
+    }
+
+    /// The stream packets peko-desktop parses
+    /// (`fixtures/desktop_stream_responses.json`) must keep their exact
+    /// shape: each decodes as a `ResponsePacket` and re-encodes to the
+    /// same JSON. A failure means the desktop's stream parsing breaks:
+    /// update peko-desktop's `src-tauri/src/ipc/mod.rs` and this
+    /// fixture together.
+    #[test]
+    fn desktop_stream_responses_keep_their_shape() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/desktop_stream_responses.json"))
+                .expect("fixture is a JSON array");
+        assert!(!fixture.is_empty());
+        for packet in fixture {
+            let ty = packet["type"]
+                .as_str()
+                .expect("every packet names its type");
+            let decoded: ResponsePacket = serde_json::from_value(packet.clone())
+                .unwrap_or_else(|e| panic!("desktop-parsed `{ty}` no longer decodes: {e}"));
+            assert_eq!(
+                serde_json::to_value(&decoded).unwrap(),
+                packet,
+                "`{ty}` changed shape on the wire"
+            );
+        }
     }
 
     /// The requests peko-desktop sends (`fixtures/desktop_requests.json`)

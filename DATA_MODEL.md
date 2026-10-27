@@ -381,6 +381,7 @@ task statuses remain unchanged and are owned by `peko-tools-core`.
 12. [Workspace MCP server definitions](#12-workspace-mcp-server-definitions)
 13. [Tool Protocol — stdin/stdout](#13-tool-protocol--stdinstdout)
    13½. [IPC — `ExecuteTool` Packet (ADR-061 phase 1)](#13½-ipc--executetool-packet-adr-061-phase-1)
+   13⅝. [IPC — `principal_send_stream` packets](#13⅝-ipc--principal_send_stream-packets)
    13¾. [`ModelCall` — one-shot inference + the judgment wire (ADR-061 phase 2a)](#13¾-modelcall--one-shot-inference--the-judgment-wire-adr-061-phase-2a)
    13⅞. [`Workflow` runner + the `workflows/` directory (ADR-061 phase 2b)](#13⅞-workflow-runner--the-workflows-directory-adr-061-phase-2b)
 14. [Extension Manifest (RETIRED)](#14-extension-manifest-retired)
@@ -2869,6 +2870,41 @@ session with missing metadata does on the agent path.
 
 A funnel-internal failure instead answers `{"type": "error", "request_id": N,
 "message": "…"}`.
+
+---
+
+## 13⅝. IPC — `principal_send_stream` packets
+
+A streaming send answers a sequence of packets, all carrying the request's
+`request_id`, with `heartbeat` packets every two seconds in between:
+
+| Packet | Fields | When |
+|---|---|---|
+| `principal_sent_iteration` | `iteration` (from 1) | Each agentic iteration starts. |
+| `principal_sent_thinking` | `delta` | Reasoning text. **Owner only.** Deltas; a final full-text event is not repeated after them. |
+| `principal_sent_tool_start` | `tool_id`, `name`, `input`? | A tool call starts. |
+| `principal_sent_tool_end` | `tool_id`, `name`, `success`, `duration_ms`, `output`? | A tool call finishes. |
+| `principal_sent_chunk` | `delta` | Assistant text. |
+| `principal_sent_done` | `content` | The final answer (success only). |
+| `run_summary` | `iterations`, `usage`, `tool_errors` | Once per run. |
+| `error` | `message` | The run failed (`stopped by user` after `principal_stop`). |
+| `done` | `success`, `error` | Last. `success: false` with `error: "[queued] …"` means the thread was busy and the message was queued; its reply is posted to the DM channel. |
+
+`input` and `output` are present only when the caller is the peko's owner:
+a short summary of the call's arguments and an excerpt of its result, both
+redacted by the tool ledger's redactor (ADR-079 D3: known runtime secrets,
+sensitive keys, credential shapes) and capped at 1 KiB. Any other caller
+sees tool names and status only, and no thinking — a peko's results and
+reasoning can quote its owner's private context. `tool_errors` messages are
+redacted the same way.
+
+```json
+{"type": "principal_sent_tool_start", "request_id": 7, "tool_id": "call_1", "name": "Bash", "input": "{\"command\":\"date\"}"}
+{"type": "principal_sent_tool_end", "request_id": 7, "tool_id": "call_1", "name": "Bash", "success": true, "duration_ms": 12, "output": "Tue Oct 27"}
+```
+
+peko-desktop parses these packets; their exact shapes are pinned by
+`peko-rs/core/src/ipc/fixtures/desktop_stream_responses.json`.
 
 ---
 

@@ -2028,7 +2028,10 @@ async fn run_principal_send(
         crate::principal::trust::stamps_for(&principal, host.principal_manager().channel_port());
     // ADR-081 D4: the operator is admitted to chat (above), but chats at
     // the trust of whom it is — the local user.
-    if stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner {
+    // The owner sees tool inputs/outputs and thinking on the stream;
+    // anyone else sees tool names and status only.
+    let owner_view = stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner;
+    if owner_view {
         if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
             host.principal_manager(),
             &principal,
@@ -2281,8 +2284,10 @@ async fn run_principal_send(
     // `ToolStart`, consulted by `ToolEnd`. The map is bounded by the
     // LLM's parallel-tool-call fanout in any one iteration (≤ ~10),
     // so memory cost is negligible.
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut tool_errors: Vec<ToolErrorEntry> = Vec::new();
+    let mut steps = StreamSteps::new(
+        owner_view,
+        Arc::clone(host.principal_manager().tooling().dispatcher().redactor()),
+    );
     // Cumulative token usage. `peko-engine` emits exactly one
     // `AgenticEvent::Usage` per run, immediately before
     // `Lifecycle{End}` — so capturing the last seen is sufficient.
@@ -2351,6 +2356,7 @@ async fn run_principal_send(
                 ..
             } => {
                 iteration += 1;
+                steps.new_iteration();
                 (
                     ResponsePacket::PrincipalSentIteration {
                         request_id,
@@ -2359,6 +2365,12 @@ async fn run_principal_send(
                     "PrincipalSentIteration",
                 )
             }
+            event @ (AgenticEvent::ToolStart { .. }
+            | AgenticEvent::ToolEnd { .. }
+            | AgenticEvent::Thinking { .. }) => match steps.packet(request_id, event) {
+                Some(step) => step,
+                None => continue,
+            },
             AgenticEvent::AssistantDelta { text, .. }
             | AgenticEvent::AssistantText { text, .. } => (
                 ResponsePacket::PrincipalSentChunk {
@@ -2371,36 +2383,6 @@ async fn run_principal_send(
             // and continue to the next iteration of the channel-drain
             // loop. The single `RunSummary` packet is emitted after the
             // channel closes (see below).
-            AgenticEvent::ToolStart { tool_id, name, .. } => {
-                tool_names.insert(tool_id.clone(), name);
-                continue;
-            }
-            AgenticEvent::ToolEnd {
-                tool_id,
-                result,
-                success,
-                ..
-            } if !success => {
-                let tool_id_str = tool_id.clone();
-                let tool_name = tool_names
-                    .get(&tool_id_str)
-                    .cloned()
-                    .or_else(|| Some(tool_id_str.clone()));
-                // Tool results are `serde_json::Value`; coerce to a
-                // compact one-line string for the summary. Truncate to
-                // ~200 chars so the packet stays small.
-                let msg = match result {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                let truncated: String = msg.chars().take(200).collect();
-                tool_errors.push(ToolErrorEntry {
-                    tool_id: tool_id_str,
-                    tool_name,
-                    error_message: truncated,
-                });
-                continue;
-            }
             AgenticEvent::Usage {
                 prompt_tokens,
                 completion_tokens,
@@ -2428,7 +2410,7 @@ async fn run_principal_send(
                 }
                 continue;
             }
-            _ => continue, // tool-success/thinking/retry/streaming stay backend-only
+            _ => continue, // retry / tool-call previews / status stay backend-only
         };
         if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
             if let Err(e) = send_response(sink, packet).await {
@@ -2521,7 +2503,7 @@ async fn run_principal_send(
                 request_id,
                 iterations: iteration,
                 usage: usage.clone(),
-                tool_errors: std::mem::take(&mut tool_errors),
+                tool_errors: steps.take_tool_errors(),
             };
             send_response(sink, summary).await?;
             let done = ResponsePacket::Done {
@@ -2641,7 +2623,7 @@ async fn run_principal_send(
                 request_id,
                 iterations: iteration,
                 usage: usage.clone(),
-                tool_errors: std::mem::take(&mut tool_errors),
+                tool_errors: steps.take_tool_errors(),
             };
             send_response(sink, summary).await?;
             let response = ResponsePacket::Error {
@@ -2663,6 +2645,139 @@ async fn run_principal_send(
 /// Phase 11: post the principal's reply (or a failure trace) to the
 /// peer's DM channel. Warn-only inside `post_peer_dm_reply`; a no-op
 /// when port/channel are absent.
+/// Byte cap for a tool step's `input` / `output` on the stream.
+const TOOL_STEP_CAP: usize = 1024;
+
+/// Turns a run's tool and thinking events into stream packets.
+///
+/// The owner sees each call's input and output (redacted with the
+/// ledger's [`Redactor`](crate::security::ledger::redact::Redactor) and
+/// capped) and the thinking; anyone else sees tool names and status
+/// only — a peko's results and reasoning can quote its owner's private
+/// context. Failed calls are collected for the run's `RunSummary`.
+struct StreamSteps {
+    owner_view: bool,
+    redactor: Arc<crate::security::ledger::redact::Redactor>,
+    /// `tool_id` → tool name, from `ToolStart`, for `ToolEnd`.
+    tool_names: HashMap<String, String>,
+    tool_errors: Vec<ToolErrorEntry>,
+    /// Whether this iteration's thinking already went out as deltas, so
+    /// a final full-text `Thinking` event is not sent twice.
+    thinking_streamed: bool,
+}
+
+impl StreamSteps {
+    fn new(owner_view: bool, redactor: Arc<crate::security::ledger::redact::Redactor>) -> Self {
+        Self {
+            owner_view,
+            redactor,
+            tool_names: HashMap::new(),
+            tool_errors: Vec::new(),
+            thinking_streamed: false,
+        }
+    }
+
+    fn new_iteration(&mut self) {
+        self.thinking_streamed = false;
+    }
+
+    fn take_tool_errors(&mut self) -> Vec<ToolErrorEntry> {
+        std::mem::take(&mut self.tool_errors)
+    }
+
+    /// The packet for a `ToolStart` / `ToolEnd` / `Thinking` event, or
+    /// `None` when nothing goes on the stream for it.
+    fn packet(
+        &mut self,
+        request_id: u64,
+        event: AgenticEvent,
+    ) -> Option<(ResponsePacket, &'static str)> {
+        match event {
+            AgenticEvent::ToolStart {
+                tool_id,
+                name,
+                params,
+                ..
+            } => {
+                self.tool_names.insert(tool_id.clone(), name.clone());
+                let input = self.owner_view.then(|| {
+                    crate::security::ledger::redact::head(
+                        &self.redactor.params(&params).to_string(),
+                        TOOL_STEP_CAP,
+                    )
+                });
+                Some((
+                    ResponsePacket::PrincipalSentToolStart {
+                        request_id,
+                        tool_id,
+                        name,
+                        input,
+                    },
+                    "PrincipalSentToolStart",
+                ))
+            }
+            AgenticEvent::ToolEnd {
+                tool_id,
+                result,
+                success,
+                duration_ms,
+                ..
+            } => {
+                let name = self
+                    .tool_names
+                    .get(&tool_id)
+                    .cloned()
+                    .unwrap_or_else(|| tool_id.clone());
+                let text = match &result {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                if !success {
+                    self.tool_errors.push(ToolErrorEntry {
+                        tool_id: tool_id.clone(),
+                        tool_name: Some(name.clone()),
+                        error_message: self.redactor.text(&text).chars().take(200).collect(),
+                    });
+                }
+                let output = self.owner_view.then(|| {
+                    let excerpt =
+                        crate::security::ledger::excerpt(&text, &result, &self.redactor).excerpt;
+                    crate::security::ledger::redact::head(&excerpt, TOOL_STEP_CAP)
+                });
+                Some((
+                    ResponsePacket::PrincipalSentToolEnd {
+                        request_id,
+                        tool_id,
+                        name,
+                        success,
+                        duration_ms,
+                        output,
+                    },
+                    "PrincipalSentToolEnd",
+                ))
+            }
+            AgenticEvent::Thinking { text, is_delta, .. } => {
+                if !self.owner_view || text.is_empty() {
+                    return None;
+                }
+                if is_delta {
+                    self.thinking_streamed = true;
+                } else if self.thinking_streamed {
+                    return None;
+                }
+                Some((
+                    ResponsePacket::PrincipalSentThinking {
+                        request_id,
+                        delta: text,
+                    },
+                    "PrincipalSentThinking",
+                ))
+            }
+            _ => None,
+        }
+    }
+}
+
 async fn post_dm_reply(
     port: Option<&Arc<dyn ChannelPort>>,
     principal: &Principal,
@@ -4795,5 +4910,160 @@ mod tests {
                 other => panic!("expected Error, got {other:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_steps_tests {
+    use super::*;
+    use crate::security::ledger::redact::{Redactor, SecretSource};
+    use serde_json::json;
+
+    struct Known(&'static str);
+
+    impl SecretSource for Known {
+        fn secrets(&self) -> Vec<(String, String)> {
+            vec![("vault:openai".into(), self.0.into())]
+        }
+    }
+
+    const SECRET: &str = "sk-live-0123456789abcdef";
+
+    fn steps(owner_view: bool) -> StreamSteps {
+        let redactor = Redactor::default();
+        redactor.set_source(Arc::new(Known(SECRET)));
+        StreamSteps::new(owner_view, Arc::new(redactor))
+    }
+
+    fn start() -> AgenticEvent {
+        AgenticEvent::ToolStart {
+            run_id: "run".into(),
+            tool_id: "t1".into(),
+            name: "Bash".into(),
+            params: json!({"command": format!("curl -H 'Authorization: {SECRET}' x"), "api_key": "abc"}),
+        }
+    }
+
+    fn end(success: bool, result: serde_json::Value) -> AgenticEvent {
+        AgenticEvent::ToolEnd {
+            run_id: "run".into(),
+            tool_id: "t1".into(),
+            result,
+            success,
+            duration_ms: 42,
+        }
+    }
+
+    fn thinking(text: &str, is_delta: bool) -> AgenticEvent {
+        AgenticEvent::Thinking {
+            run_id: "run".into(),
+            text: text.into(),
+            is_delta,
+            is_final: !is_delta,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn the_owner_sees_redacted_input_and_output() {
+        let mut s = steps(true);
+        let (packet, _) = s.packet(7, start()).unwrap();
+        let ResponsePacket::PrincipalSentToolStart { name, input, .. } = packet else {
+            panic!("expected PrincipalSentToolStart");
+        };
+        assert_eq!(name, "Bash");
+        let input = input.expect("owner sees the input");
+        assert!(!input.contains(SECRET), "{input}");
+        assert!(input.contains("[secret:vault:openai]"), "{input}");
+        assert!(!input.contains("abc"), "sensitive key kept: {input}");
+
+        let result = json!({"stdout": format!("token={SECRET}\nok"), "stderr": "", "exit_code": 0});
+        let (packet, _) = s.packet(7, end(true, result)).unwrap();
+        let ResponsePacket::PrincipalSentToolEnd {
+            name,
+            success,
+            duration_ms,
+            output,
+            ..
+        } = packet
+        else {
+            panic!("expected PrincipalSentToolEnd");
+        };
+        assert_eq!((name.as_str(), success, duration_ms), ("Bash", true, 42));
+        let output = output.expect("owner sees the output");
+        assert!(
+            output.contains("ok") && !output.contains(SECRET),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn anyone_else_sees_names_and_status_only() {
+        let mut s = steps(false);
+        let (packet, _) = s.packet(7, start()).unwrap();
+        assert!(matches!(
+            packet,
+            ResponsePacket::PrincipalSentToolStart { input: None, .. }
+        ));
+        let (packet, _) = s.packet(7, end(true, json!("secret file body"))).unwrap();
+        assert!(matches!(
+            packet,
+            ResponsePacket::PrincipalSentToolEnd {
+                output: None,
+                success: true,
+                ..
+            }
+        ));
+        assert!(s.packet(7, thinking("private reasoning", true)).is_none());
+        // The serialized packet carries no input/output fields at all.
+        let wire = serde_json::to_value(s.packet(7, start()).unwrap().0).unwrap();
+        assert!(wire.get("input").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn steps_are_capped() {
+        let mut s = steps(true);
+        let long = "x".repeat(10 * TOOL_STEP_CAP);
+        s.packet(7, start());
+        let (packet, _) = s.packet(7, end(true, json!(long))).unwrap();
+        let ResponsePacket::PrincipalSentToolEnd { output, .. } = packet else {
+            panic!("expected PrincipalSentToolEnd");
+        };
+        let output = output.unwrap();
+        assert!(output.ends_with("…(truncated)"), "{output}");
+        assert!(output.len() <= TOOL_STEP_CAP + "…(truncated)".len());
+    }
+
+    #[test]
+    fn failed_calls_feed_the_run_summary_redacted() {
+        let mut s = steps(false);
+        s.packet(7, start());
+        s.packet(7, end(false, json!(format!("auth failed for {SECRET}"))));
+        let errors = s.take_tool_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].tool_name.as_deref(), Some("Bash"));
+        assert!(!errors[0].error_message.contains(SECRET));
+        assert!(s.take_tool_errors().is_empty());
+    }
+
+    #[test]
+    fn thinking_streams_deltas_once_per_iteration() {
+        let mut s = steps(true);
+        let delta =
+            |s: &mut StreamSteps, text, is_delta| match s.packet(7, thinking(text, is_delta)) {
+                Some((ResponsePacket::PrincipalSentThinking { delta, .. }, _)) => Some(delta),
+                _ => None,
+            };
+        assert_eq!(delta(&mut s, "Let me ", true).as_deref(), Some("Let me "));
+        assert_eq!(delta(&mut s, "think", true).as_deref(), Some("think"));
+        // The final full text repeats what the deltas carried.
+        assert_eq!(delta(&mut s, "Let me think", false), None);
+        // A provider that only sends full text still gets it through.
+        s.new_iteration();
+        assert_eq!(
+            delta(&mut s, "Whole thought", false).as_deref(),
+            Some("Whole thought")
+        );
+        assert_eq!(delta(&mut s, "", true), None);
     }
 }

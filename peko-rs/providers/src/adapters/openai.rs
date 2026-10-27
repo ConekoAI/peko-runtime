@@ -405,7 +405,10 @@ impl super::ApiAdapter for OpenAiAdapter {
             None => return Ok(None),
         };
 
-        let delta = choice.delta;
+        let mut delta = choice.delta;
+        let reasoning_content = delta.reasoning_content.take().or(choice.reasoning_content);
+        let reasoning_details = delta.reasoning_details.take().or(choice.reasoning_details);
+        let reasoning = delta.reasoning.take().or(choice.reasoning);
 
         // F25: reasoning-content probe. Some providers (Moonshot/Kimi,
         // DeepSeek, OpenAI o-series) emit reasoning under different
@@ -414,17 +417,13 @@ impl super::ApiAdapter for OpenAiAdapter {
         // which to use — we probe in a fixed order and surface the
         // first hit as a ThinkingDelta so the engine loop can
         // display it alongside the assistant's text.
-        if let Some(text) = choice
-            .reasoning_content
-            .as_deref()
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(text) = reasoning_content.as_deref().filter(|s| !s.is_empty()) {
             return Ok(Some(StreamEvent::ThinkingDelta {
                 content_index: 0,
                 delta: text.to_string(),
             }));
         }
-        if let Some(details) = choice.reasoning_details.as_ref() {
+        if let Some(details) = reasoning_details.as_ref() {
             let text: String = details
                 .iter()
                 .filter_map(|d| d.text.as_deref())
@@ -437,7 +436,7 @@ impl super::ApiAdapter for OpenAiAdapter {
                 }));
             }
         }
-        if let Some(value) = choice.reasoning.as_ref() {
+        if let Some(value) = reasoning.as_ref() {
             let text = reasoning_text_from_reasoning_field(value);
             if !text.is_empty() {
                 return Ok(Some(StreamEvent::ThinkingDelta {
@@ -754,6 +753,15 @@ struct OpenAiDelta {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCallDelta>>,
+    /// Reasoning inside the delta — where DeepSeek and Moonshot/Kimi
+    /// stream it (`choices[0].delta.reasoning_content`). Read before
+    /// the choice-level fields on [`OpenAiStreamChoice`].
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning_details: Option<Vec<OpenAiReasoningDetail>>,
+    #[serde(default)]
+    reasoning: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1242,6 +1250,23 @@ mod tests {
             Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => {
                 assert_eq!(delta, "step 1");
             }
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// DeepSeek and Moonshot/Kimi stream reasoning inside the delta
+    /// (`choices[0].delta.reasoning_content`) → emit `ThinkingDelta`.
+    #[test]
+    fn test_parse_sse_thinking_delta_inside_delta() {
+        let adapter = OpenAiAdapter::new();
+        let data = r#"{"choices":[{"delta":{"role":"assistant","content":null,"reasoning_content":"step 1"},"finish_reason":null}]}"#;
+        match adapter.parse_sse_event("deepseek-reasoner", data).unwrap() {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => assert_eq!(delta, "step 1"),
+            other => panic!("Expected ThinkingDelta, got {other:?}"),
+        }
+        let data = r#"{"choices":[{"delta":{"reasoning":"bare shim"}}]}"#;
+        match adapter.parse_sse_event("shim", data).unwrap() {
+            Some(crate::StreamEvent::ThinkingDelta { delta, .. }) => assert_eq!(delta, "bare shim"),
             other => panic!("Expected ThinkingDelta, got {other:?}"),
         }
     }
