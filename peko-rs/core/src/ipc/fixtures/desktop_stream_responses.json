@@ -1,0 +1,15 @@
+[
+  {"type": "principal_sent_iteration", "request_id": 7, "iteration": 1},
+  {"type": "principal_sent_thinking", "request_id": 7, "delta": "Checking the calendar first."},
+  {"type": "principal_sent_tool_start", "request_id": 7, "tool_id": "call_1", "name": "Bash", "input": "{\"command\":\"date\"}"},
+  {"type": "principal_sent_tool_start", "request_id": 7, "tool_id": "call_2", "name": "Read"},
+  {"type": "principal_sent_tool_end", "request_id": 7, "tool_id": "call_1", "name": "Bash", "success": true, "duration_ms": 12, "output": "Tue Oct 27"},
+  {"type": "principal_sent_tool_end", "request_id": 7, "tool_id": "call_2", "name": "Read", "success": false, "duration_ms": 3},
+  {"type": "principal_sent_chunk", "request_id": 7, "delta": "It is Tuesday."},
+  {"type": "principal_sent_done", "request_id": 7, "content": "It is Tuesday."},
+  {"type": "run_summary", "request_id": 7, "iterations": 2, "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, "tool_errors": [{"tool_id": "call_2", "tool_name": "Read", "error_message": "not found"}]},
+  {"type": "done", "request_id": 7, "success": true, "error": null},
+  {"type": "done", "request_id": 8, "success": false, "error": "[queued] principal 'alice' is busy — message queued for session s1"},
+  {"type": "error", "request_id": 9, "message": "stopped by user"},
+  {"type": "heartbeat", "request_id": 7}
+]
