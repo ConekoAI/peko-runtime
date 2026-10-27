@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: OpenAI-format streams carry reasoning inside the delta (2026-10-27)
+
+DeepSeek and Moonshot/Kimi stream reasoning as
+`choices[0].delta.reasoning_content`. The adapter read reasoning only
+beside the delta (on the choice), so their thinking never reached the
+engine. Both places are read now, the delta first.
+
 ### Feature: IPC reads and sets a peko's wake policy in a group (2026-10-27)
 
 The desktop could not show whether a channel is a DM or a group, or let
