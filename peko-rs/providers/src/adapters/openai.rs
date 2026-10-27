@@ -2,7 +2,7 @@
 //!
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
-use super::{extract_text_content, role_to_string, ToolCallAccumulator};
+use super::{extract_text_content, role_to_string, PendingEvents, ToolCallAccumulator};
 use crate::transport::AuthConfig;
 use anyhow::{Context, Result};
 use peko_message::ImageSource;
@@ -21,6 +21,8 @@ pub struct OpenAiAdapter {
     base_url: String,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
+    /// Events a chunk produced beyond the one `parse_sse_event` returned.
+    pending: PendingEvents,
 }
 
 impl OpenAiAdapter {
@@ -31,7 +33,148 @@ impl OpenAiAdapter {
         Self {
             base_url: "https://api.openai.com/v1".to_string(),
             tool_call_accumulator: ToolCallAccumulator::new(),
+            pending: PendingEvents::default(),
         }
+    }
+
+    /// Every event one SSE chunk carries, in order: usage, reasoning,
+    /// text, tool-call start / argument / completion events, then — on a
+    /// finish — the calls still buffered (see
+    /// [`ToolCallAccumulator::drain_finished`]) and `Done`. A chunk can
+    /// hold several of these at once: usage beside the finish, text
+    /// beside a call, or a call complete in one chunk (some
+    /// OpenAI-compatible servers send them whole).
+    fn parse_chunk(&self, data: &str) -> Result<Vec<StreamEvent>> {
+        if data.trim() == "[DONE]" {
+            let mut events = self.finished_calls();
+            events.push(StreamEvent::Done {
+                stop_reason: StopReason::Stop,
+            });
+            return Ok(events);
+        }
+
+        let chunk: OpenAiStreamChunk =
+            serde_json::from_str(data).context("Failed to parse OpenAI SSE chunk")?;
+        let mut events = Vec::new();
+
+        // The final chunk may carry usage, with or without a choice.
+        if let Some(usage) = chunk.usage {
+            events.push(StreamEvent::Usage {
+                input: u64::from(usage.prompt_tokens),
+                output: u64::from(usage.completion_tokens),
+                total: u64::from(usage.total_tokens),
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cached_tokens)
+                    .map_or(0, u64::from),
+                reasoning_output_tokens: usage
+                    .completion_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.reasoning_tokens)
+                    .map_or(0, u64::from),
+            });
+        }
+
+        let Some(choice) = chunk.choices.into_iter().next() else {
+            return Ok(events);
+        };
+        let mut delta = choice.delta;
+
+        // F25: reasoning-content probe. Providers put reasoning inside the
+        // delta (DeepSeek, Moonshot/Kimi) or beside it, under
+        // `reasoning_content` (string), `reasoning_details[*].text`
+        // (OpenAI o-series), or a bare `reasoning` (shims). The first hit
+        // becomes a ThinkingDelta.
+        let reasoning_content = delta.reasoning_content.take().or(choice.reasoning_content);
+        let reasoning_details = delta.reasoning_details.take().or(choice.reasoning_details);
+        let reasoning = delta.reasoning.take().or(choice.reasoning);
+        let thinking = reasoning_content
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                reasoning_details
+                    .map(|details| {
+                        details
+                            .iter()
+                            .filter_map(|d| d.text.as_deref())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| {
+                reasoning
+                    .as_ref()
+                    .map(reasoning_text_from_reasoning_field)
+                    .filter(|s| !s.is_empty())
+            });
+        if let Some(delta) = thinking {
+            events.push(StreamEvent::ThinkingDelta {
+                content_index: 0,
+                delta,
+            });
+        }
+
+        if let Some(text) = delta.content.filter(|t| !t.is_empty()) {
+            events.push(StreamEvent::TextDelta {
+                content_index: 0,
+                delta: text,
+            });
+        }
+
+        for tc in delta.tool_calls.unwrap_or_default() {
+            let idx = tc.index as usize;
+            let name = tc.function.as_ref().and_then(|f| f.name.clone());
+            let arguments = tc.function.as_ref().and_then(|f| f.arguments.clone());
+            let is_new_call = tc
+                .id
+                .as_ref()
+                .is_some_and(|id| self.tool_call_accumulator.is_new_call(idx, id));
+            let complete =
+                self.tool_call_accumulator
+                    .accumulate(idx, tc.id, name, arguments.clone());
+            if is_new_call {
+                events.push(StreamEvent::ToolCallStart { content_index: idx });
+            }
+            if let Some(tool_call) = complete {
+                events.push(StreamEvent::ToolCallEnd {
+                    content_index: idx,
+                    tool_call,
+                });
+            } else if let Some(args) = arguments.filter(|a| !is_new_call && !a.is_empty()) {
+                // Still accumulating: a fragment, for progress display.
+                events.push(StreamEvent::ToolCallDelta {
+                    content_index: idx,
+                    delta: args,
+                });
+            }
+        }
+
+        if let Some(reason) = choice.finish_reason {
+            let stop_reason = match reason.as_str() {
+                "tool_calls" => StopReason::ToolUse,
+                "length" => StopReason::Length,
+                _ => StopReason::Stop,
+            };
+            events.extend(self.finished_calls());
+            events.push(StreamEvent::Done { stop_reason });
+        }
+
+        Ok(events)
+    }
+
+    /// The calls still buffered at the end of a response, as
+    /// `ToolCallEnd` events; the buffer is left empty.
+    fn finished_calls(&self) -> Vec<StreamEvent> {
+        self.tool_call_accumulator
+            .drain_finished()
+            .into_iter()
+            .map(|(content_index, tool_call)| StreamEvent::ToolCallEnd {
+                content_index,
+                tool_call,
+            })
+            .collect()
     }
 
     /// Create with custom base URL (for Azure, OpenRouter, etc.)
@@ -369,158 +512,12 @@ impl super::ApiAdapter for OpenAiAdapter {
     }
 
     fn parse_sse_event(&self, _model_id: &str, data: &str) -> Result<Option<StreamEvent>> {
-        if data.trim() == "[DONE]" {
-            // Clear accumulator when stream ends
-            self.tool_call_accumulator.reset();
-            return Ok(Some(StreamEvent::Done {
-                stop_reason: StopReason::Stop,
-            }));
-        }
+        let events = self.parse_chunk(data)?;
+        Ok(self.pending.first_and_queue(events))
+    }
 
-        let chunk: OpenAiStreamChunk =
-            serde_json::from_str(data).context("Failed to parse OpenAI SSE chunk")?;
-
-        // Check for usage first (final chunk has usage but empty choices)
-        if let Some(usage) = chunk.usage {
-            return Ok(Some(StreamEvent::Usage {
-                input: u64::from(usage.prompt_tokens),
-                output: u64::from(usage.completion_tokens),
-                total: u64::from(usage.total_tokens),
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .map_or(0, u64::from),
-                reasoning_output_tokens: usage
-                    .completion_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.reasoning_tokens)
-                    .map_or(0, u64::from),
-            }));
-        }
-
-        let choice = match chunk.choices.into_iter().next() {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-
-        let mut delta = choice.delta;
-        let reasoning_content = delta.reasoning_content.take().or(choice.reasoning_content);
-        let reasoning_details = delta.reasoning_details.take().or(choice.reasoning_details);
-        let reasoning = delta.reasoning.take().or(choice.reasoning);
-
-        // F25: reasoning-content probe. Some providers (Moonshot/Kimi,
-        // DeepSeek, OpenAI o-series) emit reasoning under different
-        // keys: `reasoning_content` (string) or
-        // `reasoning_details[*].text` (array). The server decides
-        // which to use — we probe in a fixed order and surface the
-        // first hit as a ThinkingDelta so the engine loop can
-        // display it alongside the assistant's text.
-        if let Some(text) = reasoning_content.as_deref().filter(|s| !s.is_empty()) {
-            return Ok(Some(StreamEvent::ThinkingDelta {
-                content_index: 0,
-                delta: text.to_string(),
-            }));
-        }
-        if let Some(details) = reasoning_details.as_ref() {
-            let text: String = details
-                .iter()
-                .filter_map(|d| d.text.as_deref())
-                .collect::<Vec<_>>()
-                .join("");
-            if !text.is_empty() {
-                return Ok(Some(StreamEvent::ThinkingDelta {
-                    content_index: 0,
-                    delta: text,
-                }));
-            }
-        }
-        if let Some(value) = reasoning.as_ref() {
-            let text = reasoning_text_from_reasoning_field(value);
-            if !text.is_empty() {
-                return Ok(Some(StreamEvent::ThinkingDelta {
-                    content_index: 0,
-                    delta: text,
-                }));
-            }
-        }
-
-        // Handle text content
-        if let Some(text) = delta.content {
-            if !text.is_empty() {
-                return Ok(Some(StreamEvent::TextDelta {
-                    content_index: 0,
-                    delta: text,
-                }));
-            }
-        }
-
-        // Handle tool calls - use shared accumulator
-        if let Some(tool_calls) = delta.tool_calls {
-            for tc in tool_calls {
-                let idx = tc.index as usize;
-                let id = tc.id.clone();
-                let name = tc.function.as_ref().and_then(|f| f.name.clone());
-                let arguments = tc.function.as_ref().and_then(|f| f.arguments.clone());
-
-                // Check if this is a new tool call
-                let is_new_call = id
-                    .as_ref()
-                    .is_some_and(|id_str| self.tool_call_accumulator.is_new_call(idx, id_str));
-
-                // If this is the start of a new tool call, emit ToolCallStart first
-                if is_new_call {
-                    let _ = self.tool_call_accumulator.accumulate(
-                        idx,
-                        id.clone(),
-                        name.clone(),
-                        arguments.clone(),
-                    );
-                    return Ok(Some(StreamEvent::ToolCallStart { content_index: idx }));
-                }
-
-                // Accumulate parts and check for completion
-                let complete =
-                    self.tool_call_accumulator
-                        .accumulate(idx, id, name, arguments.clone());
-
-                // If we have a complete tool call, emit ToolCallEnd
-                if let Some(complete_tool) = complete {
-                    return Ok(Some(StreamEvent::ToolCallEnd {
-                        content_index: idx,
-                        tool_call: complete_tool,
-                    }));
-                }
-
-                // Still accumulating, emit delta for progress tracking
-                if let Some(args) = arguments {
-                    return Ok(Some(StreamEvent::ToolCallDelta {
-                        content_index: idx,
-                        delta: args,
-                    }));
-                }
-            }
-        }
-
-        // Handle finish reason
-        if let Some(reason) = choice.finish_reason {
-            let stop_reason = match reason.as_str() {
-                "tool_calls" => StopReason::ToolUse,
-                "length" => StopReason::Length,
-                "stop" => StopReason::Stop,
-                _ => StopReason::Stop,
-            };
-
-            // If finish reason is tool_calls, clear the accumulator
-            if reason == "tool_calls" {
-                self.tool_call_accumulator.reset();
-            }
-
-            return Ok(Some(StreamEvent::Done { stop_reason }));
-        }
-
-        Ok(None)
+    fn take_pending_events(&self) -> Vec<StreamEvent> {
+        self.pending.take()
     }
 
     fn auth_config(&self, api_key: &str) -> AuthConfig {
@@ -1252,6 +1249,176 @@ mod tests {
             }
             other => panic!("Expected ThinkingDelta, got {other:?}"),
         }
+    }
+
+    /// Every event one adapter yields for `chunks`, in order: each
+    /// chunk's returned event, then its queued ones (as the stream
+    /// loop in `core.rs` drains them).
+    fn stream_events(adapter: &OpenAiAdapter, chunks: &[&str]) -> Vec<crate::StreamEvent> {
+        let mut out = Vec::new();
+        for chunk in chunks {
+            out.extend(adapter.parse_sse_event("m", chunk).unwrap());
+            out.extend(adapter.take_pending_events());
+        }
+        out
+    }
+
+    fn completed_calls(events: &[crate::StreamEvent]) -> Vec<(String, Value)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                crate::StreamEvent::ToolCallEnd {
+                    tool_call:
+                        ContentBlock::ToolCall {
+                            name, arguments, ..
+                        },
+                    ..
+                } => Some((name.clone(), arguments.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const FINISH_TOOL_CALLS: &str = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#;
+
+    /// Some OpenAI-compatible servers (Ollama, for one) send a whole tool
+    /// call in one chunk; the finish chunk must not discard it.
+    #[test]
+    fn a_tool_call_sent_whole_in_one_chunk_completes() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"date\"}"}}]},"finish_reason":null}]}"#,
+                FINISH_TOOL_CALLS,
+            ],
+        );
+        assert_eq!(
+            completed_calls(&events),
+            vec![("Bash".to_string(), json!({"command": "date"}))]
+        );
+        assert!(matches!(
+            events.first(),
+            Some(crate::StreamEvent::ToolCallStart { .. })
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(crate::StreamEvent::Done {
+                stop_reason: StopReason::ToolUse
+            })
+        ));
+    }
+
+    #[test]
+    fn several_whole_tool_calls_in_one_chunk_all_complete() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[
+                    {"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":"{\"path\":\"a\"}"}},
+                    {"index":1,"id":"call_2","type":"function","function":{"name":"Read","arguments":"{\"path\":\"b\"}"}}
+                ]},"finish_reason":null}]}"#,
+                FINISH_TOOL_CALLS,
+            ],
+        );
+        assert_eq!(
+            completed_calls(&events),
+            vec![
+                ("Read".to_string(), json!({"path": "a"})),
+                ("Read".to_string(), json!({"path": "b"})),
+            ]
+        );
+    }
+
+    /// A call to a tool that takes no arguments may never send any; it
+    /// completes as `{}` at the finish instead of being dropped.
+    #[test]
+    fn a_call_with_no_arguments_completes_at_the_finish() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"ModelList","arguments":""}}]},"finish_reason":null}]}"#,
+                FINISH_TOOL_CALLS,
+            ],
+        );
+        assert_eq!(
+            completed_calls(&events),
+            vec![("ModelList".to_string(), json!({}))]
+        );
+        let end = events
+            .iter()
+            .position(|e| matches!(e, crate::StreamEvent::ToolCallEnd { .. }))
+            .unwrap();
+        let done = events
+            .iter()
+            .position(|e| matches!(e, crate::StreamEvent::Done { .. }))
+            .unwrap();
+        assert!(end < done, "the call must reach the engine before Done");
+    }
+
+    /// Truncated arguments are not run as `{}`.
+    #[test]
+    fn a_call_with_broken_arguments_is_not_run() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\": \"rm"}}]},"finish_reason":null}]}"#,
+                FINISH_TOOL_CALLS,
+            ],
+        );
+        assert!(completed_calls(&events).is_empty());
+    }
+
+    /// One chunk can carry several parts; none may be dropped.
+    #[test]
+    fn every_part_of_a_chunk_is_kept() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"content":"Checking.","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{}"}}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#,
+            ],
+        );
+        assert!(
+            matches!(&events[0], crate::StreamEvent::TextDelta { delta, .. } if delta == "Checking.")
+        );
+        assert_eq!(
+            completed_calls(&events),
+            vec![("Bash".to_string(), json!({}))]
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, crate::StreamEvent::Usage { total: 5, .. })));
+        assert!(matches!(
+            events.last(),
+            Some(crate::StreamEvent::Done {
+                stop_reason: StopReason::ToolUse
+            })
+        ));
+    }
+
+    /// The incremental shape (id and name, then argument fragments)
+    /// still completes exactly once.
+    #[test]
+    fn an_incremental_tool_call_completes_once() {
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Bash","arguments":""}}]}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]}}]}"#,
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"date\"}"}}]}}]}"#,
+                FINISH_TOOL_CALLS,
+            ],
+        );
+        assert_eq!(
+            completed_calls(&events),
+            vec![("Bash".to_string(), json!({"command": "date"}))]
+        );
     }
 
     /// DeepSeek and Moonshot/Kimi stream reasoning inside the delta

@@ -175,6 +175,84 @@ impl ToolCallAccumulator {
     }
 }
 
+impl ToolCallAccumulator {
+    /// At the end of a response: every call still buffered whose
+    /// arguments are complete — valid JSON, or none at all (a call to a
+    /// tool without parameters may never send any; it gets `{}`) — in
+    /// index order. Calls whose arguments are cut off are dropped, not
+    /// run with guessed arguments. The buffer is left empty.
+    #[must_use]
+    pub fn drain_finished(&self) -> Vec<(usize, ContentBlock)> {
+        let Ok(mut buffer) = self.buffer.lock() else {
+            return Vec::new();
+        };
+        let mut pending: Vec<_> = buffer.drain().collect();
+        pending.sort_by_key(|(index, _)| *index);
+        pending
+            .into_iter()
+            .filter_map(|(index, entry)| {
+                let (Some(id), Some(name)) = (entry.id, entry.name) else {
+                    return None;
+                };
+                let arguments = if entry.arguments.trim().is_empty() {
+                    serde_json::json!({})
+                } else {
+                    match serde_json::from_str(&entry.arguments) {
+                        Ok(arguments) => arguments,
+                        Err(_) => {
+                            tracing::warn!(
+                                tool = %name,
+                                "dropping a streamed tool call whose arguments are not valid JSON"
+                            );
+                            return None;
+                        }
+                    }
+                };
+                Some((
+                    index,
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    },
+                ))
+            })
+            .collect()
+    }
+}
+
+/// Stream events a parser produced beyond the one it returned, waiting
+/// for [`ApiAdapter::take_pending_events`]. Like the accumulator, a clone
+/// starts empty: each clone parses its own response.
+#[derive(Debug, Default)]
+pub struct PendingEvents(Mutex<std::collections::VecDeque<StreamEvent>>);
+
+impl PendingEvents {
+    /// Return the first of `events` and queue the rest.
+    pub fn first_and_queue(&self, events: Vec<StreamEvent>) -> Option<StreamEvent> {
+        let mut events = events.into_iter();
+        let first = events.next();
+        if let Ok(mut queue) = self.0.lock() {
+            queue.extend(events);
+        }
+        first
+    }
+
+    /// Everything queued, in order.
+    pub fn take(&self) -> Vec<StreamEvent> {
+        self.0
+            .lock()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Clone for PendingEvents {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 // A clone starts a new parser lifetime. Sharing partial calls by content index
 // lets concurrent responses overwrite each other's tool identity and arguments.
 impl Clone for ToolCallAccumulator {
@@ -231,6 +309,14 @@ pub trait ApiAdapter: Send + Sync {
     ///
     /// Returns None if the event should be skipped (e.g., keep-alive)
     fn parse_sse_event(&self, model_id: &str, data: &str) -> Result<Option<StreamEvent>>;
+
+    /// Events the last `parse_sse_event` call produced beyond the one it
+    /// returned (one SSE chunk can carry several: usage beside a finish,
+    /// text beside a tool call, a tool call complete in one chunk). The
+    /// stream loop drains this after every parse, in order.
+    fn take_pending_events(&self) -> Vec<StreamEvent> {
+        Vec::new()
+    }
 
     /// Get authentication configuration
     fn auth_config(&self, api_key: &str) -> AuthConfig;
@@ -411,6 +497,16 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.parse_sse_event(model_id, data),
             Self::OpenAiCompatible(a) => a.parse_sse_event(model_id, data),
             Self::Mock(a) => a.parse_sse_event(model_id, data),
+        }
+    }
+
+    fn take_pending_events(&self) -> Vec<StreamEvent> {
+        match self {
+            Self::OpenAi(a) => a.take_pending_events(),
+            Self::OpenAiResponses(a) => a.take_pending_events(),
+            Self::Anthropic(a) => a.take_pending_events(),
+            Self::OpenAiCompatible(a) => a.take_pending_events(),
+            Self::Mock(a) => a.take_pending_events(),
         }
     }
 

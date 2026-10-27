@@ -80,6 +80,10 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
         self.inner.parse_sse_event(model_id, data)
     }
 
+    fn take_pending_events(&self) -> Vec<StreamEvent> {
+        self.inner.take_pending_events()
+    }
+
     fn auth_config(&self, api_key: &str) -> AuthConfig {
         AuthConfig::Bearer {
             token: api_key.to_string(),
