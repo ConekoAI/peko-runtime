@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use peko_channel::port::Checkpoint;
-use peko_channel::{ChannelCliRouter, ChannelId, ChannelPort};
+use peko_channel::{ChannelCliRouter, ChannelId, ChannelPort, ConversationKind, WakePolicy};
 
 use crate::ipc::handlers::RequestHandler;
-use crate::ipc::packet::{RequestPacket, ResponsePacket};
+use crate::ipc::packet::{ChannelPekoWake, RequestPacket, ResponsePacket};
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
 use crate::ipc::server::PeerAddr;
@@ -193,6 +193,184 @@ impl ChannelHandler {
 /// derived server-side from the connection
 /// (`CallerContext::attribution_subject`) — there is no `Trusted`
 /// passthrough anymore.
+impl ChannelHandler {
+    /// `ChannelInfo`: kind, name, members, and the wake policy of each
+    /// member peko hosted here. Membership-gated like `ChannelPeek`.
+    async fn channel_info(
+        &self,
+        request_id: u64,
+        channel: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        if !self
+            .gate_channel_read(&ch, caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let port = self.host.channel_port();
+        let read = async {
+            let kind = port.conversation_kind(&ch).await?;
+            let name = port.membership(&ch).await?.name;
+            let members = port.list_members(&ch).await?;
+            let mut pekos = Vec::new();
+            for member in &members {
+                if !matches!(member, ActorRef::Principal(_)) {
+                    continue;
+                }
+                let Some(local_id) = port.actor_info(member).await.local_id else {
+                    continue;
+                };
+                let Some(principal) = self.hosted_principal(&local_id).await else {
+                    continue;
+                };
+                let wake = match kind {
+                    ConversationKind::Dm => WakePolicy::Human,
+                    ConversationKind::Group => port
+                        .binding_for(&ch, &principal.id)
+                        .await?
+                        .map_or(WakePolicy::default_for(kind), |b| b.wake),
+                };
+                pekos.push(ChannelPekoWake {
+                    name: principal.name().await,
+                    local_id,
+                    wake,
+                });
+            }
+            Ok::<_, peko_channel::ChannelError>(ResponsePacket::ChannelInfoResult {
+                request_id,
+                channel: ch.clone(),
+                kind,
+                name,
+                members,
+                pekos,
+            })
+        };
+        match read.await {
+            Ok(response) => send_response(sink, response).await,
+            Err(e) => error_reply(sink, request_id, format!("channel info failed: {e}")).await,
+        }
+    }
+
+    /// `ChannelSetWake`: set what starts a turn for a peko in a group.
+    /// Operator callers only, and only for the peko's owner; refused
+    /// for DMs and for a peko that is not a member.
+    async fn channel_set_wake(
+        &self,
+        request_id: u64,
+        channel: &str,
+        principal_name: &str,
+        wake: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !self
+            .gate_principal_operator(caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let Some(policy) = WakePolicy::parse(wake) else {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[bad_request] wake is human, mention, or off (got {wake:?})"),
+            )
+            .await;
+        };
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let Some(manager) = self.host.principal_manager() else {
+            return error_reply(sink, request_id, "no principal manager".to_string()).await;
+        };
+        let Some(principal) = manager.get_by_name(principal_name).await else {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[not_found] principal '{principal_name}' is not loaded"),
+            )
+            .await;
+        };
+        let port = self.host.channel_port();
+        let owner = principal.config.read().await.owner.clone();
+        if !crate::security::shared_actor_keys(Some(Arc::clone(&port)))
+            .same_actor(&owner, &caller.permission_subject(&owner))
+        {
+            return error_reply(
+                sink,
+                request_id,
+                format!("[forbidden] only {principal_name}'s owner can change how it wakes"),
+            )
+            .await;
+        }
+        let set = async {
+            if port.conversation_kind(&ch).await? == ConversationKind::Dm {
+                return Ok(Err(format!(
+                    "[bad_request] {ch} is a DM; a DM always wakes on human posts"
+                )));
+            }
+            if !port
+                .list_members(&ch)
+                .await?
+                .contains(&ActorRef::from(&principal.id))
+            {
+                return Ok(Err(format!(
+                    "[forbidden] {principal_name} is not a member of {ch}"
+                )));
+            }
+            if port.binding_for(&ch, &principal.id).await?.is_none() {
+                manager
+                    .ensure_group_binding(&principal, &ch)
+                    .await
+                    .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))?;
+            }
+            let binding = port.set_wake(&ch, &principal.id, policy).await?;
+            Ok::<_, peko_channel::ChannelError>(Ok(binding.wake))
+        };
+        match set.await {
+            Ok(Ok(wake)) => {
+                let response = ResponsePacket::ChannelWakeSet {
+                    request_id,
+                    channel: ch,
+                    principal_name: principal.name().await,
+                    wake,
+                };
+                send_response(sink, response).await
+            }
+            Ok(Err(refusal)) => error_reply(sink, request_id, refusal).await,
+            Err(e) => error_reply(sink, request_id, format!("channel set wake failed: {e}")).await,
+        }
+    }
+
+    /// The principal hosted here under `local_id`, if any.
+    async fn hosted_principal(&self, local_id: &str) -> Option<Arc<crate::principal::Principal>> {
+        self.host
+            .principal_manager()?
+            .get(PrincipalId(local_id.to_string()))
+            .await
+    }
+}
+
+async fn error_reply(
+    sink: &dyn ResponseSink,
+    request_id: u64,
+    message: String,
+) -> anyhow::Result<()> {
+    send_response(
+        sink,
+        ResponsePacket::Error {
+            request_id,
+            message,
+        },
+    )
+    .await
+}
+
 enum CallerBinding {
     /// A derived owner identity: the local terminal (`user:local`, or
     /// the hub owner id when the runtime is logged into pekohub) or
@@ -237,6 +415,8 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelList { .. }
                 | RequestPacket::ChannelLeave { .. }
                 | RequestPacket::ChannelPinToShared { .. }
+                | RequestPacket::ChannelInfo { .. }
+                | RequestPacket::ChannelSetWake { .. }
         )
     }
 
@@ -814,6 +994,24 @@ impl RequestHandler for ChannelHandler {
 
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
+            RequestPacket::ChannelInfo {
+                request_id,
+                channel,
+            } => {
+                self.channel_info(request_id, &channel, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelSetWake {
+                request_id,
+                channel,
+                principal_name,
+                wake,
+            } => {
+                self.channel_set_wake(request_id, &channel, &principal_name, &wake, caller, sink)
+                    .await?
+            }
+
             _ => unreachable!("ChannelHandler::matches allowed an unhandled variant"),
         }
         Ok(())
@@ -2464,5 +2662,276 @@ mod tests {
             guard.push(packet);
             Ok(())
         }
+    }
+}
+
+/// `ChannelInfo` / `ChannelSetWake` against a real `PrincipalManager`
+/// (the wake path writes a group binding through it).
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+    use crate::principal::manager::PrincipalManager;
+    use crate::principal::Principal;
+    use peko_auth::ApiKeyScope;
+    use peko_channel::port::CreateOpts;
+    use peko_channel::{ChannelConfig, ChannelStore};
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    struct Host {
+        port: Arc<dyn ChannelPort>,
+        manager: Arc<PrincipalManager>,
+    }
+
+    impl ChannelHost for Host {
+        fn channel_port(&self) -> Arc<dyn ChannelPort> {
+            self.port.clone()
+        }
+
+        fn principal_manager(&self) -> Option<&Arc<PrincipalManager>> {
+            Some(&self.manager)
+        }
+    }
+
+    struct Sink(Mutex<Vec<ResponsePacket>>);
+
+    #[async_trait]
+    impl ResponseSink for Sink {
+        async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+            let packet = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+            self.0.lock().unwrap().push(packet);
+            Ok(())
+        }
+    }
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        _tooling: Arc<crate::tools::runtime::ToolingRuntime>,
+        port: Arc<dyn ChannelPort>,
+        handler: ChannelHandler,
+        alice: Arc<Principal>,
+        bob: Arc<Principal>,
+        group: ChannelId,
+    }
+
+    impl Fixture {
+        /// Pekos `alice` and `bob` and the local user in group `team`.
+        async fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = crate::common::paths::PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+            let store = Arc::new(ChannelStore::new(ChannelConfig {
+                runtime_dir: temp.path().join("runtime"),
+                shared_dir: None,
+            }));
+            let tunnel_port = Arc::new(crate::tunnel::TunnelChannelPort::new(store));
+            let port: Arc<dyn ChannelPort> = tunnel_port.clone();
+            tooling.services().set_channel_port(tunnel_port);
+            let vault = Arc::new(crate::common::vault::Vault::for_test(
+                temp.path(),
+                "channel-wake-test-passphrase",
+            ));
+            let manager = Arc::new(
+                PrincipalManager::with_path_resolver(
+                    paths,
+                    Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+                    Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+                    crate::async_exec::executor::standalone_inbox_registry(),
+                )
+                .with_identity_vault(vault)
+                .with_tooling(tooling.clone())
+                .with_channel_port(Arc::clone(&port)),
+            );
+            let mut pekos = Vec::new();
+            for name in ["alice", "bob"] {
+                let principal = manager
+                    .create(serde_json::from_value(json!({ "name": name })).unwrap())
+                    .await
+                    .unwrap();
+                principal.config.write().await.owner = ActorRef::User("local".into());
+                pekos.push(principal);
+            }
+            let bob = pekos.pop().unwrap();
+            let alice = pekos.pop().unwrap();
+            let group = port
+                .create(&alice.id, CreateOpts::runtime("team"))
+                .await
+                .unwrap();
+            for invitee in [ActorRef::from(&bob.id), ActorRef::User("local".into())] {
+                port.invite(&group, &alice.id, &invitee).await.unwrap();
+            }
+            let handler = ChannelHandler::new(Arc::new(Host {
+                port: Arc::clone(&port),
+                manager,
+            }));
+            Self {
+                _temp: temp,
+                _tooling: tooling,
+                port,
+                handler,
+                alice,
+                bob,
+                group,
+            }
+        }
+
+        async fn send(&self, request: RequestPacket, caller: &CallerContext) -> ResponsePacket {
+            let sink = Sink(Mutex::new(Vec::new()));
+            self.handler
+                .handle(
+                    request,
+                    caller,
+                    &sink,
+                    &PeerAddr::Ip("127.0.0.1:0".parse().unwrap()),
+                )
+                .await
+                .unwrap();
+            sink.0.into_inner().unwrap().pop().expect("one response")
+        }
+
+        async fn info(&self, channel: &ChannelId, caller: &CallerContext) -> ResponsePacket {
+            let request = RequestPacket::ChannelInfo {
+                request_id: 1,
+                channel: channel.as_str().into(),
+            };
+            self.send(request, caller).await
+        }
+
+        async fn set_wake(&self, channel: &ChannelId, peko: &str, wake: &str) -> ResponsePacket {
+            let request = RequestPacket::ChannelSetWake {
+                request_id: 1,
+                channel: channel.as_str().into(),
+                principal_name: peko.into(),
+                wake: wake.into(),
+            };
+            self.send(request, &CallerContext::local()).await
+        }
+    }
+
+    fn error_message(response: ResponsePacket) -> String {
+        match response {
+            ResponsePacket::Error { message, .. } => message,
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn info_lists_kind_members_and_each_pekos_wake() {
+        let fx = Fixture::new().await;
+        let ResponsePacket::ChannelInfoResult {
+            kind,
+            name,
+            members,
+            pekos,
+            ..
+        } = fx.info(&fx.group, &CallerContext::local()).await
+        else {
+            panic!("expected ChannelInfoResult");
+        };
+        assert_eq!(kind, ConversationKind::Group);
+        assert_eq!(name, "team");
+        assert!(members.contains(&ActorRef::User("local".into())));
+        let mut wakes: Vec<_> = pekos.iter().map(|p| (p.name.as_str(), p.wake)).collect();
+        wakes.sort_by_key(|(name, _)| *name);
+        // No binding written yet: a group reads as its default.
+        assert_eq!(
+            wakes,
+            vec![("alice", WakePolicy::Mention), ("bob", WakePolicy::Mention)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_wake_round_trips_through_info() {
+        let fx = Fixture::new().await;
+        match fx.set_wake(&fx.group, "bob", "off").await {
+            ResponsePacket::ChannelWakeSet {
+                principal_name,
+                wake,
+                ..
+            } => assert_eq!((principal_name.as_str(), wake), ("bob", WakePolicy::Off)),
+            other => panic!("expected ChannelWakeSet, got {other:?}"),
+        }
+        assert_eq!(
+            fx.port
+                .binding_for(&fx.group, &fx.bob.id)
+                .await
+                .unwrap()
+                .map(|b| b.wake),
+            Some(WakePolicy::Off)
+        );
+        let ResponsePacket::ChannelInfoResult { pekos, .. } =
+            fx.info(&fx.group, &CallerContext::local()).await
+        else {
+            panic!("expected ChannelInfoResult");
+        };
+        let bob = pekos.iter().find(|p| p.name == "bob").unwrap();
+        assert_eq!(bob.wake, WakePolicy::Off);
+        assert_eq!(bob.local_id, fx.bob.id.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn info_is_for_members_only() {
+        let fx = Fixture::new().await;
+        let outsider = CallerContext::from_jwt("mallory".to_string());
+        let message = error_message(fx.info(&fx.group, &outsider).await);
+        assert!(message.contains("not a member"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dm_always_wakes_on_human_posts() {
+        let fx = Fixture::new().await;
+        let dm = fx
+            .port
+            .ensure_dm(&fx.alice.id, &ActorRef::User("local".into()), "/local-user")
+            .await
+            .unwrap();
+        let ResponsePacket::ChannelInfoResult { kind, pekos, .. } =
+            fx.info(&dm, &CallerContext::local()).await
+        else {
+            panic!("expected ChannelInfoResult");
+        };
+        assert_eq!(kind, ConversationKind::Dm);
+        assert_eq!(pekos.len(), 1);
+        assert_eq!(pekos[0].wake, WakePolicy::Human);
+        let message = error_message(fx.set_wake(&dm, "alice", "off").await);
+        assert!(message.contains("is a DM"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_wake_refuses_bad_input_and_non_members() {
+        let fx = Fixture::new().await;
+        let message = error_message(fx.set_wake(&fx.group, "bob", "always").await);
+        assert!(message.contains("human, mention, or off"), "{message}");
+        let message = error_message(fx.set_wake(&fx.group, "nobody", "off").await);
+        assert!(message.contains("[not_found]"), "{message}");
+
+        fx.port.leave(&fx.group, &fx.bob.id).await.unwrap();
+        let message = error_message(fx.set_wake(&fx.group, "bob", "off").await);
+        assert!(message.contains("not a member"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn only_the_owner_sets_wake() {
+        let fx = Fixture::new().await;
+        fx.bob.config.write().await.owner =
+            ActorRef::User(peko_subject::Route::hub("someone-else".to_string()));
+        let request = RequestPacket::ChannelSetWake {
+            request_id: 1,
+            channel: fx.group.as_str().into(),
+            principal_name: "bob".into(),
+            wake: "off".into(),
+        };
+        // A scoped (non-admin) key acts as the local user, not as an operator.
+        let key = CallerContext::from_api_key("k1".to_string(), vec![ApiKeyScope::Write]);
+        let message = error_message(fx.send(request.clone(), &key).await);
+        assert!(message.contains("[forbidden]"), "{message}");
+        // A hub user is never a principal operator.
+        let hub_user = CallerContext::from_jwt("someone-else".to_string());
+        let message = error_message(fx.send(request, &hub_user).await);
+        assert!(message.contains("[forbidden]"), "{message}");
     }
 }

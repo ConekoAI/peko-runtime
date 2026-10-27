@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: IPC reads and sets a peko's wake policy in a group (2026-10-27)
+
+The desktop could not show whether a channel is a DM or a group, or let
+the owner choose how each of their pekos wakes in a group: the policy
+(`human` / `mention` / `off`, ADR-082) was reachable only through the
+principal-facing `Channel` tool. Two IPC requests add it:
+`channel_info { channel }` answers the channel's kind, name, members, and
+each hosted member peko's wake policy (members only, like `channel_peek`);
+`channel_set_wake { channel, principal_name, wake }` sets one (the peko's
+owner, groups only, the peko a member). Shapes are in `DATA_MODEL.md`
+§5¾.2. Both are in the desktop contract fixture
+(`ipc/fixtures/desktop_requests.json`).
+
 ### Fix: a reminder arrives once, as the reminder (2026-10-26)
 
 A reminder set in conversation showed up in `peko log` like this:

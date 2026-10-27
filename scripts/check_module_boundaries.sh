@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 
 EXIT_CODE=0
 
-EXTENSION_TYPES=(builtin agent mcp skill)
+EXTENSION_TYPES=(role mcp skill)
 
 # Phase 0.Z-B: core implementation moved under peko-rs/core/src/.
 # All rule paths below resolve against this root (repo-relative).
