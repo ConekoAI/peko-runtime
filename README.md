@@ -277,8 +277,10 @@ The two files that exist, and what actually reads them:
 See [`config.example.toml`](config.example.toml) for the annotated
 reference.
 
-The daemon's IPC/HTTP bind is a loopback constant (`127.0.0.1:11435`) — there is
-no `bind_address` knob (ADR-058 D6 removed the inert one); remote daemon
+The daemon has no HTTP server. Clients talk to it over IPC: a Unix datagram
+socket at `$PEKO_HOME/run/daemon.sock` (a named pipe on Windows), with UDP on
+the loopback constant `127.0.0.1:11435` as the fallback — there is no
+`bind_address` knob (ADR-058 D6 removed the inert one); remote daemon
 access is not a supported feature.
 
 Model selection is catalog-driven — pick the default model via the
@@ -299,7 +301,9 @@ peko-rs/
 │   │                   # registry/tunnel/extensions/tools/observability
 │   ├── src/principal/  # Runtime-coupled principal layer
 │   ├── src/extensions/ # Extension framework + role/skill/mcp adapters
-│   ├── src/daemon/     # Axum HTTP + WS daemon, cron runtime
+│   ├── src/daemon/     # Daemon state, channel bindings, cron engine + runtime
+│   ├── src/ipc/        # IPC server + handlers + packet types (the client surface)
+│   ├── src/security/   # Trust floor, policy gate, tool ledger (ADR-078/079)
 │   └── src/tools/      # Built-in tool implementations
 ├── cli/                # peko bin — clap parser + service delegates
 ├── engine/             # Agentic loop core + prompt renderer + compaction driver
@@ -317,8 +321,8 @@ peko-rs/
 └── peko-daemon/        # peko-daemon binary
 ```
 
-See [AGENTS.md](AGENTS.md) §3 for the full member table and the module
-boundary rules enforced in CI.
+CI enforces the module boundaries with `scripts/check_module_boundaries.sh`
+and the crate dependency graph with `scripts/check_workspace_deps.py`.
 
 ### Key Architectural Decisions
 

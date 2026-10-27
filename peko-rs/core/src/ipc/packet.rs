@@ -4809,4 +4809,30 @@ mod tests {
             "PrincipalSent and PrincipalSentDone must have distinct wire shapes"
         );
     }
+
+    /// The requests peko-desktop sends (`fixtures/desktop_requests.json`)
+    /// must keep decoding as the variant they name. A failure here
+    /// means a runtime change breaks the desktop: update peko-desktop's
+    /// `src-tauri/src/ipc/mod.rs` and this fixture together (its
+    /// `scripts/check-ipc-contract.py` checks the desktop side).
+    #[test]
+    fn desktop_requests_decode() {
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("fixtures/desktop_requests.json"))
+                .expect("fixture is a JSON array");
+        assert!(!fixture.is_empty());
+        for request in fixture {
+            let ty = request["type"]
+                .as_str()
+                .expect("every request names its type");
+            let bytes = serde_json::to_vec(&request).unwrap();
+            let decoded = AuthenticatedRequest::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("desktop `{ty}` request no longer decodes: {e}"));
+            let reencoded = serde_json::to_value(&decoded.packet).unwrap();
+            assert_eq!(
+                reencoded["type"], ty,
+                "desktop `{ty}` decoded as another variant"
+            );
+        }
+    }
 }
