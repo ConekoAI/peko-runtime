@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: OpenAI-format streams keep a tool call sent in one chunk (2026-10-27)
+
+Some OpenAI-compatible servers (Ollama, for one) stream a tool call whole —
+id, name, and arguments in one chunk. The parser started the call, threw
+away the completed result, and the finish chunk then cleared it: the run
+ended with no tool call and an empty reply. A chunk with several parts lost
+all but the first the same way — usage beside the finish dropped the
+finish, text beside a call dropped the call. The parser now turns each
+chunk into all of its events, in order (`ApiAdapter::take_pending_events`
+hands the stream loop the ones beyond the first). At the finish, a call
+still buffered with no arguments completes as `{}` (a tool without
+parameters); one whose arguments are cut off is dropped, not run.
+
 ### Feature: a streaming send shows the run's tool calls and thinking (2026-10-27)
 
 `principal_send_stream` sent only text chunks and iteration markers; the
