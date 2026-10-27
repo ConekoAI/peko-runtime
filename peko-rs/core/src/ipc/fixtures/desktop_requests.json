@@ -16,7 +16,7 @@
   {"type": "model_update", "protocol_version": 1, "request_id": 1, "args": {"id": "anthropic/claude-sonnet-5-5", "display_name": "Sonnet"}},
   {"type": "model_remove", "protocol_version": 1, "request_id": 1, "id": "anthropic/claude-sonnet-5-5"},
   {"type": "model_test", "protocol_version": 1, "request_id": 1, "id": "anthropic/claude-sonnet-5-5"},
-  {"type": "principal_send_stream", "protocol_version": 1, "request_id": 7, "name": "alice", "message": "hello"},
+  {"type": "principal_send_stream", "protocol_version": 1, "request_id": 7, "name": "alice", "message": "hello", "override_model": "anthropic/claude-sonnet-5-5"},
   {"type": "principal_stop", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": null},
   {"type": "principal_send", "protocol_version": 1, "request_id": 1, "name": "alice", "message": "hello"},
   {"type": "principal_log", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": {"kind": "user", "id": "local"}, "limit": 100, "since_secs": null, "cursor": null},
