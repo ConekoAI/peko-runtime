@@ -17,18 +17,22 @@ pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["Bash", "MCP"];
 /// owner's.
 pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan"];
 
-/// `Channel` actions that change who can reach the principal and whom it
-/// can reach (ADR-082 D6). An untrusted run never gets them; a trusted
-/// run's call waits for the owner ([`crate::security::judge::owner_decides`]).
-pub const CHANNEL_ROSTER_ACTIONS: &[&str] = &["create", "invite"];
+/// `Channel` actions only the owner decides: `create` / `invite` change
+/// who can reach the principal and whom it can reach (ADR-082 D6);
+/// `role` changes the instructions it follows in a conversation (ADR-087
+/// D6). An untrusted run never gets them; a trusted run's call waits for
+/// the owner ([`crate::security::judge::owner_decides`]).
+pub const CHANNEL_OWNER_ACTIONS: &[&str] = &["create", "invite", "role"];
 
-/// Whether `params` call one of the `Channel` roster actions.
+/// The `Channel` owner action `params` call, if any.
 #[must_use]
-pub fn is_channel_roster_change(tool_name: &str, params: &serde_json::Value) -> bool {
-    tool_name == "Channel"
-        && params["action"]
-            .as_str()
-            .is_some_and(|a| CHANNEL_ROSTER_ACTIONS.contains(&a))
+pub fn channel_owner_action<'a>(tool_name: &str, params: &'a serde_json::Value) -> Option<&'a str> {
+    if tool_name != "Channel" {
+        return None;
+    }
+    params["action"]
+        .as_str()
+        .filter(|a| CHANNEL_OWNER_ACTIONS.contains(a))
 }
 
 /// Why `stamp` may not make this particular call, if it may not: the
@@ -39,13 +43,17 @@ pub fn action_refusal(
     tool_name: &str,
     params: &serde_json::Value,
 ) -> Option<String> {
-    (stamp.is_untrusted() && is_channel_roster_change(tool_name, params)).then(|| {
-        format!(
-            "Creating groups and inviting people is not available while acting for {} \
-             (untrusted). Ask the owner to set it up.",
-            stamp.actor
-        )
-    })
+    if !stamp.is_untrusted() {
+        return None;
+    }
+    let what = match channel_owner_action(tool_name, params)? {
+        "role" => "Choosing the role for a conversation",
+        _ => "Creating groups and inviting people",
+    };
+    Some(format!(
+        "{what} is not available while acting for {} (untrusted). Ask the owner to set it up.",
+        stamp.actor
+    ))
 }
 
 /// Workspace files only an owner run may write. Everything an agent's

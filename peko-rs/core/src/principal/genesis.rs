@@ -177,8 +177,13 @@ This is your first self-turn — the trunk of a new principal.\n\n",
         }
     }
     brief.push_str(
-        "\nYour definition lives in `principal.toml` in your workspace; your agent \
-prompts live in `roles/`. Scratch and removal staging sessions `/tmp` \
+        "\nYour definition lives in `principal.toml` in your workspace. Who you \
+are — name, voice, style, values, and the rules every agent you run keeps — \
+belongs there (`[identity]`, `[intent]`) and in `kb/CONVENTIONS.md`, never in \
+a role. Roles in `roles/` describe jobs: `root` is this trunk's supervision, \
+`conversation` is how you talk in DMs and groups, and you or your owner may \
+add roles for specific work (a coder, a researcher) and name one for a \
+channel with `Channel` action `role`. Scratch and removal staging sessions `/tmp` \
 and `/trash` already exist under you. Your persistent knowledge base \
 lives in `kb/` — `kb/MEMORY.md` (hot memory, rides in every prompt), \
 `kb/index.md` (its map, also hot), `kb/CONVENTIONS.md` (the shared \
@@ -383,17 +388,53 @@ pub fn migrate_legacy_workspace_agents_dir(workspace: &std::path::Path) -> Resul
 ///
 /// Returns `true` when the file was written.
 pub fn seed_default_root_role(workspace: &std::path::Path) -> Result<bool> {
+    seed_role(
+        workspace,
+        "root",
+        crate::principal::routers::root::root_role_seed_content(),
+    )
+}
+
+/// Stamp the compiled-in `conversation` role (ADR-087 D3) into
+/// `<workspace>/roles/conversation.md` when the workspace has none.
+/// Seeded at provision and on every boot, so existing principals gain
+/// it on their next start; an existing file (either layout) is never
+/// touched, and a deleted one is re-seeded (conversations would
+/// otherwise fall back to the root role).
+///
+/// Returns `true` when the file was written.
+pub fn seed_default_conversation_role(workspace: &std::path::Path) -> Result<bool> {
+    seed_role(
+        workspace,
+        crate::principal::child_turns::CONVERSATION_ROLE,
+        crate::principal::child_turns::conversation_role_seed_content(),
+    )
+}
+
+/// Seed the roles every principal starts with: `root` (the trunk) and
+/// `conversation` (ADR-087). Returns the ids written.
+pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static str>> {
+    let mut seeded = Vec::new();
+    if seed_default_root_role(workspace)? {
+        seeded.push("root");
+    }
+    if seed_default_conversation_role(workspace)? {
+        seeded.push(crate::principal::child_turns::CONVERSATION_ROLE);
+    }
+    Ok(seeded)
+}
+
+/// Write `roles/<id>.md` unless `roles/<id>.md` or `roles/<id>/ROLE.md`
+/// exists.
+fn seed_role(workspace: &std::path::Path, id: &str, content: &str) -> Result<bool> {
     let roles_dir = workspace.join("roles");
-    let flat = roles_dir.join("root.md");
-    let dir_layout = roles_dir.join("root").join("ROLE.md");
+    let flat = roles_dir.join(format!("{id}.md"));
+    let dir_layout = roles_dir.join(id).join("ROLE.md");
     if flat.exists() || dir_layout.exists() {
         return Ok(false);
     }
     std::fs::create_dir_all(&roles_dir)?;
-    std::fs::write(
-        &flat,
-        crate::principal::routers::root::root_role_seed_content(),
-    )?;
+    std::fs::write(&flat, content)?;
     Ok(true)
 }
 
@@ -748,14 +789,15 @@ pub async fn seed_boot_defaults(
 
         // ADR-064 follow-up: the root role body has NO render-time
         // fallback — it must exist as a file. Stamp the compiled-in
-        // default into `roles/root.md` for principals that lack one
-        // (pre-stamping workspaces). Create-if-missing only.
-        match seed_default_root_role(&shared_root) {
-            Ok(true) => {
-                tracing::info!("genesis: seeded roles/root.md for principal '{name}'");
+        // defaults (`root`, and ADR-087's `conversation`) for
+        // principals that lack them. Create-if-missing only.
+        match seed_default_roles(&shared_root) {
+            Ok(seeded) => {
+                for role in seeded {
+                    tracing::info!("genesis: seeded roles/{role}.md for principal '{name}'");
+                }
             }
-            Ok(false) => {}
-            Err(e) => tracing::warn!("genesis: root-role seeding failed for '{name}': {e}"),
+            Err(e) => tracing::warn!("genesis: role seeding failed for '{name}': {e}"),
         }
 
         // ADR-080: the daily memory-maintenance job, seeded once per
@@ -1071,6 +1113,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dir_role).unwrap(), "custom");
     }
 
+    /// ADR-087 D3: `conversation` is seeded beside `root`, once, and a
+    /// custom one (either layout) is kept.
+    #[test]
+    fn default_roles_include_conversation_once() {
+        let ws = tempfile::tempdir().unwrap();
+        assert_eq!(
+            seed_default_roles(ws.path()).unwrap(),
+            vec!["root", "conversation"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("roles").join("conversation.md")).unwrap(),
+            crate::principal::child_turns::conversation_role_seed_content()
+        );
+        assert!(seed_default_roles(ws.path()).unwrap().is_empty());
+
+        let ws2 = tempfile::tempdir().unwrap();
+        let custom = ws2
+            .path()
+            .join("roles")
+            .join("conversation")
+            .join("ROLE.md");
+        std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
+        std::fs::write(&custom, b"custom").unwrap();
+        assert_eq!(seed_default_roles(ws2.path()).unwrap(), vec!["root"]);
+        assert_eq!(std::fs::read_to_string(&custom).unwrap(), "custom");
+    }
+
     /// The `Cron` tool guards the ids peko-cron lists; they must be the
     /// ids the runtime seeds.
     #[test]
@@ -1174,6 +1243,17 @@ mod tests {
             *when = Some(FireWhen::Always);
         }
         assert_eq!(fire_when(&fixed), FireWhen::Always);
+    }
+
+    /// ADR-087 D7: the persona goes in T0; roles are jobs.
+    #[test]
+    fn genesis_puts_the_persona_in_t0_and_roles_are_jobs() {
+        let brief = genesis_brief(&bare_config());
+        assert!(
+            brief.contains("`kb/CONVENTIONS.md`, never in a role"),
+            "{brief}"
+        );
+        assert!(brief.contains("`conversation` is how you talk"), "{brief}");
     }
 
     /// ADR-084: new principals turn goals into plans at genesis; the

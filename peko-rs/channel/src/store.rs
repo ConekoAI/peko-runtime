@@ -2360,12 +2360,10 @@ impl ChannelPort for ChannelStore {
             return Err(ChannelError::NotMember);
         }
         let mut meta = MetaJson::load(&dir, channel).await?;
-        let wake = meta
-            .bindings
-            .get(&principal.0)
-            .map(|b| b.wake)
-            .unwrap_or(WakePolicy::default_for(meta.kind));
-        let binding = Binding::new(session, wake);
+        let binding = match meta.bindings.get(&principal.0) {
+            Some(existing) => Binding::new(session, existing.wake).with_role(existing.role.clone()),
+            None => Binding::new(session, WakePolicy::default_for(meta.kind)),
+        };
         if meta.bindings.get(&principal.0) != Some(&binding) {
             meta.bindings.insert(principal.0.clone(), binding.clone());
             meta.save(&dir).await?;
@@ -2394,6 +2392,27 @@ impl ChannelPort for ChannelStore {
             )));
         };
         binding.wake = wake;
+        let binding = binding.clone();
+        meta.save(&dir).await?;
+        Ok(binding)
+    }
+
+    async fn set_role(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        role: Option<String>,
+    ) -> Result<Binding> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        let Some(binding) = meta.bindings.get_mut(&principal.0) else {
+            return Err(ChannelError::Adapter(format!(
+                "{principal} has no conversation session on {channel}"
+            )));
+        };
+        binding.role = role;
         let binding = binding.clone();
         meta.save(&dir).await?;
         Ok(binding)
@@ -2455,9 +2474,13 @@ impl ChannelPort for ChannelStore {
                 "DM participant identity conflicts with stored channel".into(),
             ));
         }
+        let role = meta
+            .bindings
+            .get(&principal.0)
+            .and_then(|existing| existing.role.clone());
         meta.bindings.insert(
             principal.0.clone(),
-            Binding::new(binding, WakePolicy::Human),
+            Binding::new(binding, WakePolicy::Human).with_role(role),
         );
         meta.participants = expected;
         meta.save(&dir).await?;
@@ -3945,6 +3968,58 @@ mod tests {
         store.leave(&group, &bob).await.unwrap();
         assert_eq!(store.binding_for(&group, &bob).await.unwrap(), None);
         assert_eq!(store.list_members(&group).await.unwrap().len(), 1);
+    }
+
+    /// ADR-087 D4: a binding's role is set on either kind and survives
+    /// the rebinds the runtime does on its own (group `bind`, DM
+    /// re-ensure on every ingress).
+    #[tokio::test]
+    async fn binding_role_is_set_on_either_kind_and_survives_rebinds() {
+        let store = ChannelStore::new(tmp_cfg("binding-role"));
+        let alice = pid("prin_alice");
+        let dm = dm_with_user(&store, &alice).await;
+        let bound = store
+            .set_role(&dm, &alice, Some("companion".into()))
+            .await
+            .unwrap();
+        assert_eq!(bound.role.as_deref(), Some("companion"));
+        dm_with_user(&store, &alice).await;
+        assert_eq!(
+            store.binding_for(&dm, &alice).await.unwrap(),
+            Some(Binding::new("/user-bob", WakePolicy::Human).with_role(Some("companion".into()))),
+            "a DM re-ensure keeps the role"
+        );
+
+        let group = store
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        assert!(
+            store
+                .set_role(&group, &alice, Some("support".into()))
+                .await
+                .is_err(),
+            "no binding yet"
+        );
+        store.bind(&group, &alice, "/group-team").await.unwrap();
+        store
+            .set_role(&group, &alice, Some("support".into()))
+            .await
+            .unwrap();
+        let rebound = store.bind(&group, &alice, "/group-team-2").await.unwrap();
+        assert_eq!(rebound.role.as_deref(), Some("support"));
+        let cleared = store.set_role(&group, &alice, None).await.unwrap();
+        assert_eq!(cleared, Binding::new("/group-team-2", WakePolicy::Mention));
+    }
+
+    #[test]
+    fn binding_role_is_omitted_until_set() {
+        let raw = serde_json::to_string(&Binding::new("/s", WakePolicy::Mention)).unwrap();
+        assert!(!raw.contains("role"), "{raw}");
+        let with_role = Binding::new("/s", WakePolicy::Mention).with_role(Some("coder".into()));
+        let raw = serde_json::to_string(&with_role).unwrap();
+        assert!(raw.contains(r#""role":"coder""#), "{raw}");
+        assert_eq!(serde_json::from_str::<Binding>(&raw).unwrap(), with_role);
     }
 
     /// `meta.json` written before ADR-082: a `passive_binding` marked a

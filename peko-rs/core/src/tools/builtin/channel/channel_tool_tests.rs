@@ -303,3 +303,59 @@ async fn non_owner_runs_stay_in_their_conversation() {
         .unwrap();
     assert!(fx.port.list_members(&here).await.unwrap().is_empty());
 }
+
+/// ADR-087 D6: `role` sets the caller's binding role on a group or a DM,
+/// refuses a role the principal does not have, and clears when omitted.
+#[tokio::test]
+async fn role_picks_a_conversation_role_on_either_kind() {
+    let fx = Fixture::new().await;
+    std::fs::write(
+        fx.caller.workspace_path.join("roles").join("support.md"),
+        "Help people with the product.\n",
+    )
+    .unwrap();
+    fx.call(json!({"action": "create", "name": "desk", "slug": "desk"}))
+        .await
+        .unwrap();
+    let set = fx
+        .call(json!({"action": "role", "channel": "group:desk", "role": "support"}))
+        .await
+        .unwrap();
+    assert_eq!(set["role"], "support");
+    let info = fx
+        .call(json!({"action": "info", "channel": "group:desk"}))
+        .await
+        .unwrap();
+    assert_eq!(info["you"]["role"], "support");
+
+    let err = fx
+        .call(json!({"action": "role", "channel": "group:desk", "role": "wizard"}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no role wizard"), "{err}");
+
+    let cleared = fx
+        .call(json!({"action": "role", "channel": "group:desk"}))
+        .await
+        .unwrap();
+    assert_eq!(cleared["role"], Value::Null);
+
+    let dm = fx
+        .port
+        .ensure_dm(&fx.caller.id, &ActorRef::User("bob".into()), "/user-bob")
+        .await
+        .unwrap();
+    fx.call(json!({"action": "role", "channel": dm.as_str(), "role": "conversation"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fx.port
+            .binding_for(&dm, &fx.caller.id)
+            .await
+            .unwrap()
+            .and_then(|b| b.role)
+            .as_deref(),
+        Some("conversation")
+    );
+}

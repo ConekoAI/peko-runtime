@@ -19,7 +19,9 @@ This document defines the public API surface for Peko, including the new Unified
 | `ConversationKind { Dm, Group }` (`as_str`, `parse`) | `peko_protocol::channel` (re-exported from `peko_channel`) | ✅ New | What a channel is; stored in `meta.json` and signed on the invite |
 | `ChannelId::is_pair_id` | `peko_protocol::channel` | ✅ New | `dm_<64 hex>` — the only id a DM may have |
 | `WakePolicy { Human, Mention, Off }` (`default_for`, `as_str`, `parse`) / `Binding { session, wake }` | `peko_channel::port` | ✅ New | A principal's runtime-local link to a channel |
-| `ChannelPort::conversation_kind` / `bind` / `set_wake` | `peko_channel::port` | ✅ New | Read the kind; record a binding (runtime only, with a new session in the channel's compartment; keeps an existing wake); set a group binding's wake |
+| `ChannelPort::conversation_kind` / `bind` / `set_wake` | `peko_channel::port` | ✅ New | Read the kind; record a binding (runtime only, with a new session in the channel's compartment; keeps an existing wake and role); set a group binding's wake |
+| `ChannelPort::set_role`, `Binding::role` / `with_role` | `peko_channel::port` | ✅ New | ADR-087: the role a principal's turns run in a DM or group (`None` = its default conversation role); the default impl refuses |
+| `genesis::{seed_default_roles, seed_default_conversation_role}` | `principal::genesis` | ✅ New | Stamp `roles/root.md` and `roles/conversation.md` create-if-missing (provision + every boot) |
 | `ChannelPort::binding_for` | `peko_channel::port` | ⚠️ Changed | Returns `Option<Binding>` instead of `Option<String>` |
 | `ChannelPort::passive_binding`, `CreateOpts::{passive_binding, with_passive_binding}` | `peko_channel::port` | ❌ Removed | Replaced by `CreateOpts::{kind, with_kind}` and the binding record |
 | `ChannelStore::{create, invite, leave, join_remote}` | `peko_channel::store` | ⚠️ Changed | A `dm` needs a pair id; invite into and leave of a DM are refused; leaving a group drops the binding; `join_remote` takes `kind` + an optional receiver-local binding and refuses a conflicting kind |
@@ -27,7 +29,7 @@ This document defines the public API surface for Peko, including the new Unified
 | `TunnelMessage::TunnelChannelInvite.kind`, `ChannelInviteSignedFields.kind`, `CHANNEL_INVITE_PAYLOAD_VERSION = "peko-channel-invite/3"` | `tunnel::{protocol, tunnel_channel_signature}` | ⚠️ Changed | `kind` replaces the creator's session path (`passive_binding`) |
 | `peer_children::ensure_group_binding`, `PrincipalManager::{ensure_group_binding, ensure_channel_subscriber}` | `principal` | ✅ New | Provision a group session with its binding; start a post-boot subscriber |
 | `ChannelTool` / `CHANNEL_TOOL_NAME` (`Channel`: create / invite / leave / wake / info) | `tools::builtin::channel::channel_tool` | ✅ New | Principal group management; installed with the principal services |
-| `floor::{CHANNEL_ROSTER_ACTIONS, is_channel_roster_change, action_refusal}`, `judge::owner_decides` | `security` | ✅ New | Untrusted runs never change a roster; a trusted run's `create` / `invite` waits for the owner instead of the reviewer |
+| `floor::{CHANNEL_OWNER_ACTIONS, channel_owner_action, action_refusal}`, `judge::owner_decides` | `security` | ✅ New | Untrusted runs never change a roster or a conversation's role; a trusted run's `create` / `invite` / `role` waits for the owner instead of the reviewer (ADR-082 D6, ADR-087 D6) |
 
 ## Channel waiting lists (ADR-072 D4a)
 

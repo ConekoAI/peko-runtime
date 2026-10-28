@@ -18,30 +18,25 @@
 //!   `AgenticEvent` stream shape the IPC `principal_send` drain loop
 //!   consumes.
 //!
-//! ## Persona inheritance
+//! ## The conversation role (ADR-087)
 //!
-//! Peer children run the principal's persona by default. The builder
-//! resolves the principal's root agent prompt exactly as the router
-//! factory does
-//! ([`DefaultPrincipalRouterFactory::resolve_root_agent_prompt`]) and
-//! carries it on the executor's `AgentConfig` snapshot — closing the
-//! pre-Phase-6 gap where the channel driver's executor had no
-//! `.with_agent_config` and child turns fell back to a blank default
-//! prompt. ADR-052 D3 makes the persona an explicit policy: when
-//! `routing.peer_agent` names a workspace role file
-//! (`roles/<name>.md` / `roles/<name>/ROLE.md`), that role's
-//! prompt body replaces the root persona for all peer-facing turns;
-//! unresolvable roles warn and fall back to the root persona.
+//! Conversation turns do not run the root role: the root role supervises
+//! the trunk. Each turn resolves its role from the session's channel
+//! binding (`meta.json` `bindings[principal].role`), then
+//! `routing.peer_agent`, then the seeded `conversation` role, and only
+//! then the root role ([`try_peer_child_agent_config`]). Who the
+//! principal is — identity, conventions, memory — reaches every role
+//! through the T0 tail sections, so the role only says what the job is.
 //!
 //! ## Live definition
 //!
-//! The bundle is cached for the principal's lifetime, but its persona
-//! and model are not: every turn re-reads `principal.toml`
-//! ([`Principal::reload_config_if_changed`]) and the root role, and
-//! re-resolves the provider when `preferred_model_id` changed. An edit
-//! to either file applies to the next turn without a daemon restart. A
-//! root role that cannot be read at turn time (mid-save, deleted) keeps
-//! the last one that could.
+//! The bundle is cached for the principal's lifetime, but its roles and
+//! model are not: every turn re-reads `principal.toml`
+//! ([`Principal::reload_config_if_changed`]), the binding, and the role
+//! file, and re-resolves the provider when `preferred_model_id` changed.
+//! An edit to any of them applies to the next turn without a daemon
+//! restart. When no role can be read at turn time (mid-save, deleted),
+//! the turn keeps the last one that could.
 //!
 //! ## Registry key (cross-guard)
 //!
@@ -71,52 +66,101 @@ use crate::principal::peer_dm::{ensure_peer_dm_channel, post_peer_dm_reply, Peer
 use crate::principal::routers::root::{default_root_prompt, trunk_session_id};
 use crate::principal::Principal;
 
-/// Resolve the agent prompt peer-child turns run and build the
-/// `AgentConfig` snapshot carrying it.
-///
-/// Default is **persona inheritance**: resolution order is the router
-/// factory's — `principal.toml` `routing.root_prompt` file →
-/// `<workspace>/roles/root.md` (or `roles/root/ROLE.md`) →
-/// compiled-in default. When `routing.peer_agent` names a workspace
-/// role (ADR-052 D3), that role's prompt BODY replaces the root
-/// prompt's body; any resolution failure logs a warning and falls
-/// back to the root persona so a bad config value never breaks peer
-/// ingress. Only the body swaps — the `AgentConfig` keeps the root
-/// prompt's name, preserving the registry-key / session-stamp
-/// invariants of [`PeerChildTurns::build`].
-///
-/// Factored out of [`PeerChildTurns::build`] so the persona mapping
-/// is unit-testable without a full `Principal`.
+/// The role conversations run when neither their binding nor
+/// `routing.peer_agent` names one (ADR-087 D3).
+pub(crate) const CONVERSATION_ROLE: &str = "conversation";
+
+/// Raw content of the compiled-in `conversation` role. A seed source
+/// (`genesis::seed_default_conversation_role`), not a render-time
+/// fallback: a missing file falls back to the root role.
+pub(crate) fn conversation_role_seed_content() -> &'static str {
+    include_str!("../resources/roles/conversation/ROLE.md")
+}
+
+/// The agent name peer-child sessions are stamped with and the
+/// session manager is built for: the root role's name. It does not
+/// change with the role a conversation runs (ADR-087 D5), so session
+/// metadata stays stable when a binding's role changes.
+pub(crate) fn peer_child_session_agent_name(
+    config: &PrincipalConfig,
+    workspace_path: &std::path::Path,
+) -> String {
+    DefaultPrincipalRouterFactory::try_resolve_root_agent_prompt(
+        &config.routing,
+        &workspace_path.join("roles"),
+    )
+    .map(|prompt| prompt.name)
+    .unwrap_or_else(|_| default_root_prompt().name)
+}
+
+/// The `AgentConfig` a conversation turn runs with no binding role:
+/// the principal's default conversation role (see
+/// [`try_peer_child_agent_config`]). Panics only when no conversation
+/// role resolves AND the root role is missing — the same configuration
+/// error that made the root router fail before.
 pub(crate) fn peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
 ) -> AgentConfig {
-    try_peer_child_agent_config(config, workspace_path).unwrap_or_else(|e| panic!("{e}"))
+    try_peer_child_agent_config(config, workspace_path, None).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`peer_child_agent_config`] without the panic on a missing or
-/// unreadable root role, for the turn-time re-read.
+/// Resolve the role a conversation turn runs (ADR-087 D4) and build
+/// its `AgentConfig`. First match wins:
+///
+/// 1. `binding_role` — the channel binding's `role`;
+/// 2. `routing.peer_agent` — the principal-wide default (ADR-052 D3);
+/// 3. [`CONVERSATION_ROLE`];
+/// 4. the root role (`routing.root_prompt` → `roles/root.md`), which
+///    errors when absent.
+///
+/// A named role that does not resolve warns and falls through, so a bad
+/// value never breaks ingress. The config is named after the role it
+/// runs (`{{role_name}}`, `kb/roles/<role>.md`); sessions and the run
+/// registry use [`peer_child_session_agent_name`] instead.
 fn try_peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
+    binding_role: Option<&str>,
 ) -> Result<AgentConfig> {
     let roles_dir = workspace_path.join("roles");
-    let mut prompt =
-        DefaultPrincipalRouterFactory::try_resolve_root_agent_prompt(&config.routing, &roles_dir)?;
-    // ADR-052 D3: opt-in T1 role for peer-facing turns.
-    if let Some(role) = config.routing.peer_agent.as_deref() {
+    let named = [
+        (binding_role, "the channel binding"),
+        (config.routing.peer_agent.as_deref(), "routing.peer_agent"),
+    ];
+    for (role, source) in named {
+        let Some(role) = role.filter(|r| !r.trim().is_empty()) else {
+            continue;
+        };
         match crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir) {
-            Ok(role_prompt) => prompt.body = role_prompt.body,
+            Ok(prompt) => return Ok(role_agent_config(role, &prompt, config)),
             Err(e) => tracing::warn!(
-                "Failed to resolve routing.peer_agent role '{role}': {e:#}. \
-                 Falling back to the root persona."
+                "cannot resolve role '{role}' named by {source}: {e:#}. \
+                 Falling back to the next default."
             ),
         }
     }
+    match crate::principal::agent_prompt::resolve_agent_prompt(CONVERSATION_ROLE, &roles_dir) {
+        Ok(prompt) => return Ok(role_agent_config(CONVERSATION_ROLE, &prompt, config)),
+        Err(e) => tracing::debug!("no conversation role, using the root role: {e:#}"),
+    }
+    let prompt =
+        DefaultPrincipalRouterFactory::try_resolve_root_agent_prompt(&config.routing, &roles_dir)?;
     Ok(build_agent_config(
         &prompt,
         config.preferred_model_id.clone(),
     ))
+}
+
+fn role_agent_config(
+    role: &str,
+    prompt: &crate::principal::agent_prompt::AgentPrompt,
+    config: &PrincipalConfig,
+) -> AgentConfig {
+    let mut agent_config = build_agent_config(prompt, config.preferred_model_id.clone());
+    // `roles/<id>/ROLE.md` loads with the file stem as its name.
+    agent_config.name = role.to_string();
+    agent_config
 }
 
 /// The trust source of test bundles built from parts: everyone is the
@@ -263,12 +307,16 @@ impl PeerChildTurns {
             (
                 config.name.clone(),
                 config.owner.clone(),
-                // Persona inheritance — see module docs.
+                // The default conversation role; each turn re-resolves
+                // its own (ADR-087).
                 peer_child_agent_config(&config, &principal.workspace_path),
                 config.preferred_model_id.clone(),
             )
         };
-        let agent_name = agent_config.name.clone();
+        let agent_name = {
+            let config = principal.config.read().await;
+            peer_child_session_agent_name(&config, &principal.workspace_path)
+        };
 
         // Resolve the principal's pinned model through the daemon's
         // shared resolver (`AgentPreference` precedence). A per-call
@@ -314,7 +362,6 @@ impl PeerChildTurns {
         // any other subagent run (F39).
         .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
         .with_provider(Arc::clone(&provider))
-        // Persona inheritance — see module docs.
         .with_agent_config(agent_config.clone());
         let live = LiveDefinition {
             principal: Arc::downgrade(principal),
@@ -665,6 +712,20 @@ impl PeerChildTurns {
             .and_then(|meta| meta.channel_id.clone())
     }
 
+    /// The role this principal's binding on `channel` names (ADR-087
+    /// D4). `None` without a channel, a port, a binding, or a role.
+    async fn binding_role(&self, channel: Option<&str>) -> Option<String> {
+        let channel = peko_channel::ChannelId::parse(channel?)?;
+        let port = self.channel_port.as_ref()?;
+        match port.binding_for(&channel, &self.principal_id).await {
+            Ok(binding) => binding?.role,
+            Err(e) => {
+                tracing::warn!(%channel, "cannot read the binding's role: {e:#}");
+                None
+            }
+        }
+    }
+
     /// Drive one streaming turn in the peer's standing child session.
     ///
     /// Blocks until the run reaches a terminal state and returns the
@@ -725,7 +786,7 @@ impl PeerChildTurns {
     /// and provider the principal's files define now (see "Live
     /// definition" in the module docs). Fails only when a changed
     /// `preferred_model_id` does not resolve, as it would at build.
-    async fn turn_executor(&self) -> Result<SubagentExecutor> {
+    async fn turn_executor(&self, binding_role: Option<&str>) -> Result<SubagentExecutor> {
         let Some(live) = &self.live else {
             return Ok(self.executor.clone());
         };
@@ -736,7 +797,7 @@ impl PeerChildTurns {
         let (agent_config, model, max_running_agents) = {
             let config = principal.config.read().await;
             (
-                try_peer_child_agent_config(&config, &principal.workspace_path),
+                try_peer_child_agent_config(&config, &principal.workspace_path, binding_role),
                 config.preferred_model_id.clone(),
                 config.governance.max_running_agents,
             )
@@ -748,15 +809,12 @@ impl PeerChildTurns {
             .set_limit(max_running_agents);
         let mut current = live.current.lock().await;
         match agent_config {
-            Ok(mut agent_config) => {
-                // The name keys sessions and the registry; only the
-                // role's text is live.
-                agent_config.name = self.agent_name.clone();
-                current.agent_config = agent_config;
-            }
+            // Named after the role it runs (ADR-087 D5); sessions and
+            // the registry key on `self.agent_name`, not this.
+            Ok(agent_config) => current.agent_config = agent_config,
             Err(e) => tracing::warn!(
                 principal = %self.principal_id,
-                "cannot read the root role; this turn keeps the one it had: {e:#}"
+                "cannot read a conversation or root role; this turn keeps the one it had: {e:#}"
             ),
         }
         if model != current.model {
@@ -787,6 +845,7 @@ impl PeerChildTurns {
         acting_for: peko_tools_core::ActingFor,
     ) -> Result<StreamingResumeOutcome> {
         let conversation_channel = self.conversation_channel(session_id).await;
+        let binding_role = self.binding_role(conversation_channel.as_deref()).await;
         // ADR-078 D7: when the policy reviews replies, a reply to anyone
         // but the owner is held back from live streaming until reviewed.
         let gate = self.executor.tooling().dispatcher().policy_gate();
@@ -827,7 +886,7 @@ impl PeerChildTurns {
             ..ExecutionConfig::default()
         };
         let mut outcome = self
-            .turn_executor()
+            .turn_executor(binding_role.as_deref())
             .await?
             .resume_streaming(
                 message,
@@ -1471,9 +1530,8 @@ mod tests {
     // ─── ADR-052 D3: opt-in T1 role via `routing.peer_agent` ───
 
     /// `peer_agent` set + role file present → the child config's
-    /// prompt is the role body; the config NAME stays the root
-    /// prompt's (the executor registry key + session-stamp
-    /// invariants rely on it).
+    /// prompt is the role body and its name is the role (ADR-087 D5);
+    /// sessions and the registry key on `peer_child_session_agent_name`.
     #[test]
     fn peer_agent_role_body_replaces_persona_prompt() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1494,10 +1552,8 @@ mod tests {
             },
         );
         let agent_config = peer_child_agent_config(&config, tmp.path());
-        assert_eq!(
-            agent_config.name, "root",
-            "role swap must not change the agent name (registry-key invariant)"
-        );
+        assert_eq!(agent_config.name, "channel-comm");
+        assert_eq!(peer_child_session_agent_name(&config, tmp.path()), "root");
         let prompt = agent_config.prompt.expect("persona prompt must be set");
         assert!(
             prompt.contains("CHANNEL_ROLE_MARKER"),
@@ -1529,6 +1585,10 @@ mod tests {
             },
         );
         let agent_config = peer_child_agent_config(&config, tmp.path());
+        assert_eq!(
+            agent_config.name, "channel-comm",
+            "not the file stem `ROLE`"
+        );
         let prompt = agent_config.prompt.expect("persona prompt must be set");
         assert!(
             prompt.contains("DIR_LAYOUT_ROLE_MARKER"),
@@ -1583,6 +1643,87 @@ mod tests {
             prompt.contains("PERSONA_MARKER"),
             "peer_agent None must inherit the root persona; got: {prompt}"
         );
+    }
+
+    // ─── ADR-087: the conversation role, chosen per binding ───
+
+    /// A workspace with the root role, the seeded conversation role, and
+    /// two task roles.
+    fn roles_fixture() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        crate::principal::genesis::seed_default_roles(tmp.path()).unwrap();
+        let roles_dir = tmp.path().join("roles");
+        std::fs::write(roles_dir.join("support.md"), "SUPPORT_ROLE_MARKER\n").unwrap();
+        std::fs::write(roles_dir.join("comms.md"), "COMMS_ROLE_MARKER\n").unwrap();
+        tmp
+    }
+
+    fn resolved(config: &PrincipalConfig, ws: &std::path::Path, role: Option<&str>) -> AgentConfig {
+        try_peer_child_agent_config(config, ws, role).unwrap()
+    }
+
+    /// D3: with nothing named, conversations run the seeded
+    /// `conversation` role, not the root role.
+    #[test]
+    fn conversations_default_to_the_conversation_role() {
+        let tmp = roles_fixture();
+        let config = test_config("role-test", PrincipalRoutingConfig::default());
+        let agent_config = resolved(&config, tmp.path(), None);
+        assert_eq!(agent_config.name, CONVERSATION_ROLE);
+        let prompt = agent_config.prompt.unwrap();
+        assert!(prompt.contains("talking in one conversation"), "{prompt}");
+        assert!(!prompt.contains("trunk session"), "{prompt}");
+    }
+
+    /// D4: binding role → `routing.peer_agent` → `conversation`; a
+    /// named role that does not resolve falls to the next step.
+    #[test]
+    fn a_binding_role_wins_and_bad_names_fall_through() {
+        let tmp = roles_fixture();
+        let with_peer_agent = test_config(
+            "role-test",
+            PrincipalRoutingConfig {
+                peer_agent: Some("comms".to_string()),
+                ..Default::default()
+            },
+        );
+        let pick = |config: &PrincipalConfig, role| resolved(config, tmp.path(), role).name;
+        assert_eq!(pick(&with_peer_agent, Some("support")), "support");
+        assert_eq!(pick(&with_peer_agent, None), "comms");
+        assert_eq!(pick(&with_peer_agent, Some("missing")), "comms");
+        let plain = test_config("role-test", PrincipalRoutingConfig::default());
+        assert_eq!(pick(&plain, Some("missing")), CONVERSATION_ROLE);
+        assert_eq!(pick(&plain, Some("  ")), CONVERSATION_ROLE);
+        let support = resolved(&plain, tmp.path(), Some("support"));
+        assert!(support.prompt.unwrap().contains("SUPPORT_ROLE_MARKER"));
+    }
+
+    /// The bundle reads the role from the session's channel binding.
+    #[tokio::test]
+    async fn binding_role_is_read_from_the_conversation_channel() {
+        let (_dir, manager, store) = dm_fixture().await;
+        let port: Arc<dyn peko_channel::ChannelPort> = store.clone();
+        let turns = bare_turns(
+            manager,
+            Some(Arc::clone(&port)),
+            None,
+            Some(Arc::new(tokio::sync::Mutex::new(()))),
+        );
+        let ingress = turns
+            .ensure_child_ingress(&ActorRef::User("alice".into()))
+            .await
+            .unwrap();
+        let dm = ingress.dm_channel.unwrap();
+        let channel = turns.conversation_channel(&ingress.child_id).await;
+        assert_eq!(turns.binding_role(channel.as_deref()).await, None);
+        port.set_role(&dm, &turns.principal_id, Some("support".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            turns.binding_role(channel.as_deref()).await.as_deref(),
+            Some("support")
+        );
+        assert_eq!(turns.binding_role(None).await, None);
     }
 
     // ─── Phase 10: DM channel provisioning on ensure_child_ingress ───

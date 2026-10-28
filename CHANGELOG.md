@@ -4,6 +4,30 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: conversations run a conversation role; the root role supervises (2026-10-28)
+
+Every DM and group turn ran the principal's root role — the same file
+that tells the trunk how to supervise — so a peko told people it ran "as
+root", and tuning one job retuned the other. ADR-087 separates them:
+
+- A new seeded role, `roles/conversation.md`, is what conversations run by
+  default. It is stamped create-if-missing at provision and on every boot,
+  so existing pekos pick it up on their next daemon start.
+- A channel binding can name its own role (`meta.json`
+  `bindings[principal].role`), set with `Channel` action `role` (owner
+  decision: refused to untrusted runs, owner approval for trusted ones) or
+  IPC `channel_set_role`; `Channel info` and `channel_info` report it.
+  Resolution per turn: binding role → `routing.peer_agent` →
+  `conversation` → `root`.
+- The seeded root role now covers supervision only (existing `root.md`
+  files are untouched).
+- A run is named after the role it runs — a conversation turn after its
+  resolved role, an `Agent` spawn after its `role` (it used to inherit
+  `root`) — so `{{role_name}}` and the `kb/roles/<role>.md` note match it.
+- The genesis brief puts voice, style, and shared rules in
+  `[identity]`/`[intent]` and `kb/CONVENTIONS.md`, and describes roles as
+  jobs.
+
 ### Feature: a peko has an avatar (2026-10-28)
 
 `principal.toml` always had `[identity] avatar`, but nothing set or read

@@ -204,10 +204,11 @@ Peko: my-peko
   Workspace: ~/.peko/principals/my-peko
   Model: my-model (pinned to this peko)
   Roles:
-    - root (~/.peko/principals/my-peko/roles/root.md): Default root role — supervises standing work and handles conversations
+    - conversation (~/.peko/principals/my-peko/roles/conversation.md): Default conversation role — talks with people and peers in a channel
+    - root (~/.peko/principals/my-peko/roles/root.md): Default root role — supervises the principal's standing work from the trunk
     - primary (~/.peko/principals/my-peko/roles/primary.md): Default assistant for my-peko
   Catalog:
-    - role: 2/2 enabled
+    - role: 3/3 enabled
     - builtin: 23/23 enabled
 ```
 

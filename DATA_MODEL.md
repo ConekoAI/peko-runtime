@@ -2073,7 +2073,7 @@ Bare `chan_*` ids are unchanged (no colons). `channel_dir_name` and
   "tier": "Runtime",
   "kind": "group",
   "bindings": {
-    "prin_alice": { "session": "0b7c…", "wake": "mention" }
+    "prin_alice": { "session": "0b7c…", "wake": "mention", "role": "support" }
   }
 }
 ```
@@ -2085,7 +2085,7 @@ Bare `chan_*` ids are unchanged (no colons). `channel_dir_name` and
 | `created_at` | RFC3339 | yes | Snapshot at create time. |
 | `tier` | `"Runtime"` \| `"Shared"` | yes | Storage locality (NOT the DM/group split). |
 | `kind` | `"dm"` \| `"group"` | yes | ADR-082 D1; immutable. A `dm` has a pair id (`dm_<sha256>`) and exactly its two members for life: invite and leave are refused. |
-| `bindings` | object | no | ADR-082 D2: local principal id → `{ session, wake }`. Runtime-local, never on the wire. Omitted when empty. |
+| `bindings` | object | no | ADR-082 D2: local principal id → `{ session, wake, role? }`. Runtime-local, never on the wire. Omitted when empty. |
 | `participants` | string[] | no | A DM's fixed pair (canonical addresses); groups use current membership. |
 
 A binding names the principal's conversation session for the channel
@@ -2100,6 +2100,13 @@ first ingress or first `ChannelSend`, a group's on first wake or on
 is authoritative; a stale binding is rewritten when the runtime next
 ensures the session. Leaving a group deletes the binding and keeps the
 session as history.
+
+`role` (ADR-087 D4, optional, omitted when unset) names the role
+(`roles/<id>.md` or `roles/<id>/ROLE.md`) the principal's turns run in
+that conversation, on either kind. Unset, a turn runs `routing.peer_agent`
+if set, else the seeded `conversation` role, else `root`; a role that does
+not resolve falls to the next. Rebinding (a DM's re-ensure, a group's
+`bind`) keeps it. Set by `Channel role` or IPC `channel_set_role`.
 
 Files written before ADR-082 carry no `kind`: a `passive_binding`
 marked a DM, and bindings were bare session strings. They are read in
@@ -2116,16 +2123,21 @@ IPC exposes the wake policy, never the session: `channel_info { channel }`
 (members only, like `channel_peek`) answers `channel_info_result`, and
 `channel_set_wake { channel, principal_name, wake }` (operator callers,
 the principal's owner, groups only, the principal a member) answers
-`channel_wake_set`:
+`channel_wake_set`. `channel_set_role { channel, principal_name, role? }`
+(operator callers, the principal's owner, DMs and groups, a role the
+principal has; omit `role` to clear it) answers `channel_role_set`:
 
 ```json
 {"type": "channel_info_result", "request_id": 1, "channel": "chan_01qwjy2l",
  "kind": "group", "name": "team",
  "members": [{"kind": "principal", "id": "prin_alice"}, {"kind": "user", "id": "local"}],
- "pekos": [{"name": "alice", "local_id": "prin_alice", "wake": "mention"}]}
+ "pekos": [{"name": "alice", "local_id": "prin_alice", "wake": "mention", "role": null}]}
 
 {"type": "channel_wake_set", "request_id": 1, "channel": "chan_01qwjy2l",
  "principal_name": "alice", "wake": "off"}
+
+{"type": "channel_role_set", "request_id": 1, "channel": "chan_01qwjy2l",
+ "principal_name": "alice", "role": "support"}
 ```
 
 `pekos` lists the member principals hosted on this runtime. A DM's is

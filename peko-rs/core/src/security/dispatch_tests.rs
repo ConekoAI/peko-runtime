@@ -368,6 +368,25 @@ async fn only_the_owner_decides_channel_rosters() {
     );
     assert_eq!(gate.asked.lock().unwrap()[0].0.tool_name, "Channel");
 
+    // ADR-087 D6: a conversation's role is the owner's decision too.
+    let role = json!({"action": "role", "channel": "dm_x", "role": "support"});
+    let out = h
+        .call_as(
+            &Caller::acting_for(guest(Trust::Untrusted)),
+            "Channel",
+            role.clone(),
+        )
+        .await;
+    assert!(
+        !out.success && out.display.contains("Choosing the role"),
+        "{}",
+        out.display
+    );
+    let out = h
+        .call_as(&Caller::acting_for(guest(Trust::Trusted)), "Channel", role)
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.display);
+
     for trust in [Trust::Untrusted, Trust::Trusted] {
         let out = h
             .call_as(
