@@ -285,6 +285,17 @@ counts as active since daemon start. An `Idle { minutes }` job is due when
 the principal has been quiet that long and the job's `last_run` predates the
 last activity, so it fires once per quiet stretch.
 
+## Principal avatar (`identity.avatar`)
+
+`principal.toml` `[identity] avatar` is an emoji or a short monogram
+(`"🦊"`, `"AB"`): at most 32 bytes, no whitespace or control characters,
+and never an image URL — clients must not fetch remote content to draw a
+peko. `principal_update { avatar }` sets it (`""` clears it; anything else
+is checked by `principal::config::validate_avatar` and refused with
+`[bad_request]`), and `principal_list` / `principal_get` summaries carry it
+as `avatar` (omitted when unset). It travels in `.peko` snapshots with the
+rest of `principal.toml`. Clients draw a peko without one from its name.
+
 ## Principal agent run limit (ADR-067)
 
 `principal.toml` configures admission in the existing governance table:

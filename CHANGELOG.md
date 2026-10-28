@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a peko has an avatar (2026-10-28)
+
+`principal.toml` always had `[identity] avatar`, but nothing set or read
+it. `principal_update { avatar }` now sets it — an emoji or a short
+monogram, at most 32 bytes, never an image URL (`""` clears it) — and
+`principal_list` / `principal_get` return it, so peko-desktop can draw
+each peko with its own face. See `DATA_MODEL.md` "Principal avatar".
+
 ### Fix: OpenAI-format streams keep a tool call sent in one chunk (2026-10-27)
 
 Some OpenAI-compatible servers (Ollama, for one) stream a tool call whole —

@@ -252,7 +252,38 @@ pub struct ChildDeclaration {
 pub struct PrincipalIdentityConfig {
     pub display_name: Option<String>,
     pub description: Option<String>,
+    /// An emoji, or a short monogram; see [`validate_avatar`].
     pub avatar: Option<String>,
+}
+
+/// Longest avatar accepted, in bytes. Room for an emoji ZWJ sequence
+/// (a family or a flag with modifiers), not for a sentence.
+pub const AVATAR_MAX_BYTES: usize = 32;
+
+/// Check an avatar as set over IPC. Surrounding whitespace is trimmed;
+/// an empty value clears the avatar (`Ok(None)`). Otherwise it is kept
+/// as written if it is at most [`AVATAR_MAX_BYTES`] and holds no
+/// whitespace or control characters — an emoji or a short monogram.
+/// Image avatars are deliberately not supported: they would make
+/// clients fetch remote content.
+pub fn validate_avatar(raw: &str) -> Result<Option<String>, String> {
+    let avatar = raw.trim();
+    if avatar.is_empty() {
+        return Ok(None);
+    }
+    if avatar.len() > AVATAR_MAX_BYTES {
+        return Err(format!(
+            "avatar is {} bytes; use an emoji or a short monogram (at most {AVATAR_MAX_BYTES} bytes)",
+            avatar.len()
+        ));
+    }
+    if avatar.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("avatar may not contain spaces or control characters".into());
+    }
+    if avatar.contains("://") || avatar.starts_with("data:") {
+        return Err("image avatars are not supported; use an emoji or a short monogram".into());
+    }
+    Ok(Some(avatar.to_string()))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -930,4 +961,32 @@ mod tests {
     //   - resolved_authority_migrates_legacy_grants
     //   - resolved_authority_empty_yields_strict_deny
     //   - authority_roundtrip_full
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::{validate_avatar, AVATAR_MAX_BYTES};
+
+    #[test]
+    fn emoji_and_monograms_are_kept() {
+        assert_eq!(validate_avatar("🦊").unwrap().as_deref(), Some("🦊"));
+        // A ZWJ family and a flag with a modifier fit.
+        assert!(validate_avatar("👨‍👩‍👧‍👦").unwrap().is_some());
+        assert!(validate_avatar("🏳️‍🌈").unwrap().is_some());
+        assert_eq!(validate_avatar("  AB ").unwrap().as_deref(), Some("AB"));
+    }
+
+    #[test]
+    fn empty_clears() {
+        assert_eq!(validate_avatar("").unwrap(), None);
+        assert_eq!(validate_avatar("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn long_text_spaces_and_controls_are_refused() {
+        assert!(validate_avatar(&"a".repeat(AVATAR_MAX_BYTES + 1)).is_err());
+        assert!(validate_avatar("two words").is_err());
+        assert!(validate_avatar("a\u{7}").is_err());
+        assert!(validate_avatar("https://example.com/me.png").is_err());
+    }
 }

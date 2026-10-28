@@ -173,6 +173,10 @@ pub enum RequestPacket {
         exposure: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preferred_model_id: Option<String>,
+        /// An emoji or short monogram; `""` clears it
+        /// (`principal::config::validate_avatar`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<String>,
     },
 
     /// Remove a Principal and delete its workspace/data. Requires
@@ -2876,6 +2880,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
+                avatar: None,
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             }],
@@ -2909,6 +2914,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
+                avatar: None,
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
             }),
@@ -3244,6 +3250,7 @@ mod tests {
             status: Some("busy".to_string()),
             exposure: Some("public".to_string()),
             preferred_model_id: Some("claude-sonnet-4-5".to_string()),
+            avatar: Some("🦊".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let json = std::str::from_utf8(&bytes).unwrap();
@@ -3260,7 +3267,9 @@ mod tests {
                 status,
                 exposure,
                 preferred_model_id,
+                avatar,
             } => {
+                assert_eq!(avatar.as_deref(), Some("🦊"));
                 assert_eq!(request_id, 304);
                 assert_eq!(name, "alice");
                 assert_eq!(description.as_deref(), Some("updated description"));
@@ -3280,6 +3289,7 @@ mod tests {
             status: None,
             exposure: None,
             preferred_model_id: None,
+            avatar: None,
         };
         let bytes = minimal.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3291,7 +3301,9 @@ mod tests {
                 status,
                 exposure,
                 preferred_model_id,
+                avatar,
             } => {
+                assert!(avatar.is_none());
                 assert_eq!(request_id, 305);
                 assert_eq!(name, "bob");
                 assert!(description.is_none());
@@ -3339,6 +3351,7 @@ mod tests {
                 exposure: peko_auth::Exposure::Public,
                 status: Some(crate::principal::config::Status::Busy),
                 preferred_model_id: None,
+                avatar: None,
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3395,6 +3408,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
+                avatar: None,
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
             },
@@ -3914,6 +3928,7 @@ mod tests {
             status: None,
             exposure: None,
             preferred_model_id: None,
+            avatar: None,
         };
         assert_eq!(req_principal_update.request_id(), 3);
 
@@ -3950,6 +3965,7 @@ mod tests {
                 exposure: peko_auth::Exposure::default(),
                 status: None,
                 preferred_model_id: None,
+                avatar: None,
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
             },
