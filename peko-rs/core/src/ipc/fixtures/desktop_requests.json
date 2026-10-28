@@ -24,7 +24,7 @@
   {"type": "principal_list", "protocol_version": 1, "request_id": 1},
   {"type": "principal_get", "protocol_version": 1, "request_id": 1, "name": "alice"},
   {"type": "principal_create", "protocol_version": 1, "request_id": 1, "name": "alice", "description": null, "model_id": "anthropic/claude-sonnet-5-5"},
-  {"type": "principal_update", "protocol_version": 1, "request_id": 1, "name": "alice", "description": "helper", "status": null, "exposure": null, "preferred_model_id": null},
+  {"type": "principal_update", "protocol_version": 1, "request_id": 1, "name": "alice", "description": "helper", "status": null, "exposure": null, "preferred_model_id": null, "avatar": "🦊"},
   {"type": "principal_remove", "protocol_version": 1, "request_id": 1, "name": "alice"},
   {"type": "principal_export", "protocol_version": 1, "request_id": 1, "name": "alice", "output": "/tmp/alice.peko"},
   {"type": "principal_import_preview", "protocol_version": 1, "request_id": 1, "file_path": "/tmp/alice.peko", "name": null, "force": false, "rotate_keys": false},

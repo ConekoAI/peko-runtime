@@ -237,6 +237,7 @@ impl Principal {
             did: self.did().await,
             owner: config.owner.clone(),
             description: config.identity.description.clone(),
+            avatar: config.identity.avatar.clone(),
             exposure: config.exposure.clone(),
             status: config.status.clone(),
             preferred_model_id: config.preferred_model_id.clone(),
@@ -261,6 +262,10 @@ pub struct PrincipalSummary {
     pub did: PrincipalDID,
     pub owner: peko_auth::ActorRef,
     pub description: Option<String>,
+    /// The peko's avatar: an emoji, or a short monogram
+    /// (`identity.avatar`, see [`config::validate_avatar`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     pub exposure: peko_auth::Exposure,
     pub status: Option<crate::principal::config::Status>,
     pub preferred_model_id: Option<String>,

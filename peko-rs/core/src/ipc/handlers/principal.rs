@@ -1404,6 +1404,7 @@ impl RequestHandler for PrincipalHandler {
                 status,
                 exposure,
                 preferred_model_id,
+                avatar,
             } => {
                 // Validate name at the IPC boundary so a hostile caller can't
                 // reach `load_principal(host, &name)` / `update_config(&name, …)`
@@ -1507,11 +1508,31 @@ impl RequestHandler for PrincipalHandler {
                     },
                 };
 
+                // `Some(None)` clears the avatar; `None` leaves it.
+                let avatar = match avatar
+                    .as_deref()
+                    .map(crate::principal::config::validate_avatar)
+                {
+                    None => None,
+                    Some(Ok(avatar)) => Some(avatar),
+                    Some(Err(e)) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("[bad_request] {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                };
+
                 match host
                     .principal_manager()
                     .update_config(&name, |config| {
                         if let Some(description) = description {
                             config.identity.description = Some(description);
+                        }
+                        if let Some(avatar) = avatar {
+                            config.identity.avatar = avatar;
                         }
                         if let Some(status) = status_enum {
                             config.status = status;

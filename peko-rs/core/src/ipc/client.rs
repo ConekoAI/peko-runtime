@@ -678,6 +678,7 @@ impl DaemonClient {
             status,
             exposure,
             preferred_model_id,
+            avatar: None,
         };
         self.request_response(packet).await
     }
