@@ -1265,10 +1265,6 @@ impl RequestHandler for PrincipalHandler {
                 model_id,
             } => {
                 use crate::common::identifiers::validate_agent_name;
-                use crate::principal::config::{
-                    Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-                    PrincipalIntentConfig, PrincipalRoutingConfig,
-                };
 
                 // 1. Validate the name first so we never touch the
                 //    filesystem with bad input.
@@ -1349,29 +1345,8 @@ impl RequestHandler for PrincipalHandler {
                 //    choice for an interactive terminal where every
                 //    local user is the same identity; for an IPC call
                 //    we honour the request's subject.
-                let description = description.unwrap_or_else(|| format!("The {name} Principal"));
-                let config = PrincipalConfig {
-                    actor_key: None,
-                    name: name.clone(),
-                    id: None,
-                    did: None,
-                    owner: caller.subject().clone(),
-                    identity: PrincipalIdentityConfig {
-                        display_name: Some(name.clone()),
-                        description: Some(description),
-                        avatar: None,
-                    },
-                    intent: PrincipalIntentConfig::default(),
-                    governance: PrincipalGovernanceConfig::default(),
-                    routing: PrincipalRoutingConfig::default(),
-                    exposure: Exposure::Private,
-                    status: None,
-                    boot_state: None,
-                    permissions: Vec::new(),
-                    preferred_model_id: Some(model_id),
-                    quota: None,
-                    children: Default::default(),
-                };
+                let config =
+                    ipc_create_config(&name, description, caller.subject().clone(), model_id);
 
                 match host.principal_manager().create(config).await {
                     Ok(principal) => {
@@ -4033,6 +4008,45 @@ async fn run_principal_log_watch(
     }
 }
 
+/// The config IPC `principal_create` writes: the caller owns it, the
+/// display name is its name, and a missing or blank description stays
+/// empty, as `peko create` leaves it. The genesis turn then has the peko
+/// adopt its own description instead of showing people
+/// "The <name> Principal".
+fn ipc_create_config(
+    name: &str,
+    description: Option<String>,
+    owner: ActorRef,
+    model_id: String,
+) -> crate::principal::config::PrincipalConfig {
+    use crate::principal::config::{
+        Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
+        PrincipalIntentConfig, PrincipalRoutingConfig,
+    };
+    PrincipalConfig {
+        actor_key: None,
+        name: name.to_string(),
+        id: None,
+        did: None,
+        owner,
+        identity: PrincipalIdentityConfig {
+            display_name: Some(name.to_string()),
+            description: description.filter(|d| !d.trim().is_empty()),
+            avatar: None,
+        },
+        intent: PrincipalIntentConfig::default(),
+        governance: PrincipalGovernanceConfig::default(),
+        routing: PrincipalRoutingConfig::default(),
+        exposure: Exposure::Private,
+        status: None,
+        boot_state: None,
+        permissions: Vec::new(),
+        preferred_model_id: Some(model_id),
+        quota: None,
+        children: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4292,6 +4306,35 @@ mod tests {
                 ActorRef::User("local".into())
             );
         }
+    }
+
+    // IPC create leaves a missing or blank description empty, so the
+    // genesis turn has the peko adopt its own (no "The <name> Principal").
+    #[test]
+    fn ipc_create_leaves_a_missing_description_for_the_peko() {
+        let owner = ActorRef::User("local".into());
+        for given in [None, Some(String::new()), Some("   ".into())] {
+            let config = super::ipc_create_config("juno", given, owner.clone(), "mock".into());
+            assert_eq!(config.identity.description, None);
+            assert_eq!(config.identity.display_name.as_deref(), Some("juno"));
+            assert_eq!(config.owner, owner);
+            assert_eq!(config.preferred_model_id.as_deref(), Some("mock"));
+        }
+        let config =
+            super::ipc_create_config("juno", Some("Plans my week".into()), owner, "mock".into());
+        assert_eq!(
+            config.identity.description.as_deref(),
+            Some("Plans my week")
+        );
+        assert!(
+            crate::principal::genesis::genesis_brief(&super::ipc_create_config(
+                "juno",
+                None,
+                ActorRef::User("local".into()),
+                "m".into()
+            ))
+            .contains("no description recorded")
+        );
     }
 
     // ─── Phase 11: read_principal_log reads the peer DM channel ──────

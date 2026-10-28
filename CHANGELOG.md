@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: pekos created from the desktop no longer read "The <name> Principal" (2026-10-28)
+
+IPC `principal_create` without a description stamped `"The <name>
+Principal"`, so every peko made in peko-desktop showed that runtime
+jargon as its subtitle and never wrote its own. A missing or blank
+description now stays empty, as `peko create` leaves it, and the genesis
+turn has the peko adopt its own self-description.
+
 ### Feature: conversations run a conversation role; the root role supervises (2026-10-28)
 
 Every DM and group turn ran the principal's root role — the same file
