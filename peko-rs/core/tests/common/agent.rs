@@ -28,7 +28,7 @@ pub fn create_mock_principal_with_tools(
 
     let root = cli.peko_dir().join("principals").join(name);
     std::fs::create_dir_all(&root).expect("create principal fixture directory");
-    peko_core::principal::genesis::seed_default_root_role(&root).expect("seed root role");
+    peko_core::principal::genesis::seed_default_roles(&root).expect("seed default roles");
     let mut config: peko_core::principal::config::PrincipalConfig =
         toml::from_str(&format!("name = {name:?}\n")).expect("fixture config");
     config.owner = peko_auth::ActorRef::User("local".into());

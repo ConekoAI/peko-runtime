@@ -1287,6 +1287,14 @@ impl ChannelPort for TunnelChannelPort {
     ) -> Result<peko_channel::Binding> {
         self.local.set_wake(channel, principal, wake).await
     }
+    async fn set_role(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        role: Option<String>,
+    ) -> Result<peko_channel::Binding> {
+        self.local.set_role(channel, principal, role).await
+    }
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,

@@ -118,16 +118,21 @@ pub trait PolicyGate: Send + Sync {
 }
 
 /// Why the owner, not the reviewer, decides this call, if they do: a
-/// non-owner run's `Channel create` / `invite` (ADR-082 D6). It runs only
-/// as an approved replay.
+/// non-owner run's `Channel create` / `invite` (ADR-082 D6) or `role`
+/// (ADR-087 D6). It runs only as an approved replay.
 #[must_use]
 pub fn owner_decides(
     stamp: &ActingFor,
     tool_name: &str,
     params: &serde_json::Value,
 ) -> Option<&'static str> {
-    (!stamp.is_owner() && crate::security::floor::is_channel_roster_change(tool_name, params))
-        .then_some("only the owner decides who joins the principal's groups")
+    if stamp.is_owner() {
+        return None;
+    }
+    match crate::security::floor::channel_owner_action(tool_name, params)? {
+        "role" => Some("only the owner decides which role the principal runs in a conversation"),
+        _ => Some("only the owner decides who joins the principal's groups"),
+    }
 }
 
 /// Whether a call by `stamp` goes to the reviewer.
@@ -137,7 +142,7 @@ pub fn needs_review(stamp: &ActingFor, tool_name: &str, params: &serde_json::Val
         return false;
     }
     // `Channel info` / `wake` / `leave` stay inside the run's own
-    // conversation (the tool enforces it); roster changes go to the owner.
+    // conversation (the tool enforces it); owner actions go to the owner.
     if tool_name == "Channel" {
         return false;
     }

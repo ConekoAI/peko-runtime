@@ -8,6 +8,7 @@
 //! | `d4_principal_identity_section`        | D4 — `[identity]`/`[intent]` ride the tail (T0)        |
 //! | `d5_self_position_section`             | D5 — the agent's own session position (T2)             |
 //! | `peer_agent_role_for_peer_turns`       | D3 — `routing.peer_agent` role for peer-facing turns   |
+//! | `conversation_role_for_peer_turns`     | ADR-087 — conversation role default, then binding role |
 //! | `d5_agents_md_project_context`         | D5 — focus-dir AGENTS.md project instructions (T2)     |
 //! | `d2_memory_update_notice`              | D2 — changed tail section re-injects with a notice     |
 //! | `d6_workspace_hook_prompt_section`     | D6 — `PromptSection` workspace-hook bind               |
@@ -130,6 +131,15 @@ fn write_root_persona(cli: &PekoCli, principal: &str, marker: &str) {
          You are the root agent of a test principal. Persona marker: {marker}.\n"
     );
     std::fs::write(&path, body).expect("write roles/root.md");
+}
+
+/// Write the hot role note `kb/roles/<role>.md`, injected into runs
+/// named after that role.
+fn write_role_note(cli: &PekoCli, principal: &str, role: &str, marker: &str) {
+    let dir = workspace(cli, principal).join("kb").join("roles");
+    std::fs::create_dir_all(&dir).expect("create kb/roles");
+    std::fs::write(dir.join(format!("{role}.md")), format!("Note: {marker}\n"))
+        .expect("write role note");
 }
 
 /// Write a named role file (`agents/<role>.md`) whose body contains `marker`.
@@ -458,7 +468,10 @@ async fn d3_role_prompt_reaches_spawned_child() {
         &["Agent", "Bash", "agent:researcher"],
     );
     write_root_persona(&cli, principal, "ROOT_PERSONA_MARKER_D3QX7");
+    write_role(&cli, principal, "conversation", "CONVERSATION_MARKER_D3QX7");
     write_role(&cli, principal, "researcher", "ROLE_MARKER_D3QX7");
+    write_role_note(&cli, principal, "researcher", "RESEARCHER_NOTE_D3QX7");
+    write_role_note(&cli, principal, "root", "ROOT_NOTE_D3QX7");
     let _daemon = DaemonGuard::spawn(&cli);
 
     let prompt = format!(
@@ -478,13 +491,21 @@ async fn d3_role_prompt_reaches_spawned_child() {
         !child_system.contains("ROOT_PERSONA_MARKER_D3QX7"),
         "spawned child's system prompt must NOT be the root persona; got:\n{child_system}"
     );
+    // ADR-087 D5: the child is named after its role, so its role note
+    // (not root's) rides its context.
+    let child_wire = child_req.to_string();
+    assert!(
+        child_wire.contains("RESEARCHER_NOTE_D3QX7") && !child_wire.contains("ROOT_NOTE_D3QX7"),
+        "spawned child must get the researcher role note; got:\n{child_wire}"
+    );
 
-    // Cross-check: the parent (peer-child root agent) kept the root persona.
+    // Cross-check: the parent is a DM conversation turn, so it runs the
+    // conversation role (ADR-087), not the root persona.
     let parent_req = request_for_needle(&recordings, parent_needle);
     let parent_system = request_system_text(&parent_req);
     assert!(
-        parent_system.contains("ROOT_PERSONA_MARKER_D3QX7"),
-        "parent's system prompt must carry the root persona; got:\n{parent_system}"
+        parent_system.contains("CONVERSATION_MARKER_D3QX7"),
+        "parent's system prompt must carry the conversation role; got:\n{parent_system}"
     );
 }
 
@@ -627,6 +648,118 @@ async fn peer_agent_role_for_peer_turns() {
         !system.contains("ROOT_MARKER_PAQX7"),
         "peer turn must NOT run the root persona when peer_agent is set; got:\n{system}"
     );
+}
+
+/// ADR-087: with nothing configured, a DM turn runs the seeded
+/// `conversation` role (not the root role); once the DM's binding names
+/// a role, the next turn runs that one — read per turn, no restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires MOCK_LLM_URL and peko daemon"]
+#[serial]
+async fn conversation_role_for_peer_turns() {
+    if mock_llm_url().is_none() {
+        eprintln!("MOCK_LLM_URL not set; skipping");
+        return;
+    }
+    let real_mock = mock_llm_url().unwrap();
+
+    // The mock matches on a conversation's FIRST user message, so both
+    // turns of the DM share one needle and its scripted sequence.
+    let needle = "tiered-convrole-a1k9";
+    let principal = "tiered_conversation_role";
+
+    let script = serde_json::json!({ needle: ["CONV_ROLE_OK", "BINDING_ROLE_OK"] }).to_string();
+    configure_mock(&real_mock, &script).await;
+
+    let (proxy_url, recordings) = start_recording_proxy(&real_mock).await;
+    let _mock_override = MockUrlOverride::set(&proxy_url);
+
+    let cli = PekoCli::new();
+    create_mock_principal_with_tools(&cli, principal, &proxy_url, &[]);
+    write_root_persona(&cli, principal, "ROOT_MARKER_CVQX7");
+    write_role(&cli, principal, "support", "SUPPORT_MARKER_CVQX7");
+    write_role_note(&cli, principal, "support", "SUPPORT_NOTE_CVQX7");
+    let _daemon = DaemonGuard::spawn(&cli);
+
+    let prompt = format!("Say CONV_ROLE_OK. Use the needle '{needle}'.");
+    send_and_assert(&cli, principal, &prompt, "CONV_ROLE_OK", 30);
+    let system = request_system_text(&request_for_needle(&recordings, needle));
+    assert!(
+        system.contains("talking in one conversation"),
+        "a DM turn must run the seeded conversation role; got:\n{system}"
+    );
+    assert!(
+        !system.contains("ROOT_MARKER_CVQX7"),
+        "a DM turn must not run the root role; got:\n{system}"
+    );
+
+    // Name a role on the DM's binding, as `Channel role` would.
+    let mut bound = 0;
+    let mut metas = Vec::new();
+    collect_named(cli.home(), "meta.json", 0, &mut metas);
+    for path in metas {
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        if meta["kind"] != "dm" {
+            continue;
+        }
+        if let Some(bindings) = meta["bindings"].as_object_mut() {
+            for binding in bindings.values_mut() {
+                binding["role"] = serde_json::json!("support");
+                bound += 1;
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    }
+    assert_eq!(bound, 1, "exactly one DM binding after one send");
+
+    send_and_assert(
+        &cli,
+        principal,
+        "Now say BINDING_ROLE_OK.",
+        "BINDING_ROLE_OK",
+        30,
+    );
+    let second = recordings
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|req| req.to_string().contains("Now say BINDING_ROLE_OK."))
+        .cloned()
+        .expect("the second turn reached the model");
+    let system = request_system_text(&second);
+    assert!(
+        system.contains("SUPPORT_MARKER_CVQX7"),
+        "the binding's role must run the next turn; got:\n{system}"
+    );
+    assert!(
+        !system.contains("talking in one conversation"),
+        "the default conversation role must not leak in; got:\n{system}"
+    );
+    assert!(
+        second.to_string().contains("SUPPORT_NOTE_CVQX7"),
+        "the turn is named after its role, so the support note rides it"
+    );
+}
+
+/// Every file named `name` under `root`.
+fn collect_named(root: &Path, name: &str, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 10 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_named(&path, name, depth + 1, out);
+        } else if path.file_name().is_some_and(|n| n == name) {
+            out.push(path);
+        }
+    }
 }
 
 /// ADR-052 D5 (T2): after a Bash call lands in a project directory, the

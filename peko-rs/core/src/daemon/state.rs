@@ -2118,11 +2118,10 @@ impl crate::tunnel::TunnelHost for AppState {
                     let config = principal.config.read().await;
                     (
                         config.owner.clone(),
-                        crate::principal::child_turns::peer_child_agent_config(
+                        crate::principal::child_turns::peer_child_session_agent_name(
                             &config,
                             &principal.workspace_path,
-                        )
-                        .name,
+                        ),
                     )
                 };
                 let session_manager = crate::principal::child_turns::peer_child_session_manager(

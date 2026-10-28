@@ -80,6 +80,13 @@ pub struct AgentConfig {
     /// from or written to a role file.
     #[serde(skip)]
     pub acting_for: Option<peko_tools_core::ActingFor>,
+
+    /// The role this run plays (ADR-087 D5), when it differs from what
+    /// `name` says: `{{role_name}}` and the `kb/roles/<role>.md` note
+    /// follow it. `name` stays the agent's identity key (its DID alias
+    /// and tool session slot). Runtime-set only.
+    #[serde(skip)]
+    pub role: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -102,6 +109,7 @@ impl Default for AgentConfig {
             model_aliases: Vec::new(),
             conversation_channel: None,
             acting_for: None,
+            role: None,
         }
     }
 }

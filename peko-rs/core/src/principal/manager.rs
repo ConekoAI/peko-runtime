@@ -406,11 +406,10 @@ impl PrincipalManager {
             ),
             Err(_) => {
                 let config = principal.config.read().await;
-                let agent_name = crate::principal::child_turns::peer_child_agent_config(
+                let agent_name = crate::principal::child_turns::peer_child_session_agent_name(
                     &config,
                     &principal.workspace_path,
-                )
-                .name;
+                );
                 let sessions = crate::principal::child_turns::peer_child_session_manager(
                     principal,
                     &agent_name,
@@ -461,8 +460,8 @@ impl PrincipalManager {
         // path (CLI provision, package import, tests) satisfies the
         // workspace-file contract before the router factory resolves
         // the root prompt and fails loudly on absence.
-        crate::principal::genesis::seed_default_root_role(&layout.shared.root)
-            .map_err(|e| PrincipalManagerError::Config(format!("root role seed failed: {e:#}")))?;
+        crate::principal::genesis::seed_default_roles(&layout.shared.root)
+            .map_err(|e| PrincipalManagerError::Config(format!("role seed failed: {e:#}")))?;
 
         // Generate and persist a real DID identity for this Principal.
         let mut config = config;
@@ -635,8 +634,8 @@ impl PrincipalManager {
         // stamp as created ones — the root role prompt has no
         // render-time fallback, so `roles/root.md` must exist before
         // the router factory resolves the root prompt.
-        crate::principal::genesis::seed_default_root_role(&workspace_path)
-            .map_err(|e| PrincipalManagerError::Config(format!("root role seed failed: {e:#}")))?;
+        crate::principal::genesis::seed_default_roles(&workspace_path)
+            .map_err(|e| PrincipalManagerError::Config(format!("role seed failed: {e:#}")))?;
 
         // Stable principal id: use the persisted one when present. For
         // pre-existing `principal.toml` files without an `id` field,
@@ -4063,8 +4062,16 @@ mod tests {
     /// Append `text` to the principal's root role, as a person editing
     /// the file would.
     async fn append_to_root_role(principal: &Principal, text: &str) {
-        let path = principal.workspace_path.join("roles").join("root.md");
-        let mut body = tokio::fs::read_to_string(&path).await.expect("root role");
+        append_to_role(principal, "root", text).await;
+    }
+
+    /// Append `text` to `roles/<role>.md`.
+    async fn append_to_role(principal: &Principal, role: &str, text: &str) {
+        let path = principal
+            .workspace_path
+            .join("roles")
+            .join(format!("{role}.md"));
+        let mut body = tokio::fs::read_to_string(&path).await.expect("role file");
         body.push_str(&format!("\n{text}\n"));
         tokio::fs::write(&path, body).await.unwrap();
     }
@@ -4084,12 +4091,12 @@ mod tests {
     }
 
     /// A conversation's turn bundle is cached for the principal's
-    /// lifetime. Before, it kept the root role and model it was built
-    /// with, so an edit to either file showed up only after a daemon
-    /// restart.
+    /// lifetime. Before, it kept the role and model it was built with,
+    /// so an edit to either file showed up only after a daemon restart.
+    /// Conversations run the `conversation` role (ADR-087).
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn conversation_turns_pick_up_root_role_and_model_edits() {
+    async fn conversation_turns_pick_up_role_and_model_edits() {
         let (_temp, manager, adapter, id) = setup().await;
         let principal = manager.get(id.clone()).await.unwrap();
         let peer = ActorRef::User("alice".into());
@@ -4110,18 +4117,18 @@ mod tests {
                     .await
             }
         };
-        let marker = "Always sign off as the edited root role.";
+        let marker = "Always sign off as the edited conversation role.";
 
         adapter.queue_text("first");
         send("one").await.expect("first turn");
         assert!(!last_request_contains(&adapter, marker));
 
-        append_to_root_role(&principal, marker).await;
+        append_to_role(&principal, "conversation", marker).await;
         adapter.queue_text("second");
         send("two").await.expect("second turn");
         assert!(
             last_request_contains(&adapter, marker),
-            "the turn after the edit must carry the new root role"
+            "the turn after the edit must carry the new conversation role"
         );
 
         // A model the catalog does not have: the next turn resolves no
@@ -4186,15 +4193,15 @@ mod tests {
         assert_eq!(adapter.recorded_requests().len(), before);
     }
 
-    /// A root role that cannot be read at turn time (mid-save, deleted)
-    /// keeps the last good one instead of failing the turn.
+    /// When no role can be read at turn time (mid-save, deleted), a
+    /// conversation keeps the last good one instead of failing the turn.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
-    async fn missing_root_role_keeps_the_last_good_one() {
+    async fn missing_roles_keep_the_last_good_one() {
         let (_temp, manager, adapter, id) = setup().await;
         let principal = manager.get(id.clone()).await.unwrap();
-        let marker = "Last good root role.";
-        append_to_root_role(&principal, marker).await;
+        let marker = "Last good conversation role.";
+        append_to_role(&principal, "conversation", marker).await;
         let peer = ActorRef::User("alice".into());
 
         adapter.queue_text("first");
@@ -4211,9 +4218,11 @@ mod tests {
             .expect("first turn");
         assert!(last_request_contains(&adapter, marker));
 
-        tokio::fs::remove_file(principal.workspace_path.join("roles").join("root.md"))
-            .await
-            .unwrap();
+        for role in ["conversation.md", "root.md"] {
+            tokio::fs::remove_file(principal.workspace_path.join("roles").join(role))
+                .await
+                .unwrap();
+        }
         adapter.queue_text("second");
         manager
             .receive_streaming(
@@ -4225,7 +4234,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("a missing root role must not fail the turn");
+            .expect("missing roles must not fail the turn");
         assert!(last_request_contains(&adapter, marker));
     }
 

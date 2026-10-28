@@ -1,13 +1,14 @@
 //! `Channel` — a principal manages its groups (ADR-082 D4–D6).
 //!
-//! Five actions: `create` a group, `invite` an actor into one, `leave`
-//! it, set its own `wake` policy there, and read a channel's `info`.
-//! DMs are opened by `ChannelSend` and never change: every action but
-//! `info` refuses one.
+//! Six actions: `create` a group, `invite` an actor into one, `leave`
+//! it, set its own `wake` policy there, choose the `role` its turns run
+//! in a channel (ADR-087), and read a channel's `info`. DMs are opened
+//! by `ChannelSend` and keep their members and wake policy: only `info`
+//! and `role` accept one.
 //!
 //! Authority is split with the dispatcher. The floor refuses `create` /
-//! `invite` to untrusted runs, and a trusted run's call waits for the
-//! owner (`security::judge::owner_decides`). This tool keeps every
+//! `invite` / `role` to untrusted runs, and a trusted run's call waits
+//! for the owner (`security::judge::owner_decides`). This tool keeps every
 //! non-owner run inside its own conversation's channel and limits
 //! invitees to the principal's owner and learned principal contacts.
 
@@ -90,6 +91,14 @@ impl ChannelTool {
                     "policy":{"type":"string", "enum":["human", "mention", "off"],
                         "description":"human: every human root post starts a turn; mention: only @<name>; off: nothing does."}
                 }, "required":["channel", "policy"], "additionalProperties":false}),
+            ),
+            (
+                "role",
+                json!({"type":"object", "properties":{
+                    "channel": channel,
+                    "role":{"type":"string", "minLength":1,
+                        "description":"A role id from RoleCatalog. Omit to return to your default conversation role."}
+                }, "required":["channel"], "additionalProperties":false}),
             ),
             (
                 "info",
@@ -219,7 +228,8 @@ impl ChannelTool {
             .parse::<ActorRef>()
             .unwrap_or_else(|_| ActorRef::from(&PrincipalId(membership.creator.clone())));
         let creator = self.port.actor_info(&creator).await.address;
-        let mut you = json!({"member": true, "wake": wake});
+        let role = binding.as_ref().and_then(|b| b.role.clone());
+        let mut you = json!({"member": true, "wake": wake, "role": role});
         if stamp.is_owner() {
             you["session"] = json!(binding.map(|b| b.session));
         }
@@ -250,10 +260,12 @@ impl Tool for ChannelTool {
          member) and can invite members at once; invite adds your owner or a principal from \
          Contacts; leave removes you from a group; wake sets what starts a turn for you in a \
          group (human: every human root post, mention: only @<your name> — the default, off: \
-         nothing; posts by principals and replies never do); info shows a channel's kind, \
-         creator, participants, and your wake policy. DMs are opened by ChannelSend and never \
-         change. Only the owner decides create and invite: a run acting for anyone else waits \
-         for the owner's approval."
+         nothing; posts by principals and replies never do); role chooses the role (from \
+         RoleCatalog) your turns run in a DM or group, or returns it to your default \
+         conversation role when omitted; info shows a channel's kind, creator, participants, \
+         and your wake policy and role. DMs are opened by ChannelSend and keep their members \
+         and wake policy. Only the owner decides create, invite, and role: a run acting for \
+         anyone else waits for the owner's approval."
             .into()
     }
 
@@ -339,6 +351,29 @@ impl Tool for ChannelTool {
                 }
                 let binding = self.port.set_wake(&channel, &id, policy).await?;
                 Ok(json!({"channel": channel.as_str(), "wake": binding.wake}))
+            }
+            Some("role") => {
+                let channel = Self::channel_arg(&params, &stamp)?;
+                self.require_member(&channel, &id).await?;
+                let principal = self.principal(&id).await?;
+                let role = params["role"].as_str().map(str::to_string);
+                if let Some(role) = &role {
+                    let roles_dir = principal.workspace_path.join("roles");
+                    crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir)
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "Channel: no role {role}; RoleCatalog lists the roles you have"
+                            )
+                        })?;
+                }
+                if self.port.binding_for(&channel, &id).await?.is_none() {
+                    self.require_group(&channel).await?;
+                    self.manager()?
+                        .ensure_group_binding(&principal, &channel)
+                        .await?;
+                }
+                let binding = self.port.set_role(&channel, &id, role).await?;
+                Ok(json!({"channel": channel.as_str(), "role": binding.role}))
             }
             other => anyhow::bail!("Channel: unknown action {other:?}"),
         }

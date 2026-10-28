@@ -145,6 +145,21 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
+    /// Set the role `principal`'s turns run on `channel` (ADR-087 D4);
+    /// `None` returns it to the principal's default. Works for both
+    /// kinds. The caller checks that the role resolves.
+    async fn set_role(
+        &self,
+        channel: &ChannelId,
+        principal: &PrincipalId,
+        role: Option<String>,
+    ) -> Result<Binding> {
+        let _ = (channel, principal, role);
+        Err(ChannelError::Adapter(
+            "this channel port does not store bindings".into(),
+        ))
+    }
+
     /// Ensure an opaque pair DM and its principal-local session binding.
     async fn ensure_dm(
         &self,
@@ -768,6 +783,10 @@ pub struct Binding {
     pub session: String,
     /// What starts a turn in that session.
     pub wake: WakePolicy,
+    /// The role (`roles/<id>.md`) the principal's turns run here
+    /// (ADR-087 D4). `None` is the principal's default conversation role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 impl Binding {
@@ -775,7 +794,14 @@ impl Binding {
         Self {
             session: session.into(),
             wake,
+            role: None,
         }
+    }
+
+    /// The same binding running `role`.
+    pub fn with_role(mut self, role: Option<String>) -> Self {
+        self.role = role;
+        self
     }
 }
 
