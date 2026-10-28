@@ -2,7 +2,7 @@
 
 **Status:** Accepted (runtime: `feature/conversation-role`)
 **Date:** 2026-10-28
-**Counterpart:** peko-desktop — a role picker beside the group wake picker (later; the IPC lands here).
+**Counterpart:** none. Roles are internal to the principal; no client surface (D6).
 
 **Amends:**
 - [ADR-052](ADR-052-tiered-system-prompt.md) D3 — "persona inheritance" (peer children run the root role) is no longer the default. The per-binding role it anticipated ("a channel binding may name a T1 role file") becomes the mechanism.
@@ -66,16 +66,16 @@ A named role that does not resolve (no such file, unreadable) logs a warning and
 
 Both kinds of channel can carry a role. A DM's `wake` is fixed (ADR-082 D3); its `role` is not.
 
-### D5 — The run's role name is the role it runs
+### D5 — The prompt reads the role, not the agent's name
 
-A run's `AgentConfig.name` is the role it runs, so `{{role_name}}` and the injected role note (`kb/roles/<role>.md`) match it:
+A run is addressed by its session's slug path; it needs no name of its own. `AgentConfig.name` is an identity key: the agent DID minted from it (a `by-name/<name>` alias in the runtime's identity store) also files the run's tool session state. Renaming runs after their roles would mint a DID per role name, shared by every principal on the runtime. So the name stays as it is, and `AgentConfig` gains a runtime-set `role` that the prompt reads instead: `{{role_name}}` and the injected role note (`kb/roles/<role>.md`) follow `role` when set, else the name.
 
-- a conversation turn is named after its resolved role (D4);
-- an `Agent`-tool spawn with a `role` is named after that role. Before, it ran the role's body under the parent's name (`root`), so a `coder` child got root's role note.
+- a conversation turn's `role` is its resolved role (D4);
+- an `Agent`-tool spawn with a `role` sets that role. Before, it ran the role's body but rendered as `root` and got root's role note; a spawn without a role keeps its parent's prompt and role.
 
-Session stamps and run admission keep the principal's root key (F4); only the prompt-facing name changes.
+Session stamps, run admission, and agent identity keep the principal's root key (F4).
 
-### D6 — Setting a role (`Channel role`, IPC)
+### D6 — The principal sets its roles (`Channel role`)
 
 `Channel` gains a sixth action:
 
@@ -93,7 +93,7 @@ Who may set it — the role decides what the principal does in that conversation
 
 A role changes instructions, not authority: the trust floor, the policy reviewer, and the ledger all key on the run's `ActingFor` stamp, which no role can raise.
 
-For people, IPC `channel_info` reports each local peko's `role` next to its `wake`, and a new `channel_set_role { principal, channel_id, role? }` (behind `gate_principal_operator`) sets it, for the desktop role picker.
+There is no IPC or client surface for roles. A role is the principal's own instruction to itself, a workspace file like the rest of its capabilities (ADR-050), and the principal manages it. An owner who wants a different role in a channel says so in conversation; that is an owner run, so the principal sets it directly. IPC `channel_info` keeps reporting only `wake`.
 
 ### D7 — Genesis puts the persona in T0
 
@@ -105,7 +105,8 @@ The genesis brief tells a new principal that its voice, style, and shared rules 
 - **Role per session instead of per binding.** Sessions outlive bindings and move between parents; a binding is already the per-channel record the runtime consults (F6), and the owner thinks in channels, not session paths.
 - **Retire `routing.peer_agent`.** It would break principals that set it. It now means "the default conversation role", which is what it was used for.
 - **Let any run in a group choose its role, like `wake`.** A role rewrites the instructions the principal follows there; group members should not be able to pick that, any more than they can invite people.
-- **Keep the parent's name on Agent-tool spawns.** It left a `coder` child reading root's role note and calling itself `root` in `{{role_name}}`, the same mismatch this ADR removes from conversations.
+- **Name each run after its role.** It fixes the role note too, but `name` keys the agent DID and its tool session slot: every role name would mint an identity shared across principals. A run needs no name; its session path is its address.
+- **A client role picker (IPC `channel_set_role`).** It turns an internal instruction into a user setting the principal does not own, and duplicates what the owner can already ask for in conversation.
 
 ## 4. Consequences
 
@@ -119,6 +120,6 @@ The genesis brief tells a new principal that its voice, style, and shared rules 
 
 1. **Data model.** `Binding.role: Option<String>` (serde default, skipped when `None`); `ChannelPort::set_role` (default refuses) implemented by `ChannelStore` and delegated by the tunnel port.
 2. **Seeds.** `resources/roles/conversation/ROLE.md`; `seed_default_conversation_role` beside `seed_default_root_role` at every call site; the root seed trimmed to supervision; the genesis brief's T0 guidance.
-3. **Resolution.** `child_turns.rs` resolves the role per turn from the session's conversation channel binding (D4) and names the run after it (D5); `subagent_executor.rs` names a role spawn after its role (D5).
-4. **Surfaces.** `Channel role` and `info.you.role` with the D6 trust table; IPC `channel_info` role and `channel_set_role`. The desktop contract fixture gains `channel_set_role` with the desktop picker that sends it.
+3. **Resolution.** `child_turns.rs` resolves the role per turn from the session's conversation channel binding (D4); `AgentConfig.role` carries it, and `subagent_executor.rs` sets it for a role spawn. The engine's `AgentView::role` feeds the prompt's role name (D5).
+4. **Surface.** `Channel role` and `info.you.role` with the D6 trust table.
 5. **Docs.** `builtin-tools.md` (`Channel`), `DATA_MODEL.md` (`meta.json` binding), `API_SURFACE.md` (`ChannelPort`), AGENTS.md §6.2 and §9, CHANGELOG.

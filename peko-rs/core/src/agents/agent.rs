@@ -1605,6 +1605,10 @@ impl peko_engine::AgentView for Agent {
         Agent::name(self)
     }
 
+    fn role(&self) -> Option<&str> {
+        self.config.role.as_deref()
+    }
+
     fn identity_did(&self) -> &str {
         // `Agent::identity` is a private field; the public surface uses
         // `Agent::did()` which returns the same value. We avoid

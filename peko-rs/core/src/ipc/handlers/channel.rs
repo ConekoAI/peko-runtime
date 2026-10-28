@@ -228,18 +228,17 @@ impl ChannelHandler {
                 let Some(principal) = self.hosted_principal(&local_id).await else {
                     continue;
                 };
-                let binding = port.binding_for(&ch, &principal.id).await?;
                 let wake = match kind {
                     ConversationKind::Dm => WakePolicy::Human,
-                    ConversationKind::Group => binding
-                        .as_ref()
+                    ConversationKind::Group => port
+                        .binding_for(&ch, &principal.id)
+                        .await?
                         .map_or(WakePolicy::default_for(kind), |b| b.wake),
                 };
                 pekos.push(ChannelPekoWake {
                     name: principal.name().await,
                     local_id,
                     wake,
-                    role: binding.and_then(|b| b.role),
                 });
             }
             Ok::<_, peko_channel::ChannelError>(ResponsePacket::ChannelInfoResult {
@@ -348,102 +347,6 @@ impl ChannelHandler {
         }
     }
 
-    /// `ChannelSetRole`: set the role a peko's turns run in a DM or a
-    /// group (ADR-087 D6). Operator callers only, and only for the
-    /// peko's owner; refused for a role the peko does not have and for a
-    /// peko that is not a member.
-    async fn channel_set_role(
-        &self,
-        request_id: u64,
-        channel: &str,
-        principal_name: &str,
-        role: Option<String>,
-        caller: &CallerContext,
-        sink: &dyn ResponseSink,
-    ) -> anyhow::Result<()> {
-        if !self
-            .gate_principal_operator(caller, request_id, sink)
-            .await?
-        {
-            return Ok(());
-        }
-        let Some(ch) = ChannelId::parse(channel) else {
-            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
-        };
-        let Some(manager) = self.host.principal_manager() else {
-            return error_reply(sink, request_id, "no principal manager".to_string()).await;
-        };
-        let Some(principal) = manager.get_by_name(principal_name).await else {
-            return error_reply(
-                sink,
-                request_id,
-                format!("[not_found] principal '{principal_name}' is not loaded"),
-            )
-            .await;
-        };
-        let port = self.host.channel_port();
-        let owner = principal.config.read().await.owner.clone();
-        if !crate::security::shared_actor_keys(Some(Arc::clone(&port)))
-            .same_actor(&owner, &caller.permission_subject(&owner))
-        {
-            return error_reply(
-                sink,
-                request_id,
-                format!("[forbidden] only {principal_name}'s owner can choose its role"),
-            )
-            .await;
-        }
-        let role = role.filter(|r| !r.trim().is_empty());
-        if let Some(role) = &role {
-            let roles_dir = principal.workspace_path.join("roles");
-            if crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir).is_err() {
-                return error_reply(
-                    sink,
-                    request_id,
-                    format!("[not_found] {principal_name} has no role '{role}'"),
-                )
-                .await;
-            }
-        }
-        let set = async {
-            if !port
-                .list_members(&ch)
-                .await?
-                .contains(&ActorRef::from(&principal.id))
-            {
-                return Ok(Err(format!(
-                    "[forbidden] {principal_name} is not a member of {ch}"
-                )));
-            }
-            if port.binding_for(&ch, &principal.id).await?.is_none() {
-                if port.conversation_kind(&ch).await? == ConversationKind::Dm {
-                    return Ok(Err(format!(
-                        "[not_found] {principal_name} has no conversation on {ch} yet"
-                    )));
-                }
-                manager
-                    .ensure_group_binding(&principal, &ch)
-                    .await
-                    .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))?;
-            }
-            let binding = port.set_role(&ch, &principal.id, role).await?;
-            Ok::<_, peko_channel::ChannelError>(Ok(binding.role))
-        };
-        match set.await {
-            Ok(Ok(role)) => {
-                let response = ResponsePacket::ChannelRoleSet {
-                    request_id,
-                    channel: ch,
-                    principal_name: principal.name().await,
-                    role,
-                };
-                send_response(sink, response).await
-            }
-            Ok(Err(refusal)) => error_reply(sink, request_id, refusal).await,
-            Err(e) => error_reply(sink, request_id, format!("channel set role failed: {e}")).await,
-        }
-    }
-
     /// The principal hosted here under `local_id`, if any.
     async fn hosted_principal(&self, local_id: &str) -> Option<Arc<crate::principal::Principal>> {
         self.host
@@ -514,7 +417,6 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelPinToShared { .. }
                 | RequestPacket::ChannelInfo { .. }
                 | RequestPacket::ChannelSetWake { .. }
-                | RequestPacket::ChannelSetRole { .. }
         )
     }
 
@@ -1107,16 +1009,6 @@ impl RequestHandler for ChannelHandler {
                 wake,
             } => {
                 self.channel_set_wake(request_id, &channel, &principal_name, &wake, caller, sink)
-                    .await?
-            }
-
-            RequestPacket::ChannelSetRole {
-                request_id,
-                channel,
-                principal_name,
-                role,
-            } => {
-                self.channel_set_role(request_id, &channel, &principal_name, role, caller, sink)
                     .await?
             }
 
@@ -2909,22 +2801,6 @@ mod wake_tests {
             self.send(request, caller).await
         }
 
-        async fn set_role(
-            &self,
-            channel: &ChannelId,
-            peko: &str,
-            role: Option<&str>,
-            caller: &CallerContext,
-        ) -> ResponsePacket {
-            let request = RequestPacket::ChannelSetRole {
-                request_id: 1,
-                channel: channel.as_str().into(),
-                principal_name: peko.into(),
-                role: role.map(str::to_string),
-            };
-            self.send(request, caller).await
-        }
-
         async fn set_wake(&self, channel: &ChannelId, peko: &str, wake: &str) -> ResponsePacket {
             let request = RequestPacket::ChannelSetWake {
                 request_id: 1,
@@ -3056,58 +2932,6 @@ mod wake_tests {
         // A hub user is never a principal operator.
         let hub_user = CallerContext::from_jwt("someone-else".to_string());
         let message = error_message(fx.send(request, &hub_user).await);
-        assert!(message.contains("[forbidden]"), "{message}");
-    }
-
-    /// ADR-087 D6: the owner sets a peko's role in a group or a DM; info
-    /// reports it; an unknown role or a non-owner is refused.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn set_role_round_trips_through_info_on_either_kind() {
-        let fx = Fixture::new().await;
-        let local = CallerContext::local();
-        match fx
-            .set_role(&fx.group, "bob", Some("conversation"), &local)
-            .await
-        {
-            ResponsePacket::ChannelRoleSet {
-                principal_name,
-                role,
-                ..
-            } => assert_eq!(
-                (principal_name.as_str(), role.as_deref()),
-                ("bob", Some("conversation"))
-            ),
-            other => panic!("expected ChannelRoleSet, got {other:?}"),
-        }
-        let ResponsePacket::ChannelInfoResult { pekos, .. } = fx.info(&fx.group, &local).await
-        else {
-            panic!("expected ChannelInfoResult");
-        };
-        let roles: std::collections::HashMap<_, _> = pekos
-            .iter()
-            .map(|p| (p.name.as_str(), p.role.as_deref()))
-            .collect();
-        assert_eq!(roles["bob"], Some("conversation"));
-        assert_eq!(roles["alice"], None);
-
-        let message = error_message(fx.set_role(&fx.group, "bob", Some("wizard"), &local).await);
-        assert!(message.contains("no role 'wizard'"), "{message}");
-
-        let dm = fx
-            .port
-            .ensure_dm(&fx.alice.id, &ActorRef::User("local".into()), "/local-user")
-            .await
-            .unwrap();
-        fx.set_role(&dm, "alice", Some("root"), &local).await;
-        match fx.set_role(&dm, "alice", None, &local).await {
-            ResponsePacket::ChannelRoleSet { role, .. } => assert_eq!(role, None),
-            other => panic!("expected ChannelRoleSet, got {other:?}"),
-        }
-
-        fx.bob.config.write().await.owner =
-            ActorRef::User(peko_subject::Route::hub("someone-else".to_string()));
-        let key = CallerContext::from_api_key("k1".to_string(), vec![ApiKeyScope::Write]);
-        let message = error_message(fx.set_role(&fx.group, "bob", None, &key).await);
         assert!(message.contains("[forbidden]"), "{message}");
     }
 }

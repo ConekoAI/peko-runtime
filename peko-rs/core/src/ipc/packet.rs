@@ -856,18 +856,6 @@ pub enum RequestPacket {
         principal_name: String,
         wake: String,
     },
-
-    /// Set the role `principal_name`'s turns run in a channel (ADR-087
-    /// D6): a role id under its `roles/`, or `None` for its default
-    /// conversation role. DMs and groups; only the peko's owner.
-    #[serde(rename = "channel_set_role")]
-    ChannelSetRole {
-        request_id: u64,
-        channel: String,
-        principal_name: String,
-        #[serde(default)]
-        role: Option<String>,
-    },
 }
 
 impl RequestPacket {
@@ -944,8 +932,7 @@ impl RequestPacket {
             | Self::ChannelLeave { request_id, .. }
             | Self::ChannelPinToShared { request_id, .. }
             | Self::ChannelInfo { request_id, .. }
-            | Self::ChannelSetWake { request_id, .. }
-            | Self::ChannelSetRole { request_id, .. } => *request_id,
+            | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
 
@@ -1258,10 +1245,9 @@ pub enum ResponsePacket {
         kind: peko_protocol::channel::ConversationKind,
         name: String,
         members: Vec<peko_subject::ActorRef>,
-        /// The member pekos hosted on this runtime, their wake policy,
-        /// and their role. A DM's wake is always `human`; a group
-        /// binding not yet written reads as the group default,
-        /// `mention`, and no role.
+        /// The member pekos hosted on this runtime and their wake
+        /// policy. A DM's is always `human`; a group binding not yet
+        /// written reads as the group default, `mention`.
         pekos: Vec<ChannelPekoWake>,
     },
 
@@ -1272,16 +1258,6 @@ pub enum ResponsePacket {
         channel: peko_protocol::channel::ChannelId,
         principal_name: String,
         wake: peko_channel::WakePolicy,
-    },
-
-    /// Response to `ChannelSetRole`: the role now stored (`None` is
-    /// the default conversation role).
-    #[serde(rename = "channel_role_set")]
-    ChannelRoleSet {
-        request_id: u64,
-        channel: peko_protocol::channel::ChannelId,
-        principal_name: String,
-        role: Option<String>,
     },
 
     #[serde(rename = "channel_pinned_to_shared")]
@@ -2091,10 +2067,6 @@ pub struct ChannelPekoWake {
     pub name: String,
     pub local_id: String,
     pub wake: peko_channel::WakePolicy,
-    /// The binding's role (ADR-087); `None` is the peko's default
-    /// conversation role.
-    #[serde(default)]
-    pub role: Option<String>,
 }
 
 /// Explicit model endpoint settings, matching `peko model add`.
@@ -2444,8 +2416,7 @@ impl ResponsePacket {
             | Self::ChannelLeft { request_id, .. }
             | Self::ChannelPinnedToShared { request_id, .. }
             | Self::ChannelInfoResult { request_id, .. }
-            | Self::ChannelWakeSet { request_id, .. }
-            | Self::ChannelRoleSet { request_id, .. } => *request_id,
+            | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
 
@@ -2527,7 +2498,6 @@ impl ResponsePacket {
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
-            Self::ChannelRoleSet { .. } => "ChannelRoleSet",
         }
     }
 

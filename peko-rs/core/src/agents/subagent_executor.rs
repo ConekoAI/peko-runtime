@@ -2106,9 +2106,9 @@ impl SubagentExecutor {
         // `execute_subagent_task` can replace the child AgentConfig's
         // prompt with the role persona.
         let role_prompt_clone = config.role_prompt.clone();
-        // ADR-087 D5: the role the child runs names it (the Agent tool's
-        // `role` rides `config.agent`). Only with a role body: an unnamed
-        // spawn keeps the parent's name with the parent's prompt.
+        // ADR-087 D5: the role the child plays (the Agent tool's `role`
+        // rides `config.agent`). Only with a role body: a spawn without
+        // one keeps the parent's prompt and role.
         let role_name_clone = config
             .role_prompt
             .as_ref()
@@ -2567,8 +2567,8 @@ fn apply_role_prompt_override(
 ) {
     if let Some(body) = role_prompt {
         config.prompt = Some(body);
-        if let Some(name) = role_name {
-            config.name = name;
+        if role_name.is_some() {
+            config.role = role_name;
         }
     }
 }
@@ -2616,9 +2616,9 @@ async fn execute_subagent_task(
     // inherited config untouched (conversation-mode peer turns, cron
     // runs, and tests always pass `None`).
     role_prompt: Option<String>,
-    // ADR-087 D5: the role id the child runs, set only with
-    // `role_prompt`. Names the child `AgentConfig` so `{{role_name}}`
-    // and the `kb/roles/<role>.md` note match its role.
+    // ADR-087 D5: the role id the child plays, set only with
+    // `role_prompt`. Sets `AgentConfig.role` (not `name`, the identity
+    // key) so `{{role_name}}` and the `kb/roles/<role>.md` note match.
     role_name: Option<String>,
     // 2026-09-05: run-scoped force-compact flag (Agent tool
     // `action = "compact"`). When true, the child Agent's loop
@@ -3653,10 +3653,10 @@ mod tests {
     }
 
     /// ADR-052 D3 + ADR-087 D5: the role override replaces the child
-    /// config's prompt and names it after the role; every other
-    /// inherited field stays intact.
+    /// config's prompt and sets its role; the name (identity key) and
+    /// every other inherited field stay intact.
     #[test]
-    fn role_prompt_override_replaces_prompt_and_name() {
+    fn role_prompt_override_replaces_prompt_and_role() {
         let mut config = AgentConfig {
             name: "parent-agent".to_string(),
             description: Some("inherited".to_string()),
@@ -3669,7 +3669,8 @@ mod tests {
             Some("reviewer".to_string()),
         );
         assert_eq!(config.prompt.as_deref(), Some("You are a code reviewer."));
-        assert_eq!(config.name, "reviewer");
+        assert_eq!(config.role.as_deref(), Some("reviewer"));
+        assert_eq!(config.name, "parent-agent");
         assert_eq!(config.description.as_deref(), Some("inherited"));
 
         // A role name without a body (no role resolved) changes nothing.
@@ -3678,7 +3679,7 @@ mod tests {
             ..Default::default()
         };
         apply_role_prompt_override(&mut config, None, Some("reviewer".to_string()));
-        assert_eq!(config.name, "parent-agent");
+        assert_eq!(config.role, None);
     }
 
     /// ADR-052 D3: `None` leaves the inherited parent persona

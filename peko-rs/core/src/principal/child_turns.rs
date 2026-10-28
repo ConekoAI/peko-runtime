@@ -115,9 +115,10 @@ pub(crate) fn peer_child_agent_config(
 ///    errors when absent.
 ///
 /// A named role that does not resolve warns and falls through, so a bad
-/// value never breaks ingress. The config is named after the role it
-/// runs (`{{role_name}}`, `kb/roles/<role>.md`); sessions and the run
-/// registry use [`peer_child_session_agent_name`] instead.
+/// value never breaks ingress. The config's `role` is the role it runs
+/// (`{{role_name}}`, `kb/roles/<role>.md`); its `name` stays
+/// [`peer_child_session_agent_name`], the identity sessions, the run
+/// registry, and the agent DID key on.
 fn try_peer_child_agent_config(
     config: &PrincipalConfig,
     workspace_path: &std::path::Path,
@@ -133,7 +134,7 @@ fn try_peer_child_agent_config(
             continue;
         };
         match crate::principal::agent_prompt::resolve_agent_prompt(role, &roles_dir) {
-            Ok(prompt) => return Ok(role_agent_config(role, &prompt, config)),
+            Ok(prompt) => return Ok(role_agent_config(role, &prompt, config, workspace_path)),
             Err(e) => tracing::warn!(
                 "cannot resolve role '{role}' named by {source}: {e:#}. \
                  Falling back to the next default."
@@ -141,7 +142,14 @@ fn try_peer_child_agent_config(
         }
     }
     match crate::principal::agent_prompt::resolve_agent_prompt(CONVERSATION_ROLE, &roles_dir) {
-        Ok(prompt) => return Ok(role_agent_config(CONVERSATION_ROLE, &prompt, config)),
+        Ok(prompt) => {
+            return Ok(role_agent_config(
+                CONVERSATION_ROLE,
+                &prompt,
+                config,
+                workspace_path,
+            ))
+        }
         Err(e) => tracing::debug!("no conversation role, using the root role: {e:#}"),
     }
     let prompt =
@@ -156,10 +164,11 @@ fn role_agent_config(
     role: &str,
     prompt: &crate::principal::agent_prompt::AgentPrompt,
     config: &PrincipalConfig,
+    workspace_path: &std::path::Path,
 ) -> AgentConfig {
     let mut agent_config = build_agent_config(prompt, config.preferred_model_id.clone());
-    // `roles/<id>/ROLE.md` loads with the file stem as its name.
-    agent_config.name = role.to_string();
+    agent_config.name = peer_child_session_agent_name(config, workspace_path);
+    agent_config.role = Some(role.to_string());
     agent_config
 }
 
@@ -809,9 +818,12 @@ impl PeerChildTurns {
             .set_limit(max_running_agents);
         let mut current = live.current.lock().await;
         match agent_config {
-            // Named after the role it runs (ADR-087 D5); sessions and
-            // the registry key on `self.agent_name`, not this.
-            Ok(agent_config) => current.agent_config = agent_config,
+            Ok(mut agent_config) => {
+                // The name keys sessions, the registry, and the agent
+                // DID; the role (ADR-087 D5) is what the prompt reads.
+                agent_config.name = self.agent_name.clone();
+                current.agent_config = agent_config;
+            }
             Err(e) => tracing::warn!(
                 principal = %self.principal_id,
                 "cannot read a conversation or root role; this turn keeps the one it had: {e:#}"
@@ -1530,8 +1542,8 @@ mod tests {
     // ─── ADR-052 D3: opt-in T1 role via `routing.peer_agent` ───
 
     /// `peer_agent` set + role file present → the child config's
-    /// prompt is the role body and its name is the role (ADR-087 D5);
-    /// sessions and the registry key on `peer_child_session_agent_name`.
+    /// prompt is the role body and its `role` is that role (ADR-087
+    /// D5); its `name` stays root's, the identity key.
     #[test]
     fn peer_agent_role_body_replaces_persona_prompt() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1552,8 +1564,8 @@ mod tests {
             },
         );
         let agent_config = peer_child_agent_config(&config, tmp.path());
-        assert_eq!(agent_config.name, "channel-comm");
-        assert_eq!(peer_child_session_agent_name(&config, tmp.path()), "root");
+        assert_eq!(agent_config.role.as_deref(), Some("channel-comm"));
+        assert_eq!(agent_config.name, "root", "the identity key stays root");
         let prompt = agent_config.prompt.expect("persona prompt must be set");
         assert!(
             prompt.contains("CHANNEL_ROLE_MARKER"),
@@ -1586,9 +1598,11 @@ mod tests {
         );
         let agent_config = peer_child_agent_config(&config, tmp.path());
         assert_eq!(
-            agent_config.name, "channel-comm",
+            agent_config.role.as_deref(),
+            Some("channel-comm"),
             "not the file stem `ROLE`"
         );
+        assert_eq!(agent_config.name, "root");
         let prompt = agent_config.prompt.expect("persona prompt must be set");
         assert!(
             prompt.contains("DIR_LAYOUT_ROLE_MARKER"),
@@ -1669,7 +1683,8 @@ mod tests {
         let tmp = roles_fixture();
         let config = test_config("role-test", PrincipalRoutingConfig::default());
         let agent_config = resolved(&config, tmp.path(), None);
-        assert_eq!(agent_config.name, CONVERSATION_ROLE);
+        assert_eq!(agent_config.role.as_deref(), Some(CONVERSATION_ROLE));
+        assert_eq!(agent_config.name, "root");
         let prompt = agent_config.prompt.unwrap();
         assert!(prompt.contains("talking in one conversation"), "{prompt}");
         assert!(!prompt.contains("trunk session"), "{prompt}");
@@ -1687,7 +1702,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let pick = |config: &PrincipalConfig, role| resolved(config, tmp.path(), role).name;
+        let pick = |config: &PrincipalConfig, role| {
+            resolved(config, tmp.path(), role)
+                .role
+                .expect("a named role resolved")
+        };
         assert_eq!(pick(&with_peer_agent, Some("support")), "support");
         assert_eq!(pick(&with_peer_agent, None), "comms");
         assert_eq!(pick(&with_peer_agent, Some("missing")), "comms");

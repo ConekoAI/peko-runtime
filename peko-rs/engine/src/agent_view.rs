@@ -41,6 +41,12 @@ pub trait AgentView: Send + Sync + 'static {
     /// Agent display name (for prompts + hook payloads).
     fn name(&self) -> &str;
 
+    /// The role this run plays (ADR-087 D5), when set apart from
+    /// `name`. The prompt's role name and role note follow it.
+    fn role(&self) -> Option<&str> {
+        None
+    }
+
     /// Agent DID — used as the session-key namespace on the shared
     /// `ToolingRuntime` (issue #68) so concurrent agents don't clobber
     /// each other.

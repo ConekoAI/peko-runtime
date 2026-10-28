@@ -14,16 +14,18 @@ root", and tuning one job retuned the other. ADR-087 separates them:
   default. It is stamped create-if-missing at provision and on every boot,
   so existing pekos pick it up on their next daemon start.
 - A channel binding can name its own role (`meta.json`
-  `bindings[principal].role`), set with `Channel` action `role` (owner
-  decision: refused to untrusted runs, owner approval for trusted ones) or
-  IPC `channel_set_role`; `Channel info` and `channel_info` report it.
+  `bindings[principal].role`). The principal sets it with `Channel` action
+  `role` (owner decision: refused to untrusted runs, owner approval for
+  trusted ones) and reads it in `Channel info`. Roles stay internal: no
+  IPC or client surface.
   Resolution per turn: binding role → `routing.peer_agent` →
   `conversation` → `root`.
 - The seeded root role now covers supervision only (existing `root.md`
   files are untouched).
-- A run is named after the role it runs — a conversation turn after its
-  resolved role, an `Agent` spawn after its `role` (it used to inherit
-  `root`) — so `{{role_name}}` and the `kb/roles/<role>.md` note match it.
+- The prompt reads a run's role, not its agent name: `AgentConfig.role`
+  (conversation turns, and `Agent` spawns with a `role`, which used to
+  render as `root`) drives `{{role_name}}` and the `kb/roles/<role>.md`
+  note. Agent names and DIDs are unchanged.
 - The genesis brief puts voice, style, and shared rules in
   `[identity]`/`[intent]` and `kb/CONVENTIONS.md`, and describes roles as
   jobs.

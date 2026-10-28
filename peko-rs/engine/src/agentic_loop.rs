@@ -2346,7 +2346,11 @@ impl AgenticLoop {
         TurnPromptContext {
             principal_id: self.agent_principal_id.clone(),
             session_id: session_id.to_string(),
-            role_name: self.agent.name().to_string(),
+            role_name: self
+                .agent
+                .role()
+                .unwrap_or_else(|| self.agent.name())
+                .to_string(),
             body,
             project_instructions,
             workspace,
