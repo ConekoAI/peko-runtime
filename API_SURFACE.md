@@ -20,6 +20,7 @@ This document defines the public API surface for Peko, including the new Unified
 | `ChannelId::is_pair_id` | `peko_protocol::channel` | ✅ New | `dm_<64 hex>` — the only id a DM may have |
 | `WakePolicy { Human, Mention, Off }` (`default_for`, `as_str`, `parse`) / `Binding { session, wake }` | `peko_channel::port` | ✅ New | A principal's runtime-local link to a channel |
 | `ChannelPort::conversation_kind` / `bind` / `set_wake` | `peko_channel::port` | ✅ New | Read the kind; record a binding (runtime only, with a new session in the channel's compartment; keeps an existing wake and role); set a group binding's wake |
+| `ChannelPort::leave_actor` | `peko_channel::port` | ✅ New | Remove any member (a person or a principal) from a group; a DM refuses |
 | `ChannelPort::set_role`, `Binding::role` / `with_role` | `peko_channel::port` | ✅ New | ADR-087: the role a principal's turns run in a DM or group (`None` = its default conversation role); the default impl refuses |
 | `AgentConfig::role`, `AgentView::role` | `agents::agent_config`, `peko_engine` | ✅ New | ADR-087 D5: the role a run plays; the prompt's role name and role note follow it (default: the agent name) |
 | `genesis::{seed_default_roles, seed_default_conversation_role}` | `principal::genesis` | ✅ New | Stamp `roles/root.md` and `roles/conversation.md` create-if-missing (provision + every boot) |

@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a person can leave a group (2026-10-29)
+
+`channel_leave` removed only a named peko, so in peko-desktop "Leave"
+took a peko out of the group and you stayed. Without `principal_name`
+it now removes the caller and answers `channel_member_left { channel,
+member }`; with one it works as before (`channel_left`, operator only).
+`ChannelPort::leave_actor` removes any member, a person or a principal
+(whose binding goes with it), and the tunnel tells remote members. A DM
+still cannot be left.
+
 ### Fix: pekos created from the desktop no longer read "The <name> Principal" (2026-10-28)
 
 IPC `principal_create` without a description stamped `"The <name>

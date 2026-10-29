@@ -1514,11 +1514,15 @@ impl ChannelPort for TunnelChannelPort {
     }
 
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
-        let subject = ActorRef::from(principal);
+        self.leave_actor(channel, &ActorRef::from(principal)).await
+    }
+
+    async fn leave_actor(&self, channel: &ChannelId, subject: &ActorRef) -> Result<()> {
+        let subject = subject.clone();
         if !self.local.list_members(channel).await?.contains(&subject) {
             return Ok(());
         }
-        self.local.leave(channel, principal).await?;
+        self.local.leave_actor(channel, &subject).await?;
         let event = ChannelEvent::MemberLeft {
             channel: channel.clone(),
             member: subject.to_string(),
