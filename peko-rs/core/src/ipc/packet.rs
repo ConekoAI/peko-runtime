@@ -824,14 +824,16 @@ pub enum RequestPacket {
         principal_name: String,
     },
 
-    /// Remove `principal_name` from `channel`. PR-3a: closes the
-    /// missing IPC variant — PR-1 had `handle_leave` only on the
-    /// in-process path.
+    /// Remove `principal_name` from `channel` (operator callers;
+    /// answers `channel_left`), or, with no `principal_name`, the
+    /// caller themself — a person leaving a group (answers
+    /// `channel_member_left`).
     #[serde(rename = "channel_leave")]
     ChannelLeave {
         request_id: u64,
         channel: String,
-        principal_name: String,
+        #[serde(default)]
+        principal_name: Option<String>,
     },
 
     /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
@@ -1232,6 +1234,15 @@ pub enum ResponsePacket {
         request_id: u64,
         channel: peko_protocol::channel::ChannelId,
         principal: peko_subject::PrincipalId,
+    },
+
+    /// Response to a `ChannelLeave` without `principal_name`: the
+    /// caller (`member`) left the group.
+    #[serde(rename = "channel_member_left")]
+    ChannelMemberLeft {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        member: peko_subject::ActorRef,
     },
 
     /// Shared-tier pin acknowledged. `shared_path` is the absolute
@@ -2414,6 +2425,7 @@ impl ResponsePacket {
             | Self::ChannelMembersResult { request_id, .. }
             | Self::ChannelListResult { request_id, .. }
             | Self::ChannelLeft { request_id, .. }
+            | Self::ChannelMemberLeft { request_id, .. }
             | Self::ChannelPinnedToShared { request_id, .. }
             | Self::ChannelInfoResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. } => *request_id,
@@ -2495,6 +2507,7 @@ impl ResponsePacket {
             Self::ChannelMembersResult { .. } => "ChannelMembersResult",
             Self::ChannelListResult { .. } => "ChannelListResult",
             Self::ChannelLeft { .. } => "ChannelLeft",
+            Self::ChannelMemberLeft { .. } => "ChannelMemberLeft",
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",

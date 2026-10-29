@@ -474,7 +474,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             let packet = RequestPacket::ChannelLeave {
                 request_id: 0,
                 channel: channel.clone(),
-                principal_name: principal.clone(),
+                principal_name: Some(principal.clone()),
             };
             let (ch, principal_id) =
                 run_daemon_or(paths, packet, "channel_leave_failed", move |port, paths| {

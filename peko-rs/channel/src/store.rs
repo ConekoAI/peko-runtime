@@ -2791,6 +2791,10 @@ impl ChannelPort for ChannelStore {
     }
 
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
+        self.leave_actor(channel, &ActorRef::from(principal)).await
+    }
+
+    async fn leave_actor(&self, channel: &ChannelId, actor: &ActorRef) -> Result<()> {
         let tier = self.resolve_tier(channel).await?;
         let chan_dir = self.channel_dir_for_tier(tier, channel);
         let _guard = self.lock_members(&chan_dir).await?;
@@ -2800,16 +2804,17 @@ impl ChannelPort for ChannelStore {
                 "a DM keeps its two members; it cannot be left".into(),
             ));
         }
-        if meta.bindings.remove(&principal.0).is_some() {
-            meta.save(&chan_dir).await?;
+        if let ActorRef::Principal(route) = actor {
+            if meta.bindings.remove(route.id()).is_some() {
+                meta.save(&chan_dir).await?;
+            }
         }
         let mut members = MembersJson::load(&chan_dir).await?;
         let before_len = members.members.len();
-        let principal_subject = ActorRef::from(principal);
-        members.members.retain(|m| {
-            self.canonical_address(&member_subject(m).to_string())
-                != self.canonical_address(&principal_subject.to_string())
-        });
+        let leaving = self.canonical_address(&actor.to_string());
+        members
+            .members
+            .retain(|m| self.canonical_address(&member_subject(m).to_string()) != leaving);
         if members.members.len() == before_len {
             // Idempotent leave for non-members.
             return Ok(());
@@ -2818,7 +2823,10 @@ impl ChannelPort for ChannelStore {
 
         let ev = ChannelEvent::MemberLeft {
             channel: channel.clone(),
-            member: principal.to_string(),
+            member: match actor {
+                ActorRef::Principal(route) => PrincipalId(route.id().to_string()).to_string(),
+                other => other.to_string(),
+            },
             at: Utc::now().to_rfc3339(),
         };
         self.append_event(tier, channel, &ev, EventOrigin::Local)
@@ -3949,6 +3957,31 @@ mod tests {
                 .to_string(),
             ChannelError::NotMember.to_string()
         );
+    }
+
+    /// A person leaves a group the same way a principal does; a DM
+    /// refuses.
+    #[tokio::test]
+    async fn a_person_can_leave_a_group_but_not_a_dm() {
+        let store = ChannelStore::new(tmp_cfg("leave-person"));
+        let alice = pid("prin_alice");
+        let bob_user = ActorRef::User("bob".into());
+        let group = store
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        store.invite(&group, &alice, &bob_user).await.unwrap();
+        assert_eq!(store.list_members(&group).await.unwrap().len(), 2);
+        store.leave_actor(&group, &bob_user).await.unwrap();
+        assert_eq!(
+            store.list_members(&group).await.unwrap(),
+            vec![ActorRef::from(&alice)]
+        );
+        // Idempotent.
+        store.leave_actor(&group, &bob_user).await.unwrap();
+
+        let dm = dm_with_user(&store, &alice).await;
+        assert!(store.leave_actor(&dm, &bob_user).await.is_err());
     }
 
     #[tokio::test]

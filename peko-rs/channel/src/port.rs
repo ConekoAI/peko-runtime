@@ -382,6 +382,21 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// `MemberLeft` event. PR-1: leaves are always permitted.
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()>;
 
+    /// Remove any member — a person as well as a principal — from a
+    /// group. A principal leaving this way also loses its binding, as
+    /// with [`Self::leave`]. Idempotent for non-members; a DM refuses.
+    async fn leave_actor(&self, channel: &ChannelId, actor: &ActorRef) -> Result<()> {
+        match actor {
+            ActorRef::Principal(route) => {
+                self.leave(channel, &PrincipalId(route.id().to_string()))
+                    .await
+            }
+            _ => Err(ChannelError::Adapter(
+                "this channel port cannot remove people".into(),
+            )),
+        }
+    }
+
     /// All current members of the channel. ADR-049 Phase 1: members
     /// are [`ActorRef`]-typed — the returned list can contain both
     /// principals and users. Legacy on-disk member rows (bare

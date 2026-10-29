@@ -865,7 +865,33 @@ impl RequestHandler for ChannelHandler {
             RequestPacket::ChannelLeave {
                 request_id,
                 channel,
-                principal_name,
+                principal_name: None,
+            } => {
+                // A person leaving a group themself: no operator gate —
+                // anyone may leave. A DM refuses in the store.
+                let Some(ch) = ChannelId::parse(&channel) else {
+                    return error_reply(sink, request_id, format!("invalid ChannelId: {channel}"))
+                        .await;
+                };
+                match self.host.channel_port().leave_actor(&ch, &actor).await {
+                    Ok(()) => {
+                        let response = ResponsePacket::ChannelMemberLeft {
+                            request_id,
+                            channel: ch,
+                            member: actor.clone(),
+                        };
+                        send_response(sink, response).await?;
+                    }
+                    Err(e) => {
+                        error_reply(sink, request_id, format!("channel leave failed: {e}")).await?;
+                    }
+                }
+            }
+
+            RequestPacket::ChannelLeave {
+                request_id,
+                channel,
+                principal_name: Some(principal_name),
             } => {
                 if !self
                     .gate_principal_operator(caller, request_id, sink)
@@ -1370,7 +1396,7 @@ mod tests {
         assert!(handler.matches(&RequestPacket::ChannelLeave {
             request_id: 1,
             channel: "chan_x".into(),
-            principal_name: "p".into(),
+            principal_name: Some("p".into()),
         }));
 
         // Non-channel variants are NOT claimed.
@@ -2912,6 +2938,34 @@ mod wake_tests {
         fx.port.leave(&fx.group, &fx.bob.id).await.unwrap();
         let message = error_message(fx.set_wake(&fx.group, "bob", "off").await);
         assert!(message.contains("not a member"), "{message}");
+    }
+
+    /// A person leaves a group themself: no peko named, no operator
+    /// gate; the reply names the caller.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn you_can_leave_a_group_yourself() {
+        let fx = Fixture::new().await;
+        let local = CallerContext::local();
+        let request = RequestPacket::ChannelLeave {
+            request_id: 1,
+            channel: fx.group.as_str().into(),
+            principal_name: None,
+        };
+        match fx.send(request, &local).await {
+            ResponsePacket::ChannelMemberLeft {
+                member, channel, ..
+            } => {
+                assert_eq!(channel, fx.group);
+                assert_eq!(member, local.attribution_subject());
+            }
+            other => panic!("expected ChannelMemberLeft, got {other:?}"),
+        }
+        let members = fx.port.list_members(&fx.group).await.unwrap();
+        assert!(
+            !members.contains(&local.attribution_subject()),
+            "{members:?}"
+        );
+        assert!(members.contains(&ActorRef::from(&fx.alice.id)));
     }
 
     #[tokio::test(flavor = "multi_thread")]
