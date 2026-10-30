@@ -34,9 +34,9 @@ fn mock_llm_url() -> Option<String> {
 }
 
 /// Directory the daemon's built-in tools treat as their workspace root:
-/// `<PEKO_HOME>/data/workspaces` (see `tools::installation::install_runtime`).
-fn workspace_dir(cli: &PekoCli) -> PathBuf {
-    cli.peko_dir().join("data").join("workspaces")
+/// the principal's own folder, `<PEKO_HOME>/principals/<name>`.
+fn principal_workspace(cli: &PekoCli, principal: &str) -> PathBuf {
+    cli.peko_dir().join("principals").join(principal)
 }
 
 /// Every persisted `.jsonl` under the data dir, concatenated — the session
@@ -108,11 +108,6 @@ async fn daemon_runs_file_and_shell_tools_in_the_principal_workspace() {
     let grep_marker = "grep-hit-d06c.txt";
 
     let cli = PekoCli::new();
-    let ws = workspace_dir(&cli);
-    std::fs::create_dir_all(ws.join("found")).unwrap();
-    std::fs::write(ws.join("read-me.txt"), format!("{read_marker}\n")).unwrap();
-    std::fs::write(ws.join("found").join(glob_marker), "glob\n").unwrap();
-    std::fs::write(ws.join("found").join(grep_marker), "needle GREP_TARGET\n").unwrap();
 
     let script = serde_json::json!({
         needle: [
@@ -134,6 +129,13 @@ async fn daemon_runs_file_and_shell_tools_in_the_principal_workspace() {
     .to_string();
     configure_mock(&mock_url, &script).await;
     create_mock_principal_with_tools(&cli, "builtin_tools_e2e", &mock_url, &[]);
+    // Seed the peko's own folder: relative paths in the file tools and
+    // Bash resolve there, not in the old runtime-wide `data/workspaces`.
+    let ws = principal_workspace(&cli, "builtin_tools_e2e");
+    std::fs::create_dir_all(ws.join("found")).unwrap();
+    std::fs::write(ws.join("read-me.txt"), format!("{read_marker}\n")).unwrap();
+    std::fs::write(ws.join("found").join(glob_marker), "glob\n").unwrap();
+    std::fs::write(ws.join("found").join(grep_marker), "needle GREP_TARGET\n").unwrap();
     let _daemon = DaemonGuard::spawn(&cli);
 
     let (output, _, _) = run_with_timeout(
