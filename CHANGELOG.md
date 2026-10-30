@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: registered pekos stay online at PekoHub (2026-10-30)
+
+The Hub marks an instance offline after 90 s without an
+`instance_heartbeat`, and public chat to an offline peko answers 503. The
+runtime's heartbeat task (`TunnelDispatcher::spawn_heartbeat_task`) was
+never started, so every registered peko went offline about 90 s after it
+announced and remote chat failed until the next reconnect. `TunnelReady`
+now starts it for the connection (the Hub's interval, capped at 60 s;
+30 s when none) after announcing, and `Disconnect` stops it.
+
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
 An agent can look at an image, listen to audio, or watch video whenever it
