@@ -2501,6 +2501,7 @@ mod tests {
                 via: None,
                 msg_id: None,
                 reply_to: None,
+                attachments: Vec::new(),
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

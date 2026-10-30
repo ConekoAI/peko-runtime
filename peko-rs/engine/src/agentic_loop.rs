@@ -688,6 +688,15 @@ impl AgenticLoop {
         };
 
         messages.extend(pre_user_messages);
+
+        // ADR-078: incoming text may not impersonate runtime blocks —
+        // the same guard as the text-only entry.
+        let mut user_message = user_message;
+        for block in &mut user_message.content {
+            if let ContentBlock::Text { text } = block {
+                *text = peko_tools_core::neutralize_runtime_tags(text);
+            }
+        }
         messages.push(user_message.clone());
 
         // Persist only the text portion of the rich user message —

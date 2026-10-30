@@ -13,7 +13,7 @@ use crate::common::paths::PathResolver;
 use crate::extensions::role::RoleAdapter;
 use crate::principal::agent_prompt::load_agent_prompt;
 use crate::principal::child_turns::PeerChildIngress;
-use crate::principal::peer_dm::{post_peer_dm_inbound, post_peer_dm_reply};
+use crate::principal::peer_dm::{post_peer_dm_inbound_attached, post_peer_dm_reply};
 use crate::principal::AgentPrompt;
 use crate::principal::PrincipalConfig;
 use peko_auth::ownership::{check_permission, Permission, Resource};
@@ -1214,11 +1214,15 @@ impl PrincipalManager {
     /// `mode = Interactive` acquires a run permit and queues on
     /// conflict (used by `receive_streaming` and the principal IPC
     /// ingress).
+    ///
+    /// `attachments` (ADR-088, already copied into the workspace) ride
+    /// the DM post; a queued message carries their notes only (D5).
     pub(crate) async fn drive_principal_ingress(
         &self,
         principal: &Arc<Principal>,
         peer: &ActorRef,
         message: &str,
+        attachments: &[peko_protocol::channel::Attachment],
         mode: IngressMode,
     ) -> Result<IngressOutcome, IngressError> {
         let turns = self
@@ -1238,9 +1242,16 @@ impl PrincipalManager {
         // believe they sent something that never entered the
         // conversation's durable home.
         if let (Some(port), Some(dm)) = (&self.channel_port, &ingress.dm_channel) {
-            post_peer_dm_inbound(port, &principal.id, dm, &peer.to_string(), message)
-                .await
-                .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
+            post_peer_dm_inbound_attached(
+                port,
+                &principal.id,
+                dm,
+                &peer.to_string(),
+                message,
+                attachments.to_vec(),
+            )
+            .await
+            .map_err(|e| IngressError::Post(anyhow::anyhow!("{e:#}")))?;
         }
 
         match mode {
@@ -1256,9 +1267,12 @@ impl PrincipalManager {
                         // queue the message as steering. Caller emits the
                         // "Queued..." notice.
                         let inbox = self.inbox_registry.get_or_create(&child_id).await;
-                        inbox
-                            .push(SteeringMessage::new(message.to_string()).into())
-                            .await;
+                        let text = crate::principal::attachments::turn_text(
+                            message,
+                            &principal.workspace_path,
+                            attachments,
+                        );
+                        inbox.push(SteeringMessage::new(text).into()).await;
                         // A queued message is someone talking to the
                         // principal, though no new turn starts yet.
                         if let Some(detector) = &self.idle_detector {
@@ -1533,7 +1547,13 @@ impl PrincipalManager {
         // (resolve child + DM channel, post inbound, acquire or queue)
         // is unified in `drive_principal_ingress` (B8c.4).
         match self
-            .drive_principal_ingress(&principal, &peer, &ctx.message, IngressMode::Interactive)
+            .drive_principal_ingress(
+                &principal,
+                &peer,
+                &ctx.message,
+                &[],
+                IngressMode::Interactive,
+            )
             .await
         {
             Ok(IngressOutcome::Ready {

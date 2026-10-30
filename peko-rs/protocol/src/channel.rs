@@ -264,6 +264,21 @@ impl std::fmt::Display for ChannelId {
 // ChannelEvent
 // ---------------------------------------------------------------------------
 
+/// A file sent with a post (ADR-088). `path` is relative to the
+/// receiving peko's workspace on the post itself; clients reading it
+/// through `principal_log` get it absolute.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The file's original name.
+    pub name: String,
+    /// Where the copy is.
+    pub path: String,
+    /// The MIME type guessed from the name.
+    pub mime: String,
+    /// Size in bytes.
+    pub size: u64,
+}
+
 /// Causal-ordered event log for one channel.
 ///
 /// Wire shape (one example per variant):
@@ -318,6 +333,11 @@ pub enum ChannelEvent {
         /// replies to messages without an id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to: Option<String>,
+        /// Files sent with the post (ADR-088), kept in the receiving
+        /// peko's workspace. Omitted when empty, so lines without
+        /// attachments are byte-identical to before.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -555,6 +575,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -572,6 +593,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -593,6 +615,7 @@ mod tests {
             via: Some("/user-a/reminder".into()),
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -653,6 +676,7 @@ mod tests {
                     via: None,
                     msg_id: None,
                     reply_to: None,
+                    attachments: Vec::new(),
                 },
                 "posted",
             ),

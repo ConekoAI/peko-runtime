@@ -755,6 +755,7 @@ mod tests {
             via: via.map(str::to_string),
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         }
     }
 

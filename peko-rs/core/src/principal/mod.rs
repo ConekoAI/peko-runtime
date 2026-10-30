@@ -19,6 +19,7 @@
 pub mod acting_for_prompt;
 pub mod agent_prompt;
 pub mod agent_runner;
+pub(crate) mod attachments;
 pub mod catalog;
 pub(crate) mod channel_digest;
 pub(crate) mod child_turns;

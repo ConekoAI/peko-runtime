@@ -618,6 +618,9 @@ pub struct PrincipalLogMessage {
     pub timestamp: DateTime<Utc>,
     pub text: String,
     pub correlation_id: Option<String>,
+    pub sender_name: Option<String>,
+    /// ADR-088: attached files; `path` absolute on the runtime's host.
+    pub attachments: Vec<peko_protocol::channel::Attachment>,
 }
 ```
 
@@ -626,6 +629,12 @@ One immutable consumer-visible message — the row type of
 retired `ChatLogMessage` (camelCase fields,
 `PRINCIPAL_LOG_SCHEMA_VERSION`); the daemon mints `chan_<line>` ids
 from the DM channel's line numbers.
+
+`peko_protocol::channel::Attachment { name, path, mime, size }` (ADR-088)
+rides `ChannelEvent::Posted.attachments` (workspace-relative `path`) and
+`PostMsg::with_attachments`. `DaemonClient::principal_send_stream` takes
+`attachments: Vec<String>` (absolute paths); `RequestPacket::PrincipalSend`
+and `PrincipalSendStream` carry it with serde default empty.
 
 ### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
 

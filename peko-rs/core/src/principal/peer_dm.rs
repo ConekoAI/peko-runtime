@@ -209,11 +209,24 @@ pub(crate) async fn post_peer_dm_inbound(
     author: &str,
     text: &str,
 ) -> Result<()> {
+    post_peer_dm_inbound_attached(port, principal, channel, author, text, Vec::new()).await
+}
+
+/// [`post_peer_dm_inbound`] with the files the peer attached
+/// (ADR-088 D3).
+pub(crate) async fn post_peer_dm_inbound_attached(
+    port: &Arc<dyn ChannelPort>,
+    principal: &PrincipalId,
+    channel: &ChannelId,
+    author: &str,
+    text: &str,
+    attachments: Vec<peko_protocol::channel::Attachment>,
+) -> Result<()> {
     port.post_attributed(
         channel,
         &ActorRef::from(principal),
         author,
-        PostMsg::root(text),
+        PostMsg::root(text).with_attachments(attachments),
     )
     .await?;
     Ok(())

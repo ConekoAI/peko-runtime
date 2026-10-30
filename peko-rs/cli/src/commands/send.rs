@@ -13,6 +13,7 @@
 //!   echo "Hello" | peko send myprincipal --stdin
 //!   peko send myprincipal "also check the calendar" --wait
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
+//!   peko send myprincipal "What's in this?" --attach ~/photo.png
 //!
 //! Group channels (`group:<slug>` recipients) post as the caller's
 //! user identity (ADR-049 Phase 2, D7): `peko send group:eng "hi"`
@@ -60,6 +61,11 @@ pub struct SendArgs {
     /// Override the configured model for this message only
     #[arg(long, value_name = "MODEL_ID")]
     pub model: Option<String>,
+
+    /// Attach a file (repeatable, up to 8, 20 MB each). The peko keeps
+    /// a copy in its workspace; a vision model also sees images.
+    #[arg(long = "attach", value_name = "PATH")]
+    pub attach: Vec<String>,
 }
 
 /// Handle the send command
@@ -73,7 +79,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // prompt) and returns a canned greeting, silently burning the
     // user's quota. A non-technical user typing this in a shell loop
     // would have no idea they were paying for empty turns.
-    if message.trim().is_empty() {
+    if message.trim().is_empty() && args.attach.is_empty() {
         anyhow::bail!(
             "Message is empty. Provide a non-empty message as an argument, via --file, or via --stdin.\n\
              Examples:\n  \
@@ -103,6 +109,9 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         if args.model.is_some() {
             anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
         }
+        if !args.attach.is_empty() {
+            anyhow::bail!("attachments can only be sent to a peko directly, not to a group");
+        }
         let channel = format!("group:{slug}");
         return post_to_group(paths, &channel, &message).await;
     }
@@ -121,9 +130,19 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // `sent_at` is the client-side timestamp just before ingress; the
     // busy-path `--wait` loop uses it to tell the principal's reply
     // apart from older thread history.
+    // ADR-088: the daemon reads attachments by absolute path.
+    let attachments = args
+        .attach
+        .iter()
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .map(|p| p.display().to_string())
+                .with_context(|| format!("cannot attach {path}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let sent_at = chrono::Utc::now();
     let stream = client
-        .principal_send_stream(&args.principal, message, args.model.clone())
+        .principal_send_stream(&args.principal, message, args.model.clone(), attachments)
         .await?;
 
     // The CLI's own subject — derived from the same rule the daemon
@@ -634,6 +653,7 @@ mod tests {
             stdin: false,
             wait: false,
             model: None,
+            attach: Vec::new(),
         }
     }
 

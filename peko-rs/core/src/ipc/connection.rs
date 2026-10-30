@@ -538,6 +538,7 @@ mod tests {
             name: "test-principal".into(),
             message: message.clone(),
             override_model: None,
+            attachments: Vec::new(),
         };
         let bytes = packet.to_bytes().unwrap();
         assert!(bytes.len() > 2048 && bytes.len() <= peko_protocol::ipc::MAX_PACKET_SIZE);

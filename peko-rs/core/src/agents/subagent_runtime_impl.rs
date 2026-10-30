@@ -401,6 +401,7 @@ fn build_root_execution_config(
         // Spawn/resume never force-compact; that flag is armed by
         // the compact action's own adapter path below.
         force_compact: false,
+        images: Vec::new(),
         // Agent-tool spawns are delegated tasks, not peer
         // conversations — keep the subagent task framing.
         conversation: false,

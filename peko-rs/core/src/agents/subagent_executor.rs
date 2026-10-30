@@ -146,6 +146,67 @@ pub struct ExecutionConfig {
     /// the inherited parent config (conversation-mode peer turns,
     /// cron runs, and tests always pass `None`).
     pub role_prompt: Option<String>,
+    /// ADR-088 D4: images attached to a conversation turn. Sent to the
+    /// model as image blocks when its spec declares `image_input`;
+    /// otherwise the turn's text says it cannot view them. Only the
+    /// streaming path carries them (peer ingress always streams).
+    pub images: Vec<ImageInput>,
+}
+
+/// ADR-088 D4: an image file attached to a turn (already copied into
+/// the principal's workspace) and its sniffed MIME type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageInput {
+    pub path: std::path::PathBuf,
+    pub mime: String,
+}
+
+/// The largest image sent to a model as an image block (ADR-088 D4).
+pub const MAX_IMAGE_BLOCK_BYTES: u64 = 5 * 1024 * 1024;
+
+/// What the turn's text says when its model cannot view attached images.
+pub const NO_VISION_NOTE: &str =
+    "[The current model cannot view images; the attached images are files you can open with your tools.]";
+
+/// Image blocks for a turn's attachments, or `None` when the model
+/// cannot view images. Unreadable or oversized files are skipped with
+/// a warning: their notes already name the path.
+async fn image_blocks(
+    images: &[ImageInput],
+    vision: bool,
+) -> Option<Vec<peko_message::ContentBlock>> {
+    use base64::Engine as _;
+    if !vision {
+        return None;
+    }
+    let mut blocks = Vec::new();
+    for image in images {
+        match tokio::fs::metadata(&image.path).await {
+            Ok(meta) if meta.len() <= MAX_IMAGE_BLOCK_BYTES => {}
+            Ok(_) => {
+                warn!(
+                    "attached image {} is too large to send",
+                    image.path.display()
+                );
+                continue;
+            }
+            Err(e) => {
+                warn!("attached image {}: {e}", image.path.display());
+                continue;
+            }
+        }
+        match tokio::fs::read(&image.path).await {
+            Ok(bytes) => blocks.push(peko_message::ContentBlock::Image {
+                source: peko_message::ImageSource::Base64 {
+                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    dimensions: None,
+                },
+                mime_type: image.mime.clone(),
+            }),
+            Err(e) => warn!("attached image {}: {e}", image.path.display()),
+        }
+    }
+    Some(blocks)
 }
 
 impl Default for ExecutionConfig {
@@ -161,6 +222,7 @@ impl Default for ExecutionConfig {
             acting_for: None,
             role_prompt: None,
             page_limit: None,
+            images: Vec::new(),
         }
     }
 }
@@ -2140,6 +2202,9 @@ impl SubagentExecutor {
         // Moved into the task closure; `None` keeps the final-only
         // execution path.
         let stream_events_for_closure = stream_events;
+        // ADR-088: the turn's attached images, decided against the
+        // final provider inside `execute_subagent_task`.
+        let images_for_closure = config.images.clone();
         // Sprint 2 Phase 7: the daemon-shared inbox registry (when
         // bound via `with_inbox_registry`) is handed to the child
         // Agent so its agentic loop drains the SAME registry the
@@ -2222,6 +2287,7 @@ impl SubagentExecutor {
                         model_override_clone, // Phase 1
                         role_prompt_clone,      // ADR-052 D3
                         role_name_clone,        // ADR-087 D5
+                        images_for_closure,     // ADR-088 D4
                         force_compact_for_closure,
                         conversation_for_closure,
                         conversation_channel_clone,
@@ -2620,6 +2686,8 @@ async fn execute_subagent_task(
     // `role_prompt`. Sets `AgentConfig.role` (not `name`, the identity
     // key) so `{{role_name}}` and the `kb/roles/<role>.md` note match.
     role_name: Option<String>,
+    // ADR-088 D4: images attached to this turn.
+    images: Vec<ImageInput>,
     // 2026-09-05: run-scoped force-compact flag (Agent tool
     // `action = "compact"`). When true, the child Agent's loop
     // force-compacts the session on iteration 1
@@ -2903,10 +2971,25 @@ async fn execute_subagent_task(
     // in history, which caused run_with_resume to skip the full
     // system prompt — leaving the subagent without knowledge of
     // available tools.
-    let combined_prompt = if conversation {
+    let mut combined_prompt = if conversation {
         task_message.to_string()
     } else {
         format!("{}\n\n{}", system_prompt, task_message)
+    };
+    // ADR-088 D4: images go to a model that declares it can view them;
+    // otherwise the text says why it cannot see them.
+    let user_images = if images.is_empty() {
+        Vec::new()
+    } else {
+        let vision = provider.spec().is_some_and(|spec| spec.image_input);
+        match image_blocks(&images, vision).await {
+            Some(blocks) => blocks,
+            None => {
+                combined_prompt.push('\n');
+                combined_prompt.push_str(NO_VISION_NOTE);
+                Vec::new()
+            }
+        }
     };
 
     // Execute the agentic loop with the child session
@@ -2988,6 +3071,7 @@ async fn execute_subagent_task(
     > = match stream_events {
         Some(sink) => Box::pin(subagent.execute_streaming_with_session(
             &combined_prompt,
+            user_images,
             Vec::new(), // subagents carry no recalled context
             child_session,
             history.clone(), // compact runs load the transcript (see above)
