@@ -156,6 +156,17 @@ impl Default for ModelSpec {
 }
 
 impl ModelSpec {
+    /// Whether the model takes `kind` as input (ADR-088).
+    #[must_use]
+    pub fn takes(&self, kind: peko_message::media::MediaKind) -> bool {
+        use peko_message::media::MediaKind;
+        match kind {
+            MediaKind::Image => self.image_input,
+            MediaKind::Audio => self.audio_input,
+            MediaKind::Video => self.video_input,
+        }
+    }
+
     /// Convenience: text-only model with no tools, no thinking,
     /// streaming on. Matches a conservative pre-Feature template
     /// entry so backfill defaults are non-broken.

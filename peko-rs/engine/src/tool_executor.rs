@@ -37,6 +37,9 @@ pub struct ToolExecutionResult {
     pub message: LlmMessage,
     /// Whether execution succeeded.
     pub success: bool,
+    /// A media file the tool's output points at (ADR-088), for the loop
+    /// to attach when the model takes it.
+    pub media: Option<crate::media::ToolMedia>,
 }
 
 /// Executes tool calls within the agentic loop.
@@ -223,6 +226,7 @@ impl ToolExecutor {
             return Ok(ToolExecutionResult {
                 message,
                 success: false,
+                media: None,
             });
         }
 
@@ -299,6 +303,13 @@ impl ToolExecutor {
             .add_tool_result(id, name, &tool_result_str, is_error)
             .await?;
 
+        // Only the built-in `Read` may point the engine at a file: its
+        // path already passed the run's file-access checks (ADR-078),
+        // which another tool's output (an MCP server's) has not.
+        let media = (success && name == "Read")
+            .then(|| crate::media::ToolMedia::from_output(&tool_result_json))
+            .flatten();
+
         on_event(AgenticEvent::ToolEnd {
             run_id: run_id.to_string(),
             tool_id: id.clone(),
@@ -311,7 +322,11 @@ impl ToolExecutor {
             LlmMessage::tool_result(id.clone(), name.clone(), tool_result_str.clone(), is_error)
                 .with_tool_call_id(id.clone());
 
-        Ok(ToolExecutionResult { message, success })
+        Ok(ToolExecutionResult {
+            message,
+            success,
+            media,
+        })
     }
 }
 

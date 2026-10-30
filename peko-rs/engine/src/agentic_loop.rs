@@ -1988,8 +1988,17 @@ impl AgenticLoop {
                     })
                     .collect();
                 let tool_results = futures::future::try_join_all(tool_call_futs).await?;
+                // ADR-088: a tool that points at a media file (`Read` on
+                // an image, audio, or video) gets it attached for a
+                // model that takes that kind.
+                let spec = self.provider.spec();
                 for r in tool_results {
-                    messages.push(r.message);
+                    let mut message = r.message;
+                    if let Some(media) = &r.media {
+                        crate::media::attach_to_tool_result(&mut message, media, spec.as_ref())
+                            .await;
+                    }
+                    messages.push(message);
                 }
 
                 // ADR-052 D5 (T2): track the latest directory touched

@@ -5,7 +5,10 @@
 //! prefixed with `<line_number>\t<text>`), so the model can read line numbers
 //! directly from the response without cross-referencing separate metadata
 //! fields. peko extensions over the Claude Code surface are binary
-//! auto-detection and an explicit `encoding: "base64"` request.
+//! auto-detection, an explicit `encoding: "base64"` request, and media:
+//! an image, audio, or video file comes back as a short description plus
+//! a `media` reference the engine attaches for a model that takes that
+//! kind (ADR-088), the way Claude Code's Read shows images.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -96,6 +99,14 @@ impl ReadTool {
                 "Path is not a file: {}",
                 resolved.display()
             ));
+        }
+
+        // ADR-088: media files go to the model itself, not as base64 text.
+        if encoding != Some("base64") {
+            let mime = crate::common::media::mime_of(&resolved).await;
+            if let Some(kind) = peko_message::media::MediaKind::from_mime(&mime) {
+                return Ok(media_result(&resolved, &mime, kind, metadata.len()));
+            }
         }
 
         // Read file content
@@ -211,6 +222,51 @@ impl Default for ReadTool {
     }
 }
 
+/// `Read` on an image, audio, or video file: a line describing it and,
+/// within the kind's block limit, the `media` reference the engine
+/// attaches (or replaces with a note when the model cannot take it).
+fn media_result(
+    path: &std::path::Path,
+    mime: &str,
+    kind: peko_message::media::MediaKind,
+    size: u64,
+) -> serde_json::Value {
+    let path_str = path.display().to_string();
+    let fits = size <= kind.max_block_bytes();
+    let content = if fits {
+        format!(
+            "{} file ({mime}, {size} bytes); its content follows for you to {}.",
+            kind.as_str(),
+            if kind == peko_message::media::MediaKind::Image {
+                "view"
+            } else {
+                "hear or watch"
+            }
+        )
+    } else {
+        format!(
+            "{} file ({mime}, {size} bytes) is over the {}-byte limit for sending to the \
+             model; inspect it with Bash instead.",
+            kind.as_str(),
+            kind.max_block_bytes()
+        )
+    };
+    let mut result = serde_json::json!({
+        "content": content,
+        "path": path_str,
+        "size_bytes": size,
+        "mime": mime,
+    });
+    if fits {
+        result["media"] = serde_json::json!({
+            "kind": kind.as_str(),
+            "mime": mime,
+            "path": path_str,
+        });
+    }
+    result
+}
+
 /// The largest char boundary in `s` at or below `index`.
 fn floor_char_boundary(s: &str, index: usize) -> usize {
     let mut i = index.min(s.len());
@@ -234,6 +290,9 @@ impl Tool for ReadTool {
     fn description(&self) -> String {
         r#"## Purpose
 Read file contents with support for partial reading (line ranges) and binary files.
+Images (PNG, JPEG, GIF, WebP), audio (WAV, MP3, FLAC, M4A, OGG), and video
+(MP4, MOV, AVI, WMV, WebM) come back as the media itself for you to view, hear,
+or watch, when the current model takes that kind; otherwise a note says so.
 
 Text output is in `cat -n` format: each line of `content` is prefixed with
 its 1-indexed line number and a tab, so line numbers are visible inline.
@@ -254,7 +313,8 @@ Maximum number of lines to read. Defaults to 2000.
 
 ### encoding (optional)
 - "utf8" (default): Read as text, content returned in `cat -n` format
-- "base64": Force base64 encoding for binary data
+- "base64": Force base64 encoding for binary data (media files then come back as
+  base64 text instead of media)
 
 ## Output limits
 
@@ -276,9 +336,14 @@ Read specific lines:
 {"file_path": "src/main.rs", "offset": 10, "limit": 20}
 ```
 
-Read binary file:
+View an image (or hear audio, watch video):
 ```json
-{"file_path": "image.png", "encoding": "base64"}
+{"file_path": "screenshot.png"}
+```
+
+Read binary file as base64:
+```json
+{"file_path": "data.bin", "encoding": "base64"}
 ```"#
             .to_string()
     }
@@ -341,6 +406,66 @@ mod tests {
             let _ = writeln!(out, "{i:0width$}");
             out
         })
+    }
+
+    /// ADR-088: an image, audio, or video file comes back as a line and a
+    /// `media` reference for the engine to attach, not as base64 text —
+    /// unless base64 is asked for.
+    #[tokio::test]
+    async fn media_files_come_back_as_media() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ReadTool::new().with_workspace(temp_dir.path());
+        fs::write(temp_dir.path().join("shot.png"), b"\x89PNG\r\n\x1a\n\0\0")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("memo.wav"), b"RIFF\x24\0\0\0WAVEfmt ")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("clip.mov"), b"\0\0\0\x14ftypqt  ")
+            .await
+            .unwrap();
+
+        let image = tool
+            .execute(json!({"file_path": "shot.png"}))
+            .await
+            .unwrap();
+        assert_eq!(image["media"]["kind"], "image");
+        assert_eq!(image["media"]["mime"], "image/png");
+        assert!(image["media"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("shot.png"));
+        assert!(image["content"].as_str().unwrap().starts_with("image file"));
+
+        let audio = tool
+            .execute(json!({"file_path": "memo.wav"}))
+            .await
+            .unwrap();
+        assert_eq!(audio["media"]["kind"], "audio");
+        let video = tool
+            .execute(json!({"file_path": "clip.mov"}))
+            .await
+            .unwrap();
+        assert_eq!(video["media"]["kind"], "video");
+
+        let raw = tool
+            .execute(json!({"file_path": "shot.png", "encoding": "base64"}))
+            .await
+            .unwrap();
+        assert!(raw.get("media").is_none());
+        assert_eq!(raw["encoding"], "base64");
+    }
+
+    #[test]
+    fn media_over_the_block_limit_is_described_not_sent() {
+        let result = media_result(
+            std::path::Path::new("/w/big.png"),
+            "image/png",
+            peko_message::media::MediaKind::Image,
+            6 * 1024 * 1024,
+        );
+        assert!(result.get("media").is_none());
+        assert!(result["content"].as_str().unwrap().contains("over the"));
     }
 
     /// Without `limit`, a read stops at DEFAULT_LINE_LIMIT and points at

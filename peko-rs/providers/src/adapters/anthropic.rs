@@ -176,19 +176,8 @@ impl AnthropicAdapter {
                                 })
                             }
                             ContentBlock::Image { source, mime_type } => {
-                                let source_value = match source {
-                                    ImageSource::Url { url, .. } => json!({
-                                        "type": "url",
-                                        "url": url,
-                                    }),
-                                    ImageSource::Base64 { data, .. } => json!({
-                                        "type": "base64",
-                                        "media_type": mime_type,
-                                        "data": data,
-                                    }),
-                                };
                                 blocks.push(AnthropicContentBlock::Image {
-                                    source: source_value,
+                                    source: image_source(source, mime_type),
                                     cache_control: None,
                                 });
                             }
@@ -282,10 +271,9 @@ impl AnthropicAdapter {
                             is_error,
                         } = block
                         {
-                            let result_text = extract_text_content(content);
                             tool_result_blocks.push(AnthropicContentBlock::ToolResult {
                                 tool_use_id: tool_call_id.clone(),
-                                content: result_text,
+                                content: tool_result_content(content),
                                 is_error: Some(*is_error),
                                 cache_control: None,
                             });
@@ -978,7 +966,9 @@ enum AnthropicContentBlock {
     },
     ToolResult {
         tool_use_id: String,
-        content: String,
+        /// A string for a text-only result; a block array when the
+        /// result carries an image (ADR-088: `Read` on a media file).
+        content: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1115,6 +1105,49 @@ struct AnthropicDelta {
     thinking: Option<String>,
     /// Message-level termination (message_delta, not content_block_delta).
     stop_reason: Option<String>,
+}
+
+/// The Anthropic-native source object for an image block.
+fn image_source(source: &ImageSource, mime_type: &str) -> Value {
+    match source {
+        ImageSource::Url { url, .. } => json!({"type": "url", "url": url}),
+        ImageSource::Base64 { data, .. } => json!({
+            "type": "base64",
+            "media_type": mime_type,
+            "data": data,
+        }),
+    }
+}
+
+/// A `tool_result`'s content: its text as a string, or — when the result
+/// carries media (ADR-088) — a block array with the images. Audio and
+/// video have no block here, so they become a note.
+fn tool_result_content(content: &[ContentBlock]) -> Value {
+    let has_media = content.iter().any(|b| {
+        matches!(
+            b,
+            ContentBlock::Image { .. } | ContentBlock::Audio { .. } | ContentBlock::Video { .. }
+        )
+    });
+    if !has_media {
+        return Value::String(extract_text_content(content));
+    }
+    Value::Array(
+        content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+                ContentBlock::Image { source, mime_type } => Some(json!({
+                    "type": "image",
+                    "source": image_source(source, mime_type),
+                })),
+                ContentBlock::Audio { mime_type, .. } | ContentBlock::Video { mime_type, .. } => {
+                    Some(json!({"type": "text", "text": super::media_omitted_note(mime_type)}))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -2543,5 +2576,57 @@ mod tests {
         let content = body["messages"][0]["content"].to_string();
         assert!(content.contains("audio/wav attachment was left out"));
         assert!(!content.contains("UklGRg=="));
+    }
+    /// Two parallel tool results, the second carrying an image (`Read`
+    /// on a PNG, ADR-088).
+    fn anthropic_results_with_an_image() -> LlmMessage {
+        let result = |id: &str, extra: Option<ContentBlock>| ContentBlock::ToolResult {
+            tool_call_id: id.to_string(),
+            name: "Read".to_string(),
+            content: std::iter::once(ContentBlock::Text {
+                text: format!("out {id}"),
+            })
+            .chain(extra)
+            .collect(),
+            is_error: false,
+        };
+        LlmMessage {
+            role: MessageRole::Tool,
+            content: vec![
+                result("call_a", None),
+                result(
+                    "call_b",
+                    Some(ContentBlock::Image {
+                        source: ImageSource::Base64 {
+                            data: "iVBORw==".to_string(),
+                            dimensions: None,
+                        },
+                        mime_type: "image/png".to_string(),
+                    }),
+                ),
+            ],
+            ..LlmMessage::default()
+        }
+    }
+
+    /// Anthropic `tool_result` content takes image blocks.
+    #[test]
+    fn tool_result_carries_its_image() {
+        let adapter = AnthropicAdapter::new();
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-6",
+                &[LlmMessage::user("look"), anthropic_results_with_an_image()],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["content"], "out call_a");
+        let with_image = blocks[1]["content"].as_array().unwrap();
+        assert_eq!(with_image[0]["text"], "out call_b");
+        assert_eq!(with_image[1]["type"], "image");
+        assert_eq!(with_image[1]["source"]["media_type"], "image/png");
     }
 }

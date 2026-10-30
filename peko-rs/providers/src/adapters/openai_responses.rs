@@ -126,9 +126,28 @@ impl OpenAiResponsesAdapter {
             }
         }
 
+        // ADR-088: `function_call_output` is text only, so media a tool
+        // result carries goes in one user message after the run of
+        // outputs it came from.
         let mut items: Vec<ResponsesInputItem> = Vec::with_capacity(messages.len());
+        let mut tool_media: Vec<ResponsesContentPart> = Vec::new();
         for msg in iter {
+            if msg.role != MessageRole::Tool && !tool_media.is_empty() {
+                items.push(ResponsesInputItem::Message {
+                    role: "user".to_string(),
+                    content: std::mem::take(&mut tool_media),
+                });
+            }
+            if msg.role == MessageRole::Tool {
+                tool_media.extend(tool_media_parts(msg));
+            }
             items.extend(self.convert_one(msg));
+        }
+        if !tool_media.is_empty() {
+            items.push(ResponsesInputItem::Message {
+                role: "user".to_string(),
+                content: tool_media,
+            });
         }
         (instructions, items)
     }
@@ -262,6 +281,42 @@ fn build_responses_input_parts(blocks: &[ContentBlock]) -> Vec<ResponsesContentP
             }
             _ => {}
         }
+    }
+    parts
+}
+
+/// The media parts a tool message's results carry, each after a line
+/// naming the call it came from.
+fn tool_media_parts(message: &LlmMessage) -> Vec<ResponsesContentPart> {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let media: Vec<ContentBlock> = content
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b,
+                    ContentBlock::Image { .. }
+                        | ContentBlock::Audio { .. }
+                        | ContentBlock::Video { .. }
+                )
+            })
+            .cloned()
+            .collect();
+        if media.is_empty() {
+            continue;
+        }
+        parts.push(ResponsesContentPart::InputText {
+            text: format!("[Media from tool call {tool_call_id}]"),
+        });
+        parts.extend(build_responses_input_parts(&media));
     }
     parts
 }
@@ -995,6 +1050,55 @@ struct ResponsesStreamResponse {
 mod tests {
     use super::super::ApiAdapter;
     use super::*;
+
+    /// Two parallel tool results, the second carrying an image (`Read`
+    /// on a PNG, ADR-088).
+    fn responses_results_with_an_image() -> LlmMessage {
+        let result = |id: &str, extra: Option<ContentBlock>| ContentBlock::ToolResult {
+            tool_call_id: id.to_string(),
+            name: "Read".to_string(),
+            content: std::iter::once(ContentBlock::Text {
+                text: format!("out {id}"),
+            })
+            .chain(extra)
+            .collect(),
+            is_error: false,
+        };
+        LlmMessage {
+            role: MessageRole::Tool,
+            content: vec![
+                result("call_a", None),
+                result(
+                    "call_b",
+                    Some(ContentBlock::Image {
+                        source: ImageSource::Base64 {
+                            data: "iVBORw==".to_string(),
+                            dimensions: None,
+                        },
+                        mime_type: "image/png".to_string(),
+                    }),
+                ),
+            ],
+            ..LlmMessage::default()
+        }
+    }
+
+    /// `function_call_output` is text only: the image goes in a user
+    /// message after the outputs.
+    #[test]
+    fn tool_media_follows_the_outputs_as_a_user_message() {
+        let adapter = OpenAiResponsesAdapter::new();
+        let (_, items) = adapter
+            .convert_messages(&[LlmMessage::user("look"), responses_results_with_an_image()]);
+        let items: Vec<serde_json::Value> = items
+            .iter()
+            .map(|i| serde_json::to_value(i).unwrap())
+            .collect();
+        assert_eq!(items[1]["type"], "function_call_output");
+        assert_eq!(items[2]["type"], "function_call_output");
+        assert_eq!(items[3]["role"], "user");
+        assert_eq!(items[3]["content"][1]["type"], "input_image");
+    }
 
     /// A repaired tool message answering parallel calls becomes one
     /// `function_call_output` per call id (before: one with `call_id: ""`).
