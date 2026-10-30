@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a peko's file tools work in its own folder (2026-10-30)
+
+Without a workspace on the call, the file tools and Bash resolved relative
+paths in one runtime-wide `<data>/workspaces` directory shared by every
+principal, so a peko's `Glob roles/*.md` found nothing and pekos could
+overwrite each other's relative files. The dispatcher now uses the
+calling principal's workspace for relative paths, the Glob/Grep search
+root, and Bash's working directory (untrusted runs were already confined
+there). `~/…` paths expand to the home directory. The runtime prompt no
+longer warns that the default directory can differ.
+`peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
+printed as `2026-10-30 T04:06:44.511473`).
+
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
 An agent can look at an image, listen to audio, or watch video whenever it

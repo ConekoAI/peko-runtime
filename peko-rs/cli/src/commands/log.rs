@@ -624,15 +624,16 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Strip seconds / sub-seconds from an RFC3339 timestamp for display.
+/// An RFC 3339 timestamp as `YYYY-MM-DD HH:MM` in local time, for
+/// display. Anything unparseable shows as given.
 fn timestamp_short(ts: &str) -> String {
-    if ts.find('T').is_some() {
-        if let Some(plus) = ts[10..].find(['+', 'Z', '-']) {
-            return format!("{} {}", &ts[..10], &ts[10..10 + plus]);
-        }
-        return format!("{} {}", &ts[..10], &ts[10..(ts.len().min(15))]);
-    }
-    ts.to_string()
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|at| {
+            at.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| ts.to_string())
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -670,6 +671,20 @@ mod tests {
         assert!(parse_duration_secs("0h").is_err());
         assert!(parse_duration_secs("24").is_err());
         assert!(parse_duration_secs("24x").is_err());
+    }
+
+    /// Before: `2026-10-30 T04:06:44.511473` (the `T` and seconds kept).
+    #[test]
+    fn timestamps_show_date_and_minutes() {
+        let shown = timestamp_short("2026-10-30T04:06:44.511473+00:00");
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-10-30T04:06:44+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        assert_eq!(shown, expected);
+        assert_eq!(shown.len(), "2026-10-30 04:06".len());
+        assert_eq!(timestamp_short("yesterday"), "yesterday");
     }
 
     #[test]
