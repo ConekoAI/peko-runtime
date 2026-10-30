@@ -192,11 +192,12 @@ impl OpenAiResponsesAdapter {
                 }
                 items
             }
-            MessageRole::Tool => {
-                let call_id = msg.tool_call_id.clone().unwrap_or_default();
-                let output = super::tool_message_text(&msg.content);
-                vec![ResponsesInputItem::FunctionCallOutput { call_id, output }]
-            }
+            // One output per call id (a repaired tool message can
+            // answer several parallel calls).
+            MessageRole::Tool => super::tool_outputs(msg)
+                .into_iter()
+                .map(|(call_id, output)| ResponsesInputItem::FunctionCallOutput { call_id, output })
+                .collect(),
         }
     }
 
@@ -994,6 +995,39 @@ struct ResponsesStreamResponse {
 mod tests {
     use super::super::ApiAdapter;
     use super::*;
+
+    /// A repaired tool message answering parallel calls becomes one
+    /// `function_call_output` per call id (before: one with `call_id: ""`).
+    #[test]
+    fn parallel_tool_results_become_one_output_per_call() {
+        let adapter = OpenAiResponsesAdapter::new();
+        let message = LlmMessage {
+            role: MessageRole::Tool,
+            content: ["call_a", "call_b"]
+                .into_iter()
+                .map(|id| ContentBlock::ToolResult {
+                    tool_call_id: id.to_string(),
+                    name: "Read".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: format!("out {id}"),
+                    }],
+                    is_error: false,
+                })
+                .collect(),
+            ..LlmMessage::default()
+        };
+        let items = adapter.convert_one(&message);
+        let ids: Vec<String> = items
+            .iter()
+            .map(|item| {
+                serde_json::to_value(item).unwrap()["call_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(ids, vec!["call_a", "call_b"]);
+    }
     use peko_message::{ContentBlock, MessageRole};
     use peko_provider_api::ServiceTier;
     use peko_provider_api::{LlmMessage, ThinkingEffort};

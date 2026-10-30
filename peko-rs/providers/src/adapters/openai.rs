@@ -2,7 +2,7 @@
 //!
 //! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
-use super::{extract_text_content, role_to_string, PendingEvents, ToolCallAccumulator};
+use super::{extract_text_content, role_to_string, HeldFinish, PendingEvents, ToolCallAccumulator};
 use crate::transport::AuthConfig;
 use anyhow::{Context, Result};
 use peko_message::ImageSource;
@@ -23,6 +23,8 @@ pub struct OpenAiAdapter {
     tool_call_accumulator: ToolCallAccumulator,
     /// Events a chunk produced beyond the one `parse_sse_event` returned.
     pending: PendingEvents,
+    /// A finish waiting for the usage chunk that follows it.
+    held_finish: HeldFinish,
 }
 
 impl OpenAiAdapter {
@@ -34,6 +36,7 @@ impl OpenAiAdapter {
             base_url: "https://api.openai.com/v1".to_string(),
             tool_call_accumulator: ToolCallAccumulator::new(),
             pending: PendingEvents::default(),
+            held_finish: HeldFinish::default(),
         }
     }
 
@@ -44,11 +47,17 @@ impl OpenAiAdapter {
     /// hold several of these at once: usage beside the finish, text
     /// beside a call, or a call complete in one chunk (some
     /// OpenAI-compatible servers send them whole).
+    ///
+    /// With `stream_options.include_usage`, usage comes in its own chunk
+    /// (empty `choices`) *after* the finish and before `[DONE]`. The
+    /// stream loop stops reading at `Done`, so the finish's `Done` is
+    /// held until that usage chunk, `[DONE]`, or the end of the stream
+    /// (`end_of_stream`) — else every streamed turn reported 0 tokens.
     fn parse_chunk(&self, data: &str) -> Result<Vec<StreamEvent>> {
         if data.trim() == "[DONE]" {
             let mut events = self.finished_calls();
             events.push(StreamEvent::Done {
-                stop_reason: StopReason::Stop,
+                stop_reason: self.held_finish.take().unwrap_or(StopReason::Stop),
             });
             return Ok(events);
         }
@@ -77,7 +86,14 @@ impl OpenAiAdapter {
             });
         }
 
+        let has_usage = !events.is_empty();
         let Some(choice) = chunk.choices.into_iter().next() else {
+            // The usage chunk after a finish ends the response.
+            if has_usage {
+                if let Some(stop_reason) = self.held_finish.take() {
+                    events.push(StreamEvent::Done { stop_reason });
+                }
+            }
             return Ok(events);
         };
         let mut delta = choice.delta;
@@ -158,7 +174,11 @@ impl OpenAiAdapter {
                 _ => StopReason::Stop,
             };
             events.extend(self.finished_calls());
-            events.push(StreamEvent::Done { stop_reason });
+            if has_usage {
+                events.push(StreamEvent::Done { stop_reason });
+            } else {
+                self.held_finish.hold(stop_reason);
+            }
         }
 
         Ok(events)
@@ -196,7 +216,21 @@ impl OpenAiAdapter {
     fn convert_messages(&self, messages: &[LlmMessage]) -> Vec<OpenAiMessage> {
         messages
             .iter()
-            .map(|m| {
+            .flat_map(|m| {
+                // One `tool` message per call id: a tool message that
+                // answers parallel calls fans out (Chat Completions
+                // rejects a tool message without its `tool_call_id`).
+                if m.role == MessageRole::Tool {
+                    return super::tool_outputs(m)
+                        .into_iter()
+                        .map(|(id, text)| OpenAiMessage {
+                            role: "tool".to_string(),
+                            content: Value::String(text),
+                            tool_calls: None,
+                            tool_call_id: Some(id),
+                        })
+                        .collect::<Vec<_>>();
+                }
                 let role = role_to_string(m.role);
                 // F28: emit content as a string for text-only blocks
                 // (matches the pre-F28 wire shape byte-for-byte) or as
@@ -204,13 +238,7 @@ impl OpenAiAdapter {
                 // Image block. The array path is OpenAI's
                 // multimodal-input shape per
                 // https://platform.openai.com/docs/guides/vision
-                // A tool message's output sits inside its `ToolResult`
-                // block, which the content builder skips.
-                let content = if m.role == MessageRole::Tool {
-                    Value::String(super::tool_message_text(&m.content))
-                } else {
-                    build_chat_completions_content(&m.content)
-                };
+                let content = build_chat_completions_content(&m.content);
 
                 // Extract tool calls from content blocks
                 let tool_calls: Option<Vec<OpenAiToolCall>> = if m.role == MessageRole::Assistant {
@@ -242,12 +270,12 @@ impl OpenAiAdapter {
                     None
                 };
 
-                OpenAiMessage {
+                vec![OpenAiMessage {
                     role: role.to_string(),
                     content,
                     tool_calls,
                     tool_call_id: m.tool_call_id.clone(),
-                }
+                }]
             })
             .collect()
     }
@@ -518,6 +546,14 @@ impl super::ApiAdapter for OpenAiAdapter {
 
     fn take_pending_events(&self) -> Vec<StreamEvent> {
         self.pending.take()
+    }
+
+    fn end_of_stream(&self) -> Vec<StreamEvent> {
+        let mut events = self.finished_calls();
+        if let Some(stop_reason) = self.held_finish.take() {
+            events.push(StreamEvent::Done { stop_reason });
+        }
+        events
     }
 
     fn auth_config(&self, api_key: &str) -> AuthConfig {
@@ -843,6 +879,55 @@ mod tests {
         assert_eq!(tool["role"], "tool");
         assert_eq!(tool["tool_call_id"], "call_1");
         assert_eq!(tool["content"], "TOOL_TEST_SECRET_123");
+    }
+
+    /// History repair pairs an assistant turn's parallel calls with one
+    /// tool message holding every result. Chat Completions needs one
+    /// `tool` message per call id; before, the repaired message went out
+    /// once with a null `tool_call_id` (MiMo: "`tool_call_id` is not set").
+    #[test]
+    fn parallel_tool_results_go_out_one_message_per_call() {
+        let adapter = OpenAiAdapter::new();
+        let calls = LlmMessage {
+            role: MessageRole::Assistant,
+            content: ["call_a", "call_b"]
+                .into_iter()
+                .map(|id| ContentBlock::ToolCall {
+                    id: id.to_string(),
+                    name: "Read".to_string(),
+                    arguments: json!({}),
+                })
+                .collect(),
+            ..LlmMessage::default()
+        };
+        let history = peko_message::repair::repair_history(vec![
+            LlmMessage::user("read both"),
+            calls,
+            LlmMessage::tool_result("call_a", "Read", "first", false),
+            LlmMessage::tool_result("call_b", "Read", "second", false),
+        ]);
+        let (_, body) = adapter
+            .build_request(
+                "mimo-v2.6-flash",
+                &history,
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let tools: Vec<_> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| {
+                (
+                    m["tool_call_id"].as_str().unwrap(),
+                    m["content"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(tools, vec![("call_a", "first"), ("call_b", "second")]);
     }
 
     #[test]
@@ -1293,13 +1378,68 @@ mod tests {
     /// Every event one adapter yields for `chunks`, in order: each
     /// chunk's returned event, then its queued ones (as the stream
     /// loop in `core.rs` drains them).
+    /// Parse `chunks` as one response whose byte stream then ends, as
+    /// the stream loop does.
     fn stream_events(adapter: &OpenAiAdapter, chunks: &[&str]) -> Vec<crate::StreamEvent> {
         let mut out = Vec::new();
         for chunk in chunks {
             out.extend(adapter.parse_sse_event("m", chunk).unwrap());
             out.extend(adapter.take_pending_events());
         }
+        out.extend(adapter.end_of_stream());
         out
+    }
+
+    /// Chat Completions sends usage in its own chunk after the finish; the
+    /// finish's `Done` waits for it, so the stream loop (which stops at
+    /// `Done`) still reads the usage. Before, every streamed turn on this
+    /// protocol reported 0 tokens.
+    #[test]
+    fn usage_after_the_finish_arrives_before_done() {
+        let adapter = OpenAiAdapter::new();
+        let mut events = Vec::new();
+        for chunk in [
+            r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":null}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":13,"completion_tokens":17,"total_tokens":30,"completion_tokens_details":{"reasoning_tokens":12}}}"#,
+        ] {
+            events.extend(adapter.parse_sse_event("m", chunk).unwrap());
+            events.extend(adapter.take_pending_events());
+        }
+        let usage = events
+            .iter()
+            .position(|e| matches!(e, crate::StreamEvent::Usage { total: 30, .. }))
+            .expect("usage is delivered");
+        let done = events
+            .iter()
+            .position(|e| matches!(e, crate::StreamEvent::Done { .. }))
+            .expect("the usage chunk ends the response");
+        assert!(usage < done);
+        // A response whose finish already carried usage ends at once.
+        let adapter = OpenAiAdapter::new();
+        let events = stream_events(
+            &adapter,
+            &[
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+            ],
+        );
+        assert!(matches!(
+            events.last(),
+            Some(crate::StreamEvent::Done { .. })
+        ));
+        // `[DONE]` releases a held finish with its stop reason.
+        let adapter = OpenAiAdapter::new();
+        let mut events = Vec::new();
+        for chunk in [FINISH_TOOL_CALLS, "[DONE]"] {
+            events.extend(adapter.parse_sse_event("m", chunk).unwrap());
+            events.extend(adapter.take_pending_events());
+        }
+        assert!(matches!(
+            events.last(),
+            Some(crate::StreamEvent::Done {
+                stop_reason: StopReason::ToolUse
+            })
+        ));
     }
 
     fn completed_calls(events: &[crate::StreamEvent]) -> Vec<(String, Value)> {

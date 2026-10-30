@@ -259,6 +259,29 @@ impl Clone for PendingEvents {
     }
 }
 
+/// The stop reason of a Chat Completions finish, held until the usage
+/// chunk that follows it (or `[DONE]`). A clone starts empty.
+#[derive(Debug, Default)]
+pub struct HeldFinish(Mutex<Option<peko_provider_api::StopReason>>);
+
+impl HeldFinish {
+    pub fn hold(&self, reason: peko_provider_api::StopReason) {
+        if let Ok(mut held) = self.0.lock() {
+            *held = Some(reason);
+        }
+    }
+
+    pub fn take(&self) -> Option<peko_provider_api::StopReason> {
+        self.0.lock().ok().and_then(|mut held| held.take())
+    }
+}
+
+impl Clone for HeldFinish {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
 // A clone starts a new parser lifetime. Sharing partial calls by content index
 // lets concurrent responses overwrite each other's tool identity and arguments.
 impl Clone for ToolCallAccumulator {
@@ -321,6 +344,13 @@ pub trait ApiAdapter: Send + Sync {
     /// text beside a tool call, a tool call complete in one chunk). The
     /// stream loop drains this after every parse, in order.
     fn take_pending_events(&self) -> Vec<StreamEvent> {
+        Vec::new()
+    }
+
+    /// Events a parser still holds when the response's byte stream ends
+    /// without its terminator — e.g. a `Done` held back for a usage
+    /// chunk that never came. The stream loop forwards them last.
+    fn end_of_stream(&self) -> Vec<StreamEvent> {
         Vec::new()
     }
 
@@ -421,6 +451,48 @@ fn extract_text_content(blocks: &[ContentBlock]) -> String {
 /// inside it; top-level `Text` blocks are kept too. The OpenAI wire
 /// formats carry this as a plain string (Chat Completions `content`,
 /// Responses `function_call_output.output`).
+/// One `(call id, output text)` per `ToolResult` in a tool message.
+///
+/// A tool message can answer several calls at once — history repair
+/// pairs all of an assistant turn's parallel calls into one — but the
+/// OpenAI protocols take one output per call id. Each result keeps its
+/// own block id; stray text blocks ride on the first output. A message
+/// with no `ToolResult` block falls back to its own `tool_call_id`.
+pub(crate) fn tool_outputs(message: &peko_message::LlmMessage) -> Vec<(String, String)> {
+    let mut outputs: Vec<(String, String)> = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_call_id,
+                content,
+                ..
+            } => Some((tool_call_id.clone(), extract_text_content(content))),
+            _ => None,
+        })
+        .collect();
+    let stray: Vec<&str> = message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    match outputs.first_mut() {
+        Some((_, text)) if !stray.is_empty() => {
+            text.push('\n');
+            text.push_str(&stray.join("\n"));
+        }
+        Some(_) => {}
+        None => outputs.push((
+            message.tool_call_id.clone().unwrap_or_default(),
+            tool_message_text(&message.content),
+        )),
+    }
+    outputs
+}
+
 fn tool_message_text(blocks: &[ContentBlock]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for block in blocks {
@@ -513,6 +585,16 @@ impl ApiAdapter for AnyAdapter {
             Self::Anthropic(a) => a.take_pending_events(),
             Self::OpenAiCompatible(a) => a.take_pending_events(),
             Self::Mock(a) => a.take_pending_events(),
+        }
+    }
+
+    fn end_of_stream(&self) -> Vec<StreamEvent> {
+        match self {
+            Self::OpenAi(a) => a.end_of_stream(),
+            Self::OpenAiResponses(a) => a.end_of_stream(),
+            Self::Anthropic(a) => a.end_of_stream(),
+            Self::OpenAiCompatible(a) => a.end_of_stream(),
+            Self::Mock(a) => a.end_of_stream(),
         }
     }
 
