@@ -4,18 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Fix: a peko's file tools work in its own folder (2026-10-30)
+### Fix: registered pekos stay online at PekoHub (2026-10-30)
 
-Without a workspace on the call, the file tools and Bash resolved relative
-paths in one runtime-wide `<data>/workspaces` directory shared by every
-principal, so a peko's `Glob roles/*.md` found nothing and pekos could
-overwrite each other's relative files. The dispatcher now uses the
-calling principal's workspace for relative paths, the Glob/Grep search
-root, and Bash's working directory (untrusted runs were already confined
-there). `~/…` paths expand to the home directory. The runtime prompt no
-longer warns that the default directory can differ.
-`peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
-printed as `2026-10-30 T04:06:44.511473`).
+The Hub marks an instance offline after 90 s without an
+`instance_heartbeat`, and public chat to an offline peko answers 503. The
+runtime's heartbeat task (`TunnelDispatcher::spawn_heartbeat_task`) was
+never started, so every registered peko went offline about 90 s after it
+announced and remote chat failed until the next reconnect. `TunnelReady`
+now starts it for the connection (the Hub's interval, capped at 60 s;
+30 s when none) after announcing, and `Disconnect` stops it.
 
 ### Feature: a spending budget per peko (2026-10-30)
 
@@ -43,6 +40,20 @@ Fixes found making it work end to end:
   (and every `update_config`) wrote the in-memory config, putting back
   values edited on disk since it was loaded; it now reloads a changed file
   first.
+
+### Fix: a peko's file tools work in its own folder (2026-10-30)
+
+Without a workspace on the call, the file tools and Bash resolved relative
+paths in one runtime-wide `<data>/workspaces` directory shared by every
+principal, so a peko's `Glob roles/*.md` found nothing and pekos could
+overwrite each other's relative files. The dispatcher now uses the
+calling principal's workspace for relative paths, the Glob/Grep search
+root, and Bash's working directory (untrusted runs were already confined
+there). `~/…` paths expand to the home directory. The runtime prompt no
+longer warns that the default directory can differ.
+`peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
+printed as `2026-10-30 T04:06:44.511473`).
+
 
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 

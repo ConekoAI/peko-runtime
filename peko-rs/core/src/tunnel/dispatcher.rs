@@ -192,6 +192,9 @@ pub struct TunnelDispatcherState {
     pub instance_state: std::collections::HashMap<String, InstanceState>,
     /// Current tunnel handle for sending messages
     pub tunnel_handle: Option<TunnelHandle>,
+    /// The connection's instance heartbeat task; replaced on every
+    /// `TunnelReady`, stopped on disconnect.
+    pub heartbeat_task: Option<tokio::task::AbortHandle>,
 }
 
 /// Dispatches tunnel messages to daemon services.
@@ -308,6 +311,9 @@ impl TunnelDispatcher {
     pub async fn mark_disconnected(&self) {
         let mut state = self.state.write().await;
         state.ready = false;
+        if let Some(task) = state.heartbeat_task.take() {
+            task.abort();
+        }
         // Clear instance state cache to prevent stale data on reconnect
         state.instance_state.clear();
         info!("Tunnel dispatcher disconnected, instance state cache cleared");
@@ -515,11 +521,23 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Start periodic instance heartbeat task
-    pub fn spawn_heartbeat_task(&self, handle: TunnelHandle) -> tokio::task::JoinHandle<()> {
+    /// Start periodic instance heartbeat task. The Hub marks an instance
+    /// offline when it has not heard a heartbeat for 90 s, so the period
+    /// is the Hub's `heartbeat_interval_secs` capped at 60 s (30 s when
+    /// the Hub sends none).
+    pub fn spawn_heartbeat_task(
+        &self,
+        handle: TunnelHandle,
+        interval_secs: u32,
+    ) -> tokio::task::JoinHandle<()> {
         let dispatcher = self.clone();
+        let period = match interval_secs {
+            0 => 30,
+            secs => secs.clamp(5, 60),
+        };
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(u64::from(period)));
             loop {
                 interval.tick().await;
                 if !dispatcher.is_ready().await {
@@ -684,6 +702,22 @@ impl TunnelDispatcher {
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
+                }
+                // Keep this connection's instances online at the Hub: it
+                // marks an instance offline after 90 s without a heartbeat,
+                // and public chat to an offline peko answers 503. The task
+                // was never started, so every peko went offline ~90 s after
+                // it announced. Started after the announce, so the first
+                // (immediate) beat finds the instances registered.
+                let task = self.spawn_heartbeat_task(handle.clone(), heartbeat_interval_secs);
+                if let Some(previous) = self
+                    .state
+                    .write()
+                    .await
+                    .heartbeat_task
+                    .replace(task.abort_handle())
+                {
+                    previous.abort();
                 }
             }
             TunnelMessage::Disconnect { reason } => {
@@ -3475,6 +3509,56 @@ mod tests {
             payload.identity_key,
             principal.config.read().await.actor_key.clone().unwrap()
         );
+    }
+
+    /// The Hub marks an instance offline after 90 s without a heartbeat,
+    /// and public chat to it answers 503. The heartbeat task was never
+    /// started; `TunnelReady` now starts it and `Disconnect` stops it.
+    #[tokio::test]
+    async fn tunnel_ready_starts_instance_heartbeats_and_disconnect_stops_them() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
+        let (handle, mut rx) = mock_tunnel_handle();
+        create_test_principal(
+            &app_state,
+            "beats",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Public,
+        )
+        .await;
+
+        dispatcher
+            .dispatch(
+                TunnelMessage::TunnelReady {
+                    heartbeat_interval_secs: 30,
+                },
+                handle.clone(),
+            )
+            .await
+            .unwrap();
+        let beat = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(TunnelMessage::InstanceHeartbeat { payload }) = rx.recv().await {
+                    break payload;
+                }
+            }
+        })
+        .await
+        .expect("a heartbeat follows TunnelReady");
+        assert_eq!(beat.id, dispatcher.instance_id("beats"));
+        assert!(dispatcher.state.read().await.heartbeat_task.is_some());
+
+        dispatcher
+            .dispatch(
+                TunnelMessage::Disconnect {
+                    reason: "test".into(),
+                },
+                handle,
+            )
+            .await
+            .unwrap();
+        assert!(dispatcher.state.read().await.heartbeat_task.is_none());
     }
 
     #[tokio::test]
