@@ -820,7 +820,13 @@ impl TunnelDispatcher {
             Err(e) => {
                 warn!("Failed to parse proxied request payload: {}", e);
                 return self
-                    .send_error_response(&handle, &request_id, "Invalid request payload")
+                    .send_error_response(
+                        &handle,
+                        &request_id,
+                        400,
+                        "Invalid request payload",
+                        false,
+                    )
                     .await;
             }
         };
@@ -844,7 +850,13 @@ impl TunnelDispatcher {
                     principal_name, e
                 );
                 return self
-                    .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                    .send_error_response(
+                        &handle,
+                        &request_id,
+                        403,
+                        &format!("Forbidden: {}", e),
+                        false,
+                    )
                     .await;
             }
         };
@@ -877,7 +889,13 @@ impl TunnelDispatcher {
         {
             warn!("Tunnel ACL denied request for {}: {}", principal_name, e);
             return self
-                .send_error_response(&handle, &request_id, &format!("Forbidden: {}", e))
+                .send_error_response(
+                    &handle,
+                    &request_id,
+                    403,
+                    &format!("Forbidden: {}", e),
+                    false,
+                )
                 .await;
         }
 
@@ -891,7 +909,7 @@ impl TunnelDispatcher {
 
         if message.is_empty() {
             return self
-                .send_error_response(&handle, &request_id, "Empty message")
+                .send_error_response(&handle, &request_id, 400, "Empty message", false)
                 .await;
         }
 
@@ -901,7 +919,7 @@ impl TunnelDispatcher {
             None => {
                 warn!("Proxied request for unknown principal: {}", principal_name);
                 return self
-                    .send_error_response(&handle, &request_id, "Principal not found")
+                    .send_error_response(&handle, &request_id, 404, "Principal not found", false)
                     .await;
             }
         };
@@ -999,7 +1017,13 @@ impl TunnelDispatcher {
                     principal_name, e
                 );
                 return self
-                    .send_error_response(&handle, &request_id, "Execution failed")
+                    .send_error_response(
+                        &handle,
+                        &request_id,
+                        500,
+                        "Execution failed",
+                        streamed_any,
+                    )
                     .await;
             }
         };
@@ -1025,8 +1049,9 @@ impl TunnelDispatcher {
             }
             Err(e) => {
                 warn!("Principal execution failed for {}: {}", principal_name, e);
+                let (status, message) = execution_failure(&e);
                 return self
-                    .send_error_response(&handle, &request_id, &format!("Execution failed: {}", e))
+                    .send_error_response(&handle, &request_id, status, &message, streamed_any)
                     .await;
             }
         }
@@ -1034,17 +1059,31 @@ impl TunnelDispatcher {
         Ok(())
     }
 
-    /// Send an error response back through the tunnel.
-    ///
-    /// Errors are sent as a single raw-text `StreamChunk` followed by a
-    /// `StreamEnd`, matching the raw-text streaming contract used by the
-    /// happy path. The hub surfaces the text to the SSE consumer.
+    /// Refuse or fail a proxied request. Before any reply text has
+    /// streamed, the refusal is a `proxied_response` with an HTTP
+    /// `status` and the message as its body: PekoHub ends the chat stream
+    /// with an error frame, so the client shows an error, not a reply
+    /// from the peko. (A hub that predates that still writes the body
+    /// as text and ends the stream, as it did before.) Once text has
+    /// streamed, the message follows as text and the stream ends — a
+    /// status response mid-stream would leave an older hub's stream open.
     async fn send_error_response(
         &self,
         handle: &TunnelHandle,
         request_id: &str,
+        status: u16,
         message: &str,
+        streamed: bool,
     ) -> anyhow::Result<()> {
+        if !streamed {
+            let payload = serde_json::json!({ "status": status, "body": message });
+            if let Err(e) =
+                handle.send_response(request_id.to_string(), payload.to_string().into_bytes())
+            {
+                warn!("Failed to send error response: {}", e);
+            }
+            return Ok(());
+        }
         if let Err(e) =
             handle.send_stream_chunk(request_id.to_string(), 0, message.as_bytes().to_vec())
         {
@@ -2274,6 +2313,19 @@ impl TunnelDispatcher {
     }
 }
 
+/// The status and message a failed principal turn goes back with. A
+/// caller without the permission gets a 403 that says so, not a 500
+/// "Execution failed".
+fn execution_failure(e: &crate::principal::manager::PrincipalManagerError) -> (u16, String) {
+    use crate::principal::manager::PrincipalManagerError as E;
+    use crate::principal::router::RouterError;
+    match e {
+        E::PermissionDenied(reason) | E::RouterError(RouterError::PermissionDenied(reason)) => {
+            (403, reason.clone())
+        }
+        other => (500, format!("Execution failed: {other}")),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3561,8 +3613,12 @@ mod tests {
         assert!(dispatcher.state.read().await.heartbeat_task.is_none());
     }
 
+    /// A request without a valid bridge token is refused with a status
+    /// response (403), which PekoHub turns into an error for the chat
+    /// client. Before, the refusal went out as a reply chunk, and the
+    /// client showed "Forbidden: …" as if the peko had said it.
     #[tokio::test]
-    async fn proxied_request_routes_to_principal() {
+    async fn an_unauthenticated_proxied_request_is_refused_with_a_status() {
         let app_state = create_test_app_state().await;
         let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
         let (handle, mut rx) = mock_tunnel_handle();
@@ -3576,6 +3632,7 @@ mod tests {
         )
         .await;
 
+        // The retired `x-pekohub-user-id` header confers nothing.
         let bridge_payload = serde_json::json!({
             "headers": {"x-pekohub-user-id": "test-user"},
             "body": {"message": "hello principal"},
@@ -3591,24 +3648,56 @@ mod tests {
             .await
             .expect("handler must not panic");
 
-        let mut got_chunk = false;
-        while let Some(msg) = rx.recv().await {
-            match msg {
-                TunnelMessage::StreamChunk { request_id, .. } => {
-                    assert_eq!(request_id, "req-web");
-                    got_chunk = true;
-                }
-                TunnelMessage::StreamEnd { request_id } => {
-                    assert_eq!(request_id, "req-web");
-                    break;
-                }
-                _ => {}
-            }
-        }
-        assert!(
-            got_chunk,
-            "proxied request must produce at least one stream chunk"
+        let TunnelMessage::ProxiedResponse {
+            request_id,
+            payload,
+        } = rx.recv().await.expect("a response")
+        else {
+            panic!("a refusal is a status response, not a stream chunk");
+        };
+        assert_eq!(request_id, "req-web");
+        let response: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(response["status"], 403);
+        assert!(response["body"]
+            .as_str()
+            .unwrap()
+            .starts_with("Forbidden: "));
+    }
+
+    #[test]
+    fn a_denied_turn_is_a_403_with_the_reason() {
+        use crate::principal::manager::PrincipalManagerError as E;
+        let reason = "Permission denied: visitor:hub:x cannot perform Chat on principal:remy";
+        assert_eq!(
+            execution_failure(&E::PermissionDenied(reason.into())),
+            (403, reason.to_string())
         );
+        assert_eq!(
+            execution_failure(&E::Config("bad".into())),
+            (500, "Execution failed: config error: bad".to_string())
+        );
+    }
+
+    /// Once reply text has streamed, a failure follows as text and the
+    /// stream ends: a status response mid-stream would leave an older
+    /// hub's stream open.
+    #[tokio::test]
+    async fn a_failure_after_streaming_ends_the_stream_as_text() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state));
+        let (handle, mut rx) = mock_tunnel_handle();
+        dispatcher
+            .send_error_response(&handle, "req-late", 500, "Execution failed: boom", true)
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.recv().await,
+            Some(TunnelMessage::StreamChunk { ref request_id, .. }) if request_id == "req-late"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(TunnelMessage::StreamEnd { ref request_id }) if request_id == "req-late"
+        ));
     }
 
     // -----------------------------------------------------------------

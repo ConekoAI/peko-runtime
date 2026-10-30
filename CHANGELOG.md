@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: remote refusals show as errors, not peko replies (2026-10-30)
+
+A refused hub request (no valid bridge token, no chat permission, unknown
+peko, empty message) went back as reply text, so web and desktop chat
+showed "Forbidden: …" as if the peko had said it. The tunnel dispatcher
+now refuses with a `proxied_response` carrying an HTTP status and the
+reason (400 / 403 / 404 / 500); PekoHub ends the chat stream with an
+`event: error` frame. A turn denied by the peko's permissions is a 403
+with the reason, no longer a 500 "Execution failed: permission denied:
+…". Once reply text has streamed, a failure still follows as text and
+ends the stream. An older hub writes the status body as text, as before.
+
 ### Fix: registered pekos stay online at PekoHub (2026-10-30)
 
 The Hub marks an instance offline after 90 s without an
