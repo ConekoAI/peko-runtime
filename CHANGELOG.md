@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a spending budget per peko (2026-10-30)
+
+`peko quota set <peko> --budget <USD>` sets the spend limit per cycle
+(`--no-budget` removes it), and `peko quota status` shows the cycle's
+spend against it. Cost is counted for models with a price
+(`spec.pricing`); a run stops when the cycle's spend reaches the budget.
+The desktop's usage panel reads and sets these through `quota_get` /
+`quota_set` (now in the desktop contract fixture).
+
+Fixes found making it work end to end:
+
+- **Over a budget, runs retried and kept paying.** The budget error's text
+  (`$0.0500`) matched the retry classifier's "500" and was retried as an
+  HTTP 500, charging again each time. Quota errors now ride the stream
+  typed (`peko_quota::QuotaError`) and the loop treats them as terminal;
+  the metered provider also refuses a call up front when a meter is
+  already exhausted, so an over-budget peko makes no further calls.
+- **A per-message model ran on the peko's own provider.** `--model <id>`
+  (and the desktop's picker, and the Agent tool's `model`) sent the
+  catalog id as the wire model name with the peko's endpoint, key, and
+  spec ("Unsupported model …", no price). `SubagentExecutor` now resolves
+  a picked model through the catalog (`with_llm_resolver`).
+- **IPC config changes reverted edits to `principal.toml`.** `quota set`
+  (and every `update_config`) wrote the in-memory config, putting back
+  values edited on disk since it was loaded; it now reloads a changed file
+  first.
+
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
 An agent can look at an image, listen to audio, or watch video whenever it

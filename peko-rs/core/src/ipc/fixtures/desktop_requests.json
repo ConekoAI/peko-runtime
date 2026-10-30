@@ -46,5 +46,7 @@
   {"type": "channel_leave", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": null},
   {"type": "channel_events_watch", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "since": null},
   {"type": "channel_info", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh"},
-  {"type": "channel_set_wake", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice", "wake": "off"}
+  {"type": "channel_set_wake", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice", "wake": "off"},
+  {"type": "quota_get", "protocol_version": 1, "request_id": 48, "name": "alice"},
+  {"type": "quota_set", "protocol_version": 1, "request_id": 49, "name": "alice", "config": {"cycle": "monthly", "budget_per_cycle": 5.0}}
 ]

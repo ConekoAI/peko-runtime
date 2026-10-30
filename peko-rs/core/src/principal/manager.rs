@@ -967,6 +967,12 @@ impl PrincipalManager {
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
+        // Pick up edits made to principal.toml since it was loaded (by
+        // hand, or by the principal's own file tools): the write below
+        // persists the whole config, and would otherwise put back the
+        // old values (a `quota set` reverted a changed model).
+        principal.reload_config_if_changed().await;
+
         // Apply the update under the write lock, then snapshot and release
         // the lock before touching disk so config readers are not blocked
         // for the duration of the (async) file write.
@@ -2632,6 +2638,38 @@ mod tests {
         assert!(
             toml.contains("public"),
             "updated exposure should be persisted"
+        );
+    }
+
+    /// An update through the manager (e.g. `quota set`) keeps an edit
+    /// made to principal.toml on disk since the config was loaded.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn update_config_keeps_edits_made_on_disk() {
+        let (_temp, manager, _adapter, id) = setup().await;
+        let principal = manager.get(id).await.expect("principal should exist");
+        let path = principal.workspace_path.join("principal.toml");
+        let mut on_disk: PrincipalConfig =
+            toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        on_disk.preferred_model_id = Some("hand-edited".to_string());
+        tokio::fs::write(&path, toml::to_string(&on_disk).unwrap())
+            .await
+            .unwrap();
+
+        manager
+            .update_config("stressy", |config| {
+                config.exposure = peko_auth::Exposure::Public;
+            })
+            .await
+            .expect("update_config should succeed");
+
+        let saved: PrincipalConfig =
+            toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(saved.preferred_model_id.as_deref(), Some("hand-edited"));
+        assert_eq!(saved.exposure, peko_auth::Exposure::Public);
+        assert_eq!(
+            principal.config.read().await.preferred_model_id.as_deref(),
+            Some("hand-edited")
         );
     }
 

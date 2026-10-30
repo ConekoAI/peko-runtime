@@ -161,6 +161,7 @@ impl StackedMeteredProvider {
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> Result<ChatResponse> {
+        self.refuse_if_exhausted()?;
         let response = self
             .inner
             .chat_with_tools(model_id, messages, tools, options)
@@ -193,6 +194,7 @@ impl StackedMeteredProvider {
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        self.refuse_if_exhausted()?;
         let inner_stream = self
             .inner
             .stream_with_tools(model_id, messages, tools, options)
@@ -227,15 +229,17 @@ impl StackedMeteredProvider {
                         // before a principal trip. We `rev()` over the
                         // captured stack (which is outer-first per
                         // `QuotaScope::collect_stack`).
-                        let mut first_error: Option<String> = None;
+                        // The typed `QuotaError` rides the stream, so the
+                        // loop recognizes it as terminal (never retried).
+                        let mut first_error: Option<peko_quota::QuotaError> = None;
                         for meter in meters.iter().rev() {
                             if let Err(e) = meter.charge_with_cost(&usage, cost_usd).await {
-                                first_error = Some(e.to_string());
+                                first_error = Some(e);
                                 break;
                             }
                         }
                         match first_error {
-                            Some(msg) => Err(anyhow::anyhow!(msg)),
+                            Some(e) => Err(anyhow::Error::new(e)),
                             None => Ok(StreamEvent::Usage {
                                 input,
                                 output,
@@ -263,6 +267,21 @@ impl StackedMeteredProvider {
     /// or via the existing `QuotaMeter::charge` (when `cost_usd ==
     /// 0.0`, i.e. the inner provider has no pricing hint). The
     /// unlimited path never trips regardless.
+    /// Refuse a call before it is made when any meter in the stack is
+    /// already over a limit or its budget (the window rolls first), so
+    /// an exhausted principal spends nothing more. Charging happens after
+    /// a call, so without this every new turn made one more paid call.
+    fn refuse_if_exhausted(&self) -> Result<()> {
+        let now = chrono::Utc::now();
+        for meter in self.meters.iter().rev() {
+            meter.advance_if_needed(now);
+            if let Some(err) = meter.check() {
+                return Err(anyhow::Error::new(err));
+            }
+        }
+        Ok(())
+    }
+
     async fn charge_stack(&self, usage: &TokenUsage, cost_usd: f64) -> Result<()> {
         // Innermost is the last entry. Walk in reverse so a peer trip
         // surfaces before a principal charge is even attempted.
@@ -276,7 +295,7 @@ impl StackedMeteredProvider {
                 meter.charge(usage).await
             };
             if let Err(e) = result {
-                return Err(anyhow::anyhow!(e));
+                return Err(anyhow::Error::new(e));
             }
         }
         Ok(())
@@ -419,6 +438,41 @@ mod tests {
             assert_eq!(state.cache_creation_tokens, 50);
             assert!((state.cost_usd.unwrap() - 0.0045).abs() < 1e-9);
         }
+    }
+
+    /// Over a budget: the stream's error is the typed `QuotaError` (the
+    /// loop must not retry it — its text "$0.0500" read as an HTTP
+    /// 500), and the next call is refused before it is made.
+    #[tokio::test]
+    async fn an_exhausted_budget_is_typed_and_refuses_the_next_call() {
+        let config = peko_quota::QuotaConfig {
+            budget_per_cycle: Some(0.001),
+            ..Default::default()
+        };
+        let meter = Arc::new(
+            QuotaMeter::load_or_init(config, None, chrono::Utc::now())
+                .await
+                .unwrap(),
+        );
+        let provider = StackedMeteredProvider {
+            inner: Arc::new(UsageProvider),
+            meters: vec![Arc::clone(&meter)],
+        };
+        let mut stream = provider
+            .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
+            .await
+            .unwrap();
+        let err = stream.next().await.unwrap().unwrap_err();
+        assert!(err.chain().any(|c| c.is::<peko_quota::QuotaError>()));
+        drop(stream);
+
+        let refused = provider
+            .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
+            .await
+            .err()
+            .expect("an exhausted budget refuses the call");
+        assert!(refused.chain().any(|c| c.is::<peko_quota::QuotaError>()));
+        assert_eq!(meter.snapshot().request_count, 1, "no second call was made");
     }
 
     #[tokio::test]
