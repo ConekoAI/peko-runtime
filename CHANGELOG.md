@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: parallel tool results and streamed usage on OpenAI-format endpoints (2026-10-30)
+
+History repair pairs an assistant turn's parallel tool calls with one tool
+message holding every result. The Chat Completions adapter sent that as a
+single `tool` message with a null `tool_call_id`, and the Responses
+adapter as one `function_call_output` with an empty `call_id`, so any
+turn replaying parallel calls failed (MiMo: "`tool_call_id` is not set").
+Both now send one output per call id. Streamed turns on Chat Completions
+also reported 0 tokens: usage arrives in its own chunk after the finish,
+and the stream loop stopped reading at the finish's `Done`. The adapter
+now holds the finish until the usage chunk, `[DONE]`, or the end of the
+stream (`ApiAdapter::end_of_stream`).
+
 ### Feature: attach files to a message — images, audio, and video reach models that take them (2026-10-30)
 
 You can hand a peko a screenshot, a voice memo, a clip, a PDF, or a

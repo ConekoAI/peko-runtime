@@ -541,6 +541,7 @@ impl Provider {
 
                 tokio::spawn(async move {
                     let mut sse_stream = crate::transport::sse::SseParser::parse_stream(stream);
+                    let mut ended = false;
                     while let Some(result) = sse_stream.next().await {
                         // The OpenAI-style `[DONE]` sentinel and the Anthropic-style
                         // `message_stop` event (which `parse_sse_event` maps to
@@ -551,8 +552,10 @@ impl Provider {
                         // `None` to terminate can block forever — stalling the
                         // agentic loop and hanging `peko send` after the final
                         // token. Stop once the canonical Done has been forwarded.
-                        // Usage chunks arrive *before* Done, so they are still
-                        // delivered. Providers that neither emit a Done event nor
+                        // Adapters emit Done after the response's usage (the
+                        // Chat Completions adapter holds a finish until its
+                        // usage chunk), so usage is still delivered. Providers
+                        // that neither emit a Done event nor
                         // close the connection will still hang; the only safe
                         // mitigation there is the per-request HTTP timeout.
                         let is_openai_done =
@@ -582,7 +585,17 @@ impl Provider {
                         }
 
                         if closed || is_openai_done || is_done_event {
+                            ended = true;
                             break;
+                        }
+                    }
+                    // The byte stream ended before its terminator: forward
+                    // whatever the parser still holds (a held finish).
+                    if !ended {
+                        for event in adapter.end_of_stream() {
+                            if tx.send(Ok(event)).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     // tx dropped here, closing the channel
