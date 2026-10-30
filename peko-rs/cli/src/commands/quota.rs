@@ -71,6 +71,14 @@ pub enum QuotaCommands {
         /// Reset cycle: hourly | daily | weekly | monthly
         #[arg(long, value_parser = parse_cycle)]
         cycle: Option<QuotaCycle>,
+        /// Spending budget per cycle, in US dollars (omit to keep
+        /// current). Cost comes from the models' prices; a run stops
+        /// when the cycle's spend reaches it.
+        #[arg(long, value_name = "USD", conflicts_with = "no_budget", value_parser = parse_budget)]
+        budget: Option<f64>,
+        /// Remove the spending budget
+        #[arg(long)]
+        no_budget: bool,
         /// Remove the quota (principal becomes unlimited)
         #[arg(long)]
         clear: bool,
@@ -99,6 +107,16 @@ fn parse_cycle(s: &str) -> Result<QuotaCycle, String> {
     QuotaCycle::from_str(s).map_err(|e: &'static str| e.to_string())
 }
 
+/// A spending budget in US dollars: a positive, finite amount.
+fn parse_budget(s: &str) -> Result<f64, String> {
+    match s.trim_start_matches('$').parse::<f64>() {
+        Ok(usd) if usd.is_finite() && usd > 0.0 => Ok(usd),
+        _ => Err(format!(
+            "'{s}' is not a positive dollar amount (e.g. 5 or 2.50)"
+        )),
+    }
+}
+
 async fn connect_daemon() -> Result<DaemonClient> {
     DaemonClient::connect()
         .await
@@ -118,9 +136,24 @@ pub async fn handle_quota(cmd: QuotaCommands, _paths: &GlobalPaths, json: bool) 
             output,
             requests,
             cycle,
+            budget,
+            no_budget,
             clear,
             peer,
-        } => set(name, input, output, requests, cycle, clear, peer, json).await,
+        } => {
+            let limits = Limits {
+                input,
+                output,
+                requests,
+                cycle,
+                budget: match (budget, no_budget) {
+                    (_, true) => BudgetChange::Clear,
+                    (Some(usd), false) => BudgetChange::Set(usd),
+                    (None, false) => BudgetChange::Keep,
+                },
+            };
+            set(name, limits, clear, peer, json).await
+        }
         QuotaCommands::Reset { name, peer } => reset(name, peer, json).await,
     }
 }
@@ -154,16 +187,29 @@ async fn status(name: String, is_peer: bool, json: bool) -> Result<()> {
     }
 }
 
-async fn set(
-    name: String,
+/// What `quota set` changes; `None` keeps the current value.
+struct Limits {
     input: Option<u64>,
     output: Option<u64>,
     requests: Option<u64>,
     cycle: Option<QuotaCycle>,
-    clear: bool,
-    is_peer: bool,
-    json: bool,
-) -> Result<()> {
+    budget: BudgetChange,
+}
+
+enum BudgetChange {
+    Keep,
+    Set(f64),
+    Clear,
+}
+
+async fn set(name: String, limits: Limits, clear: bool, is_peer: bool, json: bool) -> Result<()> {
+    let Limits {
+        input,
+        output,
+        requests,
+        cycle,
+        budget,
+    } = limits;
     let client = connect_daemon().await?;
 
     // Fetch the existing config so omitted flags preserve their
@@ -196,7 +242,11 @@ async fn set(
             // them yet; user-facing setters live in
             // `peko-rs/quota/src/config.rs`).
             cost_per_call_max: existing.cost_per_call_max,
-            budget_per_cycle: existing.budget_per_cycle,
+            budget_per_cycle: match budget {
+                BudgetChange::Keep => existing.budget_per_cycle,
+                BudgetChange::Set(usd) => Some(usd),
+                BudgetChange::Clear => None,
+            },
         }
     };
 
@@ -273,6 +323,7 @@ fn render_status(name: &str, config: &QuotaConfig, state: &QuotaState, json: boo
     fmt_limit("input:", config.input_tokens, state.input_tokens);
     fmt_limit("output:", config.output_tokens, state.output_tokens);
     fmt_limit("requests:", config.request_count, state.request_count);
+    println!("  {}", spend_line(config, state));
 
     // Informational prompt-cache split of the window's input tokens
     // (not gated by any limit). `input_tokens` semantics are
@@ -303,6 +354,16 @@ fn render_status(name: &str, config: &QuotaConfig, state: &QuotaState, json: boo
         start.to_rfc3339(),
         end.to_rfc3339()
     );
+}
+
+/// The cycle's spend against its budget. Cost is counted only for
+/// models with a price, so an unpriced model spends `$0`.
+fn spend_line(config: &QuotaConfig, state: &QuotaState) -> String {
+    let spent = state.cost_usd.unwrap_or(0.0);
+    match config.budget_per_cycle {
+        Some(budget) => format!("spend:      ${spent:.4} / ${budget:.2}"),
+        None => format!("spend:      ${spent:.4} (no budget)"),
+    }
 }
 
 // Re-export the quota state struct for `render_status`'s signature
@@ -375,6 +436,47 @@ mod tests {
             panic!("expected Quota variant");
         };
         cmd
+    }
+
+    #[test]
+    fn set_takes_a_budget_or_clears_it() {
+        match parse_set(&["set", "juno", "--budget", "$2.50"]) {
+            QuotaCommands::Set {
+                budget, no_budget, ..
+            } => {
+                assert_eq!(budget, Some(2.5));
+                assert!(!no_budget);
+            }
+            _ => panic!("expected Set"),
+        }
+        match parse_set(&["set", "juno", "--no-budget"]) {
+            QuotaCommands::Set {
+                budget, no_budget, ..
+            } => {
+                assert_eq!(budget, None);
+                assert!(no_budget);
+            }
+            _ => panic!("expected Set"),
+        }
+        assert!(parse_budget("0").is_err());
+        assert!(parse_budget("abc").is_err());
+    }
+
+    #[test]
+    fn spend_line_shows_the_budget_or_none() {
+        let state = QuotaState {
+            cost_usd: Some(0.1234),
+            ..QuotaState::fresh(QuotaCycle::Daily, chrono::Utc::now())
+        };
+        let budgeted = QuotaConfig {
+            budget_per_cycle: Some(5.0),
+            ..QuotaConfig::default()
+        };
+        assert_eq!(spend_line(&budgeted, &state), "spend:      $0.1234 / $5.00");
+        assert_eq!(
+            spend_line(&QuotaConfig::default(), &state),
+            "spend:      $0.1234 (no budget)"
+        );
     }
 
     fn parse_reset(args: &[&str]) -> QuotaCommands {

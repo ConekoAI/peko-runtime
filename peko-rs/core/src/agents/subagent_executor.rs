@@ -371,6 +371,12 @@ pub struct SubagentExecutor {
     /// `QuotaMeter::unlimited()` fallback so subagents of principals
     /// with no quota config still run (no behavior change vs F19).
     quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    /// The daemon's model resolver. A run that picks a model (a
+    /// per-message `--model`, or the Agent tool's `model`) gets that
+    /// catalog entry's own provider — its endpoint, key, spec, and
+    /// price. `None` (tests, standalone) keeps the parent's provider
+    /// and swaps only the wire model id.
+    llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     /// B5d (per-agent attribution, 2026-08-22): per-agent
     /// `QuotaMeter` constructed at executor `new` time. The agent
     /// name is the audit label; the meter is `QuotaMeter::unlimited()`
@@ -452,6 +458,7 @@ impl SubagentExecutor {
             principal_name: None,
             observability: None,
             quota_meter: None,
+            llm_resolver: None,
             // B5d: per-agent attribution meter. Audit-only by default;
             // B5e wires it into the LLM call path alongside the
             // principal meter.
@@ -518,6 +525,14 @@ impl SubagentExecutor {
     /// re-opens this meter via `QuotaScope::with` inside the spawned
     /// task (task-locals don't cross `tokio::spawn` — F19's design
     /// assumption on this point was incorrect).
+    /// Resolve a picked model through the daemon's catalog (see
+    /// `llm_resolver`).
+    #[must_use]
+    pub fn with_llm_resolver(mut self, resolver: Option<Arc<peko_providers::LlmResolver>>) -> Self {
+        self.llm_resolver = resolver;
+        self
+    }
+
     #[must_use]
     pub fn with_quota_meter(mut self, meter: Option<Arc<peko_quota::meter::QuotaMeter>>) -> Self {
         self.quota_meter = meter;
@@ -648,6 +663,7 @@ impl SubagentExecutor {
             principal_name: None,
             observability: None,
             quota_meter: None,
+            llm_resolver: None,
             // B5d: per-agent attribution meter. Audit-only by default;
             // B5e wires it into the LLM call path alongside the
             // principal meter.
@@ -2126,6 +2142,7 @@ impl SubagentExecutor {
         // can re-open `QuotaScope::with(...)` inside (task-locals don't
         // cross `tokio::spawn`).
         let parent_quota_meter_clone = self.quota_meter.clone();
+        let llm_resolver_clone = self.llm_resolver.clone();
         // Propagate the caller principal DID so the child Agent (and,
         // via its executor, deeper descendants) registers `send_peer`
         // with the principal's attribution.
@@ -2284,6 +2301,7 @@ impl SubagentExecutor {
                         observability_clone,
                         child_cancel_for_closure.clone(),
                         parent_quota_meter_clone,
+                        llm_resolver_clone,
                         agent_meter_clone,
                         caller_principal_did_clone,
                         stream_events_for_closure,
@@ -2705,6 +2723,9 @@ async fn execute_subagent_task(
     // the parent principal. `None` falls open to
     // `QuotaMeter::unlimited()` (matches F19/F20 behavior).
     parent_quota_meter: Option<Arc<peko_quota::meter::QuotaMeter>>,
+    // The daemon's model resolver, for a picked model (see
+    // `SubagentExecutor::llm_resolver`).
+    llm_resolver: Option<Arc<peko_providers::LlmResolver>>,
     // B5e: the executor's per-agent `QuotaMeter` (audit-only by
     // default; see `SubagentExecutor::agent_meter`). The spawned
     // `tokio::task` re-opens it as the innermost `QuotaScope::with`
@@ -2766,16 +2787,33 @@ async fn execute_subagent_task(
     // new Arc is a sibling. `provider.spec()` is shared unchanged,
     // so `SpecGate::check` sees the same capability descriptor the
     // parent used.
-    let provider = if let Some(ref id) = model_override {
-        let inner = Arc::try_unwrap(provider).unwrap_or_else(|arc| (*arc).clone());
-        let new_provider = inner.with_model_id(id.clone());
-        info!(
-            "Subagent '{}' dispatching with parent-picked model: {}",
-            agent_name, id
-        );
-        Arc::new(new_provider)
-    } else {
-        provider
+    // A picked model is a catalog id: build that entry's own provider
+    // (endpoint, key, spec, price). Without a resolver, keep the
+    // parent's provider and swap only the wire model id.
+    let provider = match (&model_override, &llm_resolver) {
+        (Some(id), Some(resolver)) => {
+            let (picked, _choice) = resolver
+                .build(peko_providers::resolver::ResolveRequest {
+                    override_model: Some(id),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("model '{id}' is not available: {e:#}"))?;
+            info!(
+                "Subagent '{}' dispatching with picked model: {}",
+                agent_name, id
+            );
+            picked
+        }
+        (Some(id), None) => {
+            let inner = Arc::try_unwrap(provider).unwrap_or_else(|arc| (*arc).clone());
+            info!(
+                "Subagent '{}' dispatching with parent-picked model: {}",
+                agent_name, id
+            );
+            Arc::new(inner.with_model_id(id.clone()))
+        }
+        (None, _) => provider,
     };
     // Capture the resolved model id so `Agent::new_with_shared_executor`
     // sees a non-`None` `resolved_model_id` when a parent picked a
