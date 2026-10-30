@@ -1504,6 +1504,7 @@ impl RequestHandler for PrincipalHandler {
                     }
                 };
 
+                let avatar_changed = avatar.is_some();
                 match host
                     .principal_manager()
                     .update_config(&name, |config| {
@@ -1539,6 +1540,13 @@ impl RequestHandler for PrincipalHandler {
                             let _ = dispatcher
                                 .set_instance_exposure(&name, exposure_opt.into())
                                 .await;
+                            // Hub shows the avatar with the profile; an
+                            // unregistered peko announces nothing.
+                            if avatar_changed {
+                                if let Err(e) = dispatcher.announce_single_instance(&name).await {
+                                    warn!(principal = %name, "re-announce after avatar change failed: {e}");
+                                }
+                            }
                         }
                         let response = ResponsePacket::PrincipalUpdated {
                             request_id,

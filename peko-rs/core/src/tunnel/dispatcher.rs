@@ -395,6 +395,7 @@ impl TunnelDispatcher {
                 exposure: exposure.clone(),
                 capabilities: None,
                 metadata: None,
+                avatar: principal.config.read().await.identity.avatar.clone(),
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             };
 
@@ -498,6 +499,7 @@ impl TunnelDispatcher {
             exposure: exposure.clone(),
             capabilities: None,
             metadata: None,
+            avatar: principal.config.read().await.identity.avatar.clone(),
             // B5: `runtime_direct_endpoint` field dropped from payload.
         };
 
@@ -1049,7 +1051,7 @@ impl TunnelDispatcher {
             }
             Err(e) => {
                 warn!("Principal execution failed for {}: {}", principal_name, e);
-                let (status, message) = execution_failure(&e);
+                let (status, message) = execution_failure(&principal_name, &e);
                 return self
                     .send_error_response(&handle, &request_id, status, &message, streamed_any)
                     .await;
@@ -1541,6 +1543,7 @@ impl TunnelDispatcher {
                         exposure: payload.exposure.clone(),
                         capabilities: None,
                         metadata: None,
+                        avatar: principal.config.read().await.identity.avatar.clone(),
                         // B5: `runtime_direct_endpoint` field dropped from payload.
                     };
                     if let Err(e) = handle.send(TunnelMessage::InstanceAnnounce {
@@ -2314,15 +2317,20 @@ impl TunnelDispatcher {
 }
 
 /// The status and message a failed principal turn goes back with. A
-/// caller without the permission gets a 403 that says so, not a 500
-/// "Execution failed".
-fn execution_failure(e: &crate::principal::manager::PrincipalManagerError) -> (u16, String) {
+/// caller without the permission gets a 403 that says so in words a
+/// chat user can read; the detailed reason, with actor ids, stays in
+/// the runtime's log.
+fn execution_failure(
+    principal_name: &str,
+    e: &crate::principal::manager::PrincipalManagerError,
+) -> (u16, String) {
     use crate::principal::manager::PrincipalManagerError as E;
     use crate::principal::router::RouterError;
     match e {
-        E::PermissionDenied(reason) | E::RouterError(RouterError::PermissionDenied(reason)) => {
-            (403, reason.clone())
-        }
+        E::PermissionDenied(_) | E::RouterError(RouterError::PermissionDenied(_)) => (
+            403,
+            format!("{principal_name} doesn't accept chats from you."),
+        ),
         other => (500, format!("Execution failed: {other}")),
     }
 }
@@ -3665,15 +3673,15 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_turn_is_a_403_with_the_reason() {
+    fn a_denied_turn_is_a_403_in_plain_words() {
         use crate::principal::manager::PrincipalManagerError as E;
         let reason = "Permission denied: visitor:hub:x cannot perform Chat on principal:remy";
         assert_eq!(
-            execution_failure(&E::PermissionDenied(reason.into())),
-            (403, reason.to_string())
+            execution_failure("remy", &E::PermissionDenied(reason.into())),
+            (403, "remy doesn't accept chats from you.".to_string())
         );
         assert_eq!(
-            execution_failure(&E::Config("bad".into())),
+            execution_failure("remy", &E::Config("bad".into())),
             (500, "Execution failed: config error: bad".to_string())
         );
     }

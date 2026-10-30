@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a registered peko's avatar reaches PekoHub; refusals in plain words (2026-10-31)
+
+The tunnel's `instance_announce` now carries the peko's avatar
+(`identity.avatar`, an emoji or short monogram; `null` when it has none),
+so PekoHub serves it with the public profile and remote clients show the
+same face its owner picked. Changing the avatar of a registered peko
+(`principal_update`) re-announces it. A hub chat the peko's permissions
+deny is answered "<peko> doesn't accept chats from you." instead of the
+permission check's text with raw actor ids; the detail stays in the log.
+
 ### Fix: remote refusals show as errors, not peko replies (2026-10-30)
 
 A refused hub request (no valid bridge token, no chat permission, unknown

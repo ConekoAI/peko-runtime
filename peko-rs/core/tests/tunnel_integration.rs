@@ -252,6 +252,7 @@ async fn register_test_principal(
             exposure: InstanceExposure::Public,
             capabilities: Some(vec!["chat".into()]),
             metadata: None,
+            avatar: None,
         },
     };
     write
