@@ -1971,22 +1971,10 @@ impl AgenticLoop {
                             // ToolFunnel`. `&self.extension_core` is
                             &*iteration_tooling,
                             self.agent.identity_did(),
-                            // **Track B**: per-agent `workspace`
-                            // was removed from `AgentConfig`. The
-                            // principal's workspace still lives on the
-                            // agent via `principal_workspace()`, but
-                            // it is the Agent tool's subagent prompt
-                            // resolution root
-                            // (`<ws>/agents/<name>/AGENT.md`) — not
-                            // the per-call file workspace used by
-                            // `Write`/`Edit`/`Read`/etc. Those tools
-                            // resolve relative paths against their own
-                            // `workspace_dir`, set at construction by
-                            // `ToolRuntime::register_builtins` to
-                            // `<data>/workspaces`. Passing the
-                            // principal home here would make the
-                            // builtin preprocessor rewrite file paths
-                            // against `<principal_home>` instead.
+                            // No per-call workspace: the dispatcher
+                            // resolves relative paths and the default
+                            // directory of the file tools and Bash in
+                            // the principal's own workspace.
                             None,
                             // Phase 9b.N.5b.9e: `session` parameter is
                             // `&dyn SessionView`; forward as-is to the

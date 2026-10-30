@@ -632,6 +632,21 @@ impl ToolDispatcher {
             return Ok(Dispatched::refused(text, Outcome::FloorDenied));
         }
 
+        // A principal's runs work in its own folder: without an explicit
+        // workspace on the call, relative paths and the default directory
+        // of the file tools and Bash are the principal workspace, not the
+        // runtime-wide `<data>/workspaces` every principal used to share.
+        let principal_workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
+        let call_workspace: Option<String> = call
+            .workspace
+            .clone()
+            .filter(|w| !w.is_empty())
+            .or_else(|| {
+                principal_workspace
+                    .as_ref()
+                    .map(|w| w.to_string_lossy().into_owned())
+            });
+
         // 4. Build the ToolContext once so the cancel watcher and the
         //    exec closure share the same abort receiver / identity
         //    fields.
@@ -650,7 +665,7 @@ impl ToolDispatcher {
         }
         // No workspace stays `None`: an empty one would be copied into a
         // background task's dispatch and injected as `cwd: ""`.
-        if let Some(workspace) = call.workspace.as_deref().filter(|w| !w.is_empty()) {
+        if let Some(workspace) = call_workspace.as_deref() {
             base_ctx = base_ctx.with_workspace(workspace);
         }
         if let Some(id) = caller_principal {
@@ -714,16 +729,16 @@ impl ToolDispatcher {
                 .unwrap_or_else(|| "unknown".to_string()),
             "hook_run".to_string(),
         )
-        .with_workspace(call.workspace.clone().unwrap_or_else(|| ".".to_string()))
+        .with_workspace(call_workspace.clone().unwrap_or_else(|| ".".to_string()))
         .with_principal_id(caller_principal.map(str::to_string))
         .with_executor(principal_async.map(|bound| bound.executor));
 
         let mut params = call.params.clone();
-        apply_workspace_injection(&mut params, &tool_name, call.workspace.as_deref());
+        apply_workspace_injection(&mut params, &tool_name, call_workspace.as_deref());
 
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
-        let workspace = caller_principal.and_then(|_| self.workspace_for(&principal_id));
+        let workspace = principal_workspace;
         if stamp.is_untrusted() {
             // The file tools default to a runtime-wide directory; an
             // untrusted run's relative paths are its workspace's instead.
@@ -1431,14 +1446,17 @@ fn apply_workspace_injection(params: &mut Value, tool_name: &str, workspace: Opt
             }
             "Write" | "Edit" | "Read" => {
                 if let Some(path_str) = obj.get("file_path").and_then(|v| v.as_str()) {
-                    let path_buf = std::path::PathBuf::from(path_str);
-                    if !path_buf.is_absolute() {
-                        let resolved = std::path::PathBuf::from(ws).join(path_str);
-                        obj.insert(
-                            "file_path".to_string(),
-                            Value::String(resolved.to_string_lossy().to_string()),
-                        );
-                    }
+                    // `~/…` is the home directory, not a folder named `~`.
+                    let expanded = crate::tools::builtin::paths::expand_tilde(path_str);
+                    let resolved = if expanded.is_absolute() {
+                        expanded
+                    } else {
+                        std::path::PathBuf::from(ws).join(path_str)
+                    };
+                    obj.insert(
+                        "file_path".to_string(),
+                        Value::String(resolved.to_string_lossy().to_string()),
+                    );
                 }
             }
             _ => {}
@@ -1531,6 +1549,40 @@ mod tests {
         let (text, _, success) = dispatcher.execute(call).await.unwrap();
         assert!(!success);
         assert_eq!(text, "Error: Failed to read notes.md: no such file");
+    }
+
+    /// A principal's run works in its own folder: with no workspace on the
+    /// call, a relative path resolves under the principal workspace, not a
+    /// runtime-wide directory (a peko's `Glob roles/*.md` found nothing).
+    #[tokio::test]
+    async fn relative_paths_resolve_in_the_principal_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("principals").join("juno");
+        let catalog = Arc::new(ToolCatalog::new());
+        catalog
+            .register_system(Arc::new(ProbeTool), ToolSource::BuiltIn)
+            .await;
+        let dispatcher = ToolDispatcher::new(
+            catalog,
+            Arc::new(WorkspaceHookDispatcher::new()),
+            Arc::new(AsyncExecutionRouter::new()),
+            None,
+        );
+        dispatcher.bind_workspace(
+            peko_subject::PrincipalId("principal".into()),
+            workspace.clone(),
+        );
+        let mut call = ToolCallSpec::new("Read", serde_json::json!({"file_path": "roles/root.md"}));
+        call.agent_id = Some("did:agent".into());
+        call.session_id = Some("session".into());
+        call.principal_id = Some("principal".into());
+        call.acting_for = Some(peko_tools_core::ActingFor::runtime());
+        let (_, result, success) = dispatcher.execute(call).await.unwrap();
+        assert!(success);
+        assert_eq!(
+            result["file_path"],
+            workspace.join("roles/root.md").to_string_lossy().as_ref()
+        );
     }
 
     #[tokio::test]

@@ -91,9 +91,12 @@ async fn cli_providers_real_llm_native_tool_call() {
     let cli = PekoCli::new().allow_real_llm_keys();
     real_llm_principal(&cli, "providers_tool_call", &llm);
 
-    // Read resolves relative paths against the shared workspaces root.
-    let workspace = cli.peko_dir().join("data").join("workspaces");
-    std::fs::create_dir_all(&workspace).expect("create workspaces root");
+    // Read resolves relative paths against the principal's own folder.
+    let workspace = cli
+        .peko_dir()
+        .join("principals")
+        .join("providers_tool_call");
+    std::fs::create_dir_all(&workspace).expect("create principal workspace");
     std::fs::write(workspace.join("tool_test.txt"), "TOOL_TEST_SECRET_123")
         .expect("write sentinel file");
     let _daemon = DaemonGuard::spawn(&cli);
