@@ -96,10 +96,14 @@ pub struct ModelSpec {
     #[serde(default)]
     pub image_input: bool,
     /// Whether the model accepts audio inputs (input-side only;
-    /// output speech is out of scope). Reserved for future voice
-    /// providers; defaults off everywhere for now.
+    /// output speech is out of scope). Attached audio reaches the
+    /// model as audio blocks only when set (ADR-088).
     #[serde(default)]
     pub audio_input: bool,
+    /// Whether the model accepts video inputs. Attached video reaches
+    /// the model as video blocks only when set (ADR-088).
+    #[serde(default)]
+    pub video_input: bool,
     /// Tool-calling support level. Engine refuses to surface
     /// `None` models in tool-using contexts (orchestrator,
     /// subagents).
@@ -160,6 +164,7 @@ impl ModelSpec {
         Self {
             image_input: false,
             audio_input: false,
+            video_input: false,
             tool_support: ToolSupport::None,
             streaming: true,
             thinking: ThinkingMode::Disabled,
@@ -177,6 +182,7 @@ impl ModelSpec {
         Self {
             image_input: true,
             audio_input: false,
+            video_input: false,
             tool_support: ToolSupport::FunctionCalling,
             streaming: true,
             thinking: ThinkingMode::Optional,

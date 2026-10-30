@@ -108,6 +108,15 @@ fn tool_result_tokens(content: &[ContentBlock]) -> usize {
             ContentBlock::Image { source, mime_type } => {
                 total = total.saturating_add(crate::estimate_image_tokens(source, mime_type));
             }
+            // Audio and video: a quarter-token per payload byte, an
+            // overestimate for every provider that bills by duration.
+            ContentBlock::Audio { source, .. } | ContentBlock::Video { source, .. } => {
+                let len = match source {
+                    peko_message::ImageSource::Base64 { data, .. } => data.len(),
+                    peko_message::ImageSource::Url { url, .. } => url.len(),
+                };
+                total = total.saturating_add(len / 4);
+            }
             ContentBlock::Thinking { text, .. } => {
                 total = total.saturating_add(text.len() / 4);
             }

@@ -1985,6 +1985,8 @@ pub struct ModelSpec {
     #[serde(default)]
     pub audio_input: bool,
     #[serde(default)]
+    pub video_input: bool,
+    #[serde(default)]
     pub tool_support: ModelToolSupport,
     #[serde(default = "default_streaming_true")]
     pub streaming: bool,
@@ -2010,6 +2012,7 @@ impl Default for ModelSpec {
         Self {
             image_input: false,
             audio_input: false,
+            video_input: false,
             tool_support: ModelToolSupport::None,
             streaming: true,
             thinking: ModelThinkingMode::Disabled,
@@ -2186,6 +2189,11 @@ pub struct ModelUpdateArgs {
     /// Replace the `enabled` flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Replace the capability descriptor (which inputs the model takes,
+    /// tools, thinking, ...). ADR-088: the desktop sets image / audio /
+    /// video input here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
 }
 
 /// Structured outcome of a live model ping. Mirrors

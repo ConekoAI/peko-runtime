@@ -25,6 +25,12 @@ pub use compat::OpenAiCompatibleAdapter;
 pub use openai::OpenAiAdapter;
 pub use openai_responses::OpenAiResponsesAdapter;
 
+/// The text an adapter sends in place of an audio or video block its API
+/// format cannot carry (ADR-088).
+pub(crate) fn media_omitted_note(mime_type: &str) -> String {
+    format!("[A {mime_type} attachment was left out: this API cannot carry it.]")
+}
+
 /// Accumulates partial tool call data during streaming across multiple SSE events.
 ///
 /// This component handles the stateful accumulation of tool call parts (id, name, arguments)

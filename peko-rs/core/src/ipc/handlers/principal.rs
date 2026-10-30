@@ -2289,11 +2289,11 @@ async fn run_principal_send(
     let turns_for_task = Arc::clone(&turns);
     let session_id_for_task = session_id.clone();
     // ADR-088 D4: the turn reads the message plus a note per file;
-    // images go along for a model that can view them.
+    // images, audio, and video go along for a model that takes them.
     let message_for_task =
         crate::principal::attachments::turn_text(&message, &principal.workspace_path, &attachments);
-    let images_for_task =
-        crate::principal::attachments::images(&principal.workspace_path, &attachments);
+    let media_for_task =
+        crate::principal::attachments::media(&principal.workspace_path, &attachments);
     let override_model_for_task = override_model.clone();
     // ADR-078: the run acts for the peer who spoke, at the trust their
     // permission subject earns.
@@ -2308,10 +2308,10 @@ async fn run_principal_send(
     let child_turn_handle = tokio::spawn(async move {
         let _permit_held = permit_for_task;
         let result = turns_for_task
-            .drive_turn_streaming_with_images(
+            .drive_turn_streaming_with_media(
                 &session_id_for_task,
                 &message_for_task,
-                images_for_task,
+                media_for_task,
                 Arc::new(on_event),
                 Some(cancel),
                 override_model_for_task,

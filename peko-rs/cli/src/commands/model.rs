@@ -722,6 +722,7 @@ impl ModelSummaryWire {
 struct ModelSpecWire {
     image_input: bool,
     audio_input: bool,
+    video_input: bool,
     tool_support: String,
     streaming: bool,
     thinking: String,
@@ -738,6 +739,7 @@ impl ModelSpecWire {
         Self {
             image_input: s.image_input,
             audio_input: s.audio_input,
+            video_input: s.video_input,
             tool_support: tool_support_wire(s.tool_support).to_string(),
             streaming: s.streaming,
             thinking: thinking_wire(s.thinking).to_string(),
@@ -843,6 +845,7 @@ fn print_detail(e: &ModelConfig) {
             println!("    spec:");
             println!("      image_input:    {}", s.image_input);
             println!("      audio_input:    {}", s.audio_input);
+            println!("      video_input:    {}", s.video_input);
             println!(
                 "      tool_support:   {}",
                 tool_support_wire(s.tool_support)
@@ -978,6 +981,7 @@ async fn compare_cmd(ids: &[String], paths: &GlobalPaths, json: bool) -> Result<
         "max_output_tokens",
         "image_input",
         "audio_input",
+        "video_input",
         "tool_support",
         "streaming",
         "thinking",
@@ -1058,6 +1062,10 @@ fn field_value(e: &ModelConfig, field: &str) -> String {
         "audio_input" => e
             .spec
             .map(|s| s.audio_input.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        "video_input" => e
+            .spec
+            .map(|s| s.video_input.to_string())
             .unwrap_or_else(|| "—".to_string()),
         "tool_support" => e
             .spec

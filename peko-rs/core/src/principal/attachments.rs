@@ -3,14 +3,14 @@
 //! The local operator sends files by path. The runtime copies each one
 //! into the principal's workspace (`attachments/<YYYY-MM-DD>/<8 hex>-<name>`),
 //! records it on the inbound DM post, and tells the turn about it with
-//! one note line per file. Images additionally reach a vision model as
-//! image blocks (`agents::subagent_executor::ImageInput`).
+//! one note line per file. Images, audio, and video also reach a model
+//! that takes them as media blocks (`agents::subagent_executor::MediaInput`).
 
 use std::path::{Path, PathBuf};
 
 use peko_protocol::channel::Attachment;
 
-use crate::agents::subagent_executor::{ImageInput, MAX_IMAGE_BLOCK_BYTES};
+use crate::agents::subagent_executor::{MediaInput, MediaKind};
 
 /// At most this many files per message.
 pub(crate) const MAX_FILES: usize = 8;
@@ -105,14 +105,18 @@ pub(crate) fn turn_text(message: &str, workspace: &Path, attachments: &[Attachme
     }
 }
 
-/// The attachments a vision model may see as image blocks.
-pub(crate) fn images(workspace: &Path, attachments: &[Attachment]) -> Vec<ImageInput> {
+/// The attachments a model may take as media blocks: images, audio,
+/// and video within the per-kind block limit.
+pub(crate) fn media(workspace: &Path, attachments: &[Attachment]) -> Vec<MediaInput> {
     attachments
         .iter()
-        .filter(|a| is_viewable_image(&a.mime) && a.size <= MAX_IMAGE_BLOCK_BYTES)
-        .map(|a| ImageInput {
-            path: absolute(workspace, a),
-            mime: a.mime.clone(),
+        .filter_map(|a| {
+            let kind = media_kind(&a.mime)?;
+            (a.size <= kind.max_block_bytes()).then(|| MediaInput {
+                path: absolute(workspace, a),
+                mime: a.mime.clone(),
+                kind,
+            })
         })
         .collect()
 }
@@ -122,11 +126,20 @@ pub(crate) fn absolute(workspace: &Path, attachment: &Attachment) -> PathBuf {
     workspace.join(&attachment.path)
 }
 
-fn is_viewable_image(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    )
+/// The media kind a model can take for `mime`, if any. Images are the
+/// formats every vision API reads; audio and video are the formats the
+/// omni models document (MP3/WAV/FLAC/M4A/OGG, MP4/MOV/AVI/WMV/WebM).
+fn media_kind(mime: &str) -> Option<MediaKind> {
+    match mime {
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" => Some(MediaKind::Image),
+        "audio/wav" | "audio/mpeg" | "audio/flac" | "audio/mp4" | "audio/ogg" => {
+            Some(MediaKind::Audio)
+        }
+        "video/mp4" | "video/quicktime" | "video/x-msvideo" | "video/x-ms-wmv" | "video/webm" => {
+            Some(MediaKind::Video)
+        }
+        _ => None,
+    }
 }
 
 /// Keep letters, digits, `.`, `-`, and `_`; everything else becomes `_`.
@@ -178,6 +191,21 @@ async fn mime_of(path: &Path) -> String {
     if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
         return "image/webp".into();
     }
+    if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WAVE" {
+        return "audio/wav".into();
+    }
+    if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"AVI " {
+        return "video/x-msvideo".into();
+    }
+    if head.starts_with(b"fLaC") {
+        return "audio/flac".into();
+    }
+    if head.starts_with(b"OggS") {
+        return "audio/ogg".into();
+    }
+    if head.starts_with(b"ID3") {
+        return "audio/mpeg".into();
+    }
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -201,9 +229,14 @@ async fn mime_of(path: &Path) -> String {
         "heic" => "image/heic",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "ogg" | "oga" => "audio/ogg",
         "m4a" => "audio/mp4",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
+        "avi" => "video/x-msvideo",
+        "wmv" => "video/x-ms-wmv",
+        "webm" => "video/webm",
         _ => "application/octet-stream",
     }
     .into()
@@ -255,9 +288,10 @@ mod tests {
         );
         assert_eq!(got[1].mime, "text/markdown");
 
-        let images = images(workspace.path(), &got);
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].mime, "image/png");
+        let media = media(workspace.path(), &got);
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].mime, "image/png");
+        assert_eq!(media[0].kind, MediaKind::Image);
     }
 
     #[tokio::test]
@@ -287,6 +321,29 @@ mod tests {
             .contains("too many"));
 
         assert!(!workspace.path().join(DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn audio_and_video_are_media_too() {
+        let src = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let wav = src.path().join("voice.bin"); // sniffed, not named
+        std::fs::write(&wav, b"RIFF\x24\0\0\0WAVEfmt ").unwrap();
+        let clip = src.path().join("clip.mov");
+        std::fs::write(&clip, b"\0\0\0\x14ftypqt  ").unwrap();
+        let got = ingest(
+            workspace.path(),
+            &[wav.display().to_string(), clip.display().to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(got[0].mime, "audio/wav");
+        assert_eq!(got[1].mime, "video/quicktime");
+        let kinds: Vec<_> = media(workspace.path(), &got)
+            .iter()
+            .map(|m| m.kind)
+            .collect();
+        assert_eq!(kinds, vec![MediaKind::Audio, MediaKind::Video]);
     }
 
     #[test]

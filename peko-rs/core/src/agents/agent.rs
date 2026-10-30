@@ -1023,8 +1023,8 @@ impl Agent {
     /// `user_text` is persisted verbatim as the user message in the
     /// session JSONL. `pre_user_messages` are ephemeral LLM-only turns
     /// inserted immediately before the user turn (e.g. recalled context
-    /// from prior sessions); they are never persisted. `user_images`
-    /// (ADR-088) ride the user turn as image blocks; the session keeps
+    /// from prior sessions); they are never persisted. `user_media`
+    /// (ADR-088) ride the user turn as media blocks; the session keeps
     /// only the text.
     ///
     /// F19: optional `quota_meter` is the principal's quota meter
@@ -1040,7 +1040,7 @@ impl Agent {
     pub async fn execute_streaming_with_session<F>(
         &self,
         user_text: &str,
-        user_images: Vec<peko_message::ContentBlock>,
+        user_media: Vec<peko_message::ContentBlock>,
         pre_user_messages: Vec<peko_message::LlmMessage>,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
@@ -1093,7 +1093,7 @@ impl Agent {
 
         let streaming_config = peko_engine::OrchestratorConfig::live();
 
-        let result = if user_images.is_empty() {
+        let result = if user_media.is_empty() {
             loop_
                 .run_streaming_with_resume(
                     user_text,
@@ -1106,7 +1106,7 @@ impl Agent {
                 .await
         } else {
             let mut user_message = peko_message::LlmMessage::user(user_text.to_string());
-            user_message.content.extend(user_images);
+            user_message.content.extend(user_media);
             loop_
                 .run_streaming_with_resume_rich(
                     user_message,

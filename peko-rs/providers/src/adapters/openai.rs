@@ -708,11 +708,20 @@ fn tool_choice_openai(choice: &ToolChoice) -> Value {
 /// `ImageSource::Base64 { data }` is joined with the block's
 /// `mime_type` into a `data:` URL (the form OpenAI's chat.completions
 /// vision accepts for inline images).
+///
+/// ADR-088: `Audio` becomes `{type:"input_audio", input_audio:{data,
+/// format}}` (OpenAI's shape: raw base64 plus a format name; a URL
+/// source passes the URL as `data`, which MiMo accepts), and `Video`
+/// becomes `{type:"video_url", video_url:{url}}` with a `data:` URL
+/// (the shape MiMo and other omni models on this protocol read).
 fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
-    let has_image = blocks
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Image { .. }));
-    if !has_image {
+    let has_media = blocks.iter().any(|b| {
+        matches!(
+            b,
+            ContentBlock::Image { .. } | ContentBlock::Audio { .. } | ContentBlock::Video { .. }
+        )
+    });
+    if !has_media {
         // Pre-F28 wire shape — text-only messages still emit `content: "..."`.
         return Value::String(extract_text_content(blocks));
     }
@@ -735,6 +744,24 @@ fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
                     "image_url": {"url": url},
                 }));
             }
+            ContentBlock::Audio { source, mime_type } => {
+                let input_audio = match source {
+                    ImageSource::Url { url, .. } => json!({"data": url}),
+                    ImageSource::Base64 { data, .. } => {
+                        json!({"data": data, "format": audio_format(mime_type)})
+                    }
+                };
+                parts.push(json!({"type": "input_audio", "input_audio": input_audio}));
+            }
+            ContentBlock::Video { source, mime_type } => {
+                let url = match source {
+                    ImageSource::Url { url, .. } => url.clone(),
+                    ImageSource::Base64 { data, .. } => {
+                        format!("data:{};base64,{}", mime_type, data)
+                    }
+                };
+                parts.push(json!({"type": "video_url", "video_url": {"url": url}}));
+            }
             // Tool-call / tool-result / thinking blocks do not appear
             // on user/assistant content arrays in Chat Completions
             // (they live on their own fields). Silently skip so a
@@ -743,6 +770,18 @@ fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
         }
     }
     Value::Array(parts)
+}
+
+/// The `input_audio.format` name for an audio MIME type.
+fn audio_format(mime_type: &str) -> &str {
+    match mime_type {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/flac" | "audio/x-flac" => "flac",
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "m4a",
+        "audio/ogg" => "ogg",
+        other => other.rsplit('/').next().unwrap_or(other),
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1809,6 +1848,54 @@ mod tests {
             .unwrap();
         assert_eq!(body["messages"][0]["content"], "hello");
         assert!(body["messages"][0]["content"].is_string());
+    }
+
+    /// ADR-088: audio becomes OpenAI's `input_audio` (raw base64 plus
+    /// a format name) and video a `video_url` data URL — the shapes
+    /// MiMo's omni models read on this protocol.
+    #[test]
+    fn test_build_request_audio_and_video_emit_media_parts() {
+        let adapter = OpenAiAdapter::new();
+        let b64 = |data: &str| ImageSource::Base64 {
+            data: data.to_string(),
+            dimensions: None,
+        };
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "what is said, and what moves?".to_string(),
+                },
+                ContentBlock::Audio {
+                    source: b64("UklGRg=="),
+                    mime_type: "audio/wav".to_string(),
+                },
+                ContentBlock::Video {
+                    source: b64("AAAAGGZ0eXA="),
+                    mime_type: "video/mp4".to_string(),
+                },
+            ],
+            ..LlmMessage::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "mimo-v2.6-flash",
+                &[msg],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let parts = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["type"], "input_audio");
+        assert_eq!(parts[1]["input_audio"]["data"], "UklGRg==");
+        assert_eq!(parts[1]["input_audio"]["format"], "wav");
+        assert_eq!(parts[2]["type"], "video_url");
+        assert_eq!(
+            parts[2]["video_url"]["url"],
+            "data:video/mp4;base64,AAAAGGZ0eXA="
+        );
     }
 
     /// F28: an image-only user message emits a single-element

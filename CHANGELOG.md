@@ -4,19 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Feature: attach files to a message (2026-10-30)
+### Feature: attach files to a message — images, audio, and video reach models that take them (2026-10-30)
 
-You can hand a peko a screenshot, a PDF, or a spreadsheet (ADR-088).
-`principal_send` / `principal_send_stream` take `attachments` (absolute
-paths, local user only, at most 8 files of 20 MB each), and `peko send`
-takes `--attach <path>` (repeatable). The engine copies each file into
-the peko's workspace under `attachments/<date>/`, records it on the DM
-post, and adds a note line per file to the turn. Images (PNG, JPEG, GIF,
-WebP, up to 5 MB) also reach the model as image blocks when it declares
-`image_input`; otherwise the note says it cannot view them. `peko log`
-and `principal_log` rows carry the attachments with absolute paths. The
-loop's rich-input entry now neutralizes runtime tags like the text entry,
-and the mock resolver's providers carry their catalog spec.
+You can hand a peko a screenshot, a voice memo, a clip, a PDF, or a
+spreadsheet (ADR-088). `principal_send` / `principal_send_stream` take
+`attachments` (absolute paths, local user only, at most 8 files of 20 MB
+each), and `peko send` takes `--attach <path>` (repeatable). The engine
+copies each file into the peko's workspace under `attachments/<date>/`,
+records it on the DM post, and adds a note line per file to the turn.
+Images, audio, and video also reach the model as content blocks when its
+spec declares `image_input` / `audio_input` / `video_input`; otherwise the
+note says it cannot take them. `peko-message` gains `ContentBlock::Audio`
+and `ContentBlock::Video`; `ModelSpec` gains `video_input` (shown by
+`peko model show` / `compare` and `ModelList`); IPC `model_update`
+takes `spec`, so a client can say which inputs a model takes; the spec
+gate checks audio and video. Chat Completions sends `input_audio` and `video_url`
+parts (verified with MiMo-V2.6-Flash); Anthropic Messages and OpenAI
+Responses send a text placeholder. `peko log` and `principal_log` rows
+carry the attachments with absolute paths. The loop's rich-input entry
+now neutralizes runtime tags like the text entry, and the mock
+resolver's providers carry their catalog spec.
 
 ### Feature: a person can leave a group (2026-10-29)
 

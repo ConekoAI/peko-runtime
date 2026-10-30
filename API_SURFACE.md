@@ -632,7 +632,11 @@ from the DM channel's line numbers.
 
 `peko_protocol::channel::Attachment { name, path, mime, size }` (ADR-088)
 rides `ChannelEvent::Posted.attachments` (workspace-relative `path`) and
-`PostMsg::with_attachments`. `DaemonClient::principal_send_stream` takes
+`PostMsg::with_attachments`. `peko_message::ContentBlock` gains `Audio`
+and `Video { source: ImageSource, mime_type }`; `ModelSpec` gains
+`video_input`; `SpecGateError` gains `VideoInputUnsupported`;
+IPC `ModelUpdateArgs` gains `spec`.
+`DaemonClient::principal_send_stream` takes
 `attachments: Vec<String>` (absolute paths); `RequestPacket::PrincipalSend`
 and `PrincipalSendStream` carry it with serde default empty.
 
