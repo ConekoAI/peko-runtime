@@ -836,8 +836,8 @@ fn format_runtime_section(ctx: &TurnPromptContext) -> String {
         "## Runtime\nAgent: {}\nHost: {hostname}\nOS: {}\nModel: {}\nChannel: {}\n\
          Principal workspace: {}\nPrincipal knowledge base: {}\n\
          Use absolute paths under the principal knowledge base for shared memory, \
-         including MEMORY.md and index.md. Filesystem tools' default working \
-         directory can differ from the principal workspace.",
+         including MEMORY.md and index.md. Relative paths in the file tools \
+         and Bash's working directory are the principal workspace.",
         ctx.role_name,
         std::env::consts::OS,
         ctx.resolved_model,
@@ -1392,7 +1392,7 @@ mod tests {
             "prefix was: {prefix}"
         );
         assert!(
-            prefix.contains("default working directory can differ"),
+            prefix.contains("Relative paths in the file tools"),
             "prefix was: {prefix}"
         );
         // Empty generated sections stay out: sandbox disabled, no

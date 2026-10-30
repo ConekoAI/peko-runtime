@@ -370,6 +370,9 @@ impl PeerChildTurns {
         // Charge peer-child turns against the principal's meter, like
         // any other subagent run (F39).
         .with_quota_meter(Some(Arc::clone(&principal.quota_meter)))
+        // A per-message model (`--model`, the desktop's picker) runs
+        // that catalog entry's own provider.
+        .with_llm_resolver(Some(Arc::clone(llm_resolver)))
         .with_provider(Arc::clone(&provider))
         .with_agent_config(agent_config.clone());
         let live = LiveDefinition {
@@ -1517,6 +1520,82 @@ mod tests {
         assert!(kinds(&unknown).is_empty());
         assert!(text_of(&unknown).starts_with("look"));
         assert!(text_of(&unknown).contains("cannot take images, audio or video"));
+    }
+
+    /// A per-message model is a catalog id, resolved to that entry's own
+    /// provider. Before, it was sent to the peko's provider as a wire
+    /// model name (MiMo: "Unsupported model mimo-priced").
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn a_per_message_model_resolves_through_the_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_HOME", tmp.path());
+        peko_identity::init_test_env();
+        let (llm, _adapter) = peko_providers::resolver::LlmResolver::mock(
+            peko_providers::mock::MockAdapter::new(),
+            tmp.path().join("models.toml"),
+        )
+        .await;
+        let manager = crate::principal::PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+            Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(llm.clone());
+        let principal = manager
+            .create(test_config("picker", PrincipalRoutingConfig::default()))
+            .await
+            .unwrap();
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        tooling.services().set_channel_port(Arc::clone(&port));
+        let turns = PeerChildTurns::build(
+            &principal,
+            &llm,
+            Arc::new(Observability::new("test")),
+            Some(manager.shared_inbox_registry()),
+            tooling,
+        )
+        .await
+        .unwrap()
+        .with_channel_port(Some(port));
+        let child = turns
+            .ensure_child_ingress(&ActorRef::User("test-owner".into()))
+            .await
+            .unwrap()
+            .child_id;
+        let stamp = turns
+            .root_stamp(
+                None,
+                &child,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
+        let err = turns
+            .drive_turn_streaming(
+                &child,
+                "hi",
+                Arc::new(|_| {}),
+                None,
+                Some("no-such-model".into()),
+                stamp,
+            )
+            .await
+            .expect_err("an unknown catalog id fails the turn");
+        assert!(
+            format!("{err:#}").contains("model 'no-such-model' is not available"),
+            "got {err:#}"
+        );
     }
 
     fn text_of(message: &peko_message::LlmMessage) -> String {

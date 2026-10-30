@@ -328,7 +328,9 @@ impl Agent {
         // WS3 (implicit session management, 2026-08-11): share the
         // daemon-global inbox registry so subagent completions reach
         // the parent agentic loop's per-iteration drain.
-        .with_inbox_registry(inbox_registry.clone());
+        .with_inbox_registry(inbox_registry.clone())
+        // A spawn that picks a model runs that catalog entry.
+        .with_llm_resolver(llm_resolver.clone());
         let subagent_executor = match &provider {
             Some(p) => Arc::new(
                 subagent_executor_base

@@ -425,6 +425,21 @@ impl AgenticLoop {
         self
     }
 
+    /// Classify a provider error for the retry sites. A quota or budget
+    /// refusal (`peko_quota::QuotaError` anywhere in the chain) is
+    /// terminal before any string matching: its text ("$0.0500")
+    /// read as an HTTP 500, so an over-budget run retried — and paid —
+    /// again.
+    fn classify_error(&self, err: &anyhow::Error) -> peko_provider_api::RetryClassification {
+        if err
+            .chain()
+            .any(|cause| cause.is::<peko_quota::QuotaError>())
+        {
+            return peko_provider_api::RetryClassification::QuotaExceeded;
+        }
+        self.retry_classifier.classify(err)
+    }
+
     /// Map a retry-exhausted error onto a typed `AgenticError::RetryLimit`.
     ///
     /// Called by both the start-stream (`'stream_retry`) and mid-stream
@@ -1486,7 +1501,7 @@ impl AgenticLoop {
             // before any event is emitted) and a mid-stream `Err` from
             // the byte stream fall through the same retry path below.
             //
-            // F40: classify via `self.retry_classifier.classify(&e)`,
+            // F40: classify via `self.classify_error(&e)`,
             // draw from `self.shared_budget` (single counter covers
             // both sites within this iteration), and surface
             // `AgenticError::RetryLimit { attempts, max_attempts, cause }`
@@ -1507,7 +1522,7 @@ impl AgenticLoop {
                 {
                     Ok(s) => break 'stream_retry s,
                     Err(e) => {
-                        let classification = self.retry_classifier.classify(&e);
+                        let classification = self.classify_error(&e);
                         let is_transient = classification.is_retryable();
                         let within_local_budget = stream_attempt < self.stream_max_retries;
                         let shared_budget_ok = self.shared_budget.try_consume();
@@ -1702,7 +1717,7 @@ impl AgenticLoop {
                             }
                             Err(e) => {
                                 // F40: mid-stream retry budget. The
-                                // `self.retry_classifier.classify(&e)`
+                                // `self.classify_error(&e)`
                                 // returns a `RetryClassification` that
                                 // covers HTTP 429/500/502/503/504/529,
                                 // network timeouts, connection resets,
@@ -1722,7 +1737,7 @@ impl AgenticLoop {
                                 // so the total worst case is one
                                 // ceiling, not stacked transport+engine
                                 // ceilings.
-                                let classification = self.retry_classifier.classify(&e);
+                                let classification = self.classify_error(&e);
                                 let is_transient = classification.is_retryable();
                                 let within_local_budget = stream_attempt < self.stream_max_retries;
                                 let shared_budget_ok = self.shared_budget.try_consume();
@@ -1785,7 +1800,7 @@ impl AgenticLoop {
                                         }
                                         Err(reissue_err) => {
                                             let reissue_classification =
-                                                self.retry_classifier.classify(&reissue_err);
+                                                self.classify_error(&reissue_err);
                                             on_event(AgenticEvent::Lifecycle {
                                                 run_id: run_id.clone(),
                                                 phase: LifecyclePhase::Error,
@@ -1956,22 +1971,10 @@ impl AgenticLoop {
                             // ToolFunnel`. `&self.extension_core` is
                             &*iteration_tooling,
                             self.agent.identity_did(),
-                            // **Track B**: per-agent `workspace`
-                            // was removed from `AgentConfig`. The
-                            // principal's workspace still lives on the
-                            // agent via `principal_workspace()`, but
-                            // it is the Agent tool's subagent prompt
-                            // resolution root
-                            // (`<ws>/agents/<name>/AGENT.md`) — not
-                            // the per-call file workspace used by
-                            // `Write`/`Edit`/`Read`/etc. Those tools
-                            // resolve relative paths against their own
-                            // `workspace_dir`, set at construction by
-                            // `ToolRuntime::register_builtins` to
-                            // `<data>/workspaces`. Passing the
-                            // principal home here would make the
-                            // builtin preprocessor rewrite file paths
-                            // against `<principal_home>` instead.
+                            // No per-call workspace: the dispatcher
+                            // resolves relative paths and the default
+                            // directory of the file tools and Bash in
+                            // the principal's own workspace.
                             None,
                             // Phase 9b.N.5b.9e: `session` parameter is
                             // `&dyn SessionView`; forward as-is to the
