@@ -130,6 +130,12 @@ pub struct InstanceAnnouncePayload {
     pub capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The principal's avatar (`identity.avatar`: an emoji or a short
+    /// monogram), so Hub can show it with the public profile and remote
+    /// clients can show it beside the name. Always sent, `null` when
+    /// none, so clearing it reaches Hub; a Hub that predates the field
+    /// ignores it.
+    pub avatar: Option<String>,
     // B5 cleanup: `runtime_direct_endpoint` and `transport_preference`
     // were retired — direct cross-runtime transport was removed (all
     // cross-runtime traffic flows through the tunnel relay, not a
@@ -667,6 +673,7 @@ mod tests {
                 exposure: InstanceExposure::Private,
                 capabilities: Some(vec!["c1".to_string()]),
                 metadata: Some(metadata),
+                avatar: None,
                 // B5: `runtime_direct_endpoint` and `transport_preference`
                 // fields dropped from payload.
             },
@@ -724,6 +731,7 @@ mod tests {
                 exposure: InstanceExposure::Private,
                 capabilities: None,
                 metadata: None,
+                avatar: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
@@ -767,6 +775,7 @@ mod tests {
                 exposure: InstanceExposure::Private,
                 capabilities: None,
                 metadata: None,
+                avatar: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
@@ -785,6 +794,40 @@ mod tests {
             }
             _ => panic!("Expected InstanceAnnounce"),
         }
+    }
+
+    /// The avatar always goes out: the emoji when set, `null` when not,
+    /// so Hub can clear one the owner removed.
+    #[test]
+    fn instance_announce_always_carries_the_avatar() {
+        let announce = |avatar: Option<&str>| {
+            let msg = TunnelMessage::InstanceAnnounce {
+                payload: InstanceAnnouncePayload {
+                    registration_id: None,
+                    local_id: String::new(),
+                    identity_key: String::new(),
+                    id: "inst-avatar".to_string(),
+                    instance_type: InstanceType::Principal,
+                    name: "remy".to_string(),
+                    agent_did: None,
+                    bundle_ref: None,
+                    principal_did: None,
+                    principal_pop: None,
+                    owner: None,
+                    runtime_display_name: None,
+                    status: InstanceStatus::Online,
+                    exposure: InstanceExposure::Public,
+                    capabilities: None,
+                    metadata: None,
+                    avatar: avatar.map(str::to_string),
+                },
+            };
+            let json: serde_json::Value = serde_json::from_slice(&msg.to_bytes().unwrap()).unwrap();
+            json["payload"]["avatar"].clone()
+        };
+        assert_eq!(announce(Some("🦊")), serde_json::json!("🦊"));
+        let cleared = announce(None);
+        assert!(cleared.is_null());
     }
 
     /// ADR-058 D4: `InstanceAnnouncePayload.principal_pop` serializes
@@ -810,6 +853,7 @@ mod tests {
                 exposure: InstanceExposure::Public,
                 capabilities: None,
                 metadata: None,
+                avatar: None,
             },
         };
         let bytes = msg.to_bytes().unwrap();
@@ -845,6 +889,7 @@ mod tests {
                 exposure: InstanceExposure::Public,
                 capabilities: None,
                 metadata: None,
+                avatar: None,
             },
         };
         let json = String::from_utf8(msg.to_bytes().unwrap()).unwrap();
@@ -879,6 +924,7 @@ mod tests {
                 exposure: InstanceExposure::Private,
                 capabilities: None,
                 metadata: None,
+                avatar: None,
                 // B5: `runtime_direct_endpoint` field dropped from payload.
             },
         };
