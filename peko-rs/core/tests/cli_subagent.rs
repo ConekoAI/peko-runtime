@@ -59,10 +59,10 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 }
 
 /// Workspace root used by the daemon's filesystem tools in these tests.
-/// `PekoCli` sets `PEKO_HOME`, and relative Write paths resolve under its
-/// `data/workspaces` directory.
-fn workspace_dir(cli: &PekoCli) -> PathBuf {
-    cli.peko_dir().join("data").join("workspaces")
+/// `PekoCli` sets `PEKO_HOME`, and relative Write paths resolve under the
+/// principal's own folder (`<PEKO_HOME>/principals/<name>`).
+fn principal_workspace(cli: &PekoCli, principal: &str) -> PathBuf {
+    cli.peko_dir().join("principals").join(principal)
 }
 
 /// Write a `worker` subagent prompt for the given Principal using the
@@ -265,7 +265,7 @@ async fn subagent_blocking_t1_write_file() {
     // The child wrote a file into the tool workspace. We also dump the
     // contents of `<peko_dir>/data/` on failure so the path is obvious
     // from the assertion message.
-    let path = workspace_dir(&cli).join(file_name);
+    let path = principal_workspace(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         let dump = dump_data_dir(&cli);
         panic!(
@@ -357,9 +357,9 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     );
 
     // The grandchild wrote the file into the tool workspace
-    // (`<peko_dir>/data/workspaces/{file_name}`), since the tool
-    // workspace is the shared workspaces root.
-    let path = workspace_dir(&cli).join(file_name);
+    // (`<peko_dir>/principals/{principal}/{file_name}`), since the tool
+    // workspace is the principal's own folder.
+    let path = principal_workspace(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         let dump = dump_data_dir(&cli);
         panic!("grandchild file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
@@ -430,7 +430,7 @@ async fn subagent_blocking_t1_flat_file() {
         "parent did not report BLOCKING_SUCCESS: stdout={out} stderr={err}",
     );
 
-    let path = workspace_dir(&cli).join(file_name);
+    let path = principal_workspace(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         let dump = dump_data_dir(&cli);
         panic!("child file not written at {path:?}: {e}\ndata dir dump:\n{dump}\nstdout: {out}\nstderr: {err}")
