@@ -35,6 +35,7 @@ peko-session = { path = "../session" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
 anyhow = "1.0"
 thiserror = "1.0"
 # `chrono` is used by error.rs tests (window_end timestamp comparisons).
@@ -42,7 +43,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # `uuid` is used by execution.rs::TaskId::new().
 uuid = { version = "1.7", features = ["v4"] }
 tracing = "0.1"
-tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-multi-thread"] }
+tokio = { version = "1.35", features = ["rt", "macros", "sync", "time", "rt-multi-thread", "fs"] }
 # `tokio-util` CancellationToken: needed by Phase 9b.N.2's funnel
 # (`execute_tool_via_core_with_context` accepts
 # `Option<tokio_util::sync::CancellationToken>` to match the

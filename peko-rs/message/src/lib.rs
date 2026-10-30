@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub mod media;
 pub mod repair;
 mod tool_call_info;
 

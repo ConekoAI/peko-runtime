@@ -587,18 +587,41 @@ fn render_chat_message(message: &PrincipalLogMessage) {
 
 /// One human-readable log line. The peko's own replies show its name
 /// (`my-peko: …`, as `peko send` prints them); every other actor
-/// shows its address.
+/// shows its address. Attached files (ADR-088) follow, one per line,
+/// with the path of the peko's copy.
 fn format_chat_message(message: &PrincipalLogMessage) -> String {
     let sender = match message.sender_name.as_deref() {
         Some(name) => name.to_string(),
         None => message.sender.to_string(),
     };
-    format!(
+    let mut line = format!(
         "[{}] {}: {}",
         timestamp_short(&message.timestamp.to_rfc3339()),
         sender,
         truncate(&message.text, 240)
-    )
+    );
+    for attachment in &message.attachments {
+        line.push_str(&format!(
+            "\n    📎 {} ({}, {}) {}",
+            attachment.name,
+            attachment.mime,
+            human_size(attachment.size),
+            attachment.path
+        ));
+    }
+    line
+}
+
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / (KB * KB))
+    }
 }
 
 /// Strip seconds / sub-seconds from an RFC3339 timestamp for display.
@@ -670,6 +693,22 @@ mod tests {
         let user = PrincipalLogMessage::new(peko_auth::ActorRef::User("local".into()), "hi", None);
         let line = format_chat_message(&user);
         assert!(line.ends_with("] user:local: hi"), "got {line}");
+
+        let mut with_file =
+            PrincipalLogMessage::new(peko_auth::ActorRef::User("local".into()), "look", None);
+        with_file.attachments = vec![peko_protocol::channel::Attachment {
+            name: "photo.png".into(),
+            path: "/w/attachments/2026-10-30/ab12cd34-photo.png".into(),
+            mime: "image/png".into(),
+            size: 1_258_291,
+        }];
+        let line = format_chat_message(&with_file);
+        assert!(
+            line.ends_with(
+                "] user:local: look\n    📎 photo.png (image/png, 1.2 MB) /w/attachments/2026-10-30/ab12cd34-photo.png"
+            ),
+            "got {line}"
+        );
     }
 
     #[test]

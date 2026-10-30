@@ -96,7 +96,7 @@ by runtime code rather than JSON Schema; schema defaults alone do not inject val
 
 ### Read
 
-Read text with inline line numbers, or binary content as base64.
+Read text with inline line numbers, binary content as base64, or images, audio, and video as media the model views directly.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/fs/read.rs)
 
@@ -108,6 +108,8 @@ Read text with inline line numbers, or binary content as base64.
 | `encoding` | utf8 \| base64 | no | — |
 
 Offset is 1-based. Limit defaults to 2000 lines, and returned text is capped at 256 KiB (cut at a line boundary; a single longer line is cut and marked). A bounded read returns `truncated: true` and `next_offset`. Encoding defaults to utf8; binary content is detected automatically, and binary files over 256 KiB are refused. There is no PDF pages selector.
+
+Media (ADR-088 D6): an image (PNG, JPEG, GIF, WebP), audio (WAV, MP3, FLAC, M4A, OGG), or video (MP4, MOV, AVI, WMV, WebM) file returns `content` (a line describing it), `mime`, `size_bytes`, and `media: {kind, mime, path}`. The engine attaches the file to the tool result as an image / audio / video block when the run's model spec takes that kind and the file is within the block limit (5 MB images, 20 MB audio/video); otherwise the model reads a note that it cannot take it. Only `Read` may point the engine at a file this way. `encoding: "base64"` returns a media file's bytes as base64 text instead.
 
 ### Write
 

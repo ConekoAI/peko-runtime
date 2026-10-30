@@ -56,6 +56,12 @@ Media also go to the model as content blocks — when the turn's model (after an
 
 `peko-message` gains `ContentBlock::Audio` and `ContentBlock::Video` (same source shape as images), `ModelSpec` gains `video_input`, and the spec gate refuses audio and video blocks to a model without the flag. For each kind the model does not take, the turn's text gains one line saying so (`[The current model cannot take audio or video; …]`). An API format with no such part (Anthropic Messages, OpenAI Responses) sends a text placeholder instead of the block. Other files are for the peko's own tools to open. The session keeps the text, notes included, so later turns can reopen a file by its path; media blocks are sent with their turn only.
 
+### D6 — `Read` shows media to the model too (amended 2026-10-30)
+
+An agent can look at an image, listen to audio, or watch video at any time, not only when it arrives attached to a message: `Read` on such a file returns a line describing it and a `media` reference (`{kind, mime, path}`) instead of base64 text. The engine attaches the file to that tool result as a media block when the run's model takes that kind (the D4 table and limits), else a note. Only the built-in `Read` may do this — its path already passed the run's file-access checks (ADR-078); another tool's output (an MCP server's) cannot point the engine at a file.
+
+The session keeps the tool's text; the block rides the in-flight conversation for the rest of the run. Anthropic `tool_result` content carries images (audio and video become a placeholder); the OpenAI protocols take only text in tool outputs, so a turn's tool media goes in one `user` message right after its tool outputs.
+
 ### D5 — A busy peko gets the notes only
 
 A message sent while the peko is working is queued as steering, which is text: it carries the notes, not image blocks.
@@ -80,5 +86,6 @@ A message sent while the peko is working is queued as steering, which is text: i
 1. **Wire.** `attachments` on both send requests; `Attachment` on `Posted` and on `PrincipalLogMessage`; DATA_MODEL.
 2. **Ingress.** Validate (operator, count, size, regular file), copy into the workspace, post with attachments, write the notes.
 3. **Turn.** `ExecutionConfig.media` → image / audio / video blocks for a model whose spec takes them → the loop's rich entry; adapters encode audio and video.
-4. **CLI.** `peko send --attach <path>` (repeatable).
+4. **CLI.** `peko send --attach <path>` (repeatable); `peko log` lists each message's attachments with the path of the peko's copy.
 5. **Desktop.** Attach button and drag-and-drop; chips before sending; thumbnails and file chips in the thread.
+6. **Tools (D6).** `Read` returns `media`; `peko_message::media::MediaKind` and `peko_engine::media` hold the shared kinds, limits, and loading; adapters carry media in tool results.

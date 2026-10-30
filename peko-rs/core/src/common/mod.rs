@@ -7,6 +7,7 @@ pub mod authority;
 pub mod config_path;
 pub mod identifiers;
 pub mod json_utils;
+pub(crate) mod media;
 pub mod paths;
 pub mod process;
 // `registry` was moved to `peko-extension-host` in Phase 8. The

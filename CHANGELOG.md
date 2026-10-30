@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
+
+An agent can look at an image, listen to audio, or watch video whenever it
+wants, not only when the file arrives attached to a message (ADR-088 D6).
+`Read` on a media file returns a line describing it and a `media`
+reference instead of base64 text; the engine attaches the file to that
+tool result when the run's model takes that kind, else a note. Only the
+built-in `Read` can point the engine at a file. Anthropic `tool_result`
+content now carries images; on the OpenAI protocols a turn's tool media
+follows its tool outputs as one user message. Kinds, limits, and the
+"cannot take" note live in `peko_message::media`; loading in
+`peko_engine::media`. `peko log` lists each message's attachments.
+
 ### Fix: parallel tool results and streamed usage on OpenAI-format endpoints (2026-10-30)
 
 History repair pairs an assistant turn's parallel tool calls with one tool

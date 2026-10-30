@@ -635,7 +635,11 @@ rides `ChannelEvent::Posted.attachments` (workspace-relative `path`) and
 `PostMsg::with_attachments`. `peko_message::ContentBlock` gains `Audio`
 and `Video { source: ImageSource, mime_type }`; `ModelSpec` gains
 `video_input`; `SpecGateError` gains `VideoInputUnsupported`;
-IPC `ModelUpdateArgs` gains `spec`.
+IPC `ModelUpdateArgs` gains `spec`. `peko_message::media` holds
+`MediaKind` (`from_mime`, `max_block_bytes`, `block`) and
+`unsupported_note`; `ModelSpec::takes(kind)`; `peko_engine::media` holds
+`load_block`, `ToolMedia`, and `attach_to_tool_result`;
+`ToolExecutionResult` gains `media`.
 `DaemonClient::principal_send_stream` takes
 `attachments: Vec<String>` (absolute paths); `RequestPacket::PrincipalSend`
 and `PrincipalSendStream` carry it with serde default empty.

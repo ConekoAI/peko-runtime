@@ -17,6 +17,7 @@ pub mod event_processor;
 pub mod events;
 pub mod execution;
 pub mod funnel;
+pub mod media;
 pub mod parallel_gate;
 pub mod prompt;
 pub mod spec_gate;

@@ -154,39 +154,7 @@ pub struct ExecutionConfig {
     pub media: Vec<MediaInput>,
 }
 
-/// ADR-088 D4: what kind of media an attachment is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaKind {
-    Image,
-    Audio,
-    Video,
-}
-
-impl MediaKind {
-    fn noun(self) -> &'static str {
-        match self {
-            Self::Image => "images",
-            Self::Audio => "audio",
-            Self::Video => "video",
-        }
-    }
-
-    /// The largest file sent to a model as a block of this kind.
-    pub fn max_block_bytes(self) -> u64 {
-        match self {
-            Self::Image => 5 * 1024 * 1024,
-            Self::Audio | Self::Video => 20 * 1024 * 1024,
-        }
-    }
-
-    fn accepted_by(self, spec: Option<&peko_providers::spec::ModelSpec>) -> bool {
-        spec.is_some_and(|spec| match self {
-            Self::Image => spec.image_input,
-            Self::Audio => spec.audio_input,
-            Self::Video => spec.video_input,
-        })
-    }
-}
+pub use peko_message::media::MediaKind;
 
 /// ADR-088 D4: a media file attached to a turn (already copied into
 /// the principal's workspace), its MIME type, and its kind.
@@ -197,20 +165,6 @@ pub struct MediaInput {
     pub kind: MediaKind,
 }
 
-/// The line a turn's text gains for attached media its model cannot
-/// take, e.g. `cannot take audio or video`.
-pub fn media_unsupported_note(kinds: &[MediaKind]) -> String {
-    let nouns: Vec<&str> = kinds.iter().map(|k| k.noun()).collect();
-    let list = match nouns.as_slice() {
-        [] => String::new(),
-        [one] => (*one).to_string(),
-        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
-    };
-    format!(
-        "[The current model cannot take {list}; those attachments are files you can open with your tools.]"
-    )
-}
-
 /// Media blocks for a turn's attachments the model can take, and the
 /// kinds it cannot. Unreadable or oversized files are skipped with a
 /// warning: their notes already name the path.
@@ -218,44 +172,19 @@ async fn media_blocks(
     media: &[MediaInput],
     spec: Option<&peko_providers::spec::ModelSpec>,
 ) -> (Vec<peko_message::ContentBlock>, Vec<MediaKind>) {
-    use base64::Engine as _;
     let mut blocks = Vec::new();
     let mut refused: Vec<MediaKind> = Vec::new();
     for input in media {
-        if !input.kind.accepted_by(spec) {
+        if !spec.is_some_and(|spec| spec.takes(input.kind)) {
             if !refused.contains(&input.kind) {
                 refused.push(input.kind);
             }
             continue;
         }
-        match tokio::fs::metadata(&input.path).await {
-            Ok(meta) if meta.len() <= input.kind.max_block_bytes() => {}
-            Ok(_) => {
-                warn!("attachment {} is too large to send", input.path.display());
-                continue;
-            }
-            Err(e) => {
-                warn!("attachment {}: {e}", input.path.display());
-                continue;
-            }
+        match peko_engine::media::load_block(&input.path, &input.mime, input.kind).await {
+            Ok(block) => blocks.push(block),
+            Err(reason) => warn!("attachment not sent to the model: {reason}"),
         }
-        let bytes = match tokio::fs::read(&input.path).await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                warn!("attachment {}: {e}", input.path.display());
-                continue;
-            }
-        };
-        let source = peko_message::ImageSource::Base64 {
-            data: base64::engine::general_purpose::STANDARD.encode(bytes),
-            dimensions: None,
-        };
-        let mime_type = input.mime.clone();
-        blocks.push(match input.kind {
-            MediaKind::Image => peko_message::ContentBlock::Image { source, mime_type },
-            MediaKind::Audio => peko_message::ContentBlock::Audio { source, mime_type },
-            MediaKind::Video => peko_message::ContentBlock::Video { source, mime_type },
-        });
     }
     (blocks, refused)
 }
@@ -3032,7 +2961,7 @@ async fn execute_subagent_task(
     let (user_media, refused) = media_blocks(&media, provider.spec().as_ref()).await;
     if !refused.is_empty() {
         combined_prompt.push('\n');
-        combined_prompt.push_str(&media_unsupported_note(&refused));
+        combined_prompt.push_str(&peko_message::media::unsupported_note(&refused));
     }
 
     // Execute the agentic loop with the child session

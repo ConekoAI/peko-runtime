@@ -212,72 +212,91 @@ impl Default for OpenAiAdapter {
 }
 
 impl OpenAiAdapter {
-    /// Convert unified messages to `OpenAI` format
+    /// Convert unified messages to `OpenAI` format.
+    ///
+    /// ADR-088: a tool message's content is text only on this protocol,
+    /// so media a tool result carries (`Read` on an image, audio, or
+    /// video file) goes in one `user` message right after the run of
+    /// `tool` messages it came from.
     fn convert_messages(&self, messages: &[LlmMessage]) -> Vec<OpenAiMessage> {
-        messages
-            .iter()
-            .flat_map(|m| {
-                // One `tool` message per call id: a tool message that
-                // answers parallel calls fans out (Chat Completions
-                // rejects a tool message without its `tool_call_id`).
-                if m.role == MessageRole::Tool {
-                    return super::tool_outputs(m)
-                        .into_iter()
-                        .map(|(id, text)| OpenAiMessage {
-                            role: "tool".to_string(),
-                            content: Value::String(text),
-                            tool_calls: None,
-                            tool_call_id: Some(id),
-                        })
-                        .collect::<Vec<_>>();
-                }
-                let role = role_to_string(m.role);
-                // F28: emit content as a string for text-only blocks
-                // (matches the pre-F28 wire shape byte-for-byte) or as
-                // a content-part array when the message contains an
-                // Image block. The array path is OpenAI's
-                // multimodal-input shape per
-                // https://platform.openai.com/docs/guides/vision
-                let content = build_chat_completions_content(&m.content);
+        let mut out = Vec::with_capacity(messages.len());
+        let mut tool_media: Vec<Value> = Vec::new();
+        for m in messages {
+            if m.role != MessageRole::Tool && !tool_media.is_empty() {
+                out.push(tool_media_message(std::mem::take(&mut tool_media)));
+            }
+            if m.role == MessageRole::Tool {
+                tool_media.extend(tool_media_parts(m));
+            }
+            out.extend(self.convert_one(m));
+        }
+        if !tool_media.is_empty() {
+            out.push(tool_media_message(tool_media));
+        }
+        out
+    }
 
-                // Extract tool calls from content blocks
-                let tool_calls: Option<Vec<OpenAiToolCall>> = if m.role == MessageRole::Assistant {
-                    let calls: Vec<_> = m
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolCall {
-                                id,
-                                name,
-                                arguments,
-                            } => Some(OpenAiToolCall {
-                                id: id.clone(),
-                                tool_type: "function".to_string(),
-                                function: OpenAiFunctionCall {
-                                    name: name.clone(),
-                                    arguments: arguments.to_string(),
-                                },
-                            }),
-                            _ => None,
-                        })
-                        .collect();
-                    if calls.is_empty() {
-                        None
-                    } else {
-                        Some(calls)
-                    }
-                } else {
-                    None
-                };
+    /// One unified message as `OpenAI` messages.
+    fn convert_one(&self, m: &LlmMessage) -> Vec<OpenAiMessage> {
+        // One `tool` message per call id: a tool message that
+        // answers parallel calls fans out (Chat Completions
+        // rejects a tool message without its `tool_call_id`).
+        if m.role == MessageRole::Tool {
+            return super::tool_outputs(m)
+                .into_iter()
+                .map(|(id, text)| OpenAiMessage {
+                    role: "tool".to_string(),
+                    content: Value::String(text),
+                    tool_calls: None,
+                    tool_call_id: Some(id),
+                })
+                .collect::<Vec<_>>();
+        }
+        let role = role_to_string(m.role);
+        // F28: emit content as a string for text-only blocks
+        // (matches the pre-F28 wire shape byte-for-byte) or as
+        // a content-part array when the message contains an
+        // Image block. The array path is OpenAI's
+        // multimodal-input shape per
+        // https://platform.openai.com/docs/guides/vision
+        let content = build_chat_completions_content(&m.content);
 
-                vec![OpenAiMessage {
-                    role: role.to_string(),
-                    content,
-                    tool_calls,
-                    tool_call_id: m.tool_call_id.clone(),
-                }]
-            })
-            .collect()
+        // Extract tool calls from content blocks
+        let tool_calls: Option<Vec<OpenAiToolCall>> = if m.role == MessageRole::Assistant {
+            let calls: Vec<_> = m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => Some(OpenAiToolCall {
+                        id: id.clone(),
+                        tool_type: "function".to_string(),
+                        function: OpenAiFunctionCall {
+                            name: name.clone(),
+                            arguments: arguments.to_string(),
+                        },
+                    }),
+                    _ => None,
+                })
+                .collect();
+            if calls.is_empty() {
+                None
+            } else {
+                Some(calls)
+            }
+        } else {
+            None
+        };
+
+        vec![OpenAiMessage {
+            role: role.to_string(),
+            content,
+            tool_calls,
+            tool_call_id: m.tool_call_id.clone(),
+        }]
     }
 
     /// Convert tool definitions to `OpenAI` format
@@ -808,6 +827,54 @@ fn build_chat_completions_content(blocks: &[ContentBlock]) -> Value {
     Value::Array(parts)
 }
 
+/// The media parts a tool message's results carry, each after a line
+/// naming the call it came from.
+fn tool_media_parts(message: &LlmMessage) -> Vec<Value> {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        let media: Vec<&ContentBlock> = content
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b,
+                    ContentBlock::Image { .. }
+                        | ContentBlock::Audio { .. }
+                        | ContentBlock::Video { .. }
+                )
+            })
+            .collect();
+        if media.is_empty() {
+            continue;
+        }
+        parts.push(
+            json!({"type": "text", "text": format!("[Media from tool call {tool_call_id}]")}),
+        );
+        let owned: Vec<ContentBlock> = media.into_iter().cloned().collect();
+        if let Value::Array(media_parts) = build_chat_completions_content(&owned) {
+            parts.extend(media_parts);
+        }
+    }
+    parts
+}
+
+/// The `user` message carrying tool media.
+fn tool_media_message(parts: Vec<Value>) -> OpenAiMessage {
+    OpenAiMessage {
+        role: "user".to_string(),
+        content: Value::Array(parts),
+        tool_calls: None,
+        tool_call_id: None,
+    }
+}
+
 /// The `input_audio.format` name for an audio MIME type.
 fn audio_format(mime_type: &str) -> &str {
     match mime_type {
@@ -928,6 +995,68 @@ mod tests {
             })
             .collect();
         assert_eq!(tools, vec![("call_a", "first"), ("call_b", "second")]);
+    }
+
+    /// Two parallel tool results, the second carrying an image (`Read`
+    /// on a PNG, ADR-088).
+    fn results_with_an_image() -> LlmMessage {
+        let result = |id: &str, extra: Option<ContentBlock>| ContentBlock::ToolResult {
+            tool_call_id: id.to_string(),
+            name: "Read".to_string(),
+            content: std::iter::once(ContentBlock::Text {
+                text: format!("out {id}"),
+            })
+            .chain(extra)
+            .collect(),
+            is_error: false,
+        };
+        LlmMessage {
+            role: MessageRole::Tool,
+            content: vec![
+                result("call_a", None),
+                result(
+                    "call_b",
+                    Some(ContentBlock::Image {
+                        source: ImageSource::Base64 {
+                            data: "iVBORw==".to_string(),
+                            dimensions: None,
+                        },
+                        mime_type: "image/png".to_string(),
+                    }),
+                ),
+            ],
+            ..LlmMessage::default()
+        }
+    }
+
+    /// Tool messages are text only on Chat Completions: the image goes in
+    /// one user message right after the tool messages.
+    #[test]
+    fn tool_media_follows_the_tool_messages_as_a_user_message() {
+        let adapter = OpenAiAdapter::new();
+        let (_, body) = adapter
+            .build_request(
+                "mimo-v2.6-flash",
+                &[LlmMessage::user("look"), results_with_an_image()],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "tool", "tool", "user"]);
+        assert_eq!(messages[2]["content"], "out call_b");
+        let parts = messages[3]["content"].as_array().unwrap();
+        assert_eq!(parts[0]["text"], "[Media from tool call call_b]");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(
+            parts[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw=="
+        );
     }
 
     #[test]
