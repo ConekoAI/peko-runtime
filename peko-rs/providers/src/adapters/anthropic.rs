@@ -192,6 +192,15 @@ impl AnthropicAdapter {
                                     cache_control: None,
                                 });
                             }
+                            // ADR-088: the Messages API has no audio or
+                            // video block; say so rather than drop it.
+                            ContentBlock::Audio { mime_type, .. }
+                            | ContentBlock::Video { mime_type, .. } => {
+                                blocks.push(AnthropicContentBlock::Text {
+                                    text: crate::adapters::media_omitted_note(mime_type),
+                                    cache_control: None,
+                                })
+                            }
                             _ => {}
                         }
                     }
@@ -2499,5 +2508,40 @@ mod tests {
         assert_eq!(blocks[0]["source"]["type"], "base64");
         assert_eq!(blocks[0]["source"]["media_type"], "image/png");
         assert_eq!(blocks[0]["source"]["data"], "aGVsbG8=");
+    }
+
+    /// ADR-088: the Messages API has no audio or video block; one that
+    /// reaches the adapter becomes a note instead of vanishing.
+    #[test]
+    fn test_build_request_audio_becomes_a_note() {
+        let adapter = AnthropicAdapter::new();
+        let msg = LlmMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "listen".to_string(),
+                },
+                ContentBlock::Audio {
+                    source: ImageSource::Base64 {
+                        data: "UklGRg==".to_string(),
+                        dimensions: None,
+                    },
+                    mime_type: "audio/wav".to_string(),
+                },
+            ],
+            ..LlmMessage::default()
+        };
+        let (_, body) = adapter
+            .build_request(
+                "claude-opus-4-6",
+                &[msg],
+                None,
+                &ChatOptions::default(),
+                false,
+            )
+            .unwrap();
+        let content = body["messages"][0]["content"].to_string();
+        assert!(content.contains("audio/wav attachment was left out"));
+        assert!(!content.contains("UklGRg=="));
     }
 }

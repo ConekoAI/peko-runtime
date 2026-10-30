@@ -3590,6 +3590,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -3646,6 +3647,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -3698,6 +3700,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
 
         let result = dispatcher
@@ -3756,6 +3759,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -3902,6 +3906,7 @@ mod tests {
             via: None,
             msg_id: Some("msg_hello".into()),
             reply_to: None,
+            attachments: Vec::new(),
         };
         deliver("req-1", post.clone()).await.unwrap();
         deliver("req-1", post).await.unwrap();
@@ -3991,6 +3996,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -4086,6 +4092,7 @@ mod tests {
                 via: None,
                 msg_id: None,
                 reply_to: None,
+                attachments: Vec::new(),
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {
@@ -4415,6 +4422,7 @@ mod tests {
                 via: None,
                 msg_id: Some(request.into()),
                 reply_to: None,
+                attachments: Vec::new(),
             };
             let bytes = serde_json::to_vec(&event).unwrap();
             let fields = crate::tunnel::ChannelSignedFields {

@@ -223,10 +223,13 @@ impl OpenAiResponsesAdapter {
 /// parts with the URL carried verbatim; base64 blocks become
 /// `data:` URLs joined with the block's `mime_type`.
 fn build_responses_input_parts(blocks: &[ContentBlock]) -> Vec<ResponsesContentPart> {
-    let has_image = blocks
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Image { .. }));
-    if !has_image {
+    let has_media = blocks.iter().any(|b| {
+        matches!(
+            b,
+            ContentBlock::Image { .. } | ContentBlock::Audio { .. } | ContentBlock::Video { .. }
+        )
+    });
+    if !has_media {
         // Pre-F28 wire shape.
         return vec![ResponsesContentPart::InputText {
             text: extract_text_content(blocks),
@@ -249,6 +252,12 @@ fn build_responses_input_parts(blocks: &[ContentBlock]) -> Vec<ResponsesContentP
                     }
                 };
                 parts.push(ResponsesContentPart::InputImage { image_url: url });
+            }
+            // ADR-088: no audio or video input part here; say so.
+            ContentBlock::Audio { mime_type, .. } | ContentBlock::Video { mime_type, .. } => {
+                parts.push(ResponsesContentPart::InputText {
+                    text: crate::adapters::media_omitted_note(mime_type),
+                });
             }
             _ => {}
         }

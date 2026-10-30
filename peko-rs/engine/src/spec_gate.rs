@@ -22,8 +22,8 @@
 //! The gate is intentionally narrow. It checks the four signals a
 //! request can carry:
 //!
-//! - **multimodal content blocks** in `messages` (image today;
-//!   audio is reserved for F28+ when `ContentBlock::Audio` lands)
+//! - **multimodal content blocks** in `messages` (image, audio,
+//!   video — ADR-088)
 //! - **tool definitions** (non-empty `tool_defs` ⇒ tools required)
 //! - **reasoning-effort requests** (`options.thinking_effort !=
 //!   ThinkingEffort::None` ⇒ model must declare non-Disabled
@@ -58,6 +58,9 @@ use thiserror::Error;
 /// `AgenticError::SpecViolation` (added in PR 2) before bubbling
 /// it up.
 #[derive(Debug, Error, PartialEq, Eq)]
+// Every refusal is a capability the model lacks; the shared suffix is
+// the point.
+#[allow(clippy::enum_variant_names)]
 pub enum SpecGateError {
     /// The request contains an image `ContentBlock` but the bound
     /// model's spec does not declare `image_input: true`.
@@ -74,15 +77,20 @@ pub enum SpecGateError {
     },
 
     /// The request contains an audio `ContentBlock` but the bound
-    /// model's spec does not declare `audio_input: true`. Audio
-    /// input is reserved (no `ContentBlock::Audio` variant exists
-    /// yet); this variant is reachable once audio support lands
-    /// so we don't need to revisit the gate.
+    /// model's spec does not declare `audio_input: true`.
     #[error(
         "model {model_id} ({provider}) does not accept audio inputs \
          (spec.audio_input == false)"
     )]
     AudioInputUnsupported { model_id: String, provider: String },
+
+    /// The request contains a video `ContentBlock` but the bound
+    /// model's spec does not declare `video_input: true`.
+    #[error(
+        "model {model_id} ({provider}) does not accept video inputs \
+         (spec.video_input == false)"
+    )]
+    VideoInputUnsupported { model_id: String, provider: String },
 
     /// The request supplies at least one tool definition but the
     /// bound model's spec declares `tool_support == None`.
@@ -105,7 +113,7 @@ pub enum SpecGateError {
 }
 
 impl SpecGateError {
-    /// Short machine-readable tag (`"image"`, `"audio"`, `"tools"`,
+    /// Short machine-readable tag (`"image"`, `"audio"`, `"video"`, `"tools"`,
     /// `"thinking"`). Useful for telemetry classification and
     /// tests that want to assert on the failure shape without
     /// matching `Display`.
@@ -114,6 +122,7 @@ impl SpecGateError {
         match self {
             Self::ImageInputUnsupported { .. } => "image",
             Self::AudioInputUnsupported { .. } => "audio",
+            Self::VideoInputUnsupported { .. } => "video",
             Self::ToolsUnsupported { .. } => "tools",
             Self::ThinkingUnsupported { .. } => "thinking",
         }
@@ -161,6 +170,13 @@ pub fn check(
         });
     }
 
+    if has_block(messages, |b| matches!(b, ContentBlock::Video { .. })) && !spec.video_input {
+        return Err(SpecGateError::VideoInputUnsupported {
+            model_id: model_id.to_string(),
+            provider: provider.to_string(),
+        });
+    }
+
     if !tool_defs.is_empty() && spec.tool_support == ToolSupport::None {
         return Err(SpecGateError::ToolsUnsupported {
             model_id: model_id.to_string(),
@@ -185,13 +201,12 @@ fn has_image_block(messages: &[LlmMessage]) -> bool {
         .any(|b| matches!(b, ContentBlock::Image { .. }))
 }
 
-/// Reserved for the future `ContentBlock::Audio` variant. Today
-/// the type has no audio arm, so the helper is a constant `false`.
-/// Keeping it as a function (rather than inlining the `false`)
-/// means the gate doesn't need to be touched when audio lands —
-/// only this helper changes.
-fn has_audio_block(_messages: &[LlmMessage]) -> bool {
-    false
+fn has_audio_block(messages: &[LlmMessage]) -> bool {
+    has_block(messages, |b| matches!(b, ContentBlock::Audio { .. }))
+}
+
+fn has_block(messages: &[LlmMessage], is: impl Fn(&ContentBlock) -> bool) -> bool {
+    messages.iter().flat_map(|m| m.content.iter()).any(is)
 }
 
 #[cfg(test)]
@@ -256,6 +271,42 @@ mod tests {
             &options,
         );
         assert!(result.is_ok(), "no spec must be a no-op gate: {result:?}");
+    }
+
+    /// ADR-088: audio and video blocks need `audio_input` /
+    /// `video_input`.
+    #[test]
+    fn audio_and_video_need_their_spec_flags() {
+        let media = |block: ContentBlock| LlmMessage {
+            role: MessageRole::User,
+            content: vec![block],
+            ..LlmMessage::default()
+        };
+        let source = || ImageSource::Base64 {
+            data: "AA==".to_string(),
+            dimensions: None,
+        };
+        let audio = vec![media(ContentBlock::Audio {
+            source: source(),
+            mime_type: "audio/wav".to_string(),
+        })];
+        let video = vec![media(ContentBlock::Video {
+            source: source(),
+            mime_type: "video/mp4".to_string(),
+        })];
+        let vision = ModelSpec::frontier_chat();
+        let gate = |spec: ModelSpec, messages: &[LlmMessage]| {
+            check(Some(spec), "m", "p", messages, &[], &default_options())
+        };
+        assert_eq!(gate(vision, &audio).unwrap_err().kind(), "audio");
+        assert_eq!(gate(vision, &video).unwrap_err().kind(), "video");
+        let omni = ModelSpec {
+            audio_input: true,
+            video_input: true,
+            ..vision
+        };
+        assert!(gate(omni, &audio).is_ok());
+        assert!(gate(omni, &video).is_ok());
     }
 
     #[test]

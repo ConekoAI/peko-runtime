@@ -2078,6 +2078,7 @@ impl ChannelStore {
             via: msg.via.clone(),
             msg_id: Some(msg.msg_id.unwrap_or_else(new_msg_id)),
             reply_to,
+            attachments: msg.attachments,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
@@ -3300,6 +3301,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -4334,6 +4336,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -4389,6 +4392,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -4406,6 +4410,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -4493,6 +4498,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -4520,6 +4526,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -4734,6 +4741,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)

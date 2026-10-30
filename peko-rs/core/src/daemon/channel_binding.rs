@@ -1217,6 +1217,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -1230,6 +1231,7 @@ mod tests {
             via: None,
             msg_id: None,
             reply_to: None,
+            attachments: Vec::new(),
         }
     }
 

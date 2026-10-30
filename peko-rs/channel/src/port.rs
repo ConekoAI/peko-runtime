@@ -855,6 +855,8 @@ pub struct PostMsg {
     /// channels (a local cross-principal send's record + delivery
     /// copies, a reply mirror) passes one id to both.
     pub msg_id: Option<String>,
+    /// Files sent with the post (ADR-088); empty for most posts.
+    pub attachments: Vec<peko_protocol::channel::Attachment>,
 }
 
 impl PostMsg {
@@ -865,6 +867,7 @@ impl PostMsg {
             parent: None,
             via: None,
             msg_id: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -875,6 +878,7 @@ impl PostMsg {
             parent: Some(parent),
             via: None,
             msg_id: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -882,6 +886,16 @@ impl PostMsg {
     #[must_use]
     pub fn with_msg_id(mut self, msg_id: impl Into<String>) -> Self {
         self.msg_id = Some(msg_id.into());
+        self
+    }
+
+    /// Send files with the post (ADR-088).
+    #[must_use]
+    pub fn with_attachments(
+        mut self,
+        attachments: Vec<peko_protocol::channel::Attachment>,
+    ) -> Self {
+        self.attachments = attachments;
         self
     }
 

@@ -272,3 +272,90 @@ async fn send_forwards_model_override() {
         "peko send exited non-zero\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_attaches_files_by_absolute_path() {
+    let cli = PekoCli::new();
+    let sock_path = cli.daemon_sock();
+    std::fs::create_dir_all(sock_path.parent().expect("sock parent")).expect("create run dir");
+    let _ = std::fs::remove_file(&sock_path);
+    let server = UnixDatagram::bind(&sock_path).expect("bind fake daemon socket");
+
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<(Vec<String>, String)>(1);
+
+    let server_task = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65536];
+        let mut send_tx = Some(send_tx);
+        loop {
+            let (len, peer) = match server.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let Some(peer_path) = peer.as_pathname().map(|p| p.to_path_buf()) else {
+                continue;
+            };
+            let Ok(req) = RequestPacket::from_bytes(&buf[..len]) else {
+                continue;
+            };
+
+            match req {
+                RequestPacket::Ping { request_id } => {
+                    let pong = ResponsePacket::Pong {
+                        request_id,
+                        uptime_secs: 0,
+                        version: "test".into(),
+                    }
+                    .to_bytes()
+                    .expect("encode pong");
+                    let _ = server.send_to(&pong, &peer_path).await;
+                }
+                RequestPacket::PrincipalSendStream {
+                    request_id,
+                    message,
+                    attachments,
+                    ..
+                } => {
+                    reply_send(&server, &peer_path, request_id).await;
+                    if let Some(tx) = send_tx.take() {
+                        let _ = tx.send((attachments, message)).await;
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // A relative path, resolved against the working directory.
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("notes.txt"), "hello").expect("write attachment");
+    let mut cmd = tokio::process::Command::from(cli.cmd());
+    cmd.current_dir(dir.path())
+        .args(["send", "test-agent", "look", "--attach", "notes.txt"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = tokio::time::timeout(Duration::from_secs(20), cmd.output())
+        .await
+        .expect("peko send timed out")
+        .expect("spawn peko send");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let (attachments, message) = tokio::time::timeout(Duration::from_secs(5), send_rx.recv())
+        .await
+        .expect("timed out waiting for the send request")
+        .expect("fake daemon never saw a send request");
+    server_task.abort();
+
+    let expected = std::fs::canonicalize(dir.path().join("notes.txt"))
+        .expect("canonical path")
+        .display()
+        .to_string();
+    assert_eq!(message, "look");
+    assert_eq!(attachments, vec![expected]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "peko send exited non-zero\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}

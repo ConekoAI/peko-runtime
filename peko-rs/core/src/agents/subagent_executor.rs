@@ -146,6 +146,118 @@ pub struct ExecutionConfig {
     /// the inherited parent config (conversation-mode peer turns,
     /// cron runs, and tests always pass `None`).
     pub role_prompt: Option<String>,
+    /// ADR-088 D4: images, audio, and video attached to a
+    /// conversation turn. Each goes to the model as a media block when
+    /// its spec declares that kind of input; otherwise the turn's text
+    /// says the model cannot take it. Only the streaming path carries
+    /// them (peer ingress always streams).
+    pub media: Vec<MediaInput>,
+}
+
+/// ADR-088 D4: what kind of media an attachment is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Audio,
+    Video,
+}
+
+impl MediaKind {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Image => "images",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+
+    /// The largest file sent to a model as a block of this kind.
+    pub fn max_block_bytes(self) -> u64 {
+        match self {
+            Self::Image => 5 * 1024 * 1024,
+            Self::Audio | Self::Video => 20 * 1024 * 1024,
+        }
+    }
+
+    fn accepted_by(self, spec: Option<&peko_providers::spec::ModelSpec>) -> bool {
+        spec.is_some_and(|spec| match self {
+            Self::Image => spec.image_input,
+            Self::Audio => spec.audio_input,
+            Self::Video => spec.video_input,
+        })
+    }
+}
+
+/// ADR-088 D4: a media file attached to a turn (already copied into
+/// the principal's workspace), its MIME type, and its kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaInput {
+    pub path: std::path::PathBuf,
+    pub mime: String,
+    pub kind: MediaKind,
+}
+
+/// The line a turn's text gains for attached media its model cannot
+/// take, e.g. `cannot take audio or video`.
+pub fn media_unsupported_note(kinds: &[MediaKind]) -> String {
+    let nouns: Vec<&str> = kinds.iter().map(|k| k.noun()).collect();
+    let list = match nouns.as_slice() {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    };
+    format!(
+        "[The current model cannot take {list}; those attachments are files you can open with your tools.]"
+    )
+}
+
+/// Media blocks for a turn's attachments the model can take, and the
+/// kinds it cannot. Unreadable or oversized files are skipped with a
+/// warning: their notes already name the path.
+async fn media_blocks(
+    media: &[MediaInput],
+    spec: Option<&peko_providers::spec::ModelSpec>,
+) -> (Vec<peko_message::ContentBlock>, Vec<MediaKind>) {
+    use base64::Engine as _;
+    let mut blocks = Vec::new();
+    let mut refused: Vec<MediaKind> = Vec::new();
+    for input in media {
+        if !input.kind.accepted_by(spec) {
+            if !refused.contains(&input.kind) {
+                refused.push(input.kind);
+            }
+            continue;
+        }
+        match tokio::fs::metadata(&input.path).await {
+            Ok(meta) if meta.len() <= input.kind.max_block_bytes() => {}
+            Ok(_) => {
+                warn!("attachment {} is too large to send", input.path.display());
+                continue;
+            }
+            Err(e) => {
+                warn!("attachment {}: {e}", input.path.display());
+                continue;
+            }
+        }
+        let bytes = match tokio::fs::read(&input.path).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!("attachment {}: {e}", input.path.display());
+                continue;
+            }
+        };
+        let source = peko_message::ImageSource::Base64 {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            dimensions: None,
+        };
+        let mime_type = input.mime.clone();
+        blocks.push(match input.kind {
+            MediaKind::Image => peko_message::ContentBlock::Image { source, mime_type },
+            MediaKind::Audio => peko_message::ContentBlock::Audio { source, mime_type },
+            MediaKind::Video => peko_message::ContentBlock::Video { source, mime_type },
+        });
+    }
+    (blocks, refused)
 }
 
 impl Default for ExecutionConfig {
@@ -161,6 +273,7 @@ impl Default for ExecutionConfig {
             acting_for: None,
             role_prompt: None,
             page_limit: None,
+            media: Vec::new(),
         }
     }
 }
@@ -2140,6 +2253,9 @@ impl SubagentExecutor {
         // Moved into the task closure; `None` keeps the final-only
         // execution path.
         let stream_events_for_closure = stream_events;
+        // ADR-088: the turn's attached media, decided against the
+        // final provider inside `execute_subagent_task`.
+        let media_for_closure = config.media.clone();
         // Sprint 2 Phase 7: the daemon-shared inbox registry (when
         // bound via `with_inbox_registry`) is handed to the child
         // Agent so its agentic loop drains the SAME registry the
@@ -2222,6 +2338,7 @@ impl SubagentExecutor {
                         model_override_clone, // Phase 1
                         role_prompt_clone,      // ADR-052 D3
                         role_name_clone,        // ADR-087 D5
+                        media_for_closure,      // ADR-088 D4
                         force_compact_for_closure,
                         conversation_for_closure,
                         conversation_channel_clone,
@@ -2620,6 +2737,8 @@ async fn execute_subagent_task(
     // `role_prompt`. Sets `AgentConfig.role` (not `name`, the identity
     // key) so `{{role_name}}` and the `kb/roles/<role>.md` note match.
     role_name: Option<String>,
+    // ADR-088 D4: media attached to this turn.
+    media: Vec<MediaInput>,
     // 2026-09-05: run-scoped force-compact flag (Agent tool
     // `action = "compact"`). When true, the child Agent's loop
     // force-compacts the session on iteration 1
@@ -2903,11 +3022,18 @@ async fn execute_subagent_task(
     // in history, which caused run_with_resume to skip the full
     // system prompt — leaving the subagent without knowledge of
     // available tools.
-    let combined_prompt = if conversation {
+    let mut combined_prompt = if conversation {
         task_message.to_string()
     } else {
         format!("{}\n\n{}", system_prompt, task_message)
     };
+    // ADR-088 D4: media go to a model whose spec declares that kind
+    // of input; otherwise the text says which kinds it cannot take.
+    let (user_media, refused) = media_blocks(&media, provider.spec().as_ref()).await;
+    if !refused.is_empty() {
+        combined_prompt.push('\n');
+        combined_prompt.push_str(&media_unsupported_note(&refused));
+    }
 
     // Execute the agentic loop with the child session
     info!(
@@ -2988,6 +3114,7 @@ async fn execute_subagent_task(
     > = match stream_events {
         Some(sink) => Box::pin(subagent.execute_streaming_with_session(
             &combined_prompt,
+            user_media,
             Vec::new(), // subagents carry no recalled context
             child_session,
             history.clone(), // compact runs load the transcript (see above)

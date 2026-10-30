@@ -394,6 +394,7 @@ impl DaemonClient {
             name: name.into(),
             message: message.into(),
             override_model,
+            attachments: Vec::new(),
         };
         self.send_request(packet).await
     }
@@ -406,6 +407,7 @@ impl DaemonClient {
         name: impl Into<String>,
         message: impl Into<String>,
         override_model: Option<String>,
+        attachments: Vec<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
         let packet = RequestPacket::PrincipalSendStream {
@@ -413,6 +415,7 @@ impl DaemonClient {
             name: name.into(),
             message: message.into(),
             override_model,
+            attachments,
         };
         self.send_request(packet).await
     }

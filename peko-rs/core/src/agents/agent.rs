@@ -1023,7 +1023,9 @@ impl Agent {
     /// `user_text` is persisted verbatim as the user message in the
     /// session JSONL. `pre_user_messages` are ephemeral LLM-only turns
     /// inserted immediately before the user turn (e.g. recalled context
-    /// from prior sessions); they are never persisted.
+    /// from prior sessions); they are never persisted. `user_media`
+    /// (ADR-088) ride the user turn as media blocks; the session keeps
+    /// only the text.
     ///
     /// F19: optional `quota_meter` is the principal's quota meter
     /// from `Principal::quota_meter`. When supplied, every LLM call
@@ -1038,6 +1040,7 @@ impl Agent {
     pub async fn execute_streaming_with_session<F>(
         &self,
         user_text: &str,
+        user_media: Vec<peko_message::ContentBlock>,
         pre_user_messages: Vec<peko_message::LlmMessage>,
         session: std::sync::Arc<tokio::sync::RwLock<peko_session::Session>>,
         history: Option<Vec<peko_message::LlmMessage>>,
@@ -1090,16 +1093,31 @@ impl Agent {
 
         let streaming_config = peko_engine::OrchestratorConfig::live();
 
-        let result = loop_
-            .run_streaming_with_resume(
-                user_text,
-                pre_user_messages,
-                on_event,
-                &session,
-                history,
-                streaming_config,
-            )
-            .await;
+        let result = if user_media.is_empty() {
+            loop_
+                .run_streaming_with_resume(
+                    user_text,
+                    pre_user_messages,
+                    on_event,
+                    &session,
+                    history,
+                    streaming_config,
+                )
+                .await
+        } else {
+            let mut user_message = peko_message::LlmMessage::user(user_text.to_string());
+            user_message.content.extend(user_media);
+            loop_
+                .run_streaming_with_resume_rich(
+                    user_message,
+                    pre_user_messages,
+                    on_event,
+                    &session,
+                    history,
+                    streaming_config,
+                )
+                .await
+        };
 
         self.set_state(AgentState::Idle);
         result

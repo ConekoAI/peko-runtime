@@ -775,12 +775,38 @@ impl PeerChildTurns {
         override_model: Option<String>,
         acting_for: peko_tools_core::ActingFor,
     ) -> Result<StreamingResumeOutcome> {
+        self.drive_turn_streaming_with_media(
+            session_id,
+            message,
+            Vec::new(),
+            on_event,
+            cancel,
+            override_model,
+            acting_for,
+        )
+        .await
+    }
+
+    /// [`Self::drive_turn_streaming`] with media attached to the turn
+    /// (ADR-088 D4): a model that takes them gets media blocks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn drive_turn_streaming_with_media(
+        &self,
+        session_id: &str,
+        message: &str,
+        media: Vec<crate::agents::subagent_executor::MediaInput>,
+        on_event: AgenticEventSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        override_model: Option<String>,
+        acting_for: peko_tools_core::ActingFor,
+    ) -> Result<StreamingResumeOutcome> {
         self.note_activity(&acting_for).await;
         let stamp = acting_for.clone();
         let outcome = self
             .drive_turn(
                 session_id,
                 message,
+                media,
                 on_event,
                 cancel,
                 override_model,
@@ -847,10 +873,12 @@ impl PeerChildTurns {
             .with_agent_config(current.agent_config.clone()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drive_turn(
         &self,
         session_id: &str,
         message: &str,
+        media: Vec<crate::agents::subagent_executor::MediaInput>,
         on_event: AgenticEventSink,
         cancel: Option<tokio_util::sync::CancellationToken>,
         override_model: Option<String>,
@@ -895,6 +923,7 @@ impl PeerChildTurns {
             conversation: true,
             conversation_channel,
             acting_for: Some(acting_for),
+            media,
             ..ExecutionConfig::default()
         };
         let mut outcome = self
@@ -1449,6 +1478,168 @@ mod tests {
             None => 0,
         };
         assert_eq!(queued, 0, "the trunk's inbox got the conversation reply");
+    }
+
+    /// ADR-088 D4: attached media reach a model whose spec takes that
+    /// kind as media blocks; for any other kind the turn says the model
+    /// cannot take it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn attached_media_reach_only_models_that_take_them() {
+        use peko_message::ContentBlock;
+        use peko_providers::spec::ModelSpec;
+        let kinds = |m: &peko_message::LlmMessage| -> Vec<&'static str> {
+            m.content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Image { .. } => Some("image"),
+                    ContentBlock::Audio { .. } => Some("audio"),
+                    ContentBlock::Video { .. } => Some("video"),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let omni = ModelSpec {
+            audio_input: true,
+            video_input: true,
+            ..ModelSpec::frontier_chat()
+        };
+        let all = media_turn_request(Some(omni)).await;
+        assert_eq!(kinds(&all), vec!["image", "audio", "video"]);
+        assert!(!text_of(&all).contains("cannot take"));
+
+        let vision = media_turn_request(Some(ModelSpec::frontier_chat())).await;
+        assert_eq!(kinds(&vision), vec!["image"]);
+        assert!(text_of(&vision).contains("cannot take audio or video"));
+
+        let unknown = media_turn_request(None).await;
+        assert!(kinds(&unknown).is_empty());
+        assert!(text_of(&unknown).starts_with("look"));
+        assert!(text_of(&unknown).contains("cannot take images, audio or video"));
+    }
+
+    fn text_of(message: &peko_message::LlmMessage) -> String {
+        message
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                peko_message::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Drive one conversation turn carrying an image, audio, and video
+    /// on a model with `spec`; return the user message it was sent.
+    async fn media_turn_request(
+        spec: Option<peko_providers::spec::ModelSpec>,
+    ) -> peko_message::LlmMessage {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("PEKO_HOME", tmp.path());
+        peko_identity::init_test_env();
+        let (llm, adapter) = peko_providers::resolver::LlmResolver::mock(
+            peko_providers::mock::MockAdapter::new(),
+            tmp.path().join("models.toml"),
+        )
+        .await;
+        if spec.is_some() {
+            let mut model = llm.catalog().get("mock").await.unwrap();
+            model.spec = spec;
+            llm.catalog().upsert(model).await.unwrap();
+        }
+        let manager = crate::principal::PrincipalManager::with_path_resolver(
+            crate::common::paths::PathResolver::with_dirs(
+                tmp.path().join("config"),
+                tmp.path().join("data"),
+                tmp.path().join("cache"),
+            ),
+            Arc::new(crate::principal::DefaultPrincipalMemoryFactory),
+            Arc::new(crate::principal::DefaultPrincipalRouterFactory),
+            crate::async_exec::executor::standalone_inbox_registry(),
+        )
+        .with_resolver(llm.clone());
+        let principal = manager
+            .create(test_config("seer", PrincipalRoutingConfig::default()))
+            .await
+            .unwrap();
+        let port: Arc<dyn ChannelPort> = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let tooling = crate::tools::runtime::ToolingRuntime::standalone();
+        tooling.services().set_channel_port(Arc::clone(&port));
+        let turns = PeerChildTurns::build(
+            &principal,
+            &llm,
+            Arc::new(Observability::new("test")),
+            Some(manager.shared_inbox_registry()),
+            tooling,
+        )
+        .await
+        .unwrap()
+        .with_channel_port(Some(port));
+        let child = turns
+            .ensure_child_ingress(&ActorRef::User("test-owner".into()))
+            .await
+            .unwrap()
+            .child_id;
+        use crate::agents::subagent_executor::{MediaInput, MediaKind};
+        let file = |name: &str, bytes: &[u8]| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let media = vec![
+            MediaInput {
+                path: file("photo.png", b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"),
+                mime: "image/png".into(),
+                kind: MediaKind::Image,
+            },
+            MediaInput {
+                path: file("voice.wav", b"RIFF\x24\0\0\0WAVEfmt "),
+                mime: "audio/wav".into(),
+                kind: MediaKind::Audio,
+            },
+            MediaInput {
+                path: file("clip.mp4", b"\0\0\0\x18ftypmp42"),
+                mime: "video/mp4".into(),
+                kind: MediaKind::Video,
+            },
+        ];
+        adapter.queue_text("a photo");
+        let stamp = turns
+            .root_stamp(
+                None,
+                &child,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
+        turns
+            .drive_turn_streaming_with_media(
+                &child,
+                "look",
+                media,
+                Arc::new(|_| {}),
+                None,
+                None,
+                stamp,
+            )
+            .await
+            .unwrap();
+        adapter
+            .recorded_requests()
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .rev()
+            // The turn's message, not the runtime-context tail.
+            .find(|m| m.role == peko_message::MessageRole::User && text_of(m).starts_with("look"))
+            .unwrap()
+            .clone()
     }
 
     /// Minimal principal config for persona tests — everything

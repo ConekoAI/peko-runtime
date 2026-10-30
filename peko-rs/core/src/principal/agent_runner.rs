@@ -363,6 +363,7 @@ where
     let result = agent
         .execute_streaming_with_session(
             &user_text,
+            Vec::new(),
             pre_user_messages,
             session,
             Some(history),

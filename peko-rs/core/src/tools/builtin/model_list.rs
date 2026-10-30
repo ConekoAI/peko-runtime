@@ -260,6 +260,7 @@ fn spec_to_json(s: &peko_providers::spec::ModelSpec) -> Value {
     json!({
         "image_input": s.image_input,
         "audio_input": s.audio_input,
+        "video_input": s.video_input,
         "tool_support": match s.tool_support {
             ToolSupport::None => "none",
             ToolSupport::FunctionCalling => "function_calling",
@@ -339,6 +340,7 @@ mod tests {
         ModelSpec {
             image_input: true,
             audio_input: false,
+            video_input: false,
             tool_support: ToolSupport::FunctionCalling,
             streaming: true,
             thinking: ThinkingMode::Optional,
@@ -355,6 +357,7 @@ mod tests {
         ModelSpec {
             image_input: false,
             audio_input: false,
+            video_input: false,
             tool_support: ToolSupport::None,
             streaming: true,
             thinking: ThinkingMode::Disabled,

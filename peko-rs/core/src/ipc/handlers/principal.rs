@@ -363,12 +363,14 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 override_model,
+                attachments,
             } => {
                 run_principal_send(
                     request_id,
                     caller,
                     &name,
                     message,
+                    attachments,
                     override_model,
                     host,
                     sink,
@@ -382,12 +384,14 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 message,
                 override_model,
+                attachments,
             } => {
                 run_principal_send(
                     request_id,
                     caller,
                     &name,
                     message,
+                    attachments,
                     override_model,
                     host,
                     sink,
@@ -1924,6 +1928,32 @@ async fn handle_principal_stop(
     Ok(())
 }
 
+/// Refuse a send before anything is posted: an `Error` packet, then a
+/// failed `Done`.
+async fn refuse_send(
+    sink: &dyn ResponseSink,
+    request_id: u64,
+    reason: String,
+) -> anyhow::Result<()> {
+    send_response(
+        sink,
+        ResponsePacket::Error {
+            request_id,
+            message: reason.clone(),
+        },
+    )
+    .await?;
+    send_response(
+        sink,
+        ResponsePacket::Done {
+            request_id,
+            success: false,
+            error: Some(reason),
+        },
+    )
+    .await
+}
+
 /// Shared body for `RequestPacket::PrincipalSend` and
 /// `RequestPacket::PrincipalSendStream`. Both IPC variants run the
 /// peer's standing child turn via the streaming machinery
@@ -1941,11 +1971,13 @@ async fn handle_principal_stop(
 /// pekohub, else `user:local`; the JWT sub for bridge callers; the
 /// typed apikey actor for API-key callers) and
 /// `authority = caller.subject()` (the grant-matching projection).
+#[allow(clippy::too_many_arguments)]
 async fn run_principal_send(
     request_id: u64,
     caller: &CallerContext,
     name: &str,
     message: String,
+    attachment_paths: Vec<String>,
     override_model: Option<String>,
     host: &dyn PrincipalHost,
     sink: &dyn ResponseSink,
@@ -1972,6 +2004,17 @@ async fn run_principal_send(
             return Ok(());
         }
     };
+
+    // ADR-088 D1: the engine reads attached files itself, so only the
+    // local operator, on this host, may name them.
+    if !attachment_paths.is_empty() && !caller.is_local() {
+        return refuse_send(
+            sink,
+            request_id,
+            "attachments can only be sent by the local user".to_string(),
+        )
+        .await;
+    }
 
     let peer = caller.attribution_subject();
     let channel = ChannelContext {
@@ -2074,9 +2117,27 @@ async fn run_principal_send(
     // `drive_principal_ingress`. The IPC ingress differs from
     // `receive_streaming` only in how it formats the outcome — same
     // wire-format prefixes preserved below.
+    // ADR-088 D2: copy attachments into the workspace before anything
+    // is posted; a refused file refuses the whole message.
+    let attachments = if attachment_paths.is_empty() {
+        Vec::new()
+    } else {
+        match crate::principal::attachments::ingest(&principal.workspace_path, &attachment_paths)
+            .await
+        {
+            Ok(attachments) => attachments,
+            Err(reason) => return refuse_send(sink, request_id, reason).await,
+        }
+    };
     let ingress_outcome = host
         .principal_manager()
-        .drive_principal_ingress(&principal, &peer, &message, IngressMode::Interactive)
+        .drive_principal_ingress(
+            &principal,
+            &peer,
+            &message,
+            &attachments,
+            IngressMode::Interactive,
+        )
         .await;
     // The `permit` inside the Ready variant is the per-session run
     // permit that gates concurrent `principal_send*` calls — it MUST
@@ -2227,7 +2288,12 @@ async fn run_principal_send(
     let permit_for_task = _permit_guard;
     let turns_for_task = Arc::clone(&turns);
     let session_id_for_task = session_id.clone();
-    let message_for_task = message.clone();
+    // ADR-088 D4: the turn reads the message plus a note per file;
+    // images, audio, and video go along for a model that takes them.
+    let message_for_task =
+        crate::principal::attachments::turn_text(&message, &principal.workspace_path, &attachments);
+    let media_for_task =
+        crate::principal::attachments::media(&principal.workspace_path, &attachments);
     let override_model_for_task = override_model.clone();
     // ADR-078: the run acts for the peer who spoke, at the trust their
     // permission subject earns.
@@ -2242,9 +2308,10 @@ async fn run_principal_send(
     let child_turn_handle = tokio::spawn(async move {
         let _permit_held = permit_for_task;
         let result = turns_for_task
-            .drive_turn_streaming(
+            .drive_turn_streaming_with_media(
                 &session_id_for_task,
                 &message_for_task,
+                media_for_task,
                 Arc::new(on_event),
                 Some(cancel),
                 override_model_for_task,
@@ -3577,6 +3644,8 @@ struct LogSelf {
     subject: ActorRef,
     /// Display name rendered for the principal's rows.
     name: String,
+    /// The principal's workspace; attachment paths are relative to it.
+    workspace: std::path::PathBuf,
 }
 
 impl LogSelf {
@@ -3590,6 +3659,7 @@ impl LogSelf {
             address,
             subject: ActorRef::Principal((principal.did().await).into()),
             name: principal.name().await,
+            workspace: principal.workspace_path.clone(),
         }
     }
 }
@@ -3600,12 +3670,14 @@ impl LogSelf {
 /// form with a `ActorRef::User` fallback (mirrored `x@runtime` authors).
 /// The principal's own rows (raw id or channel address) also carry its
 /// name as `sender_name`, so `peko log` shows `my-peko:` rather than an
-/// address. Unparseable timestamps surface as "now".
+/// address. Attachment paths become absolute (ADR-088 D3).
+/// Unparseable timestamps surface as "now".
 fn map_posted_to_log_message(
     id: String,
     author: &str,
     at: &str,
     text: String,
+    attachments: Vec<peko_protocol::channel::Attachment>,
     me: &LogSelf,
 ) -> PrincipalLogMessage {
     let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
@@ -3628,6 +3700,15 @@ fn map_posted_to_log_message(
         text,
         correlation_id: None,
         sender_name,
+        attachments: attachments
+            .into_iter()
+            .map(|a| peko_protocol::channel::Attachment {
+                path: crate::principal::attachments::absolute(&me.workspace, &a)
+                    .display()
+                    .to_string(),
+                ..a
+            })
+            .collect(),
     }
 }
 
@@ -3729,7 +3810,11 @@ async fn read_principal_log(
         let mut rows: Vec<(u64, PrincipalLogMessage)> = Vec::new();
         for (line, event) in page.events {
             let ChannelEvent::Posted {
-                author, text, at, ..
+                author,
+                text,
+                at,
+                attachments,
+                ..
             } = event
             else {
                 continue;
@@ -3749,8 +3834,14 @@ async fn read_principal_log(
                     continue;
                 }
             }
-            let message =
-                map_posted_to_log_message(format!("chan_{line_num}"), &author, &at, text, &me);
+            let message = map_posted_to_log_message(
+                format!("chan_{line_num}"),
+                &author,
+                &at,
+                text,
+                attachments,
+                &me,
+            );
             // The `since` cutoff admits unparseable timestamps (surfaced
             // as "now" by the mapper — now ≥ cutoff).
             if let Some(cut) = cutoff {
@@ -3916,7 +4007,11 @@ async fn run_principal_log_watch(
     let mut replayed: Vec<(String, String, String)> = Vec::new();
     for (line, event) in events {
         let ChannelEvent::Posted {
-            author, text, at, ..
+            author,
+            text,
+            at,
+            attachments,
+            ..
         } = event
         else {
             continue;
@@ -3928,8 +4023,14 @@ async fn run_principal_log_watch(
             continue;
         }
         replayed.push((author.clone(), at.clone(), text.clone()));
-        let message =
-            map_posted_to_log_message(format!("chan_{line_num}"), &author, &at, text, &me);
+        let message = map_posted_to_log_message(
+            format!("chan_{line_num}"),
+            &author,
+            &at,
+            text,
+            attachments,
+            &me,
+        );
         let packet = ResponsePacket::PrincipalLogAppended {
             request_id,
             message,
@@ -3950,7 +4051,7 @@ async fn run_principal_log_watch(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Ok(ChannelEvent::Posted {
-                    author, text, at, ..
+                    author, text, at, attachments, ..
                 }) => {
                     // Skip events already covered by the replay
                     // (subscribe→peek overlap window).
@@ -3969,6 +4070,7 @@ async fn run_principal_log_watch(
                         &author,
                         &at,
                         text,
+                        attachments,
                         &me,
                     );
                     let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
@@ -4051,6 +4153,38 @@ fn ipc_create_config(
 mod tests {
     use super::*;
 
+    /// ADR-088 D3: a log row carries the post's attachments with paths
+    /// made absolute against the principal's workspace.
+    #[test]
+    fn posted_rows_carry_attachments_with_absolute_paths() {
+        let me = LogSelf {
+            raw_author: "prin_abc".into(),
+            address: "principal:local:prin_abc".into(),
+            subject: ActorRef::Principal("did:peko:abc".into()),
+            name: "my-peko".into(),
+            workspace: "/w".into(),
+        };
+        let row = map_posted_to_log_message(
+            "chan_1".into(),
+            "user:local:me",
+            "2026-10-30T10:00:00Z",
+            "look".into(),
+            vec![peko_protocol::channel::Attachment {
+                name: "photo.png".into(),
+                path: "attachments/2026-10-30/ab12cd34-photo.png".into(),
+                mime: "image/png".into(),
+                size: 12,
+            }],
+            &me,
+        );
+        assert_eq!(row.attachments.len(), 1);
+        assert_eq!(
+            std::path::Path::new(&row.attachments[0].path),
+            std::path::Path::new("/w/attachments/2026-10-30/ab12cd34-photo.png")
+        );
+        assert_eq!(row.attachments[0].name, "photo.png");
+    }
+
     #[test]
     fn posted_rows_name_the_principal_and_address_everyone_else() {
         let me = LogSelf {
@@ -4058,6 +4192,7 @@ mod tests {
             address: "principal:local:prin_abc".into(),
             subject: ActorRef::Principal("did:peko:abc".into()),
             name: "my-peko".into(),
+            workspace: "/w".into(),
         };
         let row = |author: &str| {
             map_posted_to_log_message(
@@ -4065,6 +4200,7 @@ mod tests {
                 author,
                 "2026-10-24T10:00:00Z",
                 "Hello!".into(),
+                Vec::new(),
                 &me,
             )
         };
@@ -4639,6 +4775,7 @@ mod tests {
                 via: None,
                 msg_id: None,
                 reply_to: None,
+                attachments: Vec::new(),
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -4674,6 +4811,7 @@ mod tests {
                 via: None,
                 msg_id: None,
                 reply_to: None,
+                attachments: Vec::new(),
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)

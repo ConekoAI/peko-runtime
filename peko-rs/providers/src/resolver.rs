@@ -318,6 +318,9 @@ impl LlmResolver {
             timeout_seconds: 300,
             max_retries: 3,
             retry_delay_ms: 1000,
+            // Like `create_provider_for_model`: the catalog spec is
+            // what the engine's spec gate and image routing read.
+            spec: config.spec,
             ..Default::default()
         };
 

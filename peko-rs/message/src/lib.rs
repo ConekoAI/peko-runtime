@@ -47,6 +47,21 @@ pub enum ContentBlock {
         mime_type: String,
     },
 
+    /// Audio content (base64 or URL), sent only to a model whose spec
+    /// declares `audio_input` (ADR-088). `source` reuses the image
+    /// source shape; `dimensions` stays empty.
+    Audio {
+        source: ImageSource,
+        mime_type: String,
+    },
+
+    /// Video content (base64 or URL), sent only to a model whose spec
+    /// declares `video_input` (ADR-088).
+    Video {
+        source: ImageSource,
+        mime_type: String,
+    },
+
     /// Tool call request
     ToolCall {
         id: ToolCallId,

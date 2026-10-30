@@ -2414,6 +2414,7 @@ fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::pack
     crate::ipc::packet::ModelSpec {
         image_input: spec.image_input,
         audio_input: spec.audio_input,
+        video_input: spec.video_input,
         tool_support: match spec.tool_support {
             peko_providers::spec::ToolSupport::None => ModelToolSupport::None,
             peko_providers::spec::ToolSupport::FunctionCalling => ModelToolSupport::FunctionCalling,
@@ -2441,6 +2442,7 @@ fn model_spec_from_wire(spec: crate::ipc::packet::ModelSpec) -> peko_providers::
     ModelSpec {
         image_input: spec.image_input,
         audio_input: spec.audio_input,
+        video_input: spec.video_input,
         tool_support: match spec.tool_support {
             ModelToolSupport::None => ToolSupport::None,
             ModelToolSupport::FunctionCalling => ToolSupport::FunctionCalling,
@@ -2670,6 +2672,9 @@ impl crate::ipc::handlers::provider_edit::ModelEditHost for AppState {
         }
         if let Some(enabled) = args.enabled {
             entry.enabled = enabled;
+        }
+        if let Some(spec) = args.spec {
+            entry.spec = Some(model_spec_from_wire(spec));
         }
 
         // `upsert` stamps `updated_at` and persists atomically.
@@ -3191,6 +3196,59 @@ mod tests {
             .to_string()
             .contains("exactly one"));
         assert_eq!(state.resolver.catalog().list_all().await.len(), 1);
+    }
+
+    /// ADR-088: `model_update` replaces the capability descriptor, so the
+    /// desktop can say a model takes audio and video.
+    #[tokio::test]
+    async fn model_update_replaces_the_spec() {
+        use crate::ipc::handlers::provider_add::ModelAddHost;
+        use crate::ipc::handlers::provider_edit::ModelEditHost;
+        use crate::ipc::packet::{ModelAddArgs, ModelSpec, ModelUpdateArgs};
+        let dir = TempDir::new().unwrap();
+        let state = AppState::build_for_test(
+            dir.path().to_path_buf(),
+            "127.0.0.1".into(),
+            11435,
+            DaemonConfigSnapshot::default(),
+            dir.path().join("data"),
+            dir.path().join("config"),
+            dir.path().join("cache"),
+        )
+        .await
+        .unwrap();
+        state
+            .add_model(ModelAddArgs {
+                api_format: Some("openai_completions".into()),
+                base_url: Some("https://example.com/v1".into()),
+                model: vec!["omni".into()],
+                requires_key: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        state
+            .update_model(ModelUpdateArgs {
+                id: "omni".into(),
+                spec: Some(ModelSpec {
+                    image_input: true,
+                    audio_input: true,
+                    video_input: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let spec = state
+            .resolver
+            .catalog()
+            .get("omni")
+            .await
+            .unwrap()
+            .spec
+            .unwrap();
+        assert!(spec.image_input && spec.audio_input && spec.video_input);
     }
 
     #[tokio::test]

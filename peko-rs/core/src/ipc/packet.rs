@@ -482,6 +482,10 @@ pub enum RequestPacket {
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
+        /// ADR-088: absolute paths of files to attach. The engine reads
+        /// them itself, so only the local operator may attach.
+        #[serde(default)]
+        attachments: Vec<String>,
     },
 
     /// Streaming principal send. The daemon emits a sequence of
@@ -499,6 +503,10 @@ pub enum RequestPacket {
         /// Per-message configured model override (e.g. `peko send --model ...`).
         #[serde(default)]
         override_model: Option<String>,
+        /// ADR-088: absolute paths of files to attach. The engine reads
+        /// them itself, so only the local operator may attach.
+        #[serde(default)]
+        attachments: Vec<String>,
     },
 
     /// Soft-stop the run bound to a (principal, peer) thread.
@@ -1055,6 +1063,10 @@ pub struct PrincipalLogMessage {
     /// they render by address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_name: Option<String>,
+    /// ADR-088 D3: files attached to the message, each `path` absolute
+    /// on the runtime's host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<peko_protocol::channel::Attachment>,
 }
 
 impl PrincipalLogMessage {
@@ -1072,6 +1084,7 @@ impl PrincipalLogMessage {
             text: text.into(),
             correlation_id,
             sender_name: None,
+            attachments: Vec::new(),
         }
     }
 }
@@ -1972,6 +1985,8 @@ pub struct ModelSpec {
     #[serde(default)]
     pub audio_input: bool,
     #[serde(default)]
+    pub video_input: bool,
+    #[serde(default)]
     pub tool_support: ModelToolSupport,
     #[serde(default = "default_streaming_true")]
     pub streaming: bool,
@@ -1997,6 +2012,7 @@ impl Default for ModelSpec {
         Self {
             image_input: false,
             audio_input: false,
+            video_input: false,
             tool_support: ModelToolSupport::None,
             streaming: true,
             thinking: ModelThinkingMode::Disabled,
@@ -2173,6 +2189,11 @@ pub struct ModelUpdateArgs {
     /// Replace the `enabled` flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Replace the capability descriptor (which inputs the model takes,
+    /// tools, thinking, ...). ADR-088: the desktop sets image / audio /
+    /// video input here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<ModelSpec>,
 }
 
 /// Structured outcome of a live model ping. Mirrors
@@ -2553,6 +2574,7 @@ mod tests {
             name: "helper".to_string(),
             message: "Hello".to_string(),
             override_model: Some("gpt-4o".to_string()),
+            attachments: Vec::new(),
         };
 
         let bytes = req.to_bytes().unwrap();
@@ -2564,6 +2586,7 @@ mod tests {
                 name,
                 message,
                 override_model,
+                ..
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(name, "helper");
@@ -4274,6 +4297,23 @@ mod tests {
 
     // ─── Principal operations tests ─────────────────────────────────
 
+    /// ADR-088: a send without `attachments` (every pre-088 client)
+    /// decodes to none, and a log row without attachments omits the key.
+    #[test]
+    fn attachments_default_to_none_on_the_wire() {
+        let req: RequestPacket = serde_json::from_str(
+            r#"{"type":"principal_send_stream","request_id":1,"name":"juno","message":"hi"}"#,
+        )
+        .unwrap();
+        let RequestPacket::PrincipalSendStream { attachments, .. } = req else {
+            panic!("wrong variant");
+        };
+        assert!(attachments.is_empty());
+
+        let row = PrincipalLogMessage::new(peko_auth::ActorRef::User("local".into()), "hi", None);
+        assert!(!serde_json::to_string(&row).unwrap().contains("attachments"));
+    }
+
     #[test]
     fn test_principal_send_request_roundtrip() {
         let req = RequestPacket::PrincipalSend {
@@ -4281,6 +4321,7 @@ mod tests {
             name: "helper".to_string(),
             message: "hello".to_string(),
             override_model: Some("gpt-4o".to_string()),
+            attachments: Vec::new(),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4290,6 +4331,7 @@ mod tests {
                 name,
                 message,
                 override_model,
+                ..
             } => {
                 assert_eq!(request_id, 5000);
                 assert_eq!(name, "helper");
@@ -4310,6 +4352,7 @@ mod tests {
             name: "helper".to_string(),
             message: "stream please".to_string(),
             override_model: Some("claude-haiku-4-5".to_string()),
+            attachments: Vec::new(),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -4319,6 +4362,7 @@ mod tests {
                 name,
                 message,
                 override_model,
+                ..
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(name, "helper");
@@ -4790,6 +4834,7 @@ mod tests {
             name: "p".to_string(),
             message: "m".to_string(),
             override_model: None,
+            attachments: Vec::new(),
         };
         assert_eq!(req_send.request_id(), 1);
 
