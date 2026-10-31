@@ -28,8 +28,13 @@ use crate::tools::builtin::messaging::subagent_runtime::{
     SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest,
 };
 
+/// The role a run takes when the call names none: the seeded `worker`
+/// (`roles/worker.md`), whose job is one delegated task reported back.
+/// The peko can reshape it by editing that file.
+pub const DEFAULT_ROLE: &str = "worker";
+
 /// Agent calls select new/resume/compact/branch; omitted action means new.
-/// Every action requires prompt, role, and path. New and branch accept a
+/// Every action requires prompt and path; role defaults to [`DEFAULT_ROLE`]. New and branch accept a
 /// single caller-relative slug or an absolute session path; resume and compact
 /// address existing sessions. Source/overwrite are branch-only, retention is
 /// new/branch-only, and compact keeps the target session's model.
@@ -55,7 +60,7 @@ pub struct AgentArgs {
     /// `<workspace>/roles/<role>.md` (flat layout) or
     /// `<workspace>/roles/<role>/ROLE.md` (directory layout). The role
     /// template supplies the spawned subagent's system prompt.
-    /// Required for all actions.
+    /// Omitted (or empty): [`DEFAULT_ROLE`].
     #[serde(default)]
     pub role: String,
     /// Optional model override for new/resume/branch; compact refuses it.
@@ -153,10 +158,8 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
     }
     match action {
         AgentAction::New => {
-            if args.prompt.is_empty() || args.role.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "action \"new\" requires 'prompt' and 'role'"
-                ));
+            if args.prompt.is_empty() {
+                return Err(anyhow::anyhow!("action \"new\" requires 'prompt'"));
             }
             // `path` is a uniform address (2026-09-08): a RELATIVE
             // slug segment (no `/`) mints/attaches `<caller>/<slug>`;
@@ -195,10 +198,8 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"resume\" 'path' is not a valid slug path: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.role.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "action \"resume\" requires 'prompt' and 'role'"
-                ));
+            if args.prompt.is_empty() {
+                return Err(anyhow::anyhow!("action \"resume\" requires 'prompt'"));
             }
         }
         AgentAction::Compact => {
@@ -213,9 +214,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"compact\" 'path' is not a valid slug path: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.role.is_empty() {
+            if args.prompt.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"compact\" requires 'prompt' and 'role' — the target compacts \
+                    "action \"compact\" requires 'prompt' — the target compacts \
                      first, then continues with the prompt in the same run"
                 ));
             }
@@ -242,9 +243,9 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
                     "action \"branch\" 'path' is not a valid slug: {e}"
                 ));
             }
-            if args.prompt.is_empty() || args.role.is_empty() {
+            if args.prompt.is_empty() {
                 return Err(anyhow::anyhow!(
-                    "action \"branch\" requires 'prompt' and 'role' — the branch runs the \
+                    "action \"branch\" requires 'prompt' — the branch runs the \
                      prompt against a snapshot of the source session's live context"
                 ));
             }
@@ -263,6 +264,17 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
     Ok(())
 }
 
+impl AgentArgs {
+    /// A call that names no role runs [`DEFAULT_ROLE`].
+    #[must_use]
+    pub fn with_default_role(mut self) -> Self {
+        if self.role.trim().is_empty() {
+            self.role = DEFAULT_ROLE.to_string();
+        }
+        self
+    }
+}
+
 /// Agent tool
 ///
 /// Creates a subagent session and executes a task in the background.
@@ -275,7 +287,7 @@ pub struct AgentTool {
 
 impl AgentTool {
     pub(crate) fn tool_description() -> String {
-        r#"Run LLM work in a session: start or continue a sub-agent (action "new", the default), re-attach to a session you spawned earlier ("resume"), compact a session and continue it ("compact"), or run a prompt on a copy of a session's context ("branch"). Every action needs `prompt`, `role` (a template from RoleCatalog: `<workspace>/roles/<role>.md` or `roles/<role>/ROLE.md`), and `path`.
+        r#"Run LLM work in a session: start or continue a sub-agent (action "new", the default), re-attach to a session you spawned earlier ("resume"), compact a session and continue it ("compact"), or run a prompt on a copy of a session's context ("branch"). Every action needs `prompt` and `path`. `role` picks the template the run follows (an id from RoleCatalog: `<workspace>/roles/<role>.md` or `roles/<role>/ROLE.md`); omit it for `worker`, the general role for a delegated task.
 
 ## Addressing
 Session addresses are slug paths like `sess:/user-bob/writer-1` (the `path` field of Session action `list`; your own position is in the runtime context). For `new` and `branch`, a bare slug (`writer-1`, 1-64 chars, no `/`) means a session under yours. Raw session ids are refused.
@@ -294,6 +306,7 @@ A call is refused when the target is your own session or an ancestor, already ha
 
 ## Examples
 ```json
+{"prompt": "Find every TODO in src/ and list them by file", "path": "todo-scan"}
 {"prompt": "Use Write to create report.txt with a summary", "role": "writer", "path": "writer-1"}
 {"prompt": "Now update report.txt with the new numbers", "role": "writer", "path": "writer-1"}
 {"action": "compact", "path": "sess:/user-bob/writer-1", "prompt": "Draft the final report from our work so far", "role": "writer"}
@@ -320,7 +333,7 @@ A call is refused when the target is your own session or an ancestor, already ha
                 "role": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Role template id (see RoleCatalog); its body becomes the run's system prompt"
+                    "description": "Role template id (see RoleCatalog); its body becomes the run's system prompt. Omit for `worker`, the general role for a delegated task"
                 },
                 "path": {
                     "type": "string",
@@ -371,14 +384,14 @@ A call is refused when the target is your own session or an ancestor, already ha
         let branches: Vec<_> = variants.into_iter().map(|(action, allowed)| {
             let properties: serde_json::Map<String, serde_json::Value> = allowed.iter()
                 .map(|field| ((*field).to_string(), fields["properties"][*field].clone())).collect();
-            (action, json!({"type":"object", "properties": properties, "required":["prompt", "role", "path"]}))
+            (action, json!({"type":"object", "properties": properties, "required":["prompt", "path"]}))
         }).collect();
         let mut schema = peko_tools_core::schema::action_schema(&branches);
         schema["properties"]["action"] = fields["properties"]["action"].clone();
         // Only the new variant permits omission of action; all others retain
         // their required discriminator. This preserves the documented default.
-        schema["required"] = json!(["prompt", "role", "path"]);
-        schema["oneOf"][0]["required"] = json!(["prompt", "role", "path"]);
+        schema["required"] = json!(["prompt", "path"]);
+        schema["oneOf"][0]["required"] = json!(["prompt", "path"]);
         schema
     }
 
@@ -859,6 +872,7 @@ impl Tool for AgentTool {
         Self::action_schema().normalize(&mut params)?;
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+        let args = args.with_default_role();
 
         let action = parse_action(&args.action)?;
         validate_action_args(action, &args)?;
@@ -920,6 +934,7 @@ impl Tool for AgentTool {
         Self::action_schema().normalize(&mut params)?;
         let args: AgentArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+        let args = args.with_default_role();
 
         let action = parse_action(&args.action)?;
         validate_action_args(action, &args)?;
@@ -1426,7 +1441,7 @@ mod tests {
             ),
             (
                 serde_json::json!({ "path": "a", "role": "primary" }),
-                "requires 'prompt' and 'role'",
+                "\"new\" requires 'prompt'",
             ),
             (ok(serde_json::json!({})), "\"new\" requires 'path'"),
             (ok(serde_json::json!({ "path": "a/b" })), "not a valid slug"),
@@ -1455,7 +1470,7 @@ mod tests {
                 "not a valid slug path",
             ),
             (
-                serde_json::json!({ "action": "compact", "path": "sess:/a", "prompt": "go" }),
+                serde_json::json!({ "action": "compact", "path": "sess:/a", "role": "primary" }),
                 "\"compact\" requires 'prompt'",
             ),
             (
@@ -1724,7 +1739,8 @@ mod tests {
                 "{removed} property must be removed"
             );
         }
-        assert_eq!(params["required"], json!(["prompt", "role", "path"]));
+        // `role` may be omitted: the run takes `worker`.
+        assert_eq!(params["required"], json!(["prompt", "path"]));
         // Coin-model cross-reference in the description.
         let desc = tool.description();
         assert!(desc.contains("resume"));
@@ -1884,7 +1900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_requires_prompt_and_agent() {
+    async fn test_compact_requires_prompt_and_defaults_the_role() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -1900,21 +1916,22 @@ mod tests {
             .expect_err("compact without prompt must refuse");
         assert!(err.to_string().contains("prompt"), "{err}");
 
-        // Missing agent.
-        let err = tool
+        assert!(
+            runtime.compaction_requests().is_empty(),
+            "validation failures must not reach the runtime"
+        );
+
+        // No role: the run takes `worker`.
+        let _ = tool
             .execute(serde_json::json!({
                 "action": "compact",
                 "path": "/target-sess",
                 "prompt": "continue",
             }))
-            .await
-            .expect_err("compact without agent must refuse");
-        assert!(err.to_string().contains("role"), "{err}");
-
-        assert!(
-            runtime.compaction_requests().is_empty(),
-            "validation failures must not reach the runtime"
-        );
+            .await;
+        let requests = runtime.compaction_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].2, DEFAULT_ROLE);
     }
 
     /// ADR-053: `branch` routes to `branch_and_execute` with the raw
@@ -2072,8 +2089,31 @@ mod tests {
         assert!(runtime.branch_requests().is_empty());
     }
 
+    /// A `new` call that names no role resolves `worker`.
     #[tokio::test]
-    async fn test_branch_requires_prompt_and_agent() {
+    async fn new_without_a_role_runs_the_worker_role() {
+        let runtime = Arc::new(TestSubagentRuntime::new());
+        runtime.set_session_id("caller:sess");
+        let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
+        // No `worker` registered in this runtime: the lookup names it.
+        let err = tool
+            .execute(serde_json::json!({ "prompt": "scan", "path": "scan-1" }))
+            .await
+            .expect_err("unregistered worker role");
+        assert!(format!("{err:#}").contains(DEFAULT_ROLE), "{err:#}");
+        let args: AgentArgs =
+            serde_json::from_value(serde_json::json!({ "prompt": "scan", "path": "scan-1" }))
+                .unwrap();
+        assert_eq!(args.with_default_role().role, "worker");
+        let named: AgentArgs = serde_json::from_value(
+            serde_json::json!({ "prompt": "scan", "path": "scan-1", "role": "writer" }),
+        )
+        .unwrap();
+        assert_eq!(named.with_default_role().role, "writer");
+    }
+
+    #[tokio::test]
+    async fn test_branch_requires_prompt_and_defaults_the_role() {
         let runtime = Arc::new(TestSubagentRuntime::new());
         runtime.set_session_id("caller:sess");
         let tool = AgentTool::new(runtime.clone() as SharedSubagentRuntime);
@@ -2084,13 +2124,15 @@ mod tests {
             .expect_err("branch without prompt must refuse");
         assert!(err.to_string().contains("prompt"), "{err}");
 
-        let err = tool
-            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "prompt": "x" }))
-            .await
-            .expect_err("branch without agent must refuse");
-        assert!(err.to_string().contains("role"), "{err}");
-
         assert!(runtime.branch_requests().is_empty());
+
+        // No role: the run takes `worker`.
+        let _ = tool
+            .execute(serde_json::json!({ "action": "branch", "path": "briefing", "prompt": "x" }))
+            .await;
+        let requests = runtime.branch_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].3, DEFAULT_ROLE);
     }
 
     /// ADR-053: `source` / `overwrite` are branch-only — a stray value
