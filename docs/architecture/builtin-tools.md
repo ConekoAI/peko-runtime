@@ -62,9 +62,12 @@ so both register one task in the principal's executor. A background task's body
 runs inline under its own optional timeout and cancellation — it is not subject
 to the foreground wait — and streams live output to `Async output`.
 
-A foreground call waits at most 10 minutes. A call still running then detaches:
-the agent receives a receipt (`_async_status: "queued"`, `task_id`,
-`detached_after_secs`, and a `note` on how to follow up), the work keeps running
+A foreground call waits at most 10 minutes, and less when someone writes: a
+message from the conversation (a person or a peer peko) that arrives while the
+call runs lets it go on for 2 more seconds, then detaches it, so the run
+answers the message instead of making them wait on the tool. A detached call
+returns a receipt (`_async_status: "queued"`, `task_id`, `detached_after_secs`,
+`reason`: `timeout` | `message`, and a `note` on how to follow up), the work keeps running
 with no time limit, and its completion is delivered to the calling session — it
 starts a turn when the session is idle and reaches a running loop at its next
 iteration. Background work has no time limit by default: Async spawn, background

@@ -34,6 +34,19 @@ use tracing::{info, instrument, warn};
 /// the wait is bounded.
 pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 600;
 
+/// How long a call may keep running after someone's message arrives
+/// before it moves to the background: a call about to finish still
+/// returns its result in the same turn.
+const MESSAGE_GRACE: Duration = Duration::from_secs(2);
+
+/// Why a call stopped holding the turn.
+enum DetachReason {
+    /// The foreground wait ran out.
+    Timeout,
+    /// Someone in the conversation wrote while it ran.
+    Message,
+}
+
 /// Legacy reserved params are no longer honored; this is now a no-op.
 fn strip_legacy_reserved_params(params: Value) -> Value {
     params
@@ -259,10 +272,28 @@ impl AsyncExecutionRouter {
             )
             .await?;
 
+        // A message someone writes while the call runs moves it to the
+        // background (after a short grace), so the run can answer them
+        // instead of making them wait on the tool.
+        let peer_inbox = match (&tool_context.executor, tool_context.session_id.as_str()) {
+            (Some(executor), session) if !session.is_empty() && session != "unknown" => {
+                let principal = tool_context.principal_id.as_deref().unwrap_or_default();
+                Some(
+                    executor
+                        .inbox_registry()
+                        .get_or_create(&peko_session::inbox_key(principal, session))
+                        .await,
+                )
+            }
+            _ => None,
+        };
+        let started = tokio::time::Instant::now();
+        let mut message_seen_at: Option<tokio::time::Instant> = None;
+
         // Poll for completion up to the timeout.
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = started + timeout;
         let mut backoff = Duration::from_millis(50);
-        loop {
+        let reason = loop {
             match transport.get_status(&task_id).await? {
                 Some(AsyncTaskStatus::Completed { result }) => {
                     if result.success {
@@ -289,7 +320,17 @@ impl AsyncExecutionRouter {
                     // Never fatal, and never fabricate completion.
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
-                        break;
+                        break DetachReason::Timeout;
+                    }
+                    if message_seen_at.is_none() {
+                        if let Some(inbox) = &peer_inbox {
+                            if inbox.peer_messages_waiting().await > 0 {
+                                message_seen_at = Some(now);
+                            }
+                        }
+                    }
+                    if message_seen_at.is_some_and(|at| now >= at + MESSAGE_GRACE) {
+                        break DetachReason::Message;
                     }
                     let remaining = deadline - now;
                     let sleep_duration = std::cmp::min(backoff, remaining);
@@ -298,7 +339,7 @@ impl AsyncExecutionRouter {
                     backoff = std::cmp::min(backoff * 2, Duration::from_secs(1));
                 }
             }
-        }
+        };
 
         // Timeout fired — the task is still running in the background.
         // The agent is getting a `queued` receipt instead of the result,
@@ -315,24 +356,42 @@ impl AsyncExecutionRouter {
             );
         }
 
-        tracing::warn!(
-            tool_name = tool_name,
-            timeout_secs = timeout_secs,
-            "Tool exceeded default timeout; returning receipt while work continues in background"
-        );
+        let mut after_secs = started.elapsed().as_secs();
+        let (reason, why) = match reason {
+            DetachReason::Timeout => {
+                tracing::warn!(
+                    tool_name = tool_name,
+                    timeout_secs = timeout_secs,
+                    "Tool exceeded default timeout; returning receipt while work continues in \
+                     background"
+                );
+                after_secs = timeout_secs;
+                ("timeout", format!("is still running after {timeout_secs}s"))
+            }
+            DetachReason::Message => {
+                info!(
+                    tool_name = tool_name,
+                    after_secs, "A message arrived; moving the running tool to the background"
+                );
+                (
+                    "message",
+                    format!("was still running when a new message arrived ({after_secs}s in)"),
+                )
+            }
+        };
 
         Ok(serde_json::json!({
             "_async_status": "queued",
             "task_id": receipt.task_id,
             "status": "running",
             "tool_name": tool_name,
-            "detached_after_secs": timeout_secs,
-            "reason": "timeout",
+            "detached_after_secs": after_secs,
+            "reason": reason,
             "note": format!(
-                "{tool_name} is still running after {timeout_secs}s, so it now runs in the \
-                 background with no time limit. Its result will be delivered to this session \
-                 when it finishes. To check sooner use Async action output (block: true waits) \
-                 or action status with this task_id; to cancel use Async action stop."
+                "{tool_name} {why}, so it now runs in the background with no time limit. Its \
+                 result will be delivered to this session when it finishes. To check sooner \
+                 use Async action output (block: true waits) or action status with this \
+                 task_id; to cancel use Async action stop."
             ),
         }))
     }
@@ -711,5 +770,56 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["reason"], "timeout");
         assert!(value.get("task_id").is_some());
+    }
+
+    /// A message someone writes while a call runs moves the call to the
+    /// background after the grace; a note the runtime queued does not.
+    #[tokio::test]
+    async fn a_peer_message_moves_a_running_call_to_the_background() {
+        use peko_session::SteeringMessage;
+        let executor = std::sync::Arc::new(crate::async_exec::executor::AsyncExecutor::new(
+            crate::async_exec::executor::standalone_inbox_registry(),
+        ));
+        let router = AsyncExecutionRouter::new();
+        let context = ToolExecutionContext::new("agent1", "session-steer", "run1")
+            .with_principal_id(Some("prin_a".into()))
+            .with_executor(Some(executor.clone()));
+        let inbox = executor
+            .inbox_registry()
+            .get_or_create(&peko_session::inbox_key("prin_a", "session-steer"))
+            .await;
+
+        // A runtime note waits: the call finishes and returns its result.
+        inbox.push(SteeringMessage::new("a note").into()).await;
+        let mut params = json!({});
+        let value = router
+            .route("slow_tool", &mut params, &context, |_p| async move {
+                tokio::time::sleep(Duration::from_millis(2500)).await;
+                Ok(json!({"result": "done"}))
+            })
+            .await
+            .unwrap();
+        assert_eq!(value["result"], "done", "{value}");
+
+        // Someone writes: the call moves to the background.
+        let push_inbox = inbox.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            push_inbox
+                .push(SteeringMessage::from_peer("stop that").into())
+                .await;
+        });
+        let started = std::time::Instant::now();
+        let value = router
+            .route("slow_tool", &mut params, &context, |_p| async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(json!({"result": "too late"}))
+            })
+            .await
+            .unwrap();
+        assert_eq!(value["reason"], "message", "{value}");
+        assert_eq!(value["status"], "running");
+        assert!(started.elapsed() < Duration::from_secs(6));
+        assert!(started.elapsed() >= MESSAGE_GRACE);
     }
 }

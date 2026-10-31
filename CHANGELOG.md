@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Change: a message moves a running tool to the background (2026-10-31)
+
+- When someone in the conversation (a person or a peer peko) writes while
+  a tool call runs, the call gets 2 more seconds, then moves to the
+  background with a receipt (`reason: "message"`). The run reads the
+  message at once and answers it; the tool's result arrives later as a
+  completion, like a call detached on the 10-minute wait. Runtime notes
+  (completions, wake markers) do not do this. The model stops nothing:
+  whether to wait, cancel (`Async stop`), or carry on is its call.
+- Fixed: a detached `Bash` or `Workflow` call was killed the moment it
+  detached. Detaching drops the run's side of the abort channel, and both
+  tools read a closed channel as a stop. Now only a real stop ends them.
+
 ### Change: approvals are decided with buttons and CLI verbs, not messages (2026-10-31, ADR-078 amended)
 
 - The owner decides a waiting request outside any conversation: the

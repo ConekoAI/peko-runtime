@@ -23,6 +23,10 @@ pub struct SteeringMessage {
     pub id: Uuid,
     pub content: String,
     pub queued_at: DateTime<Utc>,
+    /// Someone in the conversation wrote it (a person or a peer peko),
+    /// as opposed to a note the runtime queued. A running tool moves to
+    /// the background when one of these waits.
+    pub from_peer: bool,
 }
 
 impl SteeringMessage {
@@ -34,6 +38,17 @@ impl SteeringMessage {
             id: Uuid::new_v4(),
             content: content.into(),
             queued_at: Utc::now(),
+            from_peer: false,
+        }
+    }
+
+    /// A message someone in the conversation wrote, queued while a run
+    /// is going.
+    #[must_use]
+    pub fn from_peer(content: impl Into<String>) -> Self {
+        Self {
+            from_peer: true,
+            ..Self::new(content)
         }
     }
 }
@@ -77,6 +92,7 @@ impl From<SteeringMessage> for crate::SteeringEnvelope {
             id: m.id,
             content: m.content,
             queued_at: m.queued_at,
+            from_peer: m.from_peer,
         }
     }
 }

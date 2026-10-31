@@ -1311,7 +1311,7 @@ impl PrincipalManager {
                             &principal.workspace_path,
                             attachments,
                         );
-                        inbox.push(SteeringMessage::new(text).into()).await;
+                        inbox.push(SteeringMessage::from_peer(text).into()).await;
                         // A queued message is someone talking to the
                         // principal, though no new turn starts yet.
                         if let Some(detector) = &self.idle_detector {
