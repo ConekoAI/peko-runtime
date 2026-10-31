@@ -1,6 +1,7 @@
 [
   {"type": "status", "protocol_version": 1, "request_id": 0},
   {"type": "ping", "protocol_version": 1, "request_id": 1},
+  {"type": "tunnel_status", "protocol_version": 1, "request_id": 1},
   {"type": "system_status", "protocol_version": 1, "request_id": 1},
   {"type": "system_doctor", "protocol_version": 1, "request_id": 1},
   {"type": "system_clean", "protocol_version": 1, "request_id": 1, "scope": null},

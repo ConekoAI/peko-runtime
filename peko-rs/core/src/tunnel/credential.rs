@@ -161,6 +161,17 @@ pub fn has_pekohub_credential() -> bool {
     PekoHubCredential::default_path().exists()
 }
 
+/// The origin of the hub this runtime is registered with
+/// (`wss://pekohub.ai/v1/tunnel` → `https://pekohub.ai`), or `None`
+/// when it isn't registered or the credential can't be read.
+#[must_use]
+pub fn registered_hub_origin() -> Option<String> {
+    load_pekohub_credential(None, "")
+        .ok()
+        .flatten()
+        .and_then(|credential| hub_origin(&credential.url))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

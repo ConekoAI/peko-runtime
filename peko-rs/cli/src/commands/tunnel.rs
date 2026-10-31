@@ -66,11 +66,13 @@ pub async fn handle_tunnel(
                         configured,
                         daemon_running,
                         connected,
+                        hub_url,
                         ..
                     }) => {
                         if json_flag || json {
                             let output = serde_json::json!({
                                 "configured": configured,
+                                "hub_url": hub_url,
                                 "credential_path": cred_path.to_string_lossy().to_string(),
                                 "daemon_running": daemon_running,
                                 "connected": connected,
@@ -92,6 +94,9 @@ pub async fn handle_tunnel(
                                 println!("  Tunnel:     ✅ Connected");
                             } else {
                                 println!("  Tunnel:     ❌ Not connected");
+                            }
+                            if let Some(hub) = &hub_url {
+                                println!("  Hub:        {hub}");
                             }
                             println!();
                             println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
@@ -244,6 +249,7 @@ mod tests {
             configured: true,
             daemon_running: true,
             connected: false,
+            hub_url: Some("https://pekohub.ai".to_string()),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -253,8 +259,10 @@ mod tests {
                 configured,
                 daemon_running,
                 connected,
+                hub_url,
             } => {
                 assert_eq!(request_id, 702);
+                assert_eq!(hub_url.as_deref(), Some("https://pekohub.ai"));
                 assert!(configured);
                 assert!(daemon_running);
                 assert!(!connected);
@@ -276,6 +284,7 @@ mod tests {
             configured: false,
             daemon_running: true,
             connected: false,
+            hub_url: None,
         };
         assert_eq!(resp.request_id(), 3);
     }

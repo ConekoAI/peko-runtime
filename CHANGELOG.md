@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: tunnel status names the hub (2026-10-31)
+
+`tunnel_status` (IPC) answers with `hub_url`, the origin of the hub this
+runtime is registered with (`wss://pekohub.ai/v1/tunnel` →
+`https://pekohub.ai`; absent when unregistered). `peko tunnel status`
+prints it, and its `--json` carries it. The desktop builds a public
+peko's share link from it (with the owner's handle from the hub), and
+sends `tunnel_status` now, so the desktop contract fixture lists it.
+
 ### Feature: a registered peko's avatar reaches PekoHub; refusals in plain words (2026-10-31)
 
 The tunnel's `instance_announce` now carries the peko's avatar
