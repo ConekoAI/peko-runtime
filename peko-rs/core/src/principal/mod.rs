@@ -43,6 +43,7 @@ pub mod policy_gate;
 pub(crate) mod quiet_tick;
 pub mod router;
 pub mod routers;
+pub mod run_failure;
 // Phase 4 of `feature/multi-model-subagents` (plan:
 // `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
@@ -121,6 +122,9 @@ pub struct Principal {
     /// last matched it. [`Self::reload_config_if_changed`] re-reads the
     /// file only when this differs.
     config_file_stamp: std::sync::Mutex<Option<ConfigFileStamp>>,
+    /// The last failed run of each of its sessions (ADR-089 D5): shown
+    /// beside the conversation, never written into it.
+    pub run_failures: run_failure::RunFailures,
 }
 
 /// What [`Principal::reload_config_if_changed`] compares to notice an

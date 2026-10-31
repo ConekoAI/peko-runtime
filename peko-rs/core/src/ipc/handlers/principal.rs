@@ -35,8 +35,8 @@ use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    PrincipalLogMessage, RequestPacket, ResponsePacket, RunUsageSummary, ToolErrorEntry,
-    PRINCIPAL_LOG_SCHEMA_VERSION,
+    PrincipalLogMessage, RequestPacket, ResponsePacket, RunFailureInfo, RunUsageSummary,
+    ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -103,6 +103,7 @@ struct PrincipalLogResponse {
     messages: Vec<PrincipalLogMessage>,
     next_cursor: Option<String>,
     has_more: bool,
+    run_failure: Option<crate::principal::run_failure::RunFailure>,
 }
 
 /// RAII guard that removes a `PrincipalSendStream` run from the
@@ -432,6 +433,11 @@ impl RequestHandler for PrincipalHandler {
                         messages: resp.messages,
                         next_cursor: resp.next_cursor,
                         has_more: resp.has_more,
+                        run_failure: resp.run_failure.map(|f| RunFailureInfo {
+                            at: f.at.to_rfc3339(),
+                            kind: f.kind,
+                            message: f.message,
+                        }),
                     },
                     Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
                         request_id,
@@ -2382,38 +2388,21 @@ async fn run_principal_send(
     // fallthroughs keep old clients wire-compatible.
     let mut heartbeat = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // ADR-089 D7: a run outlives the client that started it. When the
+    // client goes away, nothing more is sent to it, and the turn runs on:
+    // its reply lands in the DM channel like any reply.
+    let mut client_gone = false;
     loop {
         let event = tokio::select! {
             ev = event_rx.recv() => match ev {
                 Some(e) => e,
                 None => break,
             },
-            _ = heartbeat.tick() => {
+            _ = heartbeat.tick(), if !client_gone => {
                 let beat = ResponsePacket::Heartbeat { request_id };
                 if let Err(e) = send_response(sink, beat).await {
-                    tracing::warn!("failed to send Heartbeat: {e}; aborting stream");
-                    child_turn_handle.abort();
-                    // Finding 8 (2026-08-07 field test): leave a trace of
-                    // the failed run on the peer's DM channel so
-                    // `peko log` doesn't show the user's message
-                    // followed by a silent gap.
-                    post_dm_reply(
-                        channel_port.as_ref(),
-                        &principal,
-                        dm_channel.as_ref(),
-                        &format!(
-                        "{}connection lost mid-run ({e})",
-                        crate::principal::peer_dm::RUN_FAILED_PREFIX
-                    ),
-                    )
-                    .await;
-                    let done = ResponsePacket::Done {
-                        request_id,
-                        success: false,
-                        error: Some(format!("sink write failed: {e}")),
-                    };
-                    send_response(sink, done).await?;
-                    return Ok(());
+                    tracing::info!("client left mid-run ({e}); the run continues");
+                    client_gone = true;
                 }
                 continue;
             }
@@ -2483,29 +2472,12 @@ async fn run_principal_send(
             }
             _ => continue, // retry / tool-call previews / status stay backend-only
         };
-        if matches!(response_kind, PrincipalSendResponseKind::Streaming) {
+        if matches!(response_kind, PrincipalSendResponseKind::Streaming) && !client_gone {
             if let Err(e) = send_response(sink, packet).await {
-                tracing::warn!("failed to send {packet_label}: {e}; aborting stream");
-                child_turn_handle.abort();
-                // Finding 8 (2026-08-07 field test): same silent-gap
-                // trace as the heartbeat-abort branch above.
-                post_dm_reply(
-                    channel_port.as_ref(),
-                    &principal,
-                    dm_channel.as_ref(),
-                    &format!(
-                        "{}connection lost mid-run ({e})",
-                        crate::principal::peer_dm::RUN_FAILED_PREFIX
-                    ),
-                )
-                .await;
-                let done = ResponsePacket::Done {
-                    request_id,
-                    success: false,
-                    error: Some(format!("sink write failed: {e}")),
-                };
-                send_response(sink, done).await?;
-                return Ok(());
+                tracing::info!(
+                    "client left mid-run (sending {packet_label}: {e}); the run continues"
+                );
+                client_gone = true;
             }
         }
         // For OneShot we drop the chunk/iteration packet — the client
@@ -2527,8 +2499,7 @@ async fn run_principal_send(
     // with empty final text, the real `Err` was lost upstream.
     // Convert to the failure path below so the client receives an
     // Error packet + `Done { success: false }` (non-zero CLI exit)
-    // and the peer DM channel gets a "⚠ Run failed" notice instead
-    // of a silent gap.
+    // and the failure is recorded beside the conversation (ADR-089 D5).
     let turn_result = match turn_result {
         Ok(outcome) if outcome.final_text.trim().is_empty() && run_error.is_some() => {
             Err(anyhow::anyhow!(run_error.unwrap()))
@@ -2539,6 +2510,12 @@ async fn run_principal_send(
     match turn_result {
         Ok(outcome) => {
             let content = outcome.final_text;
+            principal
+                .run_failures
+                .clear(&crate::principal::run_failure::conversation_key(
+                    dm_channel.as_ref(),
+                    &session_id,
+                ));
             // Phase 11: the reply's durable home is the peer's DM
             // channel (principal-authored).
             post_dm_reply(
@@ -2554,6 +2531,11 @@ async fn run_principal_send(
             host.principal_manager()
                 .record_peer_recall(&principal, &peer, &session_id, &content)
                 .await;
+            // The client left: the reply is in the DM channel, and any
+            // queued messages stay queued for the session's next run.
+            if client_gone {
+                return Ok(());
+            }
             let final_packet = match response_kind {
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
                     request_id,
@@ -2660,10 +2642,9 @@ async fn run_principal_send(
             // Distinguish a user stop from a real failure: when the
             // run's cancel token was fired (by `PrincipalStop`), the
             // stop handler already posted a `⏹ stopped by user`
-            // marker to the DM channel — don't double-post a
-            // misleading "Run failed" row, and surface a clean
-            // "stopped by user" instead of the executor's internal
-            // "Subagent was cancelled". The registry entry is still
+            // marker to the DM channel — don't record it as a failure,
+            // and surface a clean "stopped by user" instead of the
+            // executor's internal "Subagent was cancelled". The registry entry is still
             // present here (`_run_guard` drops at function end).
             let user_stopped = {
                 let runs_registry = host.streaming_runs();
@@ -2676,16 +2657,20 @@ async fn run_principal_send(
             } else {
                 e.to_string()
             };
-            // Finding 8 (2026-08-07 field test): persist the failure so
-            // `peko log` shows it instead of a question with no answer.
+            // ADR-089 D5: the failure is kept beside the conversation —
+            // `principal_log` and `peko log` show it — never posted into
+            // it, where the next turn would read it.
             if !user_stopped {
-                post_dm_reply(
-                    channel_port.as_ref(),
-                    &principal,
-                    dm_channel.as_ref(),
-                    &format!("{}{message}", crate::principal::peer_dm::RUN_FAILED_PREFIX),
-                )
-                .await;
+                principal.run_failures.record(
+                    &crate::principal::run_failure::conversation_key(
+                        dm_channel.as_ref(),
+                        &session_id,
+                    ),
+                    crate::principal::run_failure::RunFailure::new(&e),
+                );
+            }
+            if client_gone {
+                return Ok(());
             }
             // Emit any accumulated tool errors + usage even on
             // failure — thin consumers still want to know "did any
@@ -3038,6 +3023,10 @@ async fn run_steering_successor(
     let outcome = match outcome_result {
         Ok(o) => o,
         Err(e) => {
+            principal.run_failures.record(
+                &crate::principal::run_failure::conversation_key(dm_channel.as_ref(), session_id),
+                crate::principal::run_failure::RunFailure::new(&e),
+            );
             let error = ResponsePacket::Error {
                 request_id: predecessor_request_id,
                 message: format!("Successor run failed: {e:?}"),
@@ -3051,18 +3040,15 @@ async fn run_steering_successor(
 
     // Swallowed-failure rescue (mirrors `run_principal_send`): empty
     // text + a captured `Lifecycle{Error}` means the run failed
-    // upstream — post the failure notice to the DM channel and surface
-    // an Error packet instead of an empty successor reply.
+    // upstream — record it beside the conversation (ADR-089 D5) and
+    // surface an Error packet instead of an empty successor reply.
     if content.trim().is_empty() {
         let captured = run_error.lock().unwrap().clone();
         if let Some(msg) = captured {
-            post_dm_reply(
-                channel_port.as_ref(),
-                principal,
-                dm_channel.as_ref(),
-                &format!("{}{msg}", crate::principal::peer_dm::RUN_FAILED_PREFIX),
-            )
-            .await;
+            principal.run_failures.record(
+                &crate::principal::run_failure::conversation_key(dm_channel.as_ref(), session_id),
+                crate::principal::run_failure::RunFailure::new(&anyhow::anyhow!(msg.clone())),
+            );
             let error = ResponsePacket::Error {
                 request_id: predecessor_request_id,
                 message: format!("Successor run failed: {msg}"),
@@ -3072,6 +3058,12 @@ async fn run_steering_successor(
         }
     }
 
+    principal
+        .run_failures
+        .clear(&crate::principal::run_failure::conversation_key(
+            dm_channel.as_ref(),
+            session_id,
+        ));
     post_dm_reply(
         channel_port.as_ref(),
         principal,
@@ -3753,6 +3745,7 @@ async fn read_principal_log(
         messages: Vec::new(),
         next_cursor: None,
         has_more: false,
+        run_failure: None,
     };
 
     // No channel port (non-daemon context) ⇒ empty page + debug log.
@@ -3887,6 +3880,8 @@ async fn read_principal_log(
         messages,
         next_cursor,
         has_more,
+        // ADR-089 D5: the conversation's last failed run, beside it.
+        run_failure: principal.run_failures.get(&channel.0),
     })
 }
 
@@ -4687,6 +4682,31 @@ mod tests {
                 false,
             )
             .await
+        }
+
+        /// ADR-089 D5: a failed run is reported beside the conversation —
+        /// on the page, not as one of its messages — until a run succeeds.
+        #[tokio::test(flavor = "multi_thread")]
+        #[serial_test::serial]
+        async fn a_failed_run_is_reported_beside_the_conversation() {
+            let fx = fixture(true).await;
+            post_turns(&fx, 1).await;
+            let key = crate::principal::run_failure::conversation_key(Some(&fx.channel), "unused");
+            fx.principal.run_failures.record(
+                &key,
+                crate::principal::run_failure::RunFailure::new(&anyhow::anyhow!(
+                    "error sending request for url (https://api.example.com/v1)"
+                )),
+            );
+
+            let page = read(&fx, None, None, None).await.expect("read");
+            assert_eq!(page.messages.len(), 2, "no failure row in the conversation");
+            let failure = page.run_failure.expect("the failure is on the page");
+            assert_eq!(failure.kind, "provider_unreachable");
+
+            fx.principal.run_failures.clear(&key);
+            let page = read(&fx, None, None, None).await.expect("read");
+            assert!(page.run_failure.is_none());
         }
 
         #[tokio::test(flavor = "multi_thread")]

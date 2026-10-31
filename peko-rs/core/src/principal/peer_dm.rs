@@ -232,11 +232,6 @@ pub(crate) async fn post_peer_dm_inbound_attached(
     Ok(())
 }
 
-/// Prefix of the reply a principal posts when its turn on a DM channel
-/// failed, so whoever reads the channel can tell a failure from an
-/// answer.
-pub(crate) const RUN_FAILED_PREFIX: &str = "⚠ Run failed: ";
-
 /// Phase 11: post the principal's reply back to the DM channel
 /// (plain `post` — author = `principal.id`, e.g. `prin_<uuid>`).
 ///

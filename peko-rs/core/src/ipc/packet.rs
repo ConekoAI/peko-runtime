@@ -1041,6 +1041,17 @@ pub struct ToolErrorEntry {
 /// Schema version carried on every `PrincipalLogMessage` row.
 pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
 
+/// A conversation's last failed run, as `principal_log` reports it
+/// (ADR-089 D5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunFailureInfo {
+    /// RFC 3339.
+    pub at: String,
+    /// `peko_limit`, `provider_quota`, `provider_unreachable`, or `failed`.
+    pub kind: String,
+    pub message: String,
+}
+
 /// One immutable, consumer-visible text message in a `PrincipalLog`
 /// page — the row type of `peko log`. Lives next to the packet that
 /// carries it; the dedicated chat-log store crate was retired in
@@ -1776,6 +1787,11 @@ pub enum ResponsePacket {
         messages: Vec<PrincipalLogMessage>,
         next_cursor: Option<String>,
         has_more: bool,
+        /// The conversation's last run failed (ADR-089 D5): shown beside
+        /// it, never written into it. Absent once a run succeeds, after a
+        /// restart, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_failure: Option<RunFailureInfo>,
     },
 
     /// One message on a `PrincipalLogWatch` stream — a replayed or
@@ -4695,6 +4711,11 @@ mod tests {
             )],
             next_cursor: Some("opaque-cursor".to_string()),
             has_more: true,
+            run_failure: Some(RunFailureInfo {
+                at: "2026-10-31T10:42:00+00:00".to_string(),
+                kind: "provider_unreachable".to_string(),
+                message: "error sending request".to_string(),
+            }),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -4706,7 +4727,9 @@ mod tests {
                 messages,
                 next_cursor,
                 has_more,
+                run_failure,
             } => {
+                assert_eq!(run_failure.unwrap().kind, "provider_unreachable");
                 assert_eq!(request_id, 6200);
                 assert_eq!(name, "helper");
                 assert_eq!(peer, peko_auth::ActorRef::User("alice".into()));

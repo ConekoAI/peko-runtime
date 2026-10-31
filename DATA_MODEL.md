@@ -2206,6 +2206,18 @@ logs and older readers are unaffected. Only `principal_send` /
 `principal_log` / `principal_log_watch` rows (`PrincipalLogMessage`)
 carry the same objects with `path` made absolute.
 
+### 5¾.2¾ A conversation's last failed run (2026-10-31, ADR-089 D5)
+
+A failed run writes nothing into the DM channel (the retired
+`⚠ Run failed: …` posts) and nothing into the session. A `principal_log`
+page instead carries `run_failure: { at, kind, message }` beside its
+messages: `at` RFC 3339, `kind` one of `peko_limit`, `provider_quota`,
+`provider_unreachable` (ADR-089 D1) or `failed`, `message` the error.
+It is kept in memory per conversation (keyed by DM channel) until the
+conversation's next run succeeds, so it is absent after a restart, and
+from older daemons (serde `default` + `skip_serializing_if`). `peko log`
+prints it as a status line under the conversation.
+
 ### 5¾.2⅞ Cross-runtime delivery files (2026-10-12, ADR-072)
 
 Under the channel runtime dir, `channel_delivery/`:

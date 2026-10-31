@@ -17,6 +17,25 @@ create-if-missing at provision and on every boot, so existing pekos gain
 `worker` on their next start and an edited one is kept. The `root` and
 `conversation` role seeds mention it (existing copies are not rewritten).
 
+### Fix: failures stay out of the conversation; runs outlive their client; more errors retried (2026-10-31, ADR-089 steps 1–2)
+
+- **Failures are not posted.** A failed DM run used to post `⚠ Run failed:
+  …` into the DM channel — the conversation record, which the next turn
+  reads. Nothing is posted now; the conversation's last failure rides
+  `principal_log` as `run_failure: {at, kind, message}` (cleared by the
+  next successful run) and `peko log` prints it as a status line.
+- **Runs outlive their client.** A client whose stream drops mid-run no
+  longer aborts the peko's turn (nor posts `connection lost mid-run`): the
+  run finishes and its reply lands in the DM channel. Stopping is
+  `peko stop`.
+- **Errors sorted into disruptions.** `RetryClassification::disruption()`
+  names the provider's quota or the provider being unreachable (ADR-089
+  D1). Network errors that fell through to "invalid request" and failed
+  the turn at once — DNS failures, `error sending request`, a connection
+  closed mid-reply — are retried in the turn now, as is a provider's
+  `server_is_overloaded` / `slow_down`. A 402/403 about quota, plan, or
+  billing (and a 429 about plan or billing) is the provider's quota.
+
 ### Fix: the official hub is pekohub.ai; the call that crosses a budget stands (2026-10-31)
 
 - **pekohub.ai.** `peko runtime register` and the public hub URL default to
