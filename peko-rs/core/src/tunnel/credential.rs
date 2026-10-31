@@ -55,13 +55,14 @@ impl PekoHubCredential {
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read PekoHub credential: {path:?}"))?;
-        let cred: Self = toml::from_str(&content).with_context(|| {
+        let mut cred: Self = toml::from_str(&content).with_context(|| {
             format!(
                 "Failed to parse PekoHub credential {path:?}; a credential from \
                  before the single runtime identity (ADR-081) must be replaced: \
                  run `peko runtime unregister` then `peko runtime register`"
             )
         })?;
+        cred.url = official_hub_url(&cred.url);
         Ok(cred)
     }
 
@@ -155,6 +156,22 @@ pub fn load_pekohub_credential(
     Ok(Some(cred))
 }
 
+/// The official hub moved from `pekohub.org` to `pekohub.ai`, and the
+/// old name now redirects. A tunnel can't follow a redirect, and the
+/// hub signs bridge tokens as the new origin, so a registration made
+/// against the old name is read as the new one.
+#[must_use]
+pub fn official_hub_url(url: &str) -> String {
+    for scheme in ["wss://", "https://"] {
+        if let Some(rest) = url.strip_prefix(&format!("{scheme}pekohub.org")) {
+            if rest.is_empty() || rest.starts_with('/') || rest.starts_with(':') {
+                return format!("{scheme}pekohub.ai{rest}");
+            }
+        }
+    }
+    url.to_string()
+}
+
 /// Check if PekoHub credentials exist
 #[must_use]
 pub fn has_pekohub_credential() -> bool {
@@ -178,6 +195,27 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn a_registration_on_the_old_hub_name_reads_as_the_new_one() {
+        assert_eq!(
+            official_hub_url("wss://pekohub.org/v1/tunnel"),
+            "wss://pekohub.ai/v1/tunnel"
+        );
+        assert_eq!(
+            official_hub_url("https://pekohub.org"),
+            "https://pekohub.ai"
+        );
+        // Other hubs, and names that only start the same, are left alone.
+        assert_eq!(
+            official_hub_url("ws://localhost:3000/v1/tunnel"),
+            "ws://localhost:3000/v1/tunnel"
+        );
+        assert_eq!(
+            official_hub_url("wss://pekohub.org.example/v1/tunnel"),
+            "wss://pekohub.org.example/v1/tunnel"
+        );
+    }
+
+    #[test]
     fn hub_origin_derives_http_origins_from_tunnel_urls() {
         assert_eq!(
             hub_origin("wss://pekohub.org/v1/tunnel").as_deref(),
@@ -197,7 +235,7 @@ mod tests {
         let path = temp.path().join("pekohub.toml");
 
         let cred = PekoHubCredential {
-            url: "wss://pekohub.org/v1/tunnel".to_string(),
+            url: "wss://pekohub.ai/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
             tls: None,
         };
@@ -232,7 +270,7 @@ mod tests {
         let path = temp.path().join("pekohub.toml");
 
         let cred = PekoHubCredential {
-            url: "wss://pekohub.org/v1/tunnel".to_string(),
+            url: "wss://pekohub.ai/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
             tls: Some(TunnelTlsConfig {
                 ca_path: Some(std::path::PathBuf::from("/etc/peko/ca.pem")),
