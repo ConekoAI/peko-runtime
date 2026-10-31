@@ -1,6 +1,6 @@
 # ADR-089: Runs recover from disruptions on their own — they park and continue, and nothing about it reaches the conversation
 
-**Status:** Proposed
+**Status:** Accepted (2026-10-31)
 **Date:** 2026-10-31
 
 **Preserves:** [ADR-072](ADR-072-human-started-runs-and-durable-delivery.md) (only humans and cron start runs — a continuation resumes a run one of them started), [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (the DM channel is the conversation record), [ADR-083](ADR-083-quiet-ticks.md) (the keepalive calls no model when nothing waits).
