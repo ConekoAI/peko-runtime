@@ -3076,36 +3076,82 @@ async fn execute_subagent_task(
     // events reach the caller; otherwise keep the final-only
     // `execute_with_session` path. Both arms produce the same
     // `AgenticResult`, boxed to a common future type.
-    let run_fut: std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<peko_engine::AgenticResult>> + Send + '_>,
-    > = match stream_events {
-        Some(sink) => Box::pin(subagent.execute_streaming_with_session(
-            &combined_prompt,
-            user_media,
-            Vec::new(), // subagents carry no recalled context
-            child_session,
-            history.clone(), // compact runs load the transcript (see above)
-            move |event| sink(event),
-            cancel,
-            None, // explicit_meter override: None = use the task-local meter
-        )),
-        None => Box::pin(subagent.execute_with_session(
-            &combined_prompt,
-            Vec::new(), // subagents carry no recalled context
-            child_session,
-            history, // compact runs load the transcript (see above)
-            cancel,
-            |_event| {
-                // Non-streaming: ignore events
-            },
-            None, // explicit_meter override: None = use the task-local meter
-        )),
+    // ADR-089 D8: a delegated run (not a conversation turn — those park,
+    // `PeerChildTurns::settle`) that meets a disruption waits in place
+    // and continues from its saved history: the peko's own limit until
+    // it resets, the provider with growing waits. Its parent's `Agent`
+    // call returns the usual long-run receipt meanwhile, and the result
+    // arrives through the async-completion path. Cancelling stops it.
+    let mut prompt = combined_prompt;
+    let mut run_media = user_media;
+    let mut run_history = history;
+    let mut attempts: u32 = 0;
+    let result = loop {
+        let run_fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<peko_engine::AgenticResult>> + Send + '_>,
+        > = match stream_events.clone() {
+            Some(sink) => Box::pin(subagent.execute_streaming_with_session(
+                &prompt,
+                std::mem::take(&mut run_media),
+                Vec::new(), // subagents carry no recalled context
+                child_session.clone(),
+                run_history.clone(), // compact runs load the transcript (see above)
+                move |event| sink(event),
+                cancel.clone(),
+                None, // explicit_meter override: None = use the task-local meter
+            )),
+            None => Box::pin(subagent.execute_with_session(
+                &prompt,
+                Vec::new(), // subagents carry no recalled context
+                child_session.clone(),
+                run_history.clone(), // compact runs load the transcript (see above)
+                cancel.clone(),
+                |_event| {
+                    // Non-streaming: ignore events
+                },
+                None, // explicit_meter override: None = use the task-local meter
+            )),
+        };
+        let result = peko_quota::scope::QuotaScope::with(
+            Arc::clone(&parent_quota_meter),
+            peko_quota::scope::QuotaScope::with(agent_meter.clone(), run_fut),
+        )
+        .await;
+        let cancelled = cancel
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled);
+        let disruption = match &result {
+            Err(e) if !conversation && !cancelled => crate::common::disruption::disrupted(e),
+            _ => None,
+        };
+        let Some(disruption) = disruption else {
+            break result;
+        };
+        attempts += 1;
+        let wait = crate::common::disruption::wait_after(&disruption, attempts);
+        info!(
+            "Subagent run waits on a disruption: agent={} session={} kind={} attempt={} wait={:?}",
+            agent_name, session_key, disruption.kind, attempts, wait
+        );
+        match &cancel {
+            Some(token) => {
+                tokio::select! {
+                    () = token.cancelled() => break result,
+                    () = tokio::time::sleep(wait) => {}
+                }
+            }
+            None => tokio::time::sleep(wait).await,
+        }
+        // Continue from the saved history, with no new user turn.
+        prompt = String::new();
+        run_history = Some(
+            child_session_for_recovery
+                .read()
+                .await
+                .load_history()
+                .await?,
+        );
     };
-    let result = peko_quota::scope::QuotaScope::with(
-        parent_quota_meter,
-        peko_quota::scope::QuotaScope::with(agent_meter, run_fut),
-    )
-    .await;
 
     match result {
         Ok(agentic_result) => {
@@ -3482,7 +3528,7 @@ mod tests {
                     &ChatOptions::default(),
                 )
                 .await;
-            let err = third.err().expect("over the limit: refused");
+            let err = third.expect_err("over the limit: refused");
             let msg = format!("{err:#}");
             assert!(
                 msg.contains("request count quota exceeded"),

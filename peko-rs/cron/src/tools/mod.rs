@@ -318,13 +318,19 @@ pub const INTERRUPTED_STATUS: &str = "interrupted";
 /// coalesced with that work, not counted as a failure.
 pub const SKIPPED_STATUS: &str = "skipped";
 
+/// The run status of a fire held back by a disruption (ADR-089 D6): the
+/// peko's model is unreachable or out of quota, or its own spending limit
+/// is reached. It fires once that passes; it neither resets nor counts
+/// toward the retry budget.
+pub const DEFERRED_STATUS: &str = "deferred";
+
 /// How a run's status moves the job's consecutive-failure count:
 /// `Some(true)` resets it, `Some(false)` bumps it, `None` leaves it.
 #[must_use]
 pub fn status_resets_failures(status: &str) -> Option<bool> {
     match status {
         "success" => Some(true),
-        INTERRUPTED_STATUS | SKIPPED_STATUS => None,
+        INTERRUPTED_STATUS | SKIPPED_STATUS | DEFERRED_STATUS => None,
         _ => Some(false),
     }
 }
@@ -945,6 +951,12 @@ mod tests {
     //! this module, so deserializing a value through both paths and
     //! asserting equality proves the wire shapes still match.
     use super::*;
+
+    #[test]
+    fn deferred_neither_resets_nor_counts_failures() {
+        assert_eq!(super::status_resets_failures(super::DEFERRED_STATUS), None);
+        assert_eq!(super::status_resets_failures("failed"), Some(false));
+    }
 
     fn stamped_job(id: &str, trust: peko_tools_core::Trust, every_ms: u64) -> CronJob {
         CronJob {

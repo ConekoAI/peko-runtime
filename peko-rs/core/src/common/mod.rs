@@ -5,6 +5,7 @@
 
 pub mod authority;
 pub mod config_path;
+pub mod disruption;
 pub mod identifiers;
 pub mod json_utils;
 pub(crate) mod media;

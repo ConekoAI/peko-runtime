@@ -420,6 +420,9 @@ impl CronEngine {
     }
 
     async fn execute_job(&self, job: CronJob) -> Result<()> {
+        if self.defer_for_disruption(&job).await? {
+            return Ok(());
+        }
         if self.quiet_tick(&job).await? {
             return Ok(());
         }
@@ -519,6 +522,68 @@ impl CronEngine {
             )
             .await;
         debug!(job = %job.id, "quiet tick; next at {next_run}");
+        Ok(true)
+    }
+
+    /// ADR-089 D6: hold a due model fire while the principal's model lane
+    /// is down or its own spending limit is reached — it could only fail.
+    /// The fire moves to the disruption's next attempt and reads
+    /// `deferred`; it neither runs nor counts as a failure. Returns
+    /// whether it was deferred. Manual triggers never come here.
+    async fn defer_for_disruption(&self, job: &CronJob) -> Result<bool> {
+        let CronJobAction::Send { model, .. } = &job.action else {
+            return Ok(false);
+        };
+        let Some(pm) = self.principal_manager.as_ref() else {
+            return Ok(false);
+        };
+        let Some(principal) = resolve_principal(pm, &job.principal_id).await else {
+            return Ok(false);
+        };
+        let now = Utc::now();
+        principal.quota_meter.advance_if_needed(now);
+        let until = match principal.quota_meter.check() {
+            // The peko's own limit: until it resets.
+            Some(limit) => crate::principal::run_failure::disrupted(&anyhow::Error::new(limit))
+                .and_then(|d| d.resets_at),
+            None => {
+                principal.parking.limit_lifted(now);
+                let lane = match model {
+                    Some(model) => model.clone(),
+                    None => principal
+                        .config
+                        .read()
+                        .await
+                        .preferred_model_id
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                };
+                principal
+                    .parking
+                    .waiting_on(&lane, now)
+                    .map(|run| run.next_attempt_at)
+            }
+        };
+        let Some(until) = until else {
+            return Ok(false);
+        };
+        let scheduler = self.scheduler_for(&job.principal_id).await?;
+        scheduler.record_deferred(&job.id, until)?;
+        let _ = self
+            .observability
+            .audit_with_caller(
+                Some(&CallerContext::local().subject()),
+                "cron.deferred",
+                Some(&job.principal_id.0),
+                serde_json::json!({
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "scheduled_at": job.next_run,
+                    "next_run_at": until,
+                }),
+            )
+            .await;
+        info!(job = %job.id, "deferred until {until}: the peko's model or limit is unavailable");
         Ok(true)
     }
 
@@ -632,6 +697,17 @@ impl CronEngine {
                 .is_some_and(crate::session::ownership::is_run_active_message)
         {
             status = peko_cron::SKIPPED_STATUS.to_string();
+        }
+        // ADR-089 D6: a fire whose turn met a disruption (its model went
+        // unreachable or out of quota, or the peko's limit was reached
+        // mid-run) is deferred, not failed — waiting fixes it.
+        if status == "failed"
+            && error.as_deref().is_some_and(|e| {
+                crate::principal::run_failure::failure_kind(&anyhow::anyhow!(e.to_string()))
+                    != crate::principal::run_failure::FAILED
+            })
+        {
+            status = peko_cron::DEFERRED_STATUS.to_string();
         }
 
         // Surface failures loudly — the run row and the `cron.result`
@@ -2151,6 +2227,94 @@ mod tests {
 
         // Avoid dropping the principal early; it is not needed after this.
         drop(principal);
+    }
+
+    /// ADR-089 D6: while the peko's model lane is down, a due model fire
+    /// is deferred to the lane's next attempt — no run, no model call, no
+    /// failure counted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fire_waits_while_the_peko_s_model_is_down() {
+        let tmp = TempDir::new().unwrap();
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), tmp.path())
+            .await
+            .expect("tool runtime should initialize");
+        let (llm, adapter) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver,
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_tooling(tool_runtime.tooling().clone())
+            .with_resolver(llm),
+        );
+        let workspace = tmp.path().join("principals");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        let principal = create_test_principal(&manager, &workspace, "patient").await;
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            tmp.path().to_path_buf(),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let scheduler = CronScheduler::new(resolver.cron_schedule("patient")).unwrap();
+        let engine = CronEngine::new(
+            resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            std::sync::Weak::new(),
+        );
+        // Another conversation found the peko's model unreachable.
+        let lane = principal
+            .config
+            .read()
+            .await
+            .preferred_model_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let parked = principal.parking.park(
+            "some-conversation",
+            None,
+            &lane,
+            crate::common::disruption::Disrupted {
+                kind: crate::common::disruption::PROVIDER_UNREACHABLE,
+                message: "error sending request".into(),
+                resets_at: None,
+            },
+            Utc::now(),
+        );
+
+        let principal_id = PrincipalId::from_did(&principal.did().await);
+        let mut job =
+            crate::principal::genesis::keepalive_job(&manager_config(&principal).await, Utc::now())
+                .unwrap();
+        job.principal_id = principal_id;
+        job.next_run = Utc::now() - Duration::seconds(1);
+        scheduler.add_job(&job).unwrap();
+
+        engine.execute_job(job.clone()).await.unwrap();
+        let deferred = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(
+            deferred.last_status.as_deref(),
+            Some(peko_cron::DEFERRED_STATUS)
+        );
+        assert_eq!(
+            deferred.next_run, parked.next_attempt_at,
+            "fires when the lane may be back"
+        );
+        assert_eq!(deferred.consecutive_failures, 0, "not a failure");
+        assert!(
+            scheduler.get_run_history(&job.id, 10).unwrap().is_empty(),
+            "no run"
+        );
+        assert!(adapter.recorded_requests().is_empty(), "no model call");
     }
 
     /// ADR-083: an attention-gated fire with nothing waiting is a quiet

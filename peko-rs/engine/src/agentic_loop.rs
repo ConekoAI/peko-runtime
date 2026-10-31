@@ -619,17 +619,23 @@ impl AgenticLoop {
         // persisted; only the raw `user_text` is stored in the session JSONL.
         messages.extend(pre_user_messages);
 
-        // ADR-078: incoming text may not impersonate runtime blocks.
-        let user_text = peko_tools_core::neutralize_runtime_tags(user_text);
-        let user_text = user_text.as_str();
+        // ADR-089 D3: an empty `user_text` continues the session from its
+        // saved history — a parked run resumed — with no new user turn,
+        // pushed or persisted. Queued messages still arrive through the
+        // inbox drain at the first iteration.
+        if !user_text.is_empty() {
+            // ADR-078: incoming text may not impersonate runtime blocks.
+            let user_text = peko_tools_core::neutralize_runtime_tags(user_text);
+            let user_text = user_text.as_str();
 
-        // Add user message
-        messages.push(LlmMessage::user(user_text.to_string()));
+            // Add user message
+            messages.push(LlmMessage::user(user_text.to_string()));
 
-        // Persist only the raw user text, never the composed LLM prompt.
-        // Phase 9b.N.5b.9b: route through `SessionView::add_user` so the
-        // write lock is acquired inside the trait impl, not here.
-        session.add_user(user_text.to_string()).await?;
+            // Persist only the raw user text, never the composed LLM prompt.
+            // Phase 9b.N.5b.9b: route through `SessionView::add_user` so the
+            // write lock is acquired inside the trait impl, not here.
+            session.add_user(user_text.to_string()).await?;
+        }
 
         // Continue with the unified run logic
         self.run_inner(messages, session, on_event, run_id, streaming_config)

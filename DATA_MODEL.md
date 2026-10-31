@@ -2218,6 +2218,21 @@ conversation's next run succeeds, so it is absent after a restart, and
 from older daemons (serde `default` + `skip_serializing_if`). `peko log`
 prints it as a status line under the conversation.
 
+While the conversation's run is parked (ADR-089 D2), `run_failure` also
+carries `next_attempt_at` (RFC 3339) — when it continues on its own — and
+`peko log` reads "waiting since …, next try …".
+
+### 5¾.2⅞a Parked runs — `<local>/parked.json` (2026-10-31, ADR-089 D2–D4)
+
+A JSON array, one entry per parked session: `{ session_id, conversation?,
+lane, kind, since, attempts, next_attempt_at, brought_forward_at?, message }`.
+`conversation` is the DM or group channel id the continuation's reply is
+posted to; `lane` the model the run uses; `kind` `peko_limit`,
+`provider_quota`, or `provider_unreachable`. Written atomically on every
+change (temp file + rename); an unreadable file reads as nothing parked.
+Sessions on one lane share `attempts` and `next_attempt_at`; a `peko_limit`
+entry holds every lane until the meter resets.
+
 ### 5¾.2⅞ Cross-runtime delivery files (2026-10-12, ADR-072)
 
 Under the channel runtime dir, `channel_delivery/`:

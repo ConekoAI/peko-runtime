@@ -1050,6 +1050,10 @@ pub struct RunFailureInfo {
     /// `peko_limit`, `provider_quota`, `provider_unreachable`, or `failed`.
     pub kind: String,
     pub message: String,
+    /// The run is parked and continues on its own at this time (RFC 3339;
+    /// ADR-089 D2). Absent for a failure that waiting won't fix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
 }
 
 /// One immutable, consumer-visible text message in a `PrincipalLog`
@@ -4715,6 +4719,7 @@ mod tests {
                 at: "2026-10-31T10:42:00+00:00".to_string(),
                 kind: "provider_unreachable".to_string(),
                 message: "error sending request".to_string(),
+                next_attempt_at: Some("2026-10-31T10:43:00+00:00".to_string()),
             }),
         };
         let bytes = resp.to_bytes().unwrap();

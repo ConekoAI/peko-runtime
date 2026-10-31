@@ -45,7 +45,7 @@ pub use tools::{
     calculate_next_interval_anchored, calculate_next_run, global_runtime, interval_catch_up_slot,
     normalize_cron_expr, render_job_list, resolve_schedule_kind, seeded_job_refusal,
     set_global_runtime, status_resets_failures, CronJob, CronJobAction, CronRuntime, CronTool,
-    FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS, DEFAULT_MAX_RETRIES,
+    FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS, DEFAULT_MAX_RETRIES, DEFERRED_STATUS,
     INTERRUPTED_STATUS, QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS, SEEDED_JOB_IDS,
     SKIPPED_STATUS,
 };
@@ -336,6 +336,21 @@ impl CronScheduler {
         })
     }
 
+    /// Hold a fire back for a disruption (ADR-089 D6): `next_run` moves to
+    /// when the disruption may have passed and `last_status` reads
+    /// [`DEFERRED_STATUS`]. Like a quiet tick, no run row is written and
+    /// `last_run`, `run_count`, and the failure counter are untouched.
+    pub fn record_deferred(&self, job_id: &str, next_run: DateTime<Utc>) -> Result<bool> {
+        self.mutate(|db| {
+            let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return Ok((false, false));
+            };
+            job.next_run = next_run;
+            job.last_status = Some(DEFERRED_STATUS.to_string());
+            Ok((true, true))
+        })
+    }
+
     /// Move `job_id`'s next fire to `at` when that is earlier (ADR-086).
     /// Never pushes a fire later, so a slot that is already due, or a
     /// catch-up (`interval_catch_up_slot`), is kept. Returns whether the
@@ -614,6 +629,23 @@ fn apply_patch(job: &mut CronJob, patch: &tools::JobPatch, now: DateTime<Utc>) -
 
 #[cfg(test)]
 mod tests {
+    /// ADR-089 D6: a deferred fire moves `next_run` and reads `deferred`,
+    /// leaving `last_run`, the run count, and the failure count alone.
+    #[test]
+    fn a_deferred_fire_moves_on_without_a_run() {
+        let job = make_job("deferrable", None);
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = CronScheduler::new(dir.path().join("schedule.toml")).unwrap();
+        scheduler.add_job(&job).unwrap();
+        let until = Utc::now() + chrono::Duration::minutes(7);
+        assert!(scheduler.record_deferred(&job.id, until).unwrap());
+        let after = scheduler.get_job(&job.id).unwrap().unwrap();
+        assert_eq!(after.next_run, until);
+        assert_eq!(after.last_status.as_deref(), Some(DEFERRED_STATUS));
+        assert_eq!(after.last_run, job.last_run);
+        assert_eq!(after.consecutive_failures, 0);
+    }
+
     use super::*;
     use tempfile::TempDir;
     use uuid::Uuid;

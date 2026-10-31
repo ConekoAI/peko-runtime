@@ -46,7 +46,7 @@ The classifier keeps its "unknown → `InvalidRequest`" default for request-shap
 A run hit by a disruption **parks**:
 
 - The session keeps what F7 already saved. The interrupted iteration's partial output is dropped (as today).
-- The session records its parked state: `{ disruption, since, attempts, next_attempt_at }`, in session metadata, so it survives a restart.
+- The session records its parked state: `{ disruption, since, attempts, next_attempt_at }`, in the peko's `<local>/parked.json` (amended: one small file per peko rather than session metadata — the scheduler reads every parked run at once), so it survives a restart.
 - The run ends and frees its concurrency slot. A parked session holds no slot, only its place.
 - A message that arrives for a parked session is saved and queued (F9) and does not start a second run. For an unreachable or quota-parked session, it brings the next attempt forward to now — at most once a minute — because a person writing is a good moment to check. A peko-limit park keeps its schedule: the limit has not reset.
 - `peko stop` on a parked session abandons the continuation (the queued messages stay in the session for the next run).
@@ -85,9 +85,11 @@ A cron fire for a peko whose model lane is down, or whose own limit is spent, is
 
 A dropped client stream (F6) no longer aborts the turn. The run finishes, and its reply lands in the DM channel as any reply does; a client that reconnects reads it there. Stopping a run is an explicit `principal_stop` / `peko stop`.
 
-### D8 — Subagents park on their own
+### D8 — Subagents wait in place (amended 2026-10-31)
 
-A subagent (`Agent`) run hit by a disruption parks like any run. Its parent's `Agent` call returns the receipt it returns today for a long run, and the result is delivered to the parent's session when the continuation finishes (the existing async-completion path). A parent never parks because a child did.
+A delegated run (`Agent`, and other runs that are not a conversation turn — cron, wakes) hit by a disruption **waits in place**: it sleeps the D4 wait (the peko's own limit until it resets) and continues from its saved history, until it goes through, fails, or is cancelled. Its parent's `Agent` call returns the receipt it returns today for a long run, and the result is delivered to the parent's session when it finishes (the existing async-completion path). A parent never parks because a child did.
+
+*Amended from "subagents park on their own":* parking a child would need the continuation to run it under its own role and route its result back through the task registry; waiting in place gets the same behavior from paths that exist, at the cost of holding a concurrency slot while it waits and not surviving a restart.
 
 ## 3. Alternatives considered
 
@@ -108,9 +110,9 @@ A subagent (`Agent`) run hit by a disruption parks like any run. Its parent's `A
 
 1. **Classifier.** A `Disruption` result beside `RetryClassification`, with the D1 table; transport-shaped unknowns default to unreachable; 403/429 quota bodies to provider quota. Tests per row.
 2. **No conversation traces, runs outlive clients.** Remove the `RUN_FAILED_PREFIX` posts; a dropped stream no longer aborts the child turn (D5, D7). Report the last failure in `principal_get`.
-3. **Parking and continuation.** Parked state in session metadata; ingress to a parked session queues; a daemon scheduler (rebuilt from session metadata on boot) runs continuations through `run_streaming_with_resume_skip_user_add`; `peko stop` abandons (D2, D3).
+3. **Parking and continuation.** Parked state in `<local>/parked.json`; ingress to a parked session queues; a daemon scheduler runs continuations as turns with an empty message, which the loop reads as "continue from the saved history"; `peko stop` abandons (D2, D3).
 4. **Lanes and schedules.** Per-lane wait and single probe; peko-limit wake at the meter's reset (D4).
-5. **Cron and subagents.** Deferred fires; subagent parking through the async-completion path (D6, D8).
+5. **Cron and subagents.** Deferred fires; delegated runs wait in place and deliver through the async-completion path (D6, D8).
 6. **Surfaces.** `principal_get` / `peko show` / `peko log` status line; desktop banner with Try now / Stop, row indicator, owner notifications (D5).
 
 Each step ships on its own; 1 and 2 alone already stop the conversation pollution and the client-drop aborts.

@@ -9,6 +9,7 @@
 pub(crate) mod channel_binding;
 pub(crate) mod completion_wake;
 pub(crate) mod config_drift;
+pub(crate) mod continuations;
 pub(crate) mod cron_engine;
 pub(crate) mod cron_runtime;
 pub(crate) mod state;
@@ -399,6 +400,14 @@ impl Daemon {
             app_state.channel_port(),
         );
         info!("⏰ Completion wake handler installed (idle sessions wake on task completion)");
+
+        // ADR-089 D3: parked runs continue on their own when their next
+        // attempt comes.
+        let _continuations = continuations::start(
+            app_state.principal_manager().clone(),
+            app_state.inbox_registry.clone(),
+            app_state.channel_port(),
+        );
 
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
