@@ -748,7 +748,7 @@ async fn workflow_dispatch_preserves_hidden_depth_for_the_recursion_guard() {
 }
 
 #[tokio::test]
-async fn agent_dispatch_requires_the_role_argument() {
+async fn agent_dispatch_refuses_the_retired_agent_argument() {
     use crate::tools::metadata::ToolSource;
 
     let tooling = crate::tools::runtime::ToolingRuntime::standalone();
@@ -772,9 +772,10 @@ async fn agent_dispatch_requires_the_role_argument() {
         )
         .await
         .unwrap();
+    // `role` may be omitted (it defaults to `worker`), but the retired
+    // `agent` argument is still refused, not silently ignored.
     assert!(!success);
-    assert!(display.contains("role"), "{display}");
-    assert!(display.contains("required"), "{display}");
+    assert!(display.contains("agent"), "{display}");
 }
 
 #[tokio::test]

@@ -411,8 +411,24 @@ pub fn seed_default_conversation_role(workspace: &std::path::Path) -> Result<boo
     )
 }
 
-/// Seed the roles every principal starts with: `root` (the trunk) and
-/// `conversation` (ADR-087). Returns the ids written.
+/// Stamp the compiled-in `worker` role into `<workspace>/roles/worker.md`
+/// when the workspace has none: the role an `Agent` run takes when the
+/// call names none (delegated tasks). Seeded at provision and on every
+/// boot like `conversation`; an existing file (either layout) is never
+/// touched.
+///
+/// Returns `true` when the file was written.
+pub fn seed_default_worker_role(workspace: &std::path::Path) -> Result<bool> {
+    seed_role(
+        workspace,
+        crate::tools::builtin::messaging::agent::DEFAULT_ROLE,
+        include_str!("../resources/roles/worker/ROLE.md"),
+    )
+}
+
+/// Seed the roles every principal starts with: `root` (the trunk),
+/// `conversation` (ADR-087), and `worker` (delegated tasks). Returns the
+/// ids written.
 pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static str>> {
     let mut seeded = Vec::new();
     if seed_default_root_role(workspace)? {
@@ -420,6 +436,9 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
     }
     if seed_default_conversation_role(workspace)? {
         seeded.push(crate::principal::child_turns::CONVERSATION_ROLE);
+    }
+    if seed_default_worker_role(workspace)? {
+        seeded.push(crate::tools::builtin::messaging::agent::DEFAULT_ROLE);
     }
     Ok(seeded)
 }
@@ -1113,15 +1132,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dir_role).unwrap(), "custom");
     }
 
-    /// ADR-087 D3: `conversation` is seeded beside `root`, once, and a
-    /// custom one (either layout) is kept.
+    /// ADR-087 D3: `conversation` and `worker` are seeded beside `root`,
+    /// once, and a custom one (either layout) is kept.
     #[test]
-    fn default_roles_include_conversation_once() {
+    fn default_roles_include_conversation_and_worker_once() {
         let ws = tempfile::tempdir().unwrap();
         assert_eq!(
             seed_default_roles(ws.path()).unwrap(),
-            vec!["root", "conversation"]
+            vec!["root", "conversation", "worker"]
         );
+        let worker = std::fs::read_to_string(ws.path().join("roles").join("worker.md")).unwrap();
+        assert!(worker.starts_with("---\nname: worker\n"));
         assert_eq!(
             std::fs::read_to_string(ws.path().join("roles").join("conversation.md")).unwrap(),
             crate::principal::child_turns::conversation_role_seed_content()
@@ -1136,7 +1157,10 @@ mod tests {
             .join("ROLE.md");
         std::fs::create_dir_all(custom.parent().unwrap()).unwrap();
         std::fs::write(&custom, b"custom").unwrap();
-        assert_eq!(seed_default_roles(ws2.path()).unwrap(), vec!["root"]);
+        assert_eq!(
+            seed_default_roles(ws2.path()).unwrap(),
+            vec!["root", "worker"]
+        );
         assert_eq!(std::fs::read_to_string(&custom).unwrap(), "custom");
     }
 

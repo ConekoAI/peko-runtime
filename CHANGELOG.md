@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a `worker` role for delegated work (2026-10-31)
+
+Every peko is now seeded with a third default role, `worker`
+(`roles/worker.md`, beside `root` and `conversation`): one delegated task,
+done with tools, checked, and reported back to the run that handed it
+over — no chat, no work beyond the task. The `Agent` tool's `role` is now
+optional; a call that names none runs `worker`. Before, every call had to
+name a role, and the default roles were the trunk's supervisor and the
+conversation role, neither written for a delegated task. Seeding is
+create-if-missing at provision and on every boot, so existing pekos gain
+`worker` on their next start and an edited one is kept. The `root` and
+`conversation` role seeds mention it (existing copies are not rewritten).
+
 ### Fix: the official hub is pekohub.ai; the call that crosses a budget stands (2026-10-31)
 
 - **pekohub.ai.** `peko runtime register` and the public hub URL default to
