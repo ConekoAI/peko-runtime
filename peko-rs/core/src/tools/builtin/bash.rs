@@ -258,7 +258,7 @@ impl BashTool {
         // Race the child against the executor's cancel channel. On abort
         // the child is killed explicitly (the reader tasks then see EOF
         // and drain), and we bail exactly like the blocking path.
-        let mut abort_rx = abort_rx;
+        let mut abort_rx = Some(abort_rx);
         let (status, stdout, stderr) = tokio::select! {
             res = child.wait() => {
                 let status = res.context("Failed to execute Bash command")?;
@@ -267,9 +267,7 @@ impl BashTool {
                 let stderr = stderr_task.await.unwrap_or_default();
                 (status, stdout, stderr)
             }
-            () = async {
-                let _ = abort_rx.changed().await;
-            } => {
+            () = wait_for_abort(&mut abort_rx) => {
                 drop(tree);
                 let _ = child.wait().await;
                 return Err(anyhow::anyhow!("Bash command aborted"));
@@ -349,19 +347,23 @@ impl Default for BashTool {
     }
 }
 
-/// Resolve to `()` when the abort receiver signals; never resolves
-/// when the receiver is `None` (no context supplied). Used as one
-/// branch of the `tokio::select!` inside `execute_command_blocking`.
+/// Resolve to `()` when the abort receiver flips to `true`; never
+/// resolves when the receiver is `None` (no context supplied) or its
+/// sender is gone. Used as one branch of the `tokio::select!`s that
+/// race the command.
+///
+/// A closed channel is not an abort: the call detached to the
+/// background (the foreground wait ran out, or a message arrived) and
+/// the run that started it moved on, dropping its side of the channel.
+/// The command keeps running; `Async action stop` ends it.
 async fn wait_for_abort(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     if let Some(rx) = rx.as_mut() {
-        // `changed` resolves when the watcher's value flips. We don't
-        // care about the new value — we just want to bail.
-        let _ = rx.changed().await;
-    } else {
-        // No abort context — park forever. The other select branches
-        // (timeout, command output) still race as normal.
-        std::future::pending::<()>().await;
+        if rx.wait_for(|aborted| *aborted).await.is_ok() {
+            return;
+        }
     }
+    // The other select branches (timeout, command output) still race.
+    std::future::pending::<()>().await;
 }
 
 /// Truncate a stream at `limit` bytes and append a `...(truncated)` marker.
@@ -790,6 +792,32 @@ mod tests {
             assert!(
                 !still_running_after_grace(&pid_file).await,
                 "{case}: the command's child outlived the call"
+            );
+        }
+    }
+
+    /// A closed abort channel is not a stop: a call detached to the
+    /// background outlives the run (and its side of the channel) that
+    /// started it, and finishes with its real output.
+    #[tokio::test]
+    async fn a_closed_abort_channel_does_not_stop_the_command() {
+        for background in [false, true] {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let mut ctx = ToolContext::default_for_tool("Bash").with_abort_signal(rx);
+            if background {
+                ctx.background.progress = Some(Arc::default());
+            }
+            let params = json!({ "command": "sleep 0.5; echo finished" });
+            let call =
+                tokio::spawn(
+                    async move { BashTool::new().execute_with_context(params, &ctx).await },
+                );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(tx);
+            let result = call.await.unwrap().expect("the command finishes");
+            assert!(
+                result.to_string().contains("finished"),
+                "background={background}: {result}"
             );
         }
     }

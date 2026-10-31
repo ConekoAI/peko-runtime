@@ -298,7 +298,7 @@ impl ResponderInner {
         inbox_registry
             .get_or_create(session_id)
             .await
-            .push(SteeringMessage::new(text.to_string()).into())
+            .push(SteeringMessage::from_peer(text.to_string()).into())
             .await;
         debug!(
             channel = %self.channel,

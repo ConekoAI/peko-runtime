@@ -117,6 +117,14 @@ impl SessionInbox {
             .count()
     }
 
+    /// Number of pending messages someone in the conversation wrote.
+    pub async fn peer_messages_waiting(&self) -> usize {
+        self.lock()
+            .iter()
+            .filter(|i| matches!(i, InboxItem::Steering(m) if m.from_peer))
+            .count()
+    }
+
     /// Remove a single pending steering message by id. Returns `true`
     /// if it was present.
     pub async fn cancel_steering(&self, id: uuid::Uuid) -> bool {
@@ -183,9 +191,14 @@ impl AsyncInboxLike for SessionInbox {
                 id: m.id,
                 content: m.content,
                 queued_at: m.queued_at,
+                from_peer: m.from_peer,
             }),
         };
         SessionInbox::push(self, native);
+    }
+
+    async fn peer_messages_waiting(&self) -> usize {
+        SessionInbox::peer_messages_waiting(self).await
     }
 
     async fn len(&self) -> usize {

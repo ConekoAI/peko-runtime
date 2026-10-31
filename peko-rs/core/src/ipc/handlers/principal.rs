@@ -3009,6 +3009,7 @@ async fn drain_pending_steering(
             id: env.id,
             content: env.content,
             queued_at: env.queued_at,
+            from_peer: env.from_peer,
         })
         .collect()
 }

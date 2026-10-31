@@ -373,7 +373,13 @@ impl Tool for WorkflowTool {
                         None => std::future::pending().await,
                     }
                 } => Outcome::TimedOut,
-                _ = abort_rx.changed() => Outcome::Aborted,
+                // A closed channel is not an abort: the call detached to
+                // the background and its run moved on.
+                () = async {
+                    if abort_rx.wait_for(|aborted| *aborted).await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                } => Outcome::Aborted,
             }
         };
 

@@ -39,6 +39,8 @@ pub struct SteeringEnvelope {
     pub id: uuid::Uuid,
     pub content: String,
     pub queued_at: DateTime<Utc>,
+    /// See `SteeringMessage::from_peer`.
+    pub from_peer: bool,
 }
 
 /// Narrow view of a per-session async inbox.
@@ -90,6 +92,13 @@ pub trait AsyncInboxLike: Send + Sync + 'static {
     /// override so producers / polling tests can observe non-empty
     /// inboxes without forcing a drain.
     async fn len(&self) -> usize {
+        0
+    }
+
+    /// Number of queued messages someone in the conversation wrote
+    /// (`SteeringMessage::from_peer`). The tool router moves a running
+    /// call to the background while one waits. Default 0 (test stubs).
+    async fn peer_messages_waiting(&self) -> usize {
         0
     }
 
