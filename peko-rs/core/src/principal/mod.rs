@@ -35,6 +35,7 @@ pub mod kb;
 pub mod manager;
 pub mod memory;
 pub mod messenger;
+pub mod parking;
 pub mod peer;
 pub mod peer_children;
 pub(crate) mod peer_dm;
@@ -125,6 +126,9 @@ pub struct Principal {
     /// The last failed run of each of its sessions (ADR-089 D5): shown
     /// beside the conversation, never written into it.
     pub run_failures: run_failure::RunFailures,
+    /// Its runs parked by a disruption, waiting to continue (ADR-089
+    /// D2–D4); saved in `<local>/parked.json`.
+    pub parking: parking::Parking,
 }
 
 /// What [`Principal::reload_config_if_changed`] compares to notice an

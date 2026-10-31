@@ -317,11 +317,21 @@ async fn process_response_stream(
                 // `[not_found]` packet convention); from the user's
                 // perspective this is success — nothing on stdout.
                 if let Some(e) = error.as_deref() {
-                    if e.starts_with("[queued]") {
-                        eprintln!(
-                            "[peko] {} is busy — message queued; it will be picked up at the next step (follow live: peko log {} --watch)",
-                            args.principal, args.principal
-                        );
+                    if let Some(notice) = e.strip_prefix("[queued]") {
+                        let notice = notice.trim();
+                        // ADR-089: a peko waiting on a disruption says why
+                        // and when it continues; plain busy is generic.
+                        if notice.contains(" is waiting: ") {
+                            eprintln!(
+                                "[peko] {notice} (follow live: peko log {} --watch)",
+                                args.principal
+                            );
+                        } else {
+                            eprintln!(
+                                "[peko] {} is busy — message queued; it will be picked up at the next step (follow live: peko log {} --watch)",
+                                args.principal, args.principal
+                            );
+                        }
                         if args.wait {
                             wait_for_queued_reply(client, args, peer, sent_at).await?;
                         }

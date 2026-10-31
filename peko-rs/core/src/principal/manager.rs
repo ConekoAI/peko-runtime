@@ -70,6 +70,13 @@ pub enum IngressOutcome {
     /// session). The message was pushed to the child's inbox as a
     /// `SteeringMessage`; caller emits a "Queued..." notice.
     Queued { child_id: String },
+    /// The session waits on a disruption (ADR-089 D2): its run is parked,
+    /// or its model's lane is down. The message is saved in the session
+    /// and is answered when the run continues; caller says so.
+    Parked {
+        child_id: String,
+        parked: crate::principal::parking::ParkedRun,
+    },
 }
 
 /// B8c.4: dispatch mode for [`PrincipalManager::drive_principal_ingress`].
@@ -571,6 +578,9 @@ impl PrincipalManager {
             config: RwLock::new(config),
             config_file_stamp: Principal::current_config_file_stamp(&layout.shared.root),
             run_failures: Default::default(),
+            parking: crate::principal::parking::Parking::load(
+                layout.local.root.join("parked.json"),
+            ),
             workspace_path: layout.shared.root.clone(),
             memory,
             router,
@@ -724,6 +734,9 @@ impl PrincipalManager {
             config: RwLock::new(config),
             config_file_stamp: Principal::current_config_file_stamp(&workspace_path),
             run_failures: Default::default(),
+            parking: crate::principal::parking::Parking::load(
+                layout.local.root.join("parked.json"),
+            ),
             workspace_path,
             memory,
             router,
@@ -1265,11 +1278,29 @@ impl PrincipalManager {
         match mode {
             IngressMode::Interactive => {
                 match self.inbox_registry.try_acquire_run(&child_id).await {
-                    Some(permit) => Ok(IngressOutcome::Ready {
-                        child_id,
-                        dm_channel: ingress.dm_channel,
-                        permit,
-                    }),
+                    Some(permit) => {
+                        // ADR-089 D2: a session waiting on a disruption
+                        // keeps waiting; the message joins it.
+                        if let Some(parked) = self
+                            .wait_for_disruption(
+                                principal,
+                                &turns,
+                                &child_id,
+                                ingress.dm_channel.as_ref(),
+                                message,
+                                attachments,
+                            )
+                            .await
+                        {
+                            drop(permit);
+                            return Ok(IngressOutcome::Parked { child_id, parked });
+                        }
+                        Ok(IngressOutcome::Ready {
+                            child_id,
+                            dm_channel: ingress.dm_channel,
+                            permit,
+                        })
+                    }
                     None => {
                         // A run is already active for this child session —
                         // queue the message as steering. Caller emits the
@@ -1291,6 +1322,68 @@ impl PrincipalManager {
                 }
             }
         }
+    }
+
+    /// ADR-089 D2: whether a message to `child_id` should wait instead of
+    /// starting a turn — the session's run is parked, or its model's lane
+    /// is down (another session found it so) and its next attempt is not
+    /// due. A message may bring a parked run's attempt forward, once a
+    /// minute and never past the peko's own limit. When it waits, the
+    /// message is saved in the session, so the continuation answers it
+    /// (and a restart doesn't lose it), and the session joins the wait.
+    async fn wait_for_disruption(
+        &self,
+        principal: &Arc<Principal>,
+        turns: &crate::principal::child_turns::PeerChildTurns,
+        child_id: &str,
+        dm_channel: Option<&peko_channel::ChannelId>,
+        message: &str,
+        attachments: &[peko_protocol::channel::Attachment],
+    ) -> Option<crate::principal::parking::ParkedRun> {
+        let now = chrono::Utc::now();
+        principal.quota_meter.advance_if_needed(now);
+        if principal.quota_meter.check().is_none() {
+            principal.parking.limit_lifted(now);
+        }
+        let lane = turns.lane(None).await;
+        let parked = principal.parking.get(child_id);
+        let waiting = principal.parking.waiting_on(&lane, now);
+        let parked = match (parked, waiting) {
+            (None, None) => return None,
+            (Some(own), _) if own.next_attempt_at <= now => return None,
+            (Some(_), _) if principal.parking.bring_forward(child_id, now) => return None,
+            (Some(own), _) => own,
+            (None, Some(lane_wait)) => {
+                principal
+                    .parking
+                    .join(child_id, dm_channel.map(|c| c.0.clone()), &lane_wait)
+            }
+        };
+        let text = crate::principal::attachments::turn_text(
+            message,
+            &principal.workspace_path,
+            attachments,
+        );
+        let saved = async {
+            let handle = turns
+                .session_manager()
+                .write()
+                .await
+                .open_session(child_id)
+                .await?;
+            match handle {
+                Some(handle) => handle.add_user(text).await,
+                None => Err(anyhow::anyhow!("session {child_id} not found")),
+            }
+        }
+        .await;
+        if let Err(e) = saved {
+            tracing::warn!(session = %child_id, "message to a waiting session not saved: {e:#}");
+        }
+        if let Some(detector) = &self.idle_detector {
+            detector.record_activity(&principal.id.0).await;
+        }
+        Some(parked)
     }
 
     /// Phase 11: the daemon-global channel port (when attached) — the
@@ -1614,6 +1707,9 @@ impl PrincipalManager {
                 let queued = format!("Queued for root agent session {child_id}.");
                 Ok(PrincipalResponse::queued(queued))
             }
+            Ok(IngressOutcome::Parked { parked, .. }) => Ok(PrincipalResponse::queued(
+                crate::principal::parking::waiting_notice(&principal.name().await, &parked),
+            )),
             Err(IngressError::Resolve(e)) => Err(e),
             Err(IngressError::Post(e)) => Err(PrincipalManagerError::Config(format!(
                 "peer DM inbound post: {e:#}"

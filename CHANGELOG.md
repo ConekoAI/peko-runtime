@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: runs recover from disruptions on their own (2026-10-31, ADR-089 steps 3–5)
+
+- **Parking.** A conversation turn that meets a disruption — the peko's
+  spending limit, the provider's quota, the provider unreachable — parks:
+  the session keeps its saved work and `<local>/parked.json` records why
+  and when it continues. The daemon's continuation scheduler runs it on at
+  its next attempt from the saved history (a turn with an empty message,
+  which the loop now reads as "continue"), posts the reply to the
+  conversation, and unparks it. Waits grow per lane (model): 30 s doubling
+  to 1 h while unreachable, 1 min doubling to 24 h for the provider's
+  quota, until the reset for the peko's limit (or at once when the owner
+  lifts it). One session probes a down lane at a time; when it goes
+  through, the others continue.
+- **Messages to a waiting peko** are saved into the session and answered
+  when it continues; the sender is told so (`[queued] … is waiting …`). A
+  message may bring a provider wait forward, once a minute. `peko stop`
+  abandons a parked run.
+- **Status.** `principal_log`'s `run_failure` carries `next_attempt_at`
+  while parked; `peko log` prints "waiting since …; next try …".
+- **Cron.** A model fire while the peko's lane is down or its limit is
+  reached is deferred to the next attempt (`last_status: deferred`, no run,
+  no failure counted); a fire whose turn meets a disruption mid-run is
+  `deferred`, not `failed`.
+- **Delegated runs** (`Agent`, cron, wakes) wait in place on a disruption
+  and continue from their saved history; the parent's call returns its
+  long-run receipt and the result arrives as a completion.
+
 ### Feature: a `worker` role for delegated work (2026-10-31)
 
 Every peko is now seeded with a third default role, `worker`

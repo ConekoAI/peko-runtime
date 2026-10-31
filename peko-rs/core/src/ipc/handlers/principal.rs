@@ -104,6 +104,8 @@ struct PrincipalLogResponse {
     next_cursor: Option<String>,
     has_more: bool,
     run_failure: Option<crate::principal::run_failure::RunFailure>,
+    /// The conversation's parked run, if any (ADR-089 D2).
+    parked: Option<crate::principal::parking::ParkedRun>,
 }
 
 /// RAII guard that removes a `PrincipalSendStream` run from the
@@ -433,11 +435,7 @@ impl RequestHandler for PrincipalHandler {
                         messages: resp.messages,
                         next_cursor: resp.next_cursor,
                         has_more: resp.has_more,
-                        run_failure: resp.run_failure.map(|f| RunFailureInfo {
-                            at: f.at.to_rfc3339(),
-                            kind: f.kind,
-                            message: f.message,
-                        }),
+                        run_failure: run_failure_info(resp.run_failure, resp.parked),
                     },
                     Err(PrincipalLogError::NotFound(msg)) => ResponsePacket::Error {
                         request_id,
@@ -1867,6 +1865,17 @@ async fn handle_principal_stop(
         runs.get(&session_id).map(|h| h.cancel.clone())
     };
     let Some(cancel) = cancel else {
+        // ADR-089 D2: stopping a parked run abandons its continuation.
+        // The session keeps what it has; the next message runs it anew.
+        if principal.parking.unpark(&session_id).is_some() {
+            let response = ResponsePacket::Done {
+                request_id,
+                success: true,
+                error: None,
+            };
+            send_response(sink, response).await?;
+            return Ok(());
+        }
         let response = ResponsePacket::Done {
             request_id,
             success: false,
@@ -1877,6 +1886,8 @@ async fn handle_principal_stop(
         send_response(sink, response).await?;
         return Ok(());
     };
+    // A continuation that is running stops like any run, and the park
+    // goes with it (`PeerChildTurns::settle`).
     cancel.cancel();
 
     // ── DM-channel stop marker (best-effort) ──────────────────────
@@ -2197,6 +2208,37 @@ async fn run_principal_send(
                     let final_packet = ResponsePacket::PrincipalSent {
                         request_id,
                         content: queued,
+                    };
+                    send_response(sink, final_packet).await?;
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: true,
+                        error: None,
+                    };
+                    send_response(sink, done).await?;
+                }
+            }
+            return Ok(());
+        }
+        Ok(IngressOutcome::Parked { parked, .. }) => {
+            // ADR-089 D2: the session waits on a disruption; the message
+            // is saved and answered when the run continues. Transport
+            // UX, like `Queued` — the CLI treats the `[queued]` prefix
+            // as "not answered yet".
+            let notice = crate::principal::parking::waiting_notice(&name, &parked);
+            match response_kind {
+                PrincipalSendResponseKind::Streaming => {
+                    let done = ResponsePacket::Done {
+                        request_id,
+                        success: false,
+                        error: Some(format!("[queued] {notice}")),
+                    };
+                    send_response(sink, done).await?;
+                }
+                PrincipalSendResponseKind::OneShot => {
+                    let final_packet = ResponsePacket::PrincipalSent {
+                        request_id,
+                        content: notice,
                     };
                     send_response(sink, final_packet).await?;
                     let done = ResponsePacket::Done {
@@ -2672,6 +2714,16 @@ async fn run_principal_send(
             if client_gone {
                 return Ok(());
             }
+            // ADR-089 D2: the run parked — the message will be answered
+            // when it continues. Say so instead of the raw error.
+            let parked = principal.parking.get(&session_id).filter(|_| !user_stopped);
+            let message = match &parked {
+                Some(parked) => format!(
+                    "[queued] {}",
+                    crate::principal::parking::waiting_notice(&name, parked)
+                ),
+                None => message,
+            };
             // Emit any accumulated tool errors + usage even on
             // failure — thin consumers still want to know "did any
             // tools fail?" before they see the failure banner.
@@ -2682,11 +2734,15 @@ async fn run_principal_send(
                 tool_errors: steps.take_tool_errors(),
             };
             send_response(sink, summary).await?;
-            let response = ResponsePacket::Error {
-                request_id,
-                message: message.clone(),
-            };
-            send_response(sink, response).await?;
+            // A parked run is not answered yet, as a queued message isn't:
+            // no Error packet, just the `[queued]` Done.
+            if parked.is_none() {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: message.clone(),
+                };
+                send_response(sink, response).await?;
+            }
             let done = ResponsePacket::Done {
                 request_id,
                 success: false,
@@ -2696,6 +2752,29 @@ async fn run_principal_send(
         }
     }
     Ok(())
+}
+
+/// ADR-089 D5: what a conversation's page says about its last run — the
+/// last failure, and when a parked run continues.
+fn run_failure_info(
+    failure: Option<crate::principal::run_failure::RunFailure>,
+    parked: Option<crate::principal::parking::ParkedRun>,
+) -> Option<RunFailureInfo> {
+    match (failure, parked) {
+        (failure, Some(parked)) => Some(RunFailureInfo {
+            at: failure.as_ref().map_or(parked.since, |f| f.at).to_rfc3339(),
+            kind: parked.kind.clone(),
+            message: failure.map_or(parked.message.clone(), |f| f.message),
+            next_attempt_at: Some(parked.next_attempt_at.to_rfc3339()),
+        }),
+        (Some(failure), None) => Some(RunFailureInfo {
+            at: failure.at.to_rfc3339(),
+            kind: failure.kind,
+            message: failure.message,
+            next_attempt_at: None,
+        }),
+        (None, None) => None,
+    }
 }
 
 /// Phase 11: post the principal's reply (or a failure trace) to the
@@ -3746,6 +3825,7 @@ async fn read_principal_log(
         next_cursor: None,
         has_more: false,
         run_failure: None,
+        parked: None,
     };
 
     // No channel port (non-daemon context) ⇒ empty page + debug log.
@@ -3882,6 +3962,7 @@ async fn read_principal_log(
         has_more,
         // ADR-089 D5: the conversation's last failed run, beside it.
         run_failure: principal.run_failures.get(&channel.0),
+        parked: principal.parking.for_conversation(&channel.0),
     })
 }
 

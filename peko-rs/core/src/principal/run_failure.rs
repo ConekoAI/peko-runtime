@@ -12,6 +12,10 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub use crate::common::disruption::{
+    disrupted, failure_kind, FAILED, PEKO_LIMIT, PROVIDER_QUOTA, PROVIDER_UNREACHABLE,
+};
+
 /// What went wrong in a session's last run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunFailure {
@@ -31,35 +35,6 @@ impl RunFailure {
             message: error.to_string(),
         }
     }
-}
-
-/// Which disruption an error is (ADR-089 D1), or `failed`.
-#[must_use]
-pub fn failure_kind(error: &anyhow::Error) -> &'static str {
-    if error
-        .chain()
-        .any(|cause| cause.is::<peko_quota::QuotaError>())
-        || matches!(
-            error.downcast_ref::<peko_engine::AgenticError>(),
-            Some(peko_engine::AgenticError::Quota(_))
-        )
-        || is_peko_limit_text(&error.to_string())
-    {
-        return "peko_limit";
-    }
-    use peko_provider_api::RetryClassifier as _;
-    peko_provider_api::BodyStringClassifier
-        .classify(error)
-        .disruption()
-        .map_or("failed", peko_provider_api::Disruption::as_str)
-}
-
-/// The peko's own limit, when only its text survived (the stream carries
-/// the error as text): every `QuotaError` reads "… quota exceeded: … /
-/// … (resets at …)" or "USD budget exceeded: … (resets at …)".
-fn is_peko_limit_text(message: &str) -> bool {
-    (message.contains("quota exceeded: ") || message.contains("budget exceeded: "))
-        && message.contains("(resets at ")
 }
 
 /// The key a conversation's last failure is kept under: its DM channel
@@ -102,25 +77,6 @@ impl RunFailures {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn failures_are_sorted_by_what_fixes_them() {
-        let kind = |msg: &str| failure_kind(&anyhow::anyhow!("{msg}"));
-        assert_eq!(
-            kind("USD budget exceeded: $0.0510 / $0.0500 (resets at 2026-11-01 00:00:00 UTC)"),
-            "peko_limit"
-        );
-        assert_eq!(
-            kind("request count quota exceeded: 2 / 1 (resets at 2026-11-01 00:00:00 UTC)"),
-            "peko_limit"
-        );
-        assert_eq!(kind("HTTP error 429: insufficient_quota"), "provider_quota");
-        assert_eq!(
-            kind("error sending request for url (https://api.example.com/v1)"),
-            "provider_unreachable"
-        );
-        assert_eq!(kind("HTTP error 400: invalid_request_error"), "failed");
-    }
 
     #[test]
     fn a_success_clears_the_last_failure() {

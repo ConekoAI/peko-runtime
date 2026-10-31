@@ -280,7 +280,23 @@ fn format_run_failure(failure: &RunFailureInfo) -> String {
         "provider_unreachable" => "provider unreachable",
         _ => "failed",
     };
-    format!("— last run failed at {at} ({why}): {} —", failure.message)
+    match failure.next_attempt_at.as_deref().map(local_minute) {
+        Some(next) => format!(
+            "— waiting since {at} ({why}); it continues on its own, next try {next}: {} —",
+            failure.message
+        ),
+        None => format!("— last run failed at {at} ({why}): {} —", failure.message),
+    }
+}
+
+fn local_minute(rfc3339: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| rfc3339.to_string())
 }
 
 /// `peko log --watch`: replay rows newer than `--cursor`, then render

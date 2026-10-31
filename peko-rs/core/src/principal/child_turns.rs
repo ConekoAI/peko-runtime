@@ -805,6 +805,8 @@ impl PeerChildTurns {
     ) -> Result<StreamingResumeOutcome> {
         self.note_activity(&acting_for).await;
         let stamp = acting_for.clone();
+        let lane = self.lane(override_model.as_deref()).await;
+        let stopped = cancel.clone();
         let outcome = self
             .drive_turn(
                 session_id,
@@ -816,8 +818,82 @@ impl PeerChildTurns {
                 acting_for,
             )
             .await;
+        self.settle(session_id, &lane, &outcome, stopped.as_ref())
+            .await;
         self.note_activity(&stamp).await;
         outcome
+    }
+
+    /// The lane a turn runs on (ADR-089 D4): the model it uses — the
+    /// per-message override, else the principal's preferred model.
+    pub(crate) async fn lane(&self, override_model: Option<&str>) -> String {
+        if let Some(model) = override_model {
+            return model.to_string();
+        }
+        if let Some(principal) = self.live.as_ref().and_then(|l| l.principal.upgrade()) {
+            if let Some(model) = principal.config.read().await.preferred_model_id.clone() {
+                return model;
+            }
+        }
+        "default".to_string()
+    }
+
+    /// After a turn (ADR-089 D2, D5): a run that went through unparks its
+    /// session and lets the sessions waiting on its lane continue; a
+    /// disruption parks the session to continue later; a failure ends it.
+    /// Either way the conversation's last failure is kept beside it, not
+    /// in it. A run the user stopped is neither.
+    async fn settle(
+        &self,
+        session_id: &str,
+        lane: &str,
+        outcome: &Result<StreamingResumeOutcome>,
+        stopped: Option<&tokio_util::sync::CancellationToken>,
+    ) {
+        use crate::principal::run_failure::{conversation_key, disrupted, RunFailure};
+        let Some(principal) = self.live.as_ref().and_then(|l| l.principal.upgrade()) else {
+            return;
+        };
+        let conversation = self.conversation_channel(session_id).await;
+        let key = conversation
+            .clone()
+            .unwrap_or_else(|| conversation_key(None, session_id));
+        let now = chrono::Utc::now();
+        match outcome {
+            Ok(_) => {
+                principal.run_failures.clear(&key);
+                principal.parking.unpark(session_id);
+                principal.parking.lane_recovered(lane, now);
+                // A model call went through, so the peko's own limit no
+                // longer holds either.
+                principal.parking.limit_lifted(now);
+            }
+            Err(_) if stopped.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) => {
+                principal.parking.unpark(session_id);
+            }
+            Err(e) => {
+                principal.run_failures.record(&key, RunFailure::new(e));
+                match disrupted(e) {
+                    Some(disruption) => {
+                        let run =
+                            principal
+                                .parking
+                                .park(session_id, conversation, lane, disruption, now);
+                        tracing::info!(
+                            principal = %self.principal_id,
+                            session = %session_id,
+                            kind = %run.kind,
+                            attempts = run.attempts,
+                            next = %run.next_attempt_at,
+                            "run parked; it continues at its next attempt"
+                        );
+                    }
+                    None => {
+                        principal.parking.unpark(session_id);
+                    }
+                }
+            }
+        }
     }
 
     /// The executor for the next turn: the cached one with the persona
