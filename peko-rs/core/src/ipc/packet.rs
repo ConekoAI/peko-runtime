@@ -1592,6 +1592,10 @@ pub enum ResponsePacket {
         configured: bool,
         daemon_running: bool,
         connected: bool,
+        /// The hub this runtime is registered with (`https://pekohub.ai`);
+        /// absent when unregistered, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
     },
 
     /// Comprehensive daemon status payload (issue #8). Includes tunnel

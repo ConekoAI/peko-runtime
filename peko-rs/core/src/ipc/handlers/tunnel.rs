@@ -95,6 +95,7 @@ impl RequestHandler for TunnelHandler {
                     configured,
                     daemon_running: true,
                     connected,
+                    hub_url: crate::tunnel::credential::registered_hub_origin(),
                 };
                 send_response(sink, response).await?;
             }
