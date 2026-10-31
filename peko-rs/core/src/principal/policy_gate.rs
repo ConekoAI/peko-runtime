@@ -194,6 +194,7 @@ impl PrincipalPolicyGate {
             })
             .await
             .map_err(|e| anyhow::anyhow!("reviewer model: {e}"))?;
+        crate::tools::builtin::model_call::refuse_if_exhausted(&principal.quota_meter)?;
         let provider = resolver.build_provider(&choice.config).await?;
         let options = peko_provider_api::ChatOptions {
             temperature: Some(0.0),
@@ -208,11 +209,14 @@ impl PrincipalPolicyGate {
             response.usage.input,
             response.usage.output,
         );
-        principal
+        // The review is made and paid for: recorded, and its verdict kept.
+        if let Err(e) = principal
             .quota_meter
             .charge_with_cost(&response.usage, cost)
             .await
-            .map_err(|e| anyhow::anyhow!("reviewer charge refused: {e}"))?;
+        {
+            tracing::info!("policy review crossed a limit ({e}); the next call is refused");
+        }
         let text = response
             .content
             .iter()

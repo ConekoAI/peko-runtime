@@ -207,9 +207,8 @@ impl ModelCallTool {
             .collect();
 
         // Server-side charge from provider-reported usage (never from
-        // request params). A quota trip here fails the call — the
-        // tokens were spent, and the meter reflects that.
-        charge_meter(meter, &choice.config, &response.usage).await?;
+        // request params).
+        charge_meter(meter, &choice.config, &response.usage).await;
 
         Ok(json!({
             "mode": "completion",
@@ -303,7 +302,7 @@ impl ModelCallTool {
         // carries none, only the meter's request counter advances —
         // synthesizing token counts from request params is forbidden.
         let usage = parse_judgment_usage(parsed.get("usage")).unwrap_or_default();
-        charge_meter(meter, config, &usage).await?;
+        charge_meter(meter, config, &usage).await;
 
         let mut out = json!({
             "mode": "judgment",
@@ -463,6 +462,7 @@ impl Tool for ModelCallTool {
         let (principal, resolver) = self.resolve_caller(ctx).await?;
         let choice = Self::resolve_model(&resolver, &principal, model).await?;
         let meter = Arc::clone(&principal.quota_meter);
+        refuse_if_exhausted(&meter)?;
 
         // ── 3. Dispatch ──────────────────────────────────────────────
         let result = if completion_mode {
@@ -518,24 +518,31 @@ fn pre_flight_cost_ceiling(meter: &QuotaMeter, config: &ModelConfig) -> anyhow::
     Ok(())
 }
 
+/// Refuse before any traffic when the principal is already over a limit
+/// or its budget (the window rolls first): an exhausted principal spends
+/// nothing more.
+pub(crate) fn refuse_if_exhausted(meter: &QuotaMeter) -> anyhow::Result<()> {
+    meter.advance_if_needed(chrono::Utc::now());
+    match meter.check() {
+        Some(err) => Err(anyhow::Error::new(err)),
+        None => Ok(()),
+    }
+}
+
 /// Charge the calling principal's meter from provider-reported usage,
 /// folding USD cost (from the entry's `PricingHint`) alongside the
-/// token counters so `budget_per_cycle` applies. A limit trip fails
-/// the call after the fact — the spend is real and recorded.
-async fn charge_meter(
-    meter: &QuotaMeter,
-    config: &ModelConfig,
-    usage: &TokenUsage,
-) -> anyhow::Result<()> {
+/// token counters so `budget_per_cycle` applies. A call that crosses a
+/// limit is made and paid for, so it is recorded and its result kept;
+/// the next call is refused before it is made ([`refuse_if_exhausted`]).
+async fn charge_meter(meter: &QuotaMeter, config: &ModelConfig, usage: &TokenUsage) {
     let cost = compute_cost_usd(
         config.spec.and_then(|s| s.pricing),
         usage.input,
         usage.output,
     );
-    meter
-        .charge_with_cost(usage, cost)
-        .await
-        .map_err(|e| anyhow!("ModelCall charge rejected by quota meter: {e}"))
+    if let Err(e) = meter.charge_with_cost(usage, cost).await {
+        tracing::info!("ModelCall crossed a limit ({e}); the next call is refused until it resets");
+    }
 }
 
 /// Project a `TokenUsage` into the tool-result wire shape.
@@ -872,6 +879,45 @@ mod tests {
         let snap = meter.snapshot();
         assert_eq!(snap.request_count, 1);
         assert!(snap.output_tokens > 0, "provider-reported usage charged");
+    }
+
+    /// The call that crosses a limit is made and paid for, so its text
+    /// comes back; the next is refused before any traffic.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn the_call_crossing_a_limit_returns_and_the_next_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = MockAdapter::new();
+        adapter.queue_text("crossing");
+        adapter.queue_text("never sent");
+        let (resolver, adapter) = LlmResolver::mock(adapter, temp.path().join("models.toml")).await;
+        let quota = QuotaConfig {
+            request_count: Some(0),
+            ..generous_quota()
+        };
+        let manager =
+            manager_with_principal(&temp, "caller", Some("mock"), Some(quota), resolver).await;
+        let tool = ModelCallTool::new(Arc::downgrade(&manager));
+
+        let out = tool
+            .execute_with_context(json!({"prompt": "hi"}), &ctx_for("caller"))
+            .await
+            .expect("the crossing call stands");
+        assert_eq!(out["text"], "crossing");
+
+        let err = tool
+            .execute_with_context(json!({"prompt": "again"}), &ctx_for("caller"))
+            .await
+            .expect_err("over the limit: refused");
+        assert!(
+            err.chain().any(|c| c.is::<peko_quota::QuotaError>()),
+            "{err:#}"
+        );
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            1,
+            "no second request was sent"
+        );
     }
 
     /// Explicit `model` overrides the principal default.

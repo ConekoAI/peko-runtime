@@ -3051,7 +3051,7 @@ impl crate::ipc::handlers::principal::PrincipalHost for AppState {
             .ok()
             .map(|s| s.trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "https://pekohub.org".to_string())
+            .unwrap_or_else(|| "https://pekohub.ai".to_string())
     }
 }
 
