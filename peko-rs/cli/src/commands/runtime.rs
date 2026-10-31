@@ -19,8 +19,9 @@ pub enum RuntimeCommands {
     /// Register this runtime and its local user with PekoHub (ADR-081).
     /// Required before any principal can go online.
     Register {
-        /// PekoHub origin (default: https://pekohub.org)
-        #[arg(long, default_value = "https://pekohub.org")]
+        /// PekoHub origin (default: https://pekohub.ai; pekohub.org
+        /// redirects there, and a tunnel can't follow a redirect)
+        #[arg(long, default_value = "https://pekohub.ai")]
         hub: String,
         /// API key of the Hub account to register under
         #[arg(long, env = "PEKOHUB_API_KEY")]

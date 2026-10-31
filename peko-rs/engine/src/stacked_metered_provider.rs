@@ -168,7 +168,7 @@ impl StackedMeteredProvider {
             .await?;
         let pricing = self.inner.spec().and_then(|s| s.pricing);
         let cost_usd = compute_cost_usd(pricing, response.usage.input, response.usage.output);
-        self.charge_stack(&response.usage, cost_usd).await?;
+        self.charge_stack(&response.usage, cost_usd).await;
         Ok(response)
     }
 
@@ -229,26 +229,23 @@ impl StackedMeteredProvider {
                         // before a principal trip. We `rev()` over the
                         // captured stack (which is outer-first per
                         // `QuotaScope::collect_stack`).
-                        // The typed `QuotaError` rides the stream, so the
-                        // loop recognizes it as terminal (never retried).
-                        let mut first_error: Option<peko_quota::QuotaError> = None;
+                        // A call that crosses a limit is already made and
+                        // paid for: it is charged and its answer kept. The
+                        // next call is refused before it is made
+                        // (`refuse_if_exhausted`), so spending stops there.
                         for meter in meters.iter().rev() {
                             if let Err(e) = meter.charge_with_cost(&usage, cost_usd).await {
-                                first_error = Some(e);
-                                break;
+                                note_crossed(&e);
                             }
                         }
-                        match first_error {
-                            Some(e) => Err(anyhow::Error::new(e)),
-                            None => Ok(StreamEvent::Usage {
-                                input,
-                                output,
-                                total,
-                                cache_creation_input_tokens,
-                                cache_read_input_tokens,
-                                reasoning_output_tokens,
-                            }),
-                        }
+                        Ok(StreamEvent::Usage {
+                            input,
+                            output,
+                            total,
+                            cache_creation_input_tokens,
+                            cache_read_input_tokens,
+                            reasoning_output_tokens,
+                        })
                     }
                     other => other,
                 }
@@ -257,10 +254,10 @@ impl StackedMeteredProvider {
         Ok(metered_stream)
     }
 
-    /// Charge every meter in the stack, innermost-first. Returns the
-    /// first rejection (peer trip) or `Ok(())` if every meter
-    /// accepted. Unlimited meters (no `QuotaConfig`) accept any
-    /// charge, so they never trip.
+    /// Charge every meter in the stack, innermost-first. A charge that
+    /// crosses a limit is still recorded, and the call stands: the next
+    /// one is refused before it is made. Unlimited meters (no
+    /// `QuotaConfig`) accept any charge, so they never trip.
     ///
     /// Phase 3 — `cost_usd` is folded alongside the token counters
     /// via `QuotaMeter::charge_with_cost` (when `cost_usd > 0`)
@@ -282,7 +279,7 @@ impl StackedMeteredProvider {
         Ok(())
     }
 
-    async fn charge_stack(&self, usage: &TokenUsage, cost_usd: f64) -> Result<()> {
+    async fn charge_stack(&self, usage: &TokenUsage, cost_usd: f64) {
         // Innermost is the last entry. Walk in reverse so a peer trip
         // surfaces before a principal charge is even attempted.
         for meter in self.meters.iter().rev() {
@@ -295,11 +292,15 @@ impl StackedMeteredProvider {
                 meter.charge(usage).await
             };
             if let Err(e) = result {
-                return Err(anyhow::Error::new(e));
+                note_crossed(&e);
             }
         }
-        Ok(())
     }
+}
+
+/// A call's charge crossed a limit: the call stands, the next is refused.
+fn note_crossed(err: &peko_quota::QuotaError) {
+    tracing::info!("this call crossed a limit ({err}); the next call is refused until it resets");
 }
 
 /// Phase 3 — compute USD cost for an LLM call given the inner
@@ -440,11 +441,12 @@ mod tests {
         }
     }
 
-    /// Over a budget: the stream's error is the typed `QuotaError` (the
-    /// loop must not retry it — its text "$0.0500" read as an HTTP
-    /// 500), and the next call is refused before it is made.
+    /// The call that crosses a budget completes — it is made and paid
+    /// for, so its answer is kept — and the next call is refused before
+    /// it is made, with the typed `QuotaError` (the loop must not retry
+    /// it: its text "$0.0500" once read as an HTTP 500).
     #[tokio::test]
-    async fn an_exhausted_budget_is_typed_and_refuses_the_next_call() {
+    async fn the_call_crossing_a_budget_completes_and_the_next_is_refused() {
         let config = peko_quota::QuotaConfig {
             budget_per_cycle: Some(0.001),
             ..Default::default()
@@ -462,9 +464,12 @@ mod tests {
             .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
             .await
             .unwrap();
-        let err = stream.next().await.unwrap().unwrap_err();
-        assert!(err.chain().any(|c| c.is::<peko_quota::QuotaError>()));
+        assert!(matches!(
+            stream.next().await.unwrap(),
+            Ok(StreamEvent::Usage { .. })
+        ));
         drop(stream);
+        assert!(meter.is_exhausted());
 
         let refused = provider
             .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
@@ -496,7 +501,7 @@ mod tests {
             .stream_with_tools("usage-test", &[], &[], &ChatOptions::default())
             .await
             .unwrap();
-        assert!(stream.next().await.unwrap().is_err());
+        assert!(stream.next().await.unwrap().is_ok());
         drop(stream);
         let restored = QuotaMeter::load_or_init(config, Some(path), chrono::Utc::now())
             .await

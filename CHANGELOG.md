@@ -17,6 +17,20 @@ create-if-missing at provision and on every boot, so existing pekos gain
 `worker` on their next start and an edited one is kept. The `root` and
 `conversation` role seeds mention it (existing copies are not rewritten).
 
+### Fix: the official hub is pekohub.ai; the call that crosses a budget stands (2026-10-31)
+
+- **pekohub.ai.** `peko runtime register` and the public hub URL default to
+  `https://pekohub.ai`. `pekohub.org` now redirects there, and a tunnel can't
+  follow a redirect, so a stored registration on the old name is read as the
+  new one (`credential::official_hub_url`) — tunnel and bridge-token issuer
+  both.
+- **Budgets.** A model call that crosses a limit is already made and paid for:
+  it is charged and its answer kept, instead of failing its turn after the
+  fact. The next call is refused before it is made, so spending stops there.
+  `ModelCall` and the policy reviewer now refuse before calling when the
+  principal is over a limit; before, an exhausted principal's `ModelCall`s
+  kept making paid calls that each failed afterwards.
+
 ### Feature: tunnel status names the hub (2026-10-31)
 
 `tunnel_status` (IPC) answers with `hub_url`, the origin of the hub this
