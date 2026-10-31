@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Change: approvals are decided with buttons and CLI verbs, not messages (2026-10-31, ADR-078 amended)
+
+- The owner decides a waiting request outside any conversation: the
+  desktop's Approve / Deny, or `peko approvals <peko>`,
+  `peko approve <peko> <id> [--always]`, and `peko deny <peko> <id>`
+  (`--json` on each). New IPC `approval_list` / `approval_decide`, allowed
+  only to a caller with the owner's `ManageSettings` permission.
+- The typed `approve <id>` / `deny <id>` / `approvals` messages are gone:
+  the runtime no longer reads any owner message before the agent turn, so
+  such a message is now ordinary conversation. The owner's notice names
+  the app and the CLI verbs instead.
+
 ### Feature: runs recover from disruptions on their own (2026-10-31, ADR-089 steps 3–5)
 
 - **Parking.** A conversation turn that meets a disruption — the peko's

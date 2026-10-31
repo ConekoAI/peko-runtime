@@ -57,7 +57,13 @@ This document defines every on-disk and in-memory data format used by the Peko r
   owner runs write it). The scaffold seeds `kb/dreams/README.md`.
 - `<local>/approvals/apr_<12 hex>.json`: an owner-approval request
   (`call`, `reason`, `created_at`, `expires_at` (24 h), `status`:
-  `pending`|`approved`|`denied`, `digest` of tool + arguments).
+  `pending`|`approved`|`denied`, `digest` of tool + arguments). The owner
+  lists and decides them over IPC: `approval_list {name}` →
+  `approval_list {name, approvals: [{id, actor, actor_name?, trust, summary,
+  reason, created_at, expires_at}]}` (pending only, oldest first), and
+  `approval_decide {name, id, approve, always?}` → `approval_decided {id,
+  approved, message}`; both refuse callers without the owner's
+  `ManageSettings` (`[forbidden]`).
 - `Permission::Trusted` (`"trusted"`) in `principal.toml` grants: the owner's
   consent to give one named actor full tools. Never `public`, never in invites.
 - MCP definitions gain `untrusted_ok` (default `false`) and the reserved

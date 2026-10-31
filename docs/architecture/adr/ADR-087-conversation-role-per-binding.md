@@ -89,7 +89,7 @@ Who may set it — the role decides what the principal does in that conversation
 
 | Owner run | Trusted run | Untrusted run |
 |---|---|---|
-| any channel it belongs to | waits for the owner's `approve <id>` | refused |
+| any channel it belongs to | waits for the owner's approval | refused |
 
 A role changes instructions, not authority: the trust floor, the policy reviewer, and the ledger all key on the run's `ActingFor` stamp, which no role can raise.
 

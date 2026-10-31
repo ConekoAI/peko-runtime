@@ -186,6 +186,36 @@ pub enum PrincipalCommands {
         owner: String,
     },
 
+    /// List the approval requests waiting for you, a peko's owner
+    ///
+    /// A peko acting for someone else asks its owner before a sensitive
+    /// call its policy reviewer can't settle (ADR-078). Decide with
+    /// `peko approve` / `peko deny`.
+    Approvals {
+        /// Peko name
+        name: String,
+    },
+
+    /// Approve a waiting request: the call runs for whoever asked
+    Approve {
+        /// Peko name
+        name: String,
+        /// Request id (`apr_…`, from `peko approvals`)
+        id: String,
+        /// Also allow this requester such calls from now on (adds a rule to
+        /// the peko's POLICY.md)
+        #[arg(long)]
+        always: bool,
+    },
+
+    /// Deny a waiting request
+    Deny {
+        /// Peko name
+        name: String,
+        /// Request id (`apr_…`, from `peko approvals`)
+        id: String,
+    },
+
     /// Revoke a permission from a peko
     Revoke {
         /// Peko name
@@ -319,6 +349,13 @@ pub async fn handle_principal(
             permission,
         } => revoke_permission(&name, &subject, &permission).await,
         PrincipalCommands::Transfer { name, owner } => transfer_principal(&name, &owner).await,
+        PrincipalCommands::Approvals { name } => list_approvals(&name, json).await,
+        PrincipalCommands::Approve { name, id, always } => {
+            decide_approval(&name, &id, true, always, json).await
+        }
+        PrincipalCommands::Deny { name, id } => {
+            decide_approval(&name, &id, false, false, json).await
+        }
         PrincipalCommands::Permissions { name } => list_permissions(&name).await,
         PrincipalCommands::Invite { name, scope, ttl } => mint_invite(&name, scope, &ttl).await,
         PrincipalCommands::RevokeInvite { name, jti } => revoke_invite(&name, &jti).await,
@@ -1400,6 +1437,68 @@ async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
             Ok(())
         }
         ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
+        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+    }
+}
+
+/// `peko approvals <peko>`: the requests waiting for the owner.
+async fn list_approvals(name: &str, json: bool) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    match client.approval_list(name).await? {
+        ResponsePacket::ApprovalList { approvals, .. } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&approvals)?);
+            } else if approvals.is_empty() {
+                println!("No approval requests are waiting for '{name}'.");
+            } else {
+                for a in &approvals {
+                    let who = a
+                        .actor_name
+                        .as_deref()
+                        .map_or_else(|| a.actor.clone(), |n| format!("{n} ({})", a.actor));
+                    println!("{}  {who} [{}] wants {}", a.id, a.trust, a.summary);
+                    println!("    reviewer: {}", a.reason);
+                    println!("    expires {}", a.expires_at);
+                }
+                println!();
+                println!(
+                    "Decide with: peko approve {name} <id> [--always]  |  peko deny {name} <id>"
+                );
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+        other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
+    }
+}
+
+/// `peko approve` / `peko deny`: the owner's decision on one request.
+async fn decide_approval(
+    name: &str,
+    id: &str,
+    approve: bool,
+    always: bool,
+    json: bool,
+) -> Result<()> {
+    let client = DaemonClient::connect().await?;
+    match client.approval_decide(name, id, approve, always).await? {
+        ResponsePacket::ApprovalDecided {
+            id,
+            approved,
+            message,
+            ..
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "id": id, "approved": approved, "message": message })
+                );
+            } else {
+                println!("{message}");
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
         other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
     }
 }

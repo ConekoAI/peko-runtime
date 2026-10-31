@@ -35,8 +35,8 @@ use crate::common::paths::PathResolver;
 use crate::daemon::state::StreamingRunHandle;
 use crate::ipc::handlers::RequestHandler;
 use crate::ipc::packet::{
-    PrincipalLogMessage, RequestPacket, ResponsePacket, RunFailureInfo, RunUsageSummary,
-    ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
+    ApprovalInfo, PrincipalLogMessage, RequestPacket, ResponsePacket, RunFailureInfo,
+    RunUsageSummary, ToolErrorEntry, PRINCIPAL_LOG_SCHEMA_VERSION,
 };
 use crate::ipc::response_sink::ResponseSink;
 use crate::ipc::send_response::send_response;
@@ -279,6 +279,8 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalSend { .. }
                 | RequestPacket::PrincipalSendStream { .. }
                 | RequestPacket::PrincipalStop { .. }
+                | RequestPacket::ApprovalList { .. }
+                | RequestPacket::ApprovalDecide { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
                 | RequestPacket::PrincipalExport { .. }
@@ -359,6 +361,62 @@ impl RequestHandler for PrincipalHandler {
                 peer,
             } => {
                 handle_principal_stop(request_id, &name, peer, caller, host, sink).await?;
+            }
+
+            RequestPacket::ApprovalList { request_id, name } => {
+                let response = match owner_principal(host, &name, caller).await {
+                    Err(message) => ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                    Ok(principal) => ResponsePacket::ApprovalList {
+                        request_id,
+                        name,
+                        approvals: crate::principal::policy_gate::pending_requests(&principal)
+                            .iter()
+                            .map(approval_info)
+                            .collect(),
+                    },
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::ApprovalDecide {
+                request_id,
+                name,
+                id,
+                approve,
+                always,
+            } => {
+                use crate::principal::policy_gate::{decide_request, Decision};
+                let decision = if approve {
+                    Decision::Approve { always }
+                } else {
+                    Decision::Deny
+                };
+                let response = match owner_principal(host, &name, caller).await {
+                    Err(message) => ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                    Ok(principal) => {
+                        match decide_request(host.principal_manager(), &principal, &id, decision)
+                            .await
+                        {
+                            Ok(message) => ResponsePacket::ApprovalDecided {
+                                request_id,
+                                id,
+                                approved: approve,
+                                message,
+                            },
+                            Err(e) => ResponsePacket::Error {
+                                request_id,
+                                message: format!("[bad_request] {e}"),
+                            },
+                        }
+                    }
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::PrincipalSend {
@@ -1744,6 +1802,44 @@ impl RequestHandler for PrincipalHandler {
 
 // ─── Helpers (free functions) ─────────────────────────────────────────
 
+/// The principal `name`, when the caller may make its owner's decisions
+/// (ADR-078 D7): its owner, or the operator — `ManageSettings`, as for a
+/// settings change. The error is the response message.
+async fn owner_principal(
+    host: &dyn PrincipalHost,
+    name: &str,
+    caller: &CallerContext,
+) -> Result<Arc<Principal>, String> {
+    let Some(principal) = load_principal(host, name).await else {
+        return Err(format!("[not_found] Principal '{name}' not found"));
+    };
+    let config = principal.config.read().await;
+    let resource = principal_resource(&*config);
+    check_permission(
+        &resource,
+        Permission::ManageSettings,
+        &caller.permission_subject(resource.owner()),
+        &*host_keys(host),
+    )
+    .map_err(|denied| format!("[forbidden] only the owner decides approvals: {denied}"))?;
+    drop(config);
+    Ok(principal)
+}
+
+/// An approval request as `approval_list` reports it.
+fn approval_info(record: &crate::principal::policy_gate::ApprovalRecord) -> ApprovalInfo {
+    ApprovalInfo {
+        id: record.id.clone(),
+        actor: record.call.stamp.actor.clone(),
+        actor_name: record.call.stamp.name.clone(),
+        trust: record.call.stamp.trust.as_str().to_string(),
+        summary: crate::principal::policy_gate::request_summary(record),
+        reason: record.reason.clone(),
+        created_at: record.created_at.to_rfc3339(),
+        expires_at: record.expires_at.to_rfc3339(),
+    }
+}
+
 /// Server-side handler for `RequestPacket::PrincipalStop`.
 ///
 /// Soft-stops the run bound to the (principal, peer) thread: resolves
@@ -2085,9 +2181,6 @@ async fn run_principal_send(
         return Ok(());
     }
 
-    // ADR-078 D7: the owner's approval commands are answered by the
-    // runtime before any agent turn, so no model can approve on the
-    // owner's behalf.
     let stamps =
         crate::principal::trust::stamps_for(&principal, host.principal_manager().channel_port());
     // ADR-081 D4: the operator is admitted to chat (above), but chats at
@@ -2095,34 +2188,6 @@ async fn run_principal_send(
     // The owner sees tool inputs/outputs and thinking on the stream;
     // anyone else sees tool names and status only.
     let owner_view = stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner;
-    if owner_view {
-        if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
-            host.principal_manager(),
-            &principal,
-            &message,
-        )
-        .await
-        {
-            let packet = match response_kind {
-                PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentChunk {
-                    request_id,
-                    delta: reply,
-                },
-                PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
-                    request_id,
-                    content: reply,
-                },
-            };
-            send_response(sink, packet).await?;
-            let done = ResponsePacket::Done {
-                request_id,
-                success: true,
-                error: None,
-            };
-            send_response(sink, done).await?;
-            return Ok(());
-        }
-    }
 
     // Phase 7: the turn runs in the peer's standing child of the
     // trunk (provisioned on first contact). The child session id keys
@@ -4525,6 +4590,52 @@ mod tests {
                 principal.config.read().await.owner,
                 ActorRef::User("local".into())
             );
+        }
+
+        /// ADR-078 D7: approval requests are listed and decided by the
+        /// peko's owner only (`approval_list` / `approval_decide`).
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn only_the_owner_decides_approvals() {
+            let temp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("PEKO_HOME", temp.path());
+            peko_identity::init_test_env();
+            let resolver = PathResolver::with_dirs(
+                temp.path().join("config"),
+                temp.path().join("data"),
+                temp.path().join("cache"),
+            );
+            let manager = Arc::new(PrincipalManager::with_path_resolver(
+                resolver.clone(),
+                Arc::new(crate::principal::factory::DefaultPrincipalMemoryFactory),
+                Arc::new(crate::principal::factory::DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            ));
+            manager
+                .create(
+                    serde_json::from_value(serde_json::json!({
+                        "name": "mine", "preferred_model_id": "mock",
+                        "owner": {"kind": "user", "id": "local"}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let host = Host { manager, resolver };
+
+            assert!(owner_principal(&host, "mine", &CallerContext::local())
+                .await
+                .is_ok());
+            let err = owner_principal(&host, "mine", &CallerContext::from_jwt("alice".into()))
+                .await
+                .err()
+                .unwrap();
+            assert!(err.starts_with("[forbidden]"), "{err}");
+            let err = owner_principal(&host, "nobody", &CallerContext::local())
+                .await
+                .err()
+                .unwrap();
+            assert!(err.starts_with("[not_found]"), "{err}");
         }
     }
 

@@ -388,7 +388,8 @@ DMs are opened by `ChannelSend` and keep their members and wake policy: only
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
 `invite`, and `role` to untrusted runs, and a trusted run's call to one of
-them skips the policy reviewer and waits for the owner's `approve <id>`.
+them skips the policy reviewer and waits for the owner's approval (`peko approve`
+or the desktop's Approve).
 Calls run alone (not parallel).
 
 ## Inference and workflows
