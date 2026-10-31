@@ -29,7 +29,7 @@
 use crate::commands::{parse_recipient, GlobalPaths, Recipient};
 use anyhow::{Context, Result};
 use clap::Args;
-use peko_core::ipc::packet::{PrincipalLogMessage, RequestPacket};
+use peko_core::ipc::packet::{PrincipalLogMessage, RequestPacket, RunFailureInfo};
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_protocol::channel::ChannelEvent;
 use std::str::FromStr;
@@ -173,6 +173,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
     let mut cursor = cursor.filter(|c| !c.is_empty());
     let mut accumulated: Vec<PrincipalLogMessage> = Vec::new();
     let mut resolved_peer: Option<peko_auth::ActorRef> = None;
+    let mut run_failure: Option<RunFailureInfo> = None;
     // Without `--all` exactly one page is read (`--limit` is a hard
     // cap on it). With `--all`, pages drain until `has_more` is false.
     const MAX_PAGES: usize = 25;
@@ -196,9 +197,14 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
                 messages,
                 next_cursor,
                 has_more,
+                run_failure: page_failure,
                 ..
             } => {
                 resolved_peer = Some(page_peer);
+                // The first (newest) page carries the conversation's state.
+                if run_failure.is_none() {
+                    run_failure = page_failure;
+                }
                 accumulated.extend(messages);
                 cursor = next_cursor;
                 if cursor.is_none() || !has_more {
@@ -214,6 +220,9 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
 
     let resolved_peer =
         resolved_peer.ok_or_else(|| anyhow::anyhow!("peko log: no pages received from daemon"))?;
+    // ADR-089 D5: a failed last run is shown beside the conversation, as
+    // a status line — it is not one of its messages.
+    let failure_line = run_failure.as_ref().map(format_run_failure);
 
     if use_json {
         #[derive(serde::Serialize)]
@@ -224,6 +233,8 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
             next_cursor: &'a Option<String>,
             has_more: bool,
             messages: &'a [PrincipalLogMessage],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            run_failure: Option<&'a RunFailureInfo>,
         }
         let json = serde_json::to_string_pretty(&Out {
             principal: &principal,
@@ -231,6 +242,7 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
             next_cursor: &cursor,
             has_more: cursor.is_some(),
             messages: &accumulated,
+            run_failure: run_failure.as_ref(),
         })?;
         println!("{json}");
     } else if accumulated.is_empty() {
@@ -246,7 +258,29 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
             );
         }
     }
+    if let (false, Some(line)) = (use_json, failure_line) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+/// `— last run failed at 10:42 (provider unreachable): … —`: a status
+/// line under the conversation, not a message in it.
+fn format_run_failure(failure: &RunFailureInfo) -> String {
+    let at = chrono::DateTime::parse_from_rfc3339(&failure.at)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| failure.at.clone());
+    let why = match failure.kind.as_str() {
+        "peko_limit" => "the peko's spending limit",
+        "provider_quota" => "the provider's quota",
+        "provider_unreachable" => "provider unreachable",
+        _ => "failed",
+    };
+    format!("— last run failed at {at} ({why}): {} —", failure.message)
 }
 
 /// `peko log --watch`: replay rows newer than `--cursor`, then render

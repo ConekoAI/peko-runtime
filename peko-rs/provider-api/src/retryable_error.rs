@@ -206,11 +206,9 @@ pub enum RetryClassification {
     /// changing the request shape (smaller prompt, different
     /// schema, etc.) and is out of scope for retry.
     InvalidRequest,
-    /// Server explicitly returned `server_is_overloaded` /
-    /// `slow_down` (OpenAI Responses body codes). Terminal in
-    /// codex — the test suite treats the server's "we are
-    /// overloaded" signal as authoritative and surfaces it without
-    /// retrying.
+    /// Reserved: no message classifies here any more. ADR-089 D1 counts
+    /// a provider's `server_is_overloaded` / `slow_down` as the provider
+    /// being unreachable for now ([`Self::Transient`]), not as final.
     RateLimitedTerminal,
     /// Context-window exceeded: `prompt is too long`,
     /// `context_length_exceeded`, etc. Handled by F22's
@@ -220,7 +218,47 @@ pub enum RetryClassification {
     ContextWindowExceeded,
 }
 
+/// ADR-089 D1: the disruptions a run recovers from on its own, as the
+/// provider reports them. (The third, the peko's own spending limit, is
+/// the typed `peko_quota::QuotaError`, recognized where it is raised.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disruption {
+    /// The provider's quota, plan, or billing limit; when it resets is
+    /// unknown.
+    ProviderQuota,
+    /// The provider can't be reached or is overloaded right now.
+    ProviderUnreachable,
+}
+
+impl Disruption {
+    /// A stable name for status surfaces (`provider_quota`, …).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProviderQuota => "provider_quota",
+            Self::ProviderUnreachable => "provider_unreachable",
+        }
+    }
+}
+
 impl RetryClassification {
+    /// The disruption this error is, if it is one; `None` is a failure
+    /// that waiting will not fix (a bad request, bad credentials, a
+    /// context window still too small).
+    #[must_use]
+    pub fn disruption(&self) -> Option<Disruption> {
+        match self {
+            Self::Transient { .. } => Some(Disruption::ProviderUnreachable),
+            Self::QuotaExceeded | Self::UsageLimitReached | Self::UsageNotIncluded => {
+                Some(Disruption::ProviderQuota)
+            }
+            Self::AuthFailure
+            | Self::InvalidRequest
+            | Self::RateLimitedTerminal
+            | Self::ContextWindowExceeded => None,
+        }
+    }
+
     /// `true` if this classification allows the retry site to
     /// re-issue the request after sleeping. The classifier's order
     /// means terminal variants (`QuotaExceeded`,
@@ -314,8 +352,10 @@ impl RetryClassification {
         if msg.contains("usage_not_included") {
             return Self::UsageNotIncluded;
         }
+        // ADR-089 D1: an overloaded provider is unreachable for now, not
+        // gone for good — retry it like any transient error.
         if msg.contains("server_is_overloaded") || msg.contains("slow_down") {
-            return Self::RateLimitedTerminal;
+            return Self::Transient { retry_after: None };
         }
         if contains_any(
             msg,
@@ -347,6 +387,29 @@ impl RetryClassification {
         // them is a substring of `401`.
         if contains_any(msg, &["401", "Unauthorized"]) {
             return Self::AuthFailure;
+        }
+        // ADR-089 D1: a 402 or 403 about the account's quota, plan, or
+        // billing — and a 429 about its plan or billing — is the
+        // provider's quota, not a bad request or a short rate limit.
+        // A 429 that only says "quota" stays transient: some providers
+        // word a per-minute rate limit that way.
+        let lower = msg.to_ascii_lowercase();
+        const ACCOUNT: &[&str] = &[
+            "billing",
+            "credit",
+            "insufficient balance",
+            "payment",
+            "usage limit",
+            "plan limit",
+            "upgrade your plan",
+        ];
+        if contains_any(msg, &["HTTP error 402", "HTTP error 403"])
+            && (lower.contains("quota") || contains_any(&lower, ACCOUNT))
+        {
+            return Self::QuotaExceeded;
+        }
+        if msg.contains("HTTP error 429") && contains_any(&lower, ACCOUNT) {
+            return Self::QuotaExceeded;
         }
         if contains_any(
             msg,
@@ -388,6 +451,32 @@ impl RetryClassification {
                 "connection reset",
                 "refused",
                 "connection error",
+            ],
+        ) {
+            return Self::Transient { retry_after: None };
+        }
+        // ADR-089 D1: the rest of the transport's vocabulary (reqwest,
+        // hyper, TLS) — the provider couldn't be reached, which waiting
+        // fixes. Before, these fell through to `InvalidRequest` and a DNS
+        // blip failed the turn at once.
+        if contains_any(
+            &lower,
+            &[
+                "error sending request",
+                "error trying to connect",
+                "dns error",
+                "failed to lookup address",
+                "connection closed",
+                "connection aborted",
+                "broken pipe",
+                "unexpected eof",
+                "error decoding response body",
+                "request or response body error",
+                "incomplete message",
+                "network is unreachable",
+                "no route to host",
+                "host unreachable",
+                "tls handshake",
             ],
         ) {
             return Self::Transient { retry_after: None };
@@ -464,16 +553,73 @@ mod classification_tests {
         assert_eq!(c, RetryClassification::QuotaExceeded);
     }
 
+    /// ADR-089 D1: what each kind of error is.
     #[test]
-    fn terminal_server_is_overloaded() {
-        let c = classify("HTTP error 529: server_is_overloaded");
-        assert_eq!(c, RetryClassification::RateLimitedTerminal);
+    fn errors_sort_into_the_three_disruptions() {
+        use Disruption::{ProviderQuota, ProviderUnreachable};
+        for (msg, want) in [
+            // The provider's quota, plan, or billing.
+            ("HTTP error 429: insufficient_quota", Some(ProviderQuota)),
+            (
+                "HTTP error 403: {\"error\":\"monthly quota exhausted\"}",
+                Some(ProviderQuota),
+            ),
+            ("HTTP error 402: Payment Required", Some(ProviderQuota)),
+            (
+                "HTTP error 429: your credit balance is too low",
+                Some(ProviderQuota),
+            ),
+            // Unreachable, for now.
+            (
+                "HTTP error 503: Service Unavailable",
+                Some(ProviderUnreachable),
+            ),
+            (
+                "HTTP error 429: Too Many Requests",
+                Some(ProviderUnreachable),
+            ),
+            (
+                "HTTP error 429: Quota exceeded for metric requests per minute",
+                Some(ProviderUnreachable),
+            ),
+            (
+                "error sending request for url (https://api.example.com/v1/chat)",
+                Some(ProviderUnreachable),
+            ),
+            (
+                "error trying to connect: dns error: failed to lookup address information",
+                Some(ProviderUnreachable),
+            ),
+            (
+                "connection closed before message completed",
+                Some(ProviderUnreachable),
+            ),
+            ("operation timed out", Some(ProviderUnreachable)),
+            // Failures waiting won't fix.
+            ("HTTP error 401: Unauthorized", None),
+            ("HTTP error 403: account_deactivated", None),
+            ("HTTP error 400: invalid_request_error", None),
+            (
+                "HTTP error 429: load balancer rejected the request",
+                Some(ProviderUnreachable),
+            ),
+            ("something nobody has seen", None),
+        ] {
+            assert_eq!(classify(msg).disruption(), want, "{msg}");
+        }
     }
 
     #[test]
-    fn terminal_slow_down() {
+    fn an_overloaded_provider_is_unreachable_for_now() {
+        let c = classify("HTTP error 529: server_is_overloaded");
+        assert!(c.is_retryable());
+        assert_eq!(c.disruption(), Some(Disruption::ProviderUnreachable));
+    }
+
+    #[test]
+    fn slow_down_is_unreachable_for_now() {
         let c = classify("HTTP error 429: slow_down");
-        assert_eq!(c, RetryClassification::RateLimitedTerminal);
+        assert!(c.is_retryable());
     }
 
     #[test]

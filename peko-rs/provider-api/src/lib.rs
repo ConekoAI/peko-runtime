@@ -65,7 +65,8 @@ pub use rate_limit::{
 pub use retry_after::{extract_body_delay, format_retry_after_token, parse_retry_after_header};
 pub use retry_config::ProviderRetryConfig;
 pub use retryable_error::{
-    default_classifier, BodyStringClassifier, RetryClassification, RetryClassifier, RetryableError,
+    default_classifier, BodyStringClassifier, Disruption, RetryClassification, RetryClassifier,
+    RetryableError,
 };
 pub use traits::{
     BlockType, ChatOptions, ChatResponse, ContentBlockId, ContentDelta, DeferredToolsMode,
