@@ -3427,15 +3427,10 @@ mod tests {
     }
 
     /// F39: the F39 wrap observes the principal's `request_count`
-    /// ceiling — a second subagent LLM call beyond the cap fails
-    /// with a quota error and the request counter stays above the
-    /// ceiling.
-    ///
-    /// The `QuotaMeter::charge` does NOT roll back the state when
-    /// the limit trips (it returns `Err(QuotaError)` with the
-    /// mutated state — see `quota/meter.rs:204-222`), so after the
-    /// second call `request_count` is 2 and `check()` returns
-    /// `Some(RequestCountExceeded)`.
+    /// ceiling. The second subagent LLM call crosses it: that call is
+    /// made and paid for, so it is charged and stands, and the meter
+    /// reports the trip. The third is refused before it is made, with
+    /// a quota error, and the counter stays at 2.
     #[tokio::test]
     async fn subagent_quota_limit_trips_on_second_call() {
         let (provider, meter) = make_provider_and_meter(1).await;
@@ -3462,9 +3457,8 @@ mod tests {
                 "request_count=1 == limit=1 is still within the ceiling"
             );
 
-            // Second call: meter would go 1 → 2, exceeds the limit,
-            // `charge` returns `Err(RequestCountExceeded)` and
-            // surfaces as an `anyhow::Error` from `chat_with_tools`.
+            // Second call: meter goes 1 → 2, crossing the limit. The
+            // call was made, so it stands.
             let second = stacked
                 .chat_with_tools(
                     "default",
@@ -3474,11 +3468,21 @@ mod tests {
                 )
                 .await;
             assert!(
-                second.is_err(),
-                "second call should fail with quota error: {:?}",
-                second.as_ref().map(|c| &c.usage)
+                second.is_ok(),
+                "the crossing call stands: {:?}",
+                second.err()
             );
-            let err = second.err().unwrap();
+
+            // Third call: refused before it is made.
+            let third = stacked
+                .chat_with_tools(
+                    "default",
+                    &[LlmMessage::user("and again")],
+                    &[],
+                    &ChatOptions::default(),
+                )
+                .await;
+            let err = third.err().expect("over the limit: refused");
             let msg = format!("{err:#}");
             assert!(
                 msg.contains("request count quota exceeded"),

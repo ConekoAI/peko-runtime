@@ -340,7 +340,7 @@ impl JwtValidator {
     ) -> Self {
         let url = jwks_url.unwrap_or_else(|| {
             // Derive JWKS URL from first trusted issuer
-            // e.g., "pekohub" -> "https://pekohub.org/.well-known/jwks.json"
+            // e.g., "pekohub.ai" -> "https://pekohub.ai/.well-known/jwks.json"
             trusted_issuers
                 .first()
                 .map(|issuer| format!("https://{}/.well-known/jwks.json", issuer))
