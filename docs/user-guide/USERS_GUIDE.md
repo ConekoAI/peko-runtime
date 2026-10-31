@@ -215,9 +215,11 @@ edits apply to the peko's next turn.
 `POLICY.md` holds your plain-language rules for what the peko may do for
 anyone other than you. When someone else's conversation asks for a
 sensitive action, a separate reviewer model checks it against these rules,
-without seeing the conversation. Anything unclear is sent to you; reply
-`approve <id>` or `deny <id>`. Add a section per person, headed by their
-address:
+without seeing the conversation. Anything unclear is sent to you as an
+approval request: approve or deny it in the Peko app, or with
+`peko approvals <peko>`, `peko approve <peko> <id> [--always]`, and
+`peko deny <peko> <id>`. A message never decides one. Add a section per
+person, headed by their address:
 
 ```markdown
 ## user:hub:<uuid> (Alice)
@@ -393,7 +395,7 @@ Peko is a personal runtime. It trusts the operating-system user it runs as.
 The limits below are known and accepted for this release.
 
 **Runs acting for you are not reviewed.** The policy reviewer, and the
-`approve <id>` / `deny <id>` questions it sends you, apply only to runs
+approval requests it sends you, apply only to runs
 acting for someone else: guests in a conversation, or other pekos. Runs
 acting for you are never reviewed. These include the scheduled `keepalive`
 and nightly `memory` runs.

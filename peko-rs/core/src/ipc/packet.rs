@@ -530,6 +530,26 @@ pub enum RequestPacket {
         peer: Option<peko_auth::ActorRef>,
     },
 
+    /// The approval requests waiting for a principal's owner (ADR-078 D7).
+    /// Owner (or operator) only.
+    #[serde(rename = "approval_list")]
+    ApprovalList { request_id: u64, name: String },
+
+    /// The owner's decision on approval request `id`: approve (with
+    /// `always`, also add an always-allow rule to `POLICY.md`) or deny.
+    /// The owner's own action — the desktop's buttons, `peko approve` /
+    /// `peko deny` — never a message a model reads. Owner (or operator)
+    /// only.
+    #[serde(rename = "approval_decide")]
+    ApprovalDecide {
+        request_id: u64,
+        name: String,
+        id: String,
+        approve: bool,
+        #[serde(default)]
+        always: bool,
+    },
+
     /// Read a peer's conversation thread with a Principal.
     ///
     /// This is the read complement to `PrincipalSend`. There is no
@@ -929,6 +949,8 @@ impl RequestPacket {
             | Self::PrincipalMintInvite { request_id, .. }
             | Self::PrincipalRevokeInvite { request_id, .. }
             | Self::PrincipalStop { request_id, .. }
+            | Self::ApprovalList { request_id, .. }
+            | Self::ApprovalDecide { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
             | Self::QuotaReset { request_id, .. }
@@ -1040,6 +1062,27 @@ pub struct ToolErrorEntry {
 
 /// Schema version carried on every `PrincipalLogMessage` row.
 pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
+
+/// One approval request waiting for the owner (ADR-078 D7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalInfo {
+    /// `apr_…`
+    pub id: String,
+    /// Who asked: the actor the run acted for.
+    pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_name: Option<String>,
+    /// `trusted` / `untrusted`.
+    pub trust: String,
+    /// The tool and its target (`` `Bash` (command=…) ``).
+    pub summary: String,
+    /// The policy reviewer's reason it was unclear.
+    pub reason: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339; undecided requests lapse then.
+    pub expires_at: String,
+}
 
 /// A conversation's last failed run, as `principal_log` reports it
 /// (ADR-089 D5).
@@ -1798,6 +1841,24 @@ pub enum ResponsePacket {
         run_failure: Option<RunFailureInfo>,
     },
 
+    /// The approval requests waiting for the owner, oldest first.
+    #[serde(rename = "approval_list")]
+    ApprovalList {
+        request_id: u64,
+        name: String,
+        approvals: Vec<ApprovalInfo>,
+    },
+
+    /// What the owner's decision did (`message`: e.g. "Approved apr_…
+    /// Running it for … now").
+    #[serde(rename = "approval_decided")]
+    ApprovalDecided {
+        request_id: u64,
+        id: String,
+        approved: bool,
+        message: String,
+    },
+
     /// One message on a `PrincipalLogWatch` stream — a replayed or
     /// freshly posted row of the peer's DM channel, in the same shape
     /// `PrincipalLog` pages carry. Heartbeats ride the same stream as
@@ -2448,6 +2509,8 @@ impl ResponsePacket {
             | Self::RunSummary { request_id, .. }
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
+            | Self::ApprovalList { request_id, .. }
+            | Self::ApprovalDecided { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
             | Self::PrincipalImportPreviewed { request_id, .. }
@@ -2530,6 +2593,8 @@ impl ResponsePacket {
             Self::RunSummary { .. } => "RunSummary",
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
+            Self::ApprovalList { .. } => "ApprovalList",
+            Self::ApprovalDecided { .. } => "ApprovalDecided",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
             Self::PrincipalImportPreviewed { .. } => "PrincipalImportPreviewed",

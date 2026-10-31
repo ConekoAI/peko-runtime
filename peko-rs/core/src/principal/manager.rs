@@ -1625,23 +1625,6 @@ impl PrincipalManager {
             )
             .await?;
 
-        // ADR-078 D7: the owner's approval commands are answered by the
-        // runtime before any agent turn.
-        if let Some(manager) = self.self_ref.get().and_then(std::sync::Weak::upgrade) {
-            let stamps = crate::principal::trust::stamps_for(&principal, self.channel_port.clone());
-            if stamps.driver(&peer, &peer).await.trust == peko_tools_core::Trust::Owner {
-                if let Some(reply) = crate::principal::policy_gate::handle_owner_command(
-                    &manager,
-                    &principal,
-                    &ctx.message,
-                )
-                .await
-                {
-                    return Ok(PrincipalResponse::text(reply));
-                }
-            }
-        }
-
         // Phase 11: same DM-channel discipline as `receive` — the
         // inbound message is posted (peer-attributed) before dispatch;
         // a post failure rejects dispatch. The full ingress sequence
@@ -2837,12 +2820,14 @@ mod tests {
     }
 
     /// ADR-078 D7: the reviewer reads the policy model's verdict, and the
-    /// owner's commands list, deny, and approve requests — each decided
-    /// once, with *always* recorded in POLICY.md.
+    /// owner lists, denies, and approves requests (IPC `approval_*`) —
+    /// each decided once, with *always* recorded in POLICY.md.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn the_policy_gate_reviews_and_the_owner_decides() {
-        use crate::principal::policy_gate::{handle_owner_command, PrincipalPolicyGate};
+        use crate::principal::policy_gate::{
+            decide_request, pending_requests, Decision, PrincipalPolicyGate,
+        };
         use crate::security::judge::{GatedCall, PolicyGate, Verdict};
         use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
         let (_temp, manager, adapter, id) = setup().await;
@@ -2874,24 +2859,24 @@ mod tests {
         assert!(matches!(gate.review(&call).await, Verdict::AskOwner(_)));
 
         let first = gate.ask_owner(&call, "unclear").await.unwrap();
-        let listed = handle_owner_command(&manager, &principal, "approvals")
-            .await
-            .unwrap();
-        assert!(
-            listed.contains(&first) && listed.contains("user:hub:x"),
-            "{listed}"
-        );
-        assert!(handle_owner_command(&manager, &principal, "hello there")
-            .await
-            .is_none());
-        let denied = handle_owner_command(&manager, &principal, &format!("deny {first}"))
+        let listed = pending_requests(&principal);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, first);
+        assert_eq!(listed[0].call.stamp.actor, "user:hub:x");
+        let denied = decide_request(&manager, &principal, &first, Decision::Deny)
             .await
             .unwrap();
         assert!(denied.starts_with("Denied"), "{denied}");
-        let again = handle_owner_command(&manager, &principal, &format!("approve {first}"))
-            .await
-            .unwrap();
-        assert!(again.contains("already decided"), "{again}");
+        assert!(pending_requests(&principal).is_empty());
+        let again = decide_request(
+            &manager,
+            &principal,
+            &first,
+            Decision::Approve { always: false },
+        )
+        .await
+        .expect_err("decided once");
+        assert!(again.to_string().contains("already decided"), "{again}");
 
         let second = gate.ask_owner(&call, "unclear").await.unwrap();
         let mut replay = call.clone();
@@ -2899,10 +2884,14 @@ mod tests {
             request_id: second.clone(),
         };
         assert!(!gate.is_approved_replay(&replay).await, "not approved yet");
-        let approved =
-            handle_owner_command(&manager, &principal, &format!("approve {second} always"))
-                .await
-                .unwrap();
+        let approved = decide_request(
+            &manager,
+            &principal,
+            &second,
+            Decision::Approve { always: true },
+        )
+        .await
+        .unwrap();
         assert!(approved.starts_with("Approved"), "{approved}");
         assert!(gate.is_approved_replay(&replay).await);
         // ADR-079 D4: the replay's ledger record names the request and the

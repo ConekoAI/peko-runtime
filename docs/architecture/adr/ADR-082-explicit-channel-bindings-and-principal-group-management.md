@@ -121,7 +121,7 @@ Checked by the dispatcher from the run's `ActingFor` stamp (ADR-078), before the
 |---|---|---|---|
 | `info` | any channel it belongs to | its own compartment's channel | its own compartment's channel |
 | `wake`, `leave` | any group it belongs to | its own compartment's group | its own compartment's group |
-| `create`, `invite` | allowed | waits for the owner's `approve <id>` | refused |
+| `create`, `invite` | allowed | waits for the owner's approval | refused |
 
 `wake` and `leave` are open to the run that lives in that group, because the people in a group can reasonably ask the principal to quieten down or go. `create` and `invite` change who can reach the principal and whom the principal can reach, so only the owner decides them. A trusted run's request skips the policy reviewer and goes straight to the ADR-078 owner-approval path (`judge::owner_decides`); it runs only as an approved replay. The untrusted refusal is `floor::action_refusal`, the per-action half of the floor. All five actions are recorded in the tool ledger (ADR-079) and emit one attributed `tool.call` event.
 

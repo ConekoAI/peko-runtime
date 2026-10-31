@@ -442,6 +442,35 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// The approval requests waiting for a principal's owner (ADR-078 D7).
+    pub async fn approval_list(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::ApprovalList {
+            request_id,
+            name: name.into(),
+        })
+        .await
+    }
+
+    /// The owner's decision on approval request `id`.
+    pub async fn approval_decide(
+        &self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        approve: bool,
+        always: bool,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::ApprovalDecide {
+            request_id,
+            name: name.into(),
+            id: id.into(),
+            approve,
+            always,
+        })
+        .await
+    }
+
     /// Export a Principal to a package — a full-existence snapshot
     /// (ADR-056): sessions, authored cron schedule, plans, and the
     /// installed workspace tooling alongside the definition.

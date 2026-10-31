@@ -8,11 +8,12 @@
 //!   the call — never the conversation that produced it.
 //! - **Approvals.** A request is stored in the principal's local tier
 //!   (`approvals/<id>.json`) and announced in the owner's conversation.
-//!   The owner answers with `approve <id>`, `approve <id> always`, or
-//!   `deny <id>` — handled by the runtime before any agent turn, so no
-//!   model can approve on the owner's behalf. An approved call replays as
-//!   a background task acting for the original requester, and its result
-//!   wakes the session that asked.
+//!   The owner decides with their own action — the desktop's Approve /
+//!   Deny, or `peko approve` / `peko deny` (IPC `approval_decide`) —
+//!   never in a message, so no model reading the conversation can approve
+//!   on the owner's behalf. An approved call replays as a background task
+//!   acting for the original requester, and its result wakes the session
+//!   that asked.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -235,16 +236,18 @@ impl PrincipalPolicyGate {
         vec![principal.config.read().await.owner.clone()]
     }
 
-    /// Tell the owner a request waits; best-effort (the `approvals`
-    /// command lists it either way).
+    /// Tell the owner a request waits; best-effort (`approval_list`
+    /// lists it either way).
     async fn notify_owner(principal: &Principal, record: &ApprovalRecord) {
         let Some(messenger) = crate::principal::messenger::global_messenger() else {
             return;
         };
         let call = &record.call;
+        let peko = principal.name().await;
         let note = format!(
             "📋 Approval needed ({id}): {actor}{name} ({trust}) wants to run {what}. Reviewer: \
-             {reason}. Reply `approve {id}`, `approve {id} always`, or `deny {id}`. Expires {exp}.",
+             {reason}. Approve or deny it in the Peko app, or with `peko approve {peko} {id}` \
+             / `peko deny {peko} {id}`. Expires {exp}.",
             id = record.id,
             actor = call.stamp.actor,
             name = call
@@ -669,105 +672,82 @@ async fn channel_excerpt(
     Some(best_excerpts(claim, &passages, EXCERPT_BYTES_PER_SOURCE))
 }
 
-/// An owner's approval command, parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum OwnerCommand {
-    Approve { id: String, always: bool },
-    Deny { id: String },
-    List,
+/// The owner's decision on a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Run it; with `always`, also add an always-allow rule for the
+    /// requester to `POLICY.md`.
+    Approve {
+        always: bool,
+    },
+    Deny,
 }
 
-fn parse_owner_command(text: &str) -> Option<OwnerCommand> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    match words.as_slice() {
-        ["approvals"] => Some(OwnerCommand::List),
-        ["approve", id] => Some(OwnerCommand::Approve {
-            id: (*id).to_string(),
-            always: false,
-        }),
-        ["approve", id, "always"] => Some(OwnerCommand::Approve {
-            id: (*id).to_string(),
-            always: true,
-        }),
-        ["deny", id] => Some(OwnerCommand::Deny {
-            id: (*id).to_string(),
-        }),
-        _ => None,
-    }
-    .filter(|command| match command {
-        OwnerCommand::Approve { id, .. } | OwnerCommand::Deny { id } => id.starts_with("apr_"),
-        OwnerCommand::List => true,
-    })
+/// The requests waiting for the owner, oldest first.
+#[must_use]
+pub fn pending_requests(principal: &Principal) -> Vec<ApprovalRecord> {
+    let mut pending = pending_records(&approvals_dir(principal));
+    pending.sort_by_key(|r| r.created_at);
+    pending
 }
 
-/// Handle an owner's approval command, before any agent turn. `None`
-/// when `text` is not one; the caller then runs the turn as usual. Only
-/// call this for a message whose authority is the owner.
-pub(crate) async fn handle_owner_command(
+/// One line on what a request asks: the tool and its target.
+#[must_use]
+pub fn request_summary(record: &ApprovalRecord) -> String {
+    summarize(&record.call)
+}
+
+/// Apply the owner's decision on request `id` and say what happened.
+/// Called only for the owner's own action — the desktop's buttons or the
+/// CLI (IPC `approval_decide`) — never for a message.
+pub async fn decide_request(
     manager: &Arc<PrincipalManager>,
     principal: &Arc<Principal>,
-    text: &str,
-) -> Option<String> {
-    let command = parse_owner_command(text)?;
+    id: &str,
+    decision: Decision,
+) -> Result<String> {
     let dir = approvals_dir(principal);
-    let reply = match command {
-        OwnerCommand::List => {
-            let pending = pending_records(&dir);
-            if pending.is_empty() {
-                "No approval requests are waiting.".to_string()
-            } else {
-                pending
-                    .iter()
-                    .map(|r| {
-                        format!(
-                            "- {}: {} ({}) wants {}. Reviewer: {}",
-                            r.id,
-                            r.call.stamp.actor,
-                            r.call.stamp.trust.as_str(),
-                            summarize(&r.call),
-                            r.reason
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+    let reply = match decision {
+        Decision::Deny => {
+            let record = decide(&dir, id, ApprovalStatus::Denied)?;
+            notify_requester(manager, &record, "The owner declined this request.").await;
+            format!("Denied {id}.")
         }
-        OwnerCommand::Deny { id } => match decide(&dir, &id, ApprovalStatus::Denied) {
-            Ok(record) => {
-                notify_requester(manager, &record, "The owner declined this request.").await;
-                format!("Denied {id}.")
+        Decision::Approve { always } => {
+            let record = decide(&dir, id, ApprovalStatus::Approved)?;
+            let mut reply = format!("Approved {id}.");
+            if always {
+                reply.push_str(&remember_allowance(principal, &record));
             }
-            Err(e) => format!("{e}"),
-        },
-        OwnerCommand::Approve { id, always } => match decide(&dir, &id, ApprovalStatus::Approved) {
-            Ok(record) => {
-                let mut reply = format!("Approved {id}.");
-                if always {
-                    reply.push_str(&remember_allowance(principal, &record));
-                }
-                match replay(manager, principal, &record).await {
-                    Ok(task) => reply.push_str(&format!(
-                        " Running it for {} now (task {task}); the result goes back to \
-                             their conversation.",
-                        record.call.stamp.actor
-                    )),
-                    Err(e) => reply.push_str(&format!(" It could not be started: {e:#}")),
-                }
-                reply
+            match replay(manager, principal, &record).await {
+                Ok(task) => reply.push_str(&format!(
+                    " Running it for {} now (task {task}); the result goes back to \
+                     their conversation.",
+                    record.call.stamp.actor
+                )),
+                Err(e) => reply.push_str(&format!(" It could not be started: {e:#}")),
             }
-            Err(e) => format!("{e}"),
-        },
+            reply
+        }
     };
     if let Some(obs) = manager.observability() {
         let _ = obs
             .audit_security(
                 "policy.owner_decision",
                 None,
-                serde_json::json!({ "principal_id": principal.id.0, "command": text.trim() }),
+                serde_json::json!({
+                    "principal_id": principal.id.0,
+                    "request_id": id,
+                    "decision": match decision {
+                        Decision::Approve { always: true } => "approve_always",
+                        Decision::Approve { always: false } => "approve",
+                        Decision::Deny => "deny",
+                    },
+                }),
             )
             .await;
     }
-    Some(reply)
+    Ok(reply)
 }
 
 /// Move a pending, unexpired request to `status`.
@@ -894,33 +874,6 @@ mod tests {
             tool_name: "Read".into(),
             params: serde_json::json!({"file_path": "docs/q3.md"}),
         }
-    }
-
-    #[test]
-    fn owner_commands_parse_strictly() {
-        assert_eq!(
-            parse_owner_command(" approve apr_abc "),
-            Some(OwnerCommand::Approve {
-                id: "apr_abc".into(),
-                always: false
-            })
-        );
-        assert_eq!(
-            parse_owner_command("approve apr_abc always"),
-            Some(OwnerCommand::Approve {
-                id: "apr_abc".into(),
-                always: true
-            })
-        );
-        assert_eq!(
-            parse_owner_command("deny apr_abc"),
-            Some(OwnerCommand::Deny {
-                id: "apr_abc".into()
-            })
-        );
-        assert_eq!(parse_owner_command("approvals"), Some(OwnerCommand::List));
-        assert_eq!(parse_owner_command("please approve apr_abc"), None);
-        assert_eq!(parse_owner_command("approve everything"), None);
     }
 
     #[test]

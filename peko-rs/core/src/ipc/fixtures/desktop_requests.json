@@ -49,5 +49,7 @@
   {"type": "channel_info", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh"},
   {"type": "channel_set_wake", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice", "wake": "off"},
   {"type": "quota_get", "protocol_version": 1, "request_id": 48, "name": "alice"},
-  {"type": "quota_set", "protocol_version": 1, "request_id": 49, "name": "alice", "config": {"cycle": "monthly", "budget_per_cycle": 5.0}}
+  {"type": "quota_set", "protocol_version": 1, "request_id": 49, "name": "alice", "config": {"cycle": "monthly", "budget_per_cycle": 5.0}},
+  {"type": "approval_list", "protocol_version": 1, "request_id": 50, "name": "alice"},
+  {"type": "approval_decide", "protocol_version": 1, "request_id": 51, "name": "alice", "id": "apr_0123456789ab", "approve": true, "always": false}
 ]
