@@ -210,14 +210,14 @@ Run work in a new, resumed, compacted, or branched session.
 |---|---|---|---|
 | `action` | new \| resume \| compact \| branch | no | default "new" |
 | `prompt` | string | yes | nonempty |
-| `role` | string | yes | nonempty |
+| `role` | string | no | default "worker" |
 | `path` | string | yes | nonempty |
 | `model` | string | no | — |
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 0, ≤ 10000 |
 
-All four actions require nonempty prompt, role, and path. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
 
 ### RoleCatalog
 
