@@ -146,6 +146,11 @@ pub enum RequestPacket {
         #[serde(default)]
         description: Option<String>,
         model_id: String,
+        /// A seed's TOML text (ADR-060), e.g. downloaded from PekoHub: the
+        /// new peko grows from it with a fresh identity, owned by the
+        /// caller. `model_id` and `description` override the seed's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seed: Option<String>,
     },
 
     /// Load (or no-op when already loaded) a principal that exists on
@@ -422,6 +427,22 @@ pub enum RequestPacket {
     RuntimeId { request_id: u64 },
     #[serde(rename = "runtime_info")]
     RuntimeInfo { request_id: u64 },
+
+    /// Register this runtime and its local user with PekoHub (ADR-081
+    /// D2/D3) under the account `token` signs in as — an OAuth access token
+    /// (pekohub ADR-007) or an API key — then connect the tunnel. Local
+    /// callers only. Answered with `RuntimeRegistered`.
+    #[serde(rename = "runtime_register")]
+    RuntimeRegister {
+        request_id: u64,
+        /// The Hub API origin (`https://api.pekohub.ai`).
+        hub: String,
+        token: String,
+    },
+    /// Remove this runtime's PekoHub registration and close the tunnel.
+    /// Local callers only. Answered with `Done`.
+    #[serde(rename = "runtime_unregister")]
+    RuntimeUnregister { request_id: u64, token: String },
 
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
@@ -930,6 +951,8 @@ impl RequestPacket {
             | Self::AuthStatus { request_id }
             | Self::TunnelStop { request_id }
             | Self::TunnelStatus { request_id }
+            | Self::RuntimeRegister { request_id, .. }
+            | Self::RuntimeUnregister { request_id, .. }
             | Self::Status { request_id }
             | Self::InstanceSetStatus { request_id, .. }
             | Self::InstanceSetExposure { request_id, .. }
@@ -1641,6 +1664,16 @@ pub enum ResponsePacket {
     RuntimeInfo {
         request_id: u64,
         metadata: RuntimeMetadataResponse,
+    },
+
+    /// `RuntimeRegister` succeeded.
+    #[serde(rename = "runtime_registered")]
+    RuntimeRegistered {
+        request_id: u64,
+        hub: String,
+        runtime_did: String,
+        /// The Hub account the runtime and its local user now belong to.
+        account: String,
     },
 
     // ── Tunnel (ADR-035) ──
@@ -2521,6 +2554,7 @@ impl ResponsePacket {
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalRegistrationUpdated { request_id, .. }
             | Self::TunnelStatus { request_id, .. }
+            | Self::RuntimeRegistered { request_id, .. }
             | Self::Status { request_id, .. }
             | Self::QuotaStatus { request_id, .. }
             | Self::PrincipalInviteMinted { request_id, .. }
@@ -2605,6 +2639,7 @@ impl ResponsePacket {
             Self::PrincipalRegistrationUpdated { .. } => "PrincipalRegistrationUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",
             Self::TunnelStatus { .. } => "TunnelStatus",
+            Self::RuntimeRegistered { .. } => "RuntimeRegistered",
             Self::Status { .. } => "Status",
             Self::QuotaStatus { .. } => "QuotaStatus",
             Self::PrincipalInviteMinted { .. } => "PrincipalInviteMinted",
@@ -3321,6 +3356,7 @@ mod tests {
             name: "alice".to_string(),
             description: Some("personal assistant".to_string()),
             model_id: "gpt-4o".to_string(),
+            seed: Some("name = \"ada\"\n".to_string()),
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3330,11 +3366,13 @@ mod tests {
                 name,
                 description,
                 model_id,
+                seed,
             } => {
                 assert_eq!(request_id, 302);
                 assert_eq!(name, "alice");
                 assert_eq!(description.as_deref(), Some("personal assistant"));
                 assert_eq!(model_id, "gpt-4o");
+                assert_eq!(seed.as_deref(), Some("name = \"ada\"\n"));
             }
             _ => panic!("Wrong variant"),
         }
@@ -3347,8 +3385,11 @@ mod tests {
             name: "bob".to_string(),
             description: None,
             model_id: "claude-sonnet-4-5".to_string(),
+            seed: None,
         };
         let bytes = minimal.to_bytes().unwrap();
+        // Older daemons never see a `seed` key they don't know.
+        assert!(!String::from_utf8_lossy(&bytes).contains("seed"));
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
             RequestPacket::PrincipalCreate {
@@ -3356,8 +3397,10 @@ mod tests {
                 name,
                 description,
                 model_id,
+                seed,
             } => {
                 assert_eq!(request_id, 303);
+                assert!(seed.is_none());
                 assert_eq!(name, "bob");
                 assert!(description.is_none());
                 assert_eq!(model_id, "claude-sonnet-4-5");

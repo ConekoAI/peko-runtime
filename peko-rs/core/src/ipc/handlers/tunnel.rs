@@ -42,6 +42,17 @@ pub(crate) trait TunnelHost: Send + Sync {
 
     /// Whether the outbound tunnel is currently connected.
     async fn tunnel_connected(&self) -> bool;
+
+    /// Register with the Hub at `hub` as the account `token` signs in as,
+    /// then (re)connect the tunnel.
+    async fn register_runtime(
+        &self,
+        hub: &str,
+        token: &str,
+    ) -> anyhow::Result<crate::tunnel::registration::RuntimeRegistration>;
+
+    /// Remove the Hub registration and close the tunnel.
+    async fn unregister_runtime(&self, token: &str) -> anyhow::Result<()>;
 }
 
 /// `tunnel` domain request handler. Constructed with an `Arc<dyn TunnelHost>`
@@ -65,14 +76,17 @@ impl RequestHandler for TunnelHandler {
     fn matches(&self, request: &RequestPacket) -> bool {
         matches!(
             request,
-            RequestPacket::TunnelStop { .. } | RequestPacket::TunnelStatus { .. }
+            RequestPacket::TunnelStop { .. }
+                | RequestPacket::TunnelStatus { .. }
+                | RequestPacket::RuntimeRegister { .. }
+                | RequestPacket::RuntimeUnregister { .. }
         )
     }
 
     async fn handle(
         &self,
         request: RequestPacket,
-        _caller: &CallerContext,
+        caller: &CallerContext,
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
@@ -100,10 +114,185 @@ impl RequestHandler for TunnelHandler {
                 send_response(sink, response).await?;
             }
 
+            // Registration binds the runtime and its local user to a Hub
+            // account: the local user's decision only (ADR-081 D3).
+            RequestPacket::RuntimeRegister { request_id, .. }
+            | RequestPacket::RuntimeUnregister { request_id, .. }
+                if !caller.is_local() =>
+            {
+                let response = ResponsePacket::Error {
+                    request_id,
+                    message: "[permission_denied] only the local user registers this runtime"
+                        .to_string(),
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::RuntimeRegister {
+                request_id,
+                hub,
+                token,
+            } => {
+                let response = match self.host.register_runtime(&hub, &token).await {
+                    Ok(registered) => ResponsePacket::RuntimeRegistered {
+                        request_id,
+                        hub: registered.origin,
+                        runtime_did: registered.runtime_did,
+                        account: registered.account,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e:#}"),
+                    },
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::RuntimeUnregister { request_id, token } => {
+                let response = match self.host.unregister_runtime(&token).await {
+                    Ok(()) => ResponsePacket::Done {
+                        request_id,
+                        success: true,
+                        error: None,
+                    },
+                    Err(e) => ResponsePacket::Error {
+                        request_id,
+                        message: format!("{e:#}"),
+                    },
+                };
+                send_response(sink, response).await?;
+            }
+
             // `matches()` returned true, so the exhaustive list above
             // covers every owned variant. This arm is unreachable.
             _ => unreachable!("TunnelHandler::matches allowed an unhandled variant"),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Records registrations; never touches the network.
+    #[derive(Default)]
+    struct Host {
+        registered: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl TunnelHost for Host {
+        async fn stop_tunnel(&self) {}
+        async fn tunnel_connected(&self) -> bool {
+            false
+        }
+        async fn register_runtime(
+            &self,
+            hub: &str,
+            token: &str,
+        ) -> anyhow::Result<crate::tunnel::registration::RuntimeRegistration> {
+            self.registered
+                .lock()
+                .unwrap()
+                .push((hub.to_string(), token.to_string()));
+            Ok(crate::tunnel::registration::RuntimeRegistration {
+                origin: hub.to_string(),
+                runtime_did: "did:key:zRuntime".to_string(),
+                account: "0b6c7a4e-0000-4000-8000-000000000000".to_string(),
+            })
+        }
+        async fn unregister_runtime(&self, _token: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Sink(Mutex<Vec<ResponsePacket>>);
+
+    #[async_trait]
+    impl ResponseSink for Sink {
+        async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+            let packet = serde_json::from_slice(bytes).map_err(std::io::Error::other)?;
+            self.0.lock().unwrap().push(packet);
+            Ok(())
+        }
+    }
+
+    async fn send(
+        host: Arc<Host>,
+        caller: CallerContext,
+        request: RequestPacket,
+    ) -> ResponsePacket {
+        let sink = Sink(Mutex::new(Vec::new()));
+        TunnelHandler::new(host)
+            .handle(
+                request,
+                &caller,
+                &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+        sink.0.into_inner().unwrap().pop().expect("a response")
+    }
+
+    /// pekohub ADR-007: the desktop registers its runtime with the token
+    /// it signed in with, and gets the account back.
+    #[tokio::test]
+    async fn the_local_user_registers_the_runtime() {
+        let host = Arc::new(Host::default());
+        let response = send(
+            host.clone(),
+            CallerContext::local(),
+            RequestPacket::RuntimeRegister {
+                request_id: 7,
+                hub: "https://api.pekohub.ai".into(),
+                token: "access-token".into(),
+            },
+        )
+        .await;
+        match response {
+            ResponsePacket::RuntimeRegistered {
+                request_id,
+                hub,
+                account,
+                ..
+            } => {
+                assert_eq!(request_id, 7);
+                assert_eq!(hub, "https://api.pekohub.ai");
+                assert!(!account.is_empty());
+            }
+            other => panic!("expected RuntimeRegistered, got {other:?}"),
+        }
+        assert_eq!(
+            host.registered.lock().unwrap().as_slice(),
+            &[(
+                "https://api.pekohub.ai".to_string(),
+                "access-token".to_string()
+            )]
+        );
+    }
+
+    /// ADR-081 D3: registering binds the local user to an account — no
+    /// remote caller may do it.
+    #[tokio::test]
+    async fn a_remote_caller_cannot_register_the_runtime() {
+        let host = Arc::new(Host::default());
+        let response = send(
+            host.clone(),
+            CallerContext::from_jwt("someone".into()),
+            RequestPacket::RuntimeRegister {
+                request_id: 8,
+                hub: "https://api.pekohub.ai".into(),
+                token: "t".into(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&response, ResponsePacket::Error { message, .. } if message.contains("permission_denied")),
+            "{response:?}"
+        );
+        assert!(host.registered.lock().unwrap().is_empty());
     }
 }

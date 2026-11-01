@@ -4,6 +4,35 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Change: PekoHub's API on api.pekohub.ai; sign in with a code; `peko seed` (2026-11-01)
+
+- The official hub's API is `api.pekohub.ai` (`pekohub.ai` is the website).
+  `peko runtime register` defaults to it, and a registration saved against
+  `pekohub.org` or `pekohub.ai` is read as `api.pekohub.ai`. Re-register only
+  if the daemon logs a refused tunnel.
+- `peko runtime register` and `peko runtime unregister` no longer need an API
+  key: without `--api-key` they print a code and a link
+  (`pekohub.ai/device`), wait for you to approve it there, and continue
+  (OAuth device grant, pekohub ADR-007). `--api-key` / `PEKOHUB_API_KEY`
+  still work for scripts.
+- `peko seed <NAME> [-o <PATH>]` exports a peko's seed: its
+  `principal.toml` without `id`, `did`, `actor_key`, `owner`,
+  `permissions`, `boot_state`, `status`, `exposure`, `children`, `quota`,
+  or `routing.root_prompt`. PekoHub publishes it (pekohub ADR-008) and
+  `peko create <NAME> -s <FILE>` grows it. Reads the file directly; the
+  daemon need not run. Core: `principal::seed::seed_from_config`.
+- Growing a peko from a seed resets its `exposure` and `status` too (with
+  its identity, owner and grants): a seed that said `exposure = "public"`
+  no longer publishes every peko grown from it. One rule for the CLI and
+  the IPC (`principal::seed::{parse_seed, Seed::grown}`).
+- IPC: `principal_create` takes an optional `seed` (the TOML text), so the
+  desktop can grow a peko from a seed downloaded from PekoHub; `model_id`
+  and `description` override the seed's. New `runtime_register { hub,
+  token }` → `runtime_registered { hub, runtime_did, account }` and
+  `runtime_unregister { token }` let the desktop register its own runtime
+  with the token it signed in with; the daemon connects the tunnel at
+  once. Local callers only.
+
 ### Change: a message moves a running tool to the background (2026-10-31)
 
 - When someone in the conversation (a person or a peer peko) writes while

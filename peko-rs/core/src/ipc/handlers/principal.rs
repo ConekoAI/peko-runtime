@@ -1329,6 +1329,7 @@ impl RequestHandler for PrincipalHandler {
                 name,
                 description,
                 model_id,
+                seed,
             } => {
                 use crate::common::identifiers::validate_agent_name;
 
@@ -1342,6 +1343,20 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
+
+                // A seed (ADR-060) is checked before anything is written.
+                let seed = match seed.as_deref().map(crate::principal::seed::parse_seed) {
+                    Some(Ok(seed)) => Some(seed),
+                    Some(Err(e)) => {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("[invalid_seed] {e:#}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                    None => None,
+                };
 
                 // 2. Materialize the workspace + default agent prompt
                 //    BEFORE invoking `manager.create`. The manager
@@ -1391,11 +1406,21 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                let prompt_body = format!(
-                    "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
-                     You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
-                     {{{{memory}}}}\n"
-                );
+                let persona = seed.as_ref().and_then(|seed| seed.persona.clone());
+                let prompt_body = match &persona {
+                    Some(body) => crate::principal::seed::persona_prompt(
+                        &name,
+                        description
+                            .as_deref()
+                            .or(seed.as_ref().and_then(|s| s.config.identity.description.as_deref())),
+                        body,
+                    ),
+                    None => format!(
+                        "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
+                         You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
+                         {{{{memory}}}}\n"
+                    ),
+                };
                 if let Err(e) = tokio::fs::write(roles_dir.join("primary.md"), prompt_body).await {
                     let response = ResponsePacket::Error {
                         request_id,
@@ -1411,8 +1436,19 @@ impl RequestHandler for PrincipalHandler {
                 //    choice for an interactive terminal where every
                 //    local user is the same identity; for an IPC call
                 //    we honour the request's subject.
-                let config =
-                    ipc_create_config(&name, description, caller.subject().clone(), model_id);
+                let config = match seed {
+                    Some(seed) => {
+                        let mut config = seed.grown(&name, caller.subject().clone());
+                        config.preferred_model_id = Some(model_id);
+                        if let Some(description) = description.filter(|d| !d.trim().is_empty()) {
+                            config.identity.description = Some(description);
+                        }
+                        config
+                    }
+                    None => {
+                        ipc_create_config(&name, description, caller.subject().clone(), model_id)
+                    }
+                };
 
                 match host.principal_manager().create(config).await {
                     Ok(principal) => {

@@ -137,6 +137,18 @@ pub enum PrincipalCommands {
         output: Option<String>,
     },
 
+    /// Export a peko's seed: its definition without its identity,
+    /// owner, grants, or memory. Publish it on PekoHub, or grow a new
+    /// peko from it with `peko create <name> -s <file>` (ADR-060)
+    Seed {
+        /// Peko name
+        name: String,
+
+        /// Write the seed here (prints it when omitted)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
     /// Import a peko from a `.peko` package
     Import {
         /// Path to the `.peko` package
@@ -331,6 +343,7 @@ pub async fn handle_principal(
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
+        PrincipalCommands::Seed { name, output } => export_seed(&name, output, paths),
         PrincipalCommands::Import {
             file_path,
             name,
@@ -535,49 +548,11 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     Ok(())
 }
 
-/// Seed keys tolerated in a `--seed` file beyond the
-/// `PrincipalConfig` shape. serde ignores unknown keys when
-/// deserializing `PrincipalConfig`, so the file is parsed twice —
-/// once as the config, once for these extras — without loss.
-#[derive(serde::Deserialize)]
-struct SeedExtras {
-    persona: Option<String>,
-}
-
-/// Parsed `--seed` file: the config fields plus the optional
-/// inline `persona` (Markdown body for the root agent prompt).
-struct SeedBundle {
-    config: PrincipalConfig,
-    persona: Option<String>,
-}
-
-/// Load and parse a `--seed` create seed. The file IS a
-/// `principal.toml` (plus tolerated extras), so exports round-trip:
-/// `peko export` → edit → `peko create -s`.
-fn load_seed(path: &str) -> Result<SeedBundle> {
+/// Load a `--seed` file (`principal.toml` plus an optional `persona`), so
+/// exports round-trip: `peko seed` → edit → `peko create -s`.
+fn load_seed(path: &str) -> Result<peko_core::principal::seed::Seed> {
     let content = std::fs::read_to_string(path).with_context(|| format!("read seed {}", path))?;
-    let config: PrincipalConfig = toml::from_str(&content)
-        .with_context(|| format!("parse seed {} as principal.toml", path))?;
-    let extras: SeedExtras =
-        toml::from_str(&content).with_context(|| format!("parse seed {} extras", path))?;
-    Ok(SeedBundle {
-        config,
-        persona: extras.persona,
-    })
-}
-
-/// Compose the root agent prompt from an optional persona body.
-/// Same frontmatter/`{{memory}}` shape as `default_agent_prompt` —
-/// the persona only replaces the body.
-fn persona_agent_prompt(name: &str, description: Option<&str>, persona: &str) -> String {
-    let description = description
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("The {name} peko"));
-    format!(
-        "---\nname: primary\ndescription: \"{description}\"\n---\n\n\
-         {persona}\n\n\
-         {{{{memory}}}}\n"
-    )
+    peko_core::principal::seed::parse_seed(&content).with_context(|| format!("seed {path}"))
 }
 
 /// `peko create` — the full genesis pipeline (ADR-054):
@@ -666,24 +641,13 @@ async fn provision_principal(
     // ── P1 definition: seed or defaults ─────────────────────────────
     let (mut config, persona) = match seed_path {
         Some(path) => {
-            let bundle = load_seed(path)?;
-            let mut config = bundle.config;
+            let seed = load_seed(path)?;
+            let persona = seed.persona.clone();
             // The CLI arg names the principal; a seed `name` is
-            // overridden (the arg is what the user typed).
-            config.name = name.to_string();
-            // Fresh identity, always: a seed must not transplant
-            // another principal's id, DID, or boot state. This is what
-            // makes the artifact a seed rather than a template — the
-            // peko that grows from it is never a copy (ADR-060).
-            config.id = None;
-            config.did = None;
-            config.boot_state = None;
-            // ADR-081 D4: a seed carries no authority. The creating local
-            // user owns what grows from it, and nobody else is granted
-            // anything until that owner says so.
-            config.owner = ActorRef::User("local".into());
-            config.permissions.clear();
-            (config, bundle.persona)
+            // overridden. A fresh identity, always, and no authority:
+            // the creating local user owns what grows from it (ADR-060,
+            // ADR-081 D4).
+            (seed.grown(name, ActorRef::User("local".into())), persona)
         }
         None => {
             // Bare create: empty `[identity]`/`[intent]` is the honest
@@ -737,7 +701,11 @@ async fn provision_principal(
     tokio::fs::create_dir_all(&roles_dir).await?;
     let prompt_path = roles_dir.join("primary.md");
     let prompt_body = match &persona {
-        Some(body) => persona_agent_prompt(name, config.identity.description.as_deref(), body),
+        Some(body) => peko_core::principal::seed::persona_prompt(
+            name,
+            config.identity.description.as_deref(),
+            body,
+        ),
         None => default_agent_prompt(name),
     };
     tokio::fs::write(&prompt_path, prompt_body).await?;
@@ -1243,6 +1211,33 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
             anyhow::bail!("Unexpected response from daemon: {other:?}");
         }
     }
+}
+
+/// `peko seed` — reads the peko's `principal.toml` directly; the daemon
+/// need not be running.
+fn export_seed(name: &str, output: Option<String>, paths: &GlobalPaths) -> Result<()> {
+    let config_path = paths
+        .principals_root_dir()
+        .join(name)
+        .join("principal.toml");
+    let config = std::fs::read_to_string(&config_path).with_context(|| {
+        format!(
+            "no peko named '{name}' (looked for {})",
+            config_path.display()
+        )
+    })?;
+    let seed = peko_core::principal::seed::seed_from_config(&config)?;
+    match output {
+        Some(path) => {
+            let path = absolute_from_cwd(&path)?;
+            std::fs::write(&path, &seed).with_context(|| format!("write {path}"))?;
+            println!("Wrote the seed for '{name}' to {path}");
+            println!("  Publish it on PekoHub: https://pekohub.ai/seeds/new");
+            println!("  Or grow a peko from it: peko create <name> -s {path}");
+        }
+        None => print!("{seed}"),
+    }
+    Ok(())
 }
 
 async fn import_principal(

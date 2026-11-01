@@ -52,6 +52,104 @@ pub fn tunnel_url(origin: &str) -> String {
     format!("{ws}/v1/tunnel")
 }
 
+/// A sign-in waiting for the user to approve it on the website (RFC 8628).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DeviceSignIn {
+    device_code: String,
+    /// The code the user confirms, `ABCD-EFGH`.
+    pub user_code: String,
+    /// Where to approve it (the website's `/device`).
+    pub verification_uri: String,
+    /// The same page with the code filled in.
+    pub verification_uri_complete: Option<String>,
+    /// Seconds until the code expires.
+    pub expires_in: u64,
+    #[serde(default = "default_poll_interval")]
+    interval: u64,
+}
+
+fn default_poll_interval() -> u64 {
+    5
+}
+
+/// The OAuth client the CLI signs in as (pekohub ADR-007).
+const CLI_CLIENT_ID: &str = "peko-cli";
+
+/// Start signing the CLI in to the Hub at `origin`: the user approves the
+/// returned code on the website, while [`finish_device_sign_in`] waits.
+///
+/// # Errors
+/// When the Hub can't be reached or refuses the request.
+pub async fn start_device_sign_in(origin: &str) -> Result<DeviceSignIn> {
+    let origin = crate::tunnel::credential::official_hub_url(&hub_http_origin(origin)?);
+    let response = reqwest::Client::new()
+        .post(format!("{origin}/oauth/device/code"))
+        .form(&[("client_id", CLI_CLIENT_ID)])
+        .send()
+        .await
+        .context("could not reach PekoHub")?;
+    let status = response.status();
+    anyhow::ensure!(
+        status.is_success(),
+        "PekoHub refused to start sign-in: HTTP {status}"
+    );
+    response
+        .json()
+        .await
+        .context("PekoHub sent an unreadable sign-in code")
+}
+
+/// Wait until the user approves (or denies) `sign_in`, polling at the
+/// Hub's pace. Returns an access token for the account that approved.
+///
+/// # Errors
+/// When the user denies it, the code expires, or the Hub fails.
+pub async fn finish_device_sign_in(origin: &str, sign_in: &DeviceSignIn) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct TokenAnswer {
+        access_token: Option<String>,
+        error: Option<String>,
+    }
+    let origin = crate::tunnel::credential::official_hub_url(&hub_http_origin(origin)?);
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(sign_in.expires_in);
+    let mut interval = sign_in.interval.max(1);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "The sign-in code expired. Run the command again for a new one."
+        );
+        let answer: TokenAnswer = client
+            .post(format!("{origin}/oauth/token"))
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", CLI_CLIENT_ID),
+                ("device_code", sign_in.device_code.as_str()),
+            ])
+            .send()
+            .await
+            .context("could not reach PekoHub")?
+            .json()
+            .await
+            .context("PekoHub sent an unreadable answer")?;
+        match (answer.access_token, answer.error.as_deref()) {
+            (Some(token), _) => return Ok(token),
+            (None, Some("authorization_pending")) => {}
+            // RFC 8628 §3.5: back off by five seconds.
+            (None, Some("slow_down")) => interval += 5,
+            (None, Some("access_denied")) => anyhow::bail!("Sign-in was denied on PekoHub."),
+            (None, Some("expired_token")) => {
+                anyhow::bail!("The sign-in code expired. Run the command again for a new one.")
+            }
+            (None, other) => anyhow::bail!(
+                "PekoHub refused the sign-in: {}",
+                other.unwrap_or("no reason given")
+            ),
+        }
+    }
+}
+
 /// This runtime's identity and signing key, created on first use.
 pub fn runtime_key(
     resolver: &PathResolver,
@@ -113,7 +211,7 @@ pub async fn register_runtime(
     origin: &str,
     api_key: &str,
 ) -> Result<RuntimeRegistration> {
-    let origin = hub_http_origin(origin)?;
+    let origin = crate::tunnel::credential::official_hub_url(&hub_http_origin(origin)?);
     let (identity, signing_key) = runtime_key(resolver, vault)?;
     let runtime_did = identity.runtime_did.clone();
     let client = reqwest::Client::new();
@@ -277,6 +375,76 @@ mod tests {
             tunnel_url("http://localhost:4000"),
             "ws://localhost:4000/v1/tunnel"
         );
+    }
+
+    /// A one-route-per-call HTTP stand-in for the Hub's OAuth endpoints:
+    /// answers each request with the next canned body for its path.
+    async fn fake_hub(answers: Vec<(&'static str, &'static str)>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut answers = std::collections::VecDeque::from(answers);
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let Some((path, body)) = answers.pop_front() else {
+                    break;
+                };
+                assert!(
+                    request.starts_with(&format!("POST {path} ")),
+                    "unexpected {request}"
+                );
+                assert!(
+                    request.contains("client_id=peko-cli"),
+                    "CLI client id missing"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        origin
+    }
+
+    /// pekohub ADR-007: the CLI shows a code, waits through
+    /// `authorization_pending`, and returns the token once approved.
+    #[tokio::test]
+    async fn device_sign_in_waits_for_approval() {
+        let origin = fake_hub(vec![
+            (
+                "/oauth/device/code",
+                r#"{"device_code":"dc","user_code":"BCDF-GHJK","verification_uri":"https://hub/device","verification_uri_complete":"https://hub/device?code=BCDF-GHJK","expires_in":60,"interval":1}"#,
+            ),
+            ("/oauth/token", r#"{"error":"authorization_pending"}"#),
+            ("/oauth/token", r#"{"access_token":"tok","token_type":"Bearer","expires_in":3600}"#),
+        ])
+        .await;
+        let pending = start_device_sign_in(&origin).await.unwrap();
+        assert_eq!(pending.user_code, "BCDF-GHJK");
+        assert_eq!(pending.verification_uri, "https://hub/device");
+        assert_eq!(
+            finish_device_sign_in(&origin, &pending).await.unwrap(),
+            "tok"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denied_device_sign_in_says_so() {
+        let origin = fake_hub(vec![
+            (
+                "/oauth/device/code",
+                r#"{"device_code":"dc","user_code":"BCDF-GHJK","verification_uri":"https://hub/device","expires_in":60,"interval":1}"#,
+            ),
+            ("/oauth/token", r#"{"error":"access_denied"}"#),
+        ])
+        .await;
+        let pending = start_device_sign_in(&origin).await.unwrap();
+        let error = finish_device_sign_in(&origin, &pending).await.unwrap_err();
+        assert!(error.to_string().contains("denied"), "{error}");
     }
 
     /// ADR-081 D3: the local user keeps one key; registering adds the

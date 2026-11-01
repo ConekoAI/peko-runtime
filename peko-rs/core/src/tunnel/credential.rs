@@ -156,16 +156,18 @@ pub fn load_pekohub_credential(
     Ok(Some(cred))
 }
 
-/// The official hub moved from `pekohub.org` to `pekohub.ai`, and the
-/// old name now redirects. A tunnel can't follow a redirect, and the
-/// hub signs bridge tokens as the new origin, so a registration made
-/// against the old name is read as the new one.
+/// The official hub's API lives on `api.pekohub.ai`; `pekohub.ai` is the
+/// website and `pekohub.org` redirects to it. A tunnel can't follow a
+/// redirect, and the hub signs bridge tokens as the API origin, so a
+/// registration made against either older name is read as the API host.
 #[must_use]
 pub fn official_hub_url(url: &str) -> String {
     for scheme in ["wss://", "https://"] {
-        if let Some(rest) = url.strip_prefix(&format!("{scheme}pekohub.org")) {
-            if rest.is_empty() || rest.starts_with('/') || rest.starts_with(':') {
-                return format!("{scheme}pekohub.ai{rest}");
+        for old_host in ["pekohub.org", "pekohub.ai"] {
+            if let Some(rest) = url.strip_prefix(&format!("{scheme}{old_host}")) {
+                if rest.is_empty() || rest.starts_with('/') || rest.starts_with(':') {
+                    return format!("{scheme}api.pekohub.ai{rest}");
+                }
             }
         }
     }
@@ -195,14 +197,17 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn a_registration_on_the_old_hub_name_reads_as_the_new_one() {
+    fn a_registration_on_an_older_hub_name_reads_as_the_api_host() {
+        for old in ["wss://pekohub.org/v1/tunnel", "wss://pekohub.ai/v1/tunnel"] {
+            assert_eq!(official_hub_url(old), "wss://api.pekohub.ai/v1/tunnel");
+        }
         assert_eq!(
-            official_hub_url("wss://pekohub.org/v1/tunnel"),
-            "wss://pekohub.ai/v1/tunnel"
+            official_hub_url("https://pekohub.ai"),
+            "https://api.pekohub.ai"
         );
         assert_eq!(
-            official_hub_url("https://pekohub.org"),
-            "https://pekohub.ai"
+            official_hub_url("wss://api.pekohub.ai/v1/tunnel"),
+            "wss://api.pekohub.ai/v1/tunnel"
         );
         // Other hubs, and names that only start the same, are left alone.
         assert_eq!(
@@ -212,6 +217,10 @@ mod tests {
         assert_eq!(
             official_hub_url("wss://pekohub.org.example/v1/tunnel"),
             "wss://pekohub.org.example/v1/tunnel"
+        );
+        assert_eq!(
+            official_hub_url("wss://pekohub.aix/v1/tunnel"),
+            "wss://pekohub.aix/v1/tunnel"
         );
     }
 
@@ -235,7 +244,7 @@ mod tests {
         let path = temp.path().join("pekohub.toml");
 
         let cred = PekoHubCredential {
-            url: "wss://pekohub.ai/v1/tunnel".to_string(),
+            url: "wss://api.pekohub.ai/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
             tls: None,
         };
@@ -270,7 +279,7 @@ mod tests {
         let path = temp.path().join("pekohub.toml");
 
         let cred = PekoHubCredential {
-            url: "wss://pekohub.ai/v1/tunnel".to_string(),
+            url: "wss://api.pekohub.ai/v1/tunnel".to_string(),
             runtime_id: "did:key:z6MkTest".to_string(),
             tls: Some(TunnelTlsConfig {
                 ca_path: Some(std::path::PathBuf::from("/etc/peko/ca.pem")),

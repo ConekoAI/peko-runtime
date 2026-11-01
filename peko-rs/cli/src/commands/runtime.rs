@@ -17,22 +17,51 @@ pub enum RuntimeCommands {
     /// Show runtime metadata
     Info,
     /// Register this runtime and its local user with PekoHub (ADR-081).
-    /// Required before any principal can go online.
+    /// Required before any principal can go online. Without `--api-key`,
+    /// shows a code to approve on the PekoHub website.
     Register {
-        /// PekoHub origin (default: https://pekohub.ai; pekohub.org
-        /// redirects there, and a tunnel can't follow a redirect)
-        #[arg(long, default_value = "https://pekohub.ai")]
+        /// PekoHub API origin (`pekohub.ai` and `pekohub.org` are read as
+        /// `api.pekohub.ai`)
+        #[arg(long, default_value = "https://api.pekohub.ai")]
         hub: String,
-        /// API key of the Hub account to register under
+        /// API key of the Hub account to register under (for scripts;
+        /// otherwise you approve a sign-in code on the website)
         #[arg(long, env = "PEKOHUB_API_KEY")]
-        api_key: String,
+        api_key: Option<String>,
     },
     /// Remove this runtime's PekoHub registration
     Unregister {
         /// API key of the Hub account the runtime is registered under
+        /// (otherwise you approve a sign-in code on the website)
         #[arg(long, env = "PEKOHUB_API_KEY")]
-        api_key: String,
+        api_key: Option<String>,
     },
+}
+
+/// Sign the CLI in to the Hub: show a code, wait for the user to approve
+/// it on the website, and return an access token for their account.
+async fn sign_in(hub: &str, json: bool) -> anyhow::Result<String> {
+    use peko_core::tunnel::registration::{finish_device_sign_in, start_device_sign_in};
+    let pending = start_device_sign_in(hub).await?;
+    let link = pending
+        .verification_uri_complete
+        .clone()
+        .unwrap_or_else(|| pending.verification_uri.clone());
+    if json {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "user_code": pending.user_code,
+                "verification_uri": pending.verification_uri,
+                "verification_uri_complete": pending.verification_uri_complete,
+            })
+        );
+    } else {
+        println!("To sign in, open {link}");
+        println!("and confirm the code {}", pending.user_code);
+        println!("Waiting for you to approve it…");
+    }
+    finish_device_sign_in(hub, &pending).await
 }
 
 /// Handle runtime commands
@@ -46,6 +75,10 @@ pub async fn handle_runtime(
             let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
                 paths.resolver().vault(),
             )?);
+            let api_key = match api_key {
+                Some(key) => key,
+                None => sign_in(&hub, json).await?,
+            };
             let registered = peko_core::tunnel::registration::register_runtime(
                 paths.resolver(),
                 vault,
@@ -77,6 +110,18 @@ pub async fn handle_runtime(
             let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
                 paths.resolver().vault(),
             )?);
+            let api_key = match api_key {
+                Some(key) => key,
+                None => {
+                    let credential = peko_core::tunnel::PekoHubCredential::from_file(
+                        &paths.resolver().pekohub_config(),
+                    )
+                    .map_err(|_| anyhow::anyhow!("This runtime isn't registered with PekoHub."))?;
+                    let origin = peko_core::tunnel::hub_origin(&credential.url)
+                        .ok_or_else(|| anyhow::anyhow!("the registration names no Hub origin"))?;
+                    sign_in(&origin, json).await?
+                }
+            };
             peko_core::tunnel::registration::unregister_runtime(paths.resolver(), vault, &api_key)
                 .await?;
             println!("✓ Runtime unregistered; the local user is offline-only.");
