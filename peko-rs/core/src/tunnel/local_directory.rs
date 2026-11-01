@@ -118,6 +118,16 @@ impl AgentDirectory for LocalFirstAgentDirectory {
             self.inner.resolve_by_handle_as(owner, name, caller).await
         }
     }
+    async fn resolve_by_hub_id_for_user(
+        &self,
+        hub_id: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        if let Some(resolution) = self.local_by_hub_id(hub_id).await {
+            return Ok(resolution);
+        }
+        self.inner.resolve_by_hub_id_for_user(hub_id, bearer).await
+    }
     async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
         if let Some(resolution) = self.local_by_hub_id(did).await {
             return Ok(resolution);

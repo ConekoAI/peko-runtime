@@ -1935,6 +1935,23 @@ impl TunnelDispatcher {
             vec![request_id.clone()],
         )
         .await;
+        // ADR-090 D5: a person's root post in a DM is ingress — the host
+        // starts the peko's turn (only for DMs; groups wake by binding).
+        if let peko_protocol::channel::ChannelEvent::Posted {
+            author,
+            text,
+            parent: None,
+            ..
+        } = &event
+        {
+            if let Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) =
+                author.parse::<ActorRef>()
+            {
+                self.host
+                    .human_dm_post(channel_id_typed.clone(), human, text.clone())
+                    .await;
+            }
+        }
 
         debug!(
             "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
@@ -2103,6 +2120,17 @@ impl TunnelDispatcher {
                 );
                 return Ok(());
             }
+        } else if is_human_dm_invite(
+            &payload.creator,
+            &payload.creator_did,
+            &payload.source_principal_did,
+            kind,
+        ) && author_signature.is_empty()
+        {
+            // ADR-090 D3: the local user of the source runtime opens a DM.
+            // A human has no key; the runtime signature and the Hub's
+            // binding of that runtime to the account vouch for it, and the
+            // host accepts only the two-member shape.
         } else {
             warn!(request_id, "Principal invites require a signing key proof");
             return Ok(());
@@ -2314,6 +2342,25 @@ impl TunnelDispatcher {
             }
         }
     }
+}
+
+/// Whether an invite's creator fields are the local user of the source
+/// runtime opening a DM (ADR-090 D3): one Hub user address as creator,
+/// creator DID, and source, on a `dm` invite.
+fn is_human_dm_invite(
+    creator: &str,
+    creator_did: &str,
+    source_principal_did: &str,
+    kind: peko_protocol::channel::ConversationKind,
+) -> bool {
+    kind == peko_protocol::channel::ConversationKind::Dm
+        && creator == creator_did
+        && creator == source_principal_did
+        && matches!(
+            creator.parse::<ActorRef>(),
+            Ok(human @ ActorRef::User(_)) if human.is_hub_route()
+                && human.canonical_address() == creator
+        )
 }
 
 /// The status and message a failed principal turn goes back with. A
@@ -4717,5 +4764,572 @@ mod tests {
             matches!(result, Err(peko_channel::ChannelError::NotFound(_))),
             "no mirror may be bootstrapped for an unknown invitee; got: {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // ADR-090: the local user DMs a peko on another runtime
+    // -----------------------------------------------------------------
+
+    use crate::ipc::packet::{RequestPacket, ResponsePacket};
+
+    #[test]
+    fn only_a_hub_user_opening_a_dm_is_a_human_invite() {
+        use peko_protocol::channel::ConversationKind::{Dm, Group};
+        let user = "user:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01";
+        assert!(is_human_dm_invite(user, user, user, Dm));
+        assert!(!is_human_dm_invite(user, user, user, Group), "a group");
+        let other = "user:hub:0b3c2a52-58b6-4b8e-9d1c-6a3f0b6f1a02";
+        assert!(!is_human_dm_invite(user, user, other, Dm), "another source");
+        assert!(
+            !is_human_dm_invite(user, other, user, Dm),
+            "another creator DID"
+        );
+        for creator in [
+            "user:local:local",
+            "visitor:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
+            "principal:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
+            "did:key:z6Mk",
+        ] {
+            assert!(
+                !is_human_dm_invite(creator, creator, creator, Dm),
+                "{creator}"
+            );
+        }
+    }
+
+    /// One in-process runtime with a captured tunnel: what it sends to
+    /// the Hub lands in `outbound`.
+    struct DmRuntime {
+        _dir: TempDir,
+        app: AppState,
+        dispatcher: TunnelDispatcher,
+        outbound: mpsc::Receiver<TunnelMessage>,
+    }
+
+    impl DmRuntime {
+        async fn new(directory: Arc<crate::tunnel::hub_directory::FakeAgentDirectory>) -> Self {
+            let dir = TempDir::new().unwrap();
+            let data_dir = dir.path().to_path_buf();
+            let app = AppState::with_data_dir(
+                data_dir.clone(),
+                "127.0.0.1".to_string(),
+                11435,
+                DaemonConfigSnapshot {
+                    data_dir: data_dir.clone(),
+                    config_dir: data_dir.clone(),
+                    log_level: "info".to_string(),
+                    launch_mode: crate::daemon::LaunchMode::Headless,
+                },
+                data_dir,
+            )
+            .await
+            .unwrap();
+            let (tx, outbound) = mpsc::channel(64);
+            *app.tunnel_handle_slot().write().await = Some(TunnelHandle::new(tx));
+            app.tunnel_channel_port()
+                .set_ctx(Arc::new(crate::tunnel::CrossRuntimeChannelCtx {
+                    directory,
+                    signing_key: Arc::clone(&app.runtime_signing_key),
+                    caller_runtime_id: app.runtime_did(),
+                    tunnel: app.tunnel_handle_slot(),
+                    principal_keys: TunnelHost::principal_signing_keys(&app),
+                }))
+                .await;
+            let dispatcher = TunnelDispatcher::new(Arc::new(app.clone()));
+            Self {
+                _dir: dir,
+                app,
+                dispatcher,
+                outbound,
+            }
+        }
+
+        /// Hand an envelope the other runtime sent to this one, as the Hub
+        /// would.
+        async fn receive(&self, message: TunnelMessage) {
+            match message {
+                TunnelMessage::TunnelChannelInvite {
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    creator,
+                    creator_did,
+                    name,
+                    kind,
+                    initial_members,
+                    signature,
+                    author_signature,
+                } => self
+                    .dispatcher
+                    .handle_inbound_tunnel_channel_invite(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        source_principal_did,
+                        channel_id,
+                        creator,
+                        creator_did,
+                        name,
+                        kind,
+                        initial_members,
+                        signature,
+                        author_signature,
+                    )
+                    .await
+                    .unwrap(),
+                TunnelMessage::TunnelChannelEvent {
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    channel_id,
+                    event,
+                    signature,
+                    author_signature,
+                } => self
+                    .dispatcher
+                    .handle_inbound_tunnel_channel_event(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        source_principal_did,
+                        channel_id,
+                        event,
+                        signature,
+                        author_signature,
+                    )
+                    .await
+                    .unwrap(),
+                other => panic!("unexpected envelope {other:?}"),
+            }
+        }
+
+        /// Everything this runtime sent so far.
+        fn sent(&mut self) -> Vec<TunnelMessage> {
+            std::iter::from_fn(|| self.outbound.try_recv().ok()).collect()
+        }
+
+        async fn ipc(&self, request: RequestPacket) -> ResponsePacket {
+            struct Sink(std::sync::Mutex<Vec<ResponsePacket>>);
+            #[async_trait::async_trait]
+            impl crate::ipc::response_sink::ResponseSink for Sink {
+                async fn send_bytes(&self, bytes: &[u8]) -> std::io::Result<()> {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(bytes).map_err(std::io::Error::other)?);
+                    Ok(())
+                }
+            }
+            use crate::ipc::handlers::RequestHandler;
+            let sink = Sink(std::sync::Mutex::new(Vec::new()));
+            crate::ipc::handlers::channel::ChannelHandler::new(Arc::new(self.app.clone()))
+                .handle(
+                    request,
+                    &peko_auth::caller::CallerContext::local(),
+                    &sink,
+                    &crate::ipc::server::PeerAddr::Ip("127.0.0.1:0".parse().unwrap()),
+                )
+                .await
+                .unwrap();
+            sink.0.into_inner().unwrap().pop().expect("one response")
+        }
+    }
+
+    /// Deliver what `from` sent to `to`, and the receipts back, until both
+    /// are quiet.
+    async fn relay(a: &mut DmRuntime, b: &mut DmRuntime) {
+        loop {
+            let (to_b, to_a) = (a.sent(), b.sent());
+            if to_b.is_empty() && to_a.is_empty() {
+                return;
+            }
+            for message in to_b {
+                b.receive(message).await;
+            }
+            for message in to_a {
+                a.receive(message).await;
+            }
+        }
+    }
+
+    fn posts(events: &[peko_channel::ChannelEvent]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { author, text, .. } => {
+                    Some((author.clone(), text.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// ADR-090 end to end, two runtimes in process with the Hub as a
+    /// relay: the local user of A opens a DM with a peko hosted on B, B
+    /// binds a session in the conversation's compartment, the user's
+    /// post reaches B and wakes the peko (acting for its owner), and the
+    /// peko's answer reaches A's record. Reopening finds the same DM, and
+    /// works with the directory down.
+    #[tokio::test]
+    async fn local_user_talks_to_a_peko_on_another_runtime() {
+        use crate::tunnel::hub_directory::{
+            AgentResolution, DirectoryErrorKind, FakeAgentDirectory, ResolvedExposure,
+        };
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let human = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+
+        // B hosts the peko, registered and owned by the person's account.
+        let mut b = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &b.app,
+            "peko",
+            human.clone(),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        b.app
+            .tunnel_channel_port()
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("peko"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+
+        // A is the person's runtime, registered under their account.
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let resolution = AgentResolution {
+            runtime_id: b.app.runtime_did(),
+            instance_id: "instance".into(),
+            name: Some("peko".into()),
+            hub_id: hub_id.clone(),
+            local_id: peko.id.0.clone(),
+            identity_key: peko_key.clone(),
+            agent_did: peko_did.clone(),
+            owner_principal: human.clone(),
+            exposure: ResolvedExposure::Private,
+        };
+        directory.register_hub_id(&hub_id, resolution);
+        let mut a = DmRuntime::new(Arc::clone(&directory)).await;
+        let open = RequestPacket::ChannelOpenRemoteDm {
+            request_id: 1,
+            hub_id: hub_id.clone(),
+            token: Some("desktop-token".into()),
+        };
+        // Unregistered, the runtime cannot open one.
+        match a.ipc(open.clone()).await {
+            ResponsePacket::Error { message, .. } => {
+                assert!(message.contains("peko runtime register"), "{message}")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        a.app
+            .tunnel_channel_port()
+            .local()
+            .link_local_user(&a.app.runtime_did(), &account)
+            .await
+            .unwrap();
+
+        let channel = match a.ipc(open.clone()).await {
+            ResponsePacket::ChannelRemoteDmOpened {
+                channel,
+                peer,
+                name,
+                created,
+                ..
+            } => {
+                assert!(created);
+                assert_eq!(peer, format!("principal:hub:{hub_id}"));
+                assert_eq!(name.as_deref(), Some("peko"));
+                channel
+            }
+            other => panic!("expected the DM, got {other:?}"),
+        };
+        assert_eq!(
+            channel,
+            peko_channel::dm_channel_id(&peko_key, &format!("user:hub:{account}"))
+        );
+        relay(&mut a, &mut b).await;
+
+        // B: a mirror bound to a new session in the conversation's
+        // compartment; the person's turns run as the owner.
+        let b_port = b.app.tunnel_channel_port();
+        let binding = b_port
+            .binding_for(&channel, &peko.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(binding.session.starts_with("/user-"), "{binding:?}");
+        assert_eq!(binding.wake, peko_channel::WakePolicy::Human);
+        let metas = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(peko.memory.sessions_dir())
+            .list_all_sessions(false)
+            .await
+            .unwrap();
+        let session = metas
+            .iter()
+            .find(|m| m.channel_id.as_deref() == Some(channel.as_str()))
+            .expect("a session bound to the DM");
+        assert_eq!(
+            session.compartment,
+            Some(peko_tools_core::Compartment::Conversation {
+                channel: channel.as_str().into()
+            })
+        );
+        let stamps = crate::principal::trust::stamps_for(
+            &peko,
+            Some(b_port.clone() as Arc<dyn ChannelPort>),
+        );
+        assert_eq!(
+            stamps.driver(&human, &human).await.trust,
+            peko_tools_core::Trust::Owner
+        );
+
+        // The person posts on A; it reaches B, where it is ingress for the
+        // peko's session: with a run already active there, it becomes that
+        // run's steering (D5).
+        let child = session.session_id.to_string();
+        let permit = b
+            .app
+            .inbox_registry
+            .try_acquire_run(&child)
+            .await
+            .expect("no run yet");
+        let posted = a
+            .ipc(RequestPacket::ChannelPost {
+                request_id: 2,
+                channel: channel.as_str().into(),
+                sender_name: None,
+                text: "hello from my desktop".into(),
+                parent: None,
+            })
+            .await;
+        assert!(
+            matches!(posted, ResponsePacket::ChannelPosted { .. }),
+            "{posted:?}"
+        );
+        relay(&mut a, &mut b).await;
+        let on_b = b_port.peek(&channel, &Checkpoint::default()).await.unwrap();
+        assert_eq!(
+            posts(&on_b),
+            [(
+                format!("user:hub:{account}"),
+                "hello from my desktop".to_string()
+            )]
+        );
+        assert_eq!(
+            b.app.human_dm_recipients(&channel).await,
+            vec![peko.id.clone()]
+        );
+        let mut steering = Vec::new();
+        for _ in 0..100 {
+            if let Some(inbox) = b.app.inbox_registry.peek_inbox(&child).await {
+                steering.extend(inbox.drain_steering().await);
+            }
+            if !steering.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            matches!(steering.as_slice(), [s] if s.content.contains("hello from my desktop")),
+            "the post reaches the running session"
+        );
+        drop(permit);
+
+        // The peko's answer reaches the person's record on A.
+        b_port
+            .post(
+                &channel,
+                &ActorRef::from(&peko.id),
+                peko_channel::PostMsg::root("hi! what can I do?"),
+            )
+            .await
+            .unwrap();
+        relay(&mut a, &mut b).await;
+        let read = a
+            .ipc(RequestPacket::ChannelPeek {
+                request_id: 3,
+                channel: channel.as_str().into(),
+                since: None,
+                tail: None,
+                before: None,
+                query: None,
+                author: None,
+            })
+            .await;
+        let ResponsePacket::ChannelPeekResult { events, .. } = read else {
+            panic!("expected events, got {read:?}");
+        };
+        let texts: Vec<_> = posts(&events).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(texts, ["hello from my desktop", "hi! what can I do?"]);
+        assert_eq!(
+            posts(&events)[1].0,
+            format!("principal:hub:{hub_id}"),
+            "the answer is the peko's"
+        );
+
+        // Reopening finds the same DM without a new invite — also with
+        // the directory unreachable.
+        for down in [false, true] {
+            if down {
+                directory
+                    .register_hub_id_err(&hub_id, DirectoryErrorKind::Transport("offline".into()));
+            }
+            match a.ipc(open.clone()).await {
+                ResponsePacket::ChannelRemoteDmOpened {
+                    channel: again,
+                    created,
+                    ..
+                } => assert!(again == channel && !created),
+                other => panic!("expected the same DM, got {other:?}"),
+            }
+            assert!(a.sent().is_empty(), "no second invite");
+        }
+
+        // On B, the account's Hub-proxy conversation is this same DM.
+        assert_eq!(
+            b_port
+                .ensure_dm(&peko.id, &human, &binding.session)
+                .await
+                .unwrap(),
+            channel
+        );
+    }
+
+    /// ADR-090 D3: an unsigned invite is a person's only in the exact
+    /// two-member DM shape, and a private peko still needs its owner's
+    /// `Chat` grant for that person.
+    #[tokio::test]
+    async fn a_persons_invite_must_be_a_granted_two_member_dm() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        let b = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &b.app,
+            "peko",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let port = b.app.tunnel_channel_port();
+        port.register_actor(
+            &ActorRef::from(&peko.id),
+            Some(&hub_id),
+            Some(&peko_did),
+            Some(&peko_key),
+            Some("peko"),
+            peko_channel::Registration::Private,
+        )
+        .await
+        .unwrap();
+        let source = peko_identity::keys::KeyPair::generate();
+        let source_runtime = crate::tunnel::verifying_key_to_did_key(&source.verifying_key);
+        let account = uuid::Uuid::new_v4().to_string();
+        let person = format!("user:hub:{account}");
+        let channel = peko_channel::dm_channel_id(&peko_key, &person);
+        let person_row = peko_protocol::channel::InitialMember {
+            principal_did: person.clone(),
+            runtime_id: Some(source_runtime.clone()),
+            hub_id: Some(account.clone()),
+            identity_key: Some(person.clone()),
+            name: None,
+        };
+        let peko_row = peko_protocol::channel::InitialMember {
+            principal_did: peko_did.clone(),
+            runtime_id: None,
+            hub_id: Some(hub_id.clone()),
+            identity_key: Some(peko_key.clone()),
+            name: Some("peko".into()),
+        };
+        let invite = |request: &str, members: Vec<peko_protocol::channel::InitialMember>| {
+            let (signature, members) = build_signed_tunnel_channel_invite(
+                &source,
+                request,
+                &source_runtime,
+                &b.app.runtime_did(),
+                &person,
+                channel.as_str(),
+                &person,
+                &person,
+                "dm-peko",
+                peko_channel::ConversationKind::Dm,
+                &members,
+            );
+            TunnelMessage::TunnelChannelInvite {
+                request_id: request.into(),
+                source_runtime_id: source_runtime.clone(),
+                recipient_runtime_id: b.app.runtime_did(),
+                source_principal_did: person.clone(),
+                channel_id: channel.as_str().into(),
+                creator: person.clone(),
+                creator_did: person.clone(),
+                name: "dm-peko".into(),
+                kind: peko_channel::ConversationKind::Dm,
+                initial_members: members,
+                signature,
+                author_signature: String::new(),
+            }
+        };
+        let mirrored = || async { port.local().conversation_kind(&channel).await.is_ok() };
+
+        let third = peko_protocol::channel::InitialMember {
+            principal_did: "user:hub:00000000-0000-4000-8000-000000000000".into(),
+            ..person_row.clone()
+        };
+        b.receive(invite(
+            "three",
+            vec![person_row.clone(), third, peko_row.clone()],
+        ))
+        .await;
+        assert!(!mirrored().await, "a DM has two members");
+
+        b.receive(invite(
+            "ungranted",
+            vec![person_row.clone(), peko_row.clone()],
+        ))
+        .await;
+        assert!(!mirrored().await, "a private peko needs a Chat grant");
+
+        grant_chat(
+            &b.dispatcher,
+            "peko",
+            &[ActorRef::User(peko_subject::Route::hub(account))],
+        )
+        .await;
+        b.receive(invite("granted", vec![person_row, peko_row]))
+            .await;
+        assert!(mirrored().await);
+        assert!(port
+            .binding_for(&channel, &peko.id)
+            .await
+            .unwrap()
+            .is_some());
     }
 }

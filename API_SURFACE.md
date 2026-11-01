@@ -12,6 +12,21 @@ This document defines the public API surface for Peko, including the new Unified
 
 ---
 
+## The local user's DM with a peko on another runtime (ADR-090)
+
+| Component | Module | Status | Purpose |
+|-----------|--------|--------|---------|
+| `TunnelChannelPort::open_hub_dm(hub_id, bearer) -> HubDm { channel, peer, created }` | `core::tunnel::tunnel_channel_port` | ✅ New | Resolve a remote peko by Hub ID (with the user's token for a private one), find-or-create the DM, and queue the user's invite; offline, returns a DM opened before |
+| `human_dm_channel_id(principal_key, "user:hub:<account>")` | `core::tunnel` | ✅ New | The pair id both runtimes derive from the wire |
+| `AgentDirectory::resolve_by_hub_id_for_user(hub_id, bearer)` | `core::tunnel::hub_directory` | ✅ New (defaulted) | Lookup as the local user: `Bearer` token for this request only; the default (and without a token) is the anonymous lookup |
+| `ChannelStore::{ensure_human_dm, channel_name}` | `peko_channel::store` | ✅ New | The user's side of the DM (both members, no binding); a channel's display name |
+| `TunnelHost::human_dm_post`, `AppState::human_dm_recipients` | `core::tunnel::host`, `daemon::state` | ✅ New | After a person's root post over the tunnel is applied, start the turn of each peko bound to that DM |
+| `PrincipalManager::receive_channel_dm_post` | `principal::manager` | ✅ New | Ingress for a post already in the channel: drive the bound session's turn acting for the author (steering when a run is active, waits when parked), post the answer |
+| `RequestPacket::ChannelOpenRemoteDm` / `ResponsePacket::ChannelRemoteDmOpened` | `ipc::packet` | ✅ New | `channel_open_remote_dm { hub_id, token? }` → `channel_remote_dm_opened { channel, peer, hub_id, name?, created }`; local callers only |
+| `ChannelHost::tunnel_channel_port` | `ipc::handlers::channel` | ✅ New (defaulted) | The concrete port the open request needs; `None` refuses it |
+| `TunnelDispatcher` invite handling | `core::tunnel::dispatcher` | ⚠️ Changed | Accepts an unsigned invite only as a Hub user's two-member DM (`creator = creator_did = source = user:hub:<account>`) |
+| `ChannelHandler` caller registration | `ipc::handlers::channel` | ⚠️ Changed | Registers only an unknown caller; no longer drops the local user's Hub account on every request |
+
 ## Channel kind, bindings, and group management (ADR-082)
 
 | Component | Module | Status | Purpose |

@@ -1700,6 +1700,94 @@ impl PrincipalManager {
         }
     }
 
+    /// ADR-090 D5: a person's post that arrived over the tunnel on DM
+    /// `channel` is ingress, like [`Self::receive_streaming`] — except the
+    /// post is already in the channel. Drives the turn in the session
+    /// bound there, acting for `author`, and posts the answer to the
+    /// channel (it fans back to the person's runtime). A run already
+    /// active takes the message as steering; a parked session keeps it
+    /// (ADR-089 D2).
+    pub(crate) async fn receive_channel_dm_post(
+        &self,
+        principal_id: &PrincipalId,
+        author: &ActorRef,
+        channel: &peko_channel::ChannelId,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        let principal = self
+            .get(principal_id.clone())
+            .await
+            .ok_or_else(|| anyhow::anyhow!("principal {principal_id} is not loaded"))?;
+        let port = self
+            .channel_port
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no channel store"))?;
+        anyhow::ensure!(
+            port.binding_for(channel, &principal.id).await?.is_some(),
+            "{principal_id} has no session on {channel}"
+        );
+        let peer = port.actor_info(author).await.subject();
+        let (owner, agent_name) = {
+            let config = principal.config.read().await;
+            (
+                config.owner.clone(),
+                crate::principal::child_turns::peer_child_session_agent_name(
+                    &config,
+                    &principal.workspace_path,
+                ),
+            )
+        };
+        // Keyed by the channel, so this finds the session the binding names.
+        let child_id = crate::principal::peer_children::ensure_channel_child(
+            &agent_name,
+            channel.as_str(),
+            &crate::principal::peer_children::peer_child_slug(&peer)?,
+            &peer.to_string(),
+            &crate::principal::child_turns::peer_child_session_manager(
+                &principal,
+                &agent_name,
+                &owner,
+            ),
+        )
+        .await?;
+        let Some(_permit) = self.inbox_registry.try_acquire_run(&child_id).await else {
+            let text =
+                crate::principal::attachments::turn_text(message, &principal.workspace_path, &[]);
+            self.inbox_registry
+                .get_or_create(&child_id)
+                .await
+                .push(SteeringMessage::from_peer(text).into())
+                .await;
+            if let Some(detector) = &self.idle_detector {
+                detector.record_activity(&principal.id.0).await;
+            }
+            return Ok(());
+        };
+        let turns = self.peer_child_turns_for(&principal).await?;
+        if self
+            .wait_for_disruption(&principal, &turns, &child_id, Some(channel), message, &[])
+            .await
+            .is_some()
+        {
+            return Ok(());
+        }
+        let driver = turns.driver(author, author).await;
+        let acting_for = turns
+            .root_stamp(
+                Some(&driver),
+                &child_id,
+                peko_tools_core::Origin::Ingress { channel: None },
+            )
+            .await;
+        let outcome = turns
+            .drive_turn_streaming(&child_id, message, Arc::new(|_| {}), None, None, acting_for)
+            .await?;
+        post_peer_dm_reply(&port, &principal.id, channel, &outcome.final_text).await;
+        self.record_peer_recall(&principal, author, &child_id, &outcome.final_text)
+            .await;
+        Ok(())
+    }
+
     /// Principal-self entry point (Phase 3, 2026-08-15): a turn fired
     /// into the principal's forever-continuous trunk session
     /// `root:self` (see `routers::root::trunk_session_id`). This is the

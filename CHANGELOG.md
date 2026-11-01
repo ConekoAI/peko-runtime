@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: the local user talks to a peko on another runtime over channels (2026-11-01, ADR-090)
+
+- New IPC `channel_open_remote_dm { hub_id, token? }` →
+  `channel_remote_dm_opened { channel, peer, hub_id, name, created }`
+  (local callers only). The runtime resolves the peko through PekoHub —
+  with `token`, the desktop's PekoHub access token, for a private peko;
+  it is used for that lookup and never stored — opens a DM between its
+  local user and the peko, and invites the peko's runtime over the
+  tunnel. Post and read with `channel_post` / `channel_peek` /
+  `channel_events_watch`. Calling it again returns the same DM, also
+  when PekoHub cannot be reached; if the peko moved, its new runtime is
+  invited. The runtime must be registered (`peko runtime register`).
+- On the peko's runtime, the DM gets a session of its own (its own
+  compartment), and the person's posts start turns there like any
+  message to the peko: as its owner if the account owns it, trusted if
+  the owner granted that, else untrusted; a private peko needs the
+  owner's `Chat` grant. The answers come back over the tunnel. Either
+  runtime may be offline: posts wait in the sender's outbox and are
+  delivered when it is back. A conversation the account already had
+  through PekoHub's chat continues in the same DM.
+- The tunnel accepts one unsigned invite: a Hub user's two-member DM.
+  PekoHub must relay `user:hub:<id>` envelopes only from the runtime
+  registered to that account (a PekoHub change).
+- Fixed: every `channel_*` IPC request from the local user re-registered
+  it without its Hub account, so a registered runtime's local user lost
+  its PekoHub identity (and its posts to remote channels failed).
+
 ### Change: PekoHub's API on api.pekohub.ai; sign in with a code; `peko seed` (2026-11-01)
 
 - The official hub's API is `api.pekohub.ai` (`pekohub.ai` is the website).

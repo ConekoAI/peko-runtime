@@ -76,6 +76,12 @@ pub(crate) trait ChannelHost: Send + Sync {
     /// [`Self::ensure_invitee_subscriber`]: the IPC arm never blocks on it
     /// and create must not depend on subscriber-spawn success.
     fn channel_created(&self, _creator: &PrincipalId, _channel: &ChannelId) {}
+
+    /// The concrete cross-runtime port, for `ChannelOpenRemoteDm`
+    /// (ADR-090 D2). Default `None`: the request is refused.
+    fn tunnel_channel_port(&self) -> Option<Arc<crate::tunnel::TunnelChannelPort>> {
+        None
+    }
 }
 
 /// `channel` domain request handler. Constructed with an `Arc<dyn
@@ -347,6 +353,52 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelOpenRemoteDm` (ADR-090 D2): the local user opens, or
+    /// finds, its DM with a peko on another runtime. Local callers only —
+    /// it speaks as the runtime's local user and may carry its Hub token.
+    async fn channel_open_remote_dm(
+        &self,
+        request_id: u64,
+        hub_id: &str,
+        token: Option<&str>,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user opens its conversations".to_string(),
+            )
+            .await;
+        }
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".to_string(),
+            )
+            .await;
+        };
+        match port.open_hub_dm(hub_id, token).await {
+            Ok(dm) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelRemoteDmOpened {
+                        request_id,
+                        channel: dm.channel,
+                        peer: dm.peer.hub_address().unwrap_or(dm.peer.address),
+                        hub_id: hub_id.to_string(),
+                        name: dm.peer.name,
+                        created: dm.created,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     /// The principal hosted here under `local_id`, if any.
     async fn hosted_principal(&self, local_id: &str) -> Option<Arc<crate::principal::Principal>> {
         self.host
@@ -417,6 +469,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelPinToShared { .. }
                 | RequestPacket::ChannelInfo { .. }
                 | RequestPacket::ChannelSetWake { .. }
+                | RequestPacket::ChannelOpenRemoteDm { .. }
         )
     }
 
@@ -427,23 +480,30 @@ impl RequestHandler for ChannelHandler {
         sink: &dyn ResponseSink,
         _peer: &PeerAddr,
     ) -> anyhow::Result<()> {
+        // Register a caller the registry does not know yet. A known one is
+        // left alone: re-registering `user:local` without its Hub route
+        // would drop the account the runtime is registered under
+        // (ADR-081 D3).
         let actor = caller.attribution_subject();
-        let hub = actor.route().filter(|r| r.is_hub()).map(|r| r.id());
-        self.host
-            .channel_port()
-            .register_actor(
-                &actor,
-                hub,
-                None,
-                None,
-                None,
-                if hub.is_some() {
-                    peko_channel::Registration::Registered
-                } else {
-                    peko_channel::Registration::LocalOnly
-                },
-            )
-            .await?;
+        let known = self.host.channel_port().actor_info(&actor).await;
+        if known.identity_key == known.address {
+            let hub = actor.route().filter(|r| r.is_hub()).map(|r| r.id());
+            self.host
+                .channel_port()
+                .register_actor(
+                    &actor,
+                    hub,
+                    None,
+                    None,
+                    None,
+                    if hub.is_some() {
+                        peko_channel::Registration::Registered
+                    } else {
+                        peko_channel::Registration::LocalOnly
+                    },
+                )
+                .await?;
+        }
         match request {
             RequestPacket::ChannelCreate {
                 request_id,
@@ -1035,6 +1095,15 @@ impl RequestHandler for ChannelHandler {
                 wake,
             } => {
                 self.channel_set_wake(request_id, &channel, &principal_name, &wake, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelOpenRemoteDm {
+                request_id,
+                hub_id,
+                token,
+            } => {
+                self.channel_open_remote_dm(request_id, &hub_id, token.as_deref(), caller, sink)
                     .await?
             }
 
@@ -1668,6 +1737,99 @@ mod tests {
     fn capture_sink() -> (Arc<Mutex<Vec<ResponsePacket>>>, CaptureSink) {
         let captured = Arc::new(Mutex::new(Vec::<ResponsePacket>::new()));
         (captured.clone(), CaptureSink(captured))
+    }
+
+    /// ADR-081 D3: a channel request by the local user leaves its Hub
+    /// account linked (it used to re-register the caller without it).
+    #[tokio::test]
+    async fn a_channel_request_keeps_the_local_users_hub_account() {
+        let (_tmp, host) = test_host();
+        let store = ChannelStore::new(ChannelConfig {
+            runtime_dir: host.path_resolver.runtime_dir(),
+            shared_dir: None,
+        });
+        store
+            .link_local_user("did:key:zHere", "acct-uuid")
+            .await
+            .unwrap();
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+        let (_captured, sink) = capture_sink();
+        ChannelHandler::new(host.clone())
+            .handle(
+                RequestPacket::ChannelMembers {
+                    request_id: 1,
+                    channel: ch.to_string(),
+                },
+                &test_caller(),
+                &sink,
+                &PeerAddr::Ip("127.0.0.1:0".parse().unwrap()),
+            )
+            .await
+            .unwrap();
+        let local = host.port.actor_info(&ActorRef::User("local".into())).await;
+        assert_eq!(local.hub_id.as_deref(), Some("acct-uuid"));
+    }
+
+    /// ADR-090 D2: only the local user opens its remote DMs, and a host
+    /// without a Hub connection says so.
+    #[tokio::test]
+    async fn open_remote_dm_is_the_local_users_and_needs_the_hub() {
+        let (_tmp, host) = test_host();
+        let handler = ChannelHandler::new(host.clone());
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().unwrap());
+        let open = || RequestPacket::ChannelOpenRemoteDm {
+            request_id: 9,
+            hub_id: uuid::Uuid::new_v4().to_string(),
+            token: None,
+        };
+        for (caller, expected) in [
+            (
+                CallerContext::from_jwt("alice".to_string()),
+                "[permission_denied]",
+            ),
+            (test_caller(), "no PekoHub connection"),
+        ] {
+            let (captured, sink) = capture_sink();
+            handler.handle(open(), &caller, &sink, &peer).await.unwrap();
+            let responses = captured.lock().unwrap().clone();
+            match responses.as_slice() {
+                [ResponsePacket::Error {
+                    request_id: 9,
+                    message,
+                }] => assert!(message.contains(expected), "{message}"),
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn open_remote_dm_packets_round_trip() {
+        let request: RequestPacket = serde_json::from_value(serde_json::json!({
+            "type": "channel_open_remote_dm",
+            "request_id": 4,
+            "hub_id": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
+        }))
+        .unwrap();
+        assert!(matches!(
+            request,
+            RequestPacket::ChannelOpenRemoteDm {
+                request_id: 4,
+                token: None,
+                ..
+            }
+        ));
+        let response = ResponsePacket::ChannelRemoteDmOpened {
+            request_id: 4,
+            channel: ChannelId("dm_ab".into()),
+            peer: "principal:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01".into(),
+            hub_id: "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01".into(),
+            name: Some("peko".into()),
+            created: true,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["type"], "channel_remote_dm_opened");
+        assert_eq!(json["channel"], "dm_ab");
+        assert_eq!(response.request_id(), 4);
     }
 
     /// Phase 2, amended by ADR-057: a member user posts as their own

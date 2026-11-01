@@ -2247,7 +2247,8 @@ Under the channel runtime dir, `channel_delivery/`:
   yet confirmed by its recipient runtime: `{seq, request_id,
   recipient_runtime_id, item, created_at, attempts, last_attempt}`,
   where `item` is `{"kind":"event", channel, event, source}` or
-  `{"kind":"invite", channel, inviter, creator_did, invitee}` — the
+  `{"kind":"invite", channel, inviter, creator_did, invitee}` or
+  `{"kind":"user_invite", channel, invitee}` (ADR-090) — the
   unsigned parts, re-signed on every attempt. The zero-padded `seq`
   keeps send order. Deleted on receipt; dropped after 30 days.
 - `received.jsonl` — `{request_id, at}` per inbound envelope applied,
@@ -2257,6 +2258,46 @@ Under the channel runtime dir, `channel_delivery/`:
 Receipts travel as `{"kind":"received", channel, request_ids, at}`
 channel events inside `TunnelChannelEvent` envelopes and are never
 written to a channel log.
+
+### 5¾.2⅞b The local user's DM with a remote peko (2026-11-01, ADR-090)
+
+A `dm` channel between the runtime's local user and a principal hosted on
+another runtime. Its id is `dm_channel_id(<principal actor key>,
+"user:hub:<account>")`, where `<account>` is the Hub account the user's
+runtime is registered under; both runtimes compute it from the invite.
+
+On the user's runtime, `meta.json` has `kind: "dm"`, `creator:
+"user:local:local"`, `participants` = the two addresses, and no
+`bindings`; `members.json` lists `user:local:local` and
+`principal:hub:<UUID>` as members and the peko's signing DID under its
+runtime in `remote_members`. On the peko's runtime the mirror has the peko
+as its only local member with a binding to a new session (compartment
+`conversation`), and `user:hub:<account>` under the user's runtime in
+`remote_members`; an existing conversation with that pair id (the Hub
+proxy's) is reused.
+
+IPC (local callers only):
+
+```json
+{"type": "channel_open_remote_dm", "request_id": 1,
+ "hub_id": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01", "token": "<PekoHub access token>"}
+
+{"type": "channel_remote_dm_opened", "request_id": 1, "channel": "dm_9c1e…",
+ "peer": "principal:hub:6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01",
+ "hub_id": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01", "name": "peko", "created": true}
+```
+
+`token` is optional (a public peko resolves without it) and is never
+stored. Posts and reads use `channel_post` / `channel_peek` /
+`channel_events_watch` on `channel`.
+
+The user's `tunnel_channel_invite`: `creator`, `creator_did`, and
+`source_principal_did` are all `user:hub:<account>`; `kind` is `dm`;
+`initial_members` is exactly `[{principal_did: "user:hub:<account>",
+runtime_id: <user's runtime>, hub_id: <account>, identity_key:
+"user:hub:<account>"}, {principal_did: <peko signing DID>, runtime_id:
+null, hub_id, identity_key, name}]`; `author_signature` is empty (the
+runtime signature covers it). Any other unsigned invite is refused.
 
 ### 5¾.3 Mirror `members.json` partition (Phase 12a)
 
