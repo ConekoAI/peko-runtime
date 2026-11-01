@@ -1,0 +1,278 @@
+[
+  {
+    "type": "runtime_hello",
+    "runtimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "nonce": "client-nonce",
+    "signature": "hello-signature"
+  },
+  {
+    "type": "tunnel_challenge",
+    "nonce": "server-nonce"
+  },
+  {
+    "type": "tunnel_challenge_ack",
+    "nonce": "server-nonce",
+    "signature": "challenge-signature"
+  },
+  {
+    "type": "tunnel_ready",
+    "heartbeatIntervalSecs": 30
+  },
+  {
+    "type": "heartbeat",
+    "seq": 7
+  },
+  {
+    "type": "heartbeat_ack",
+    "seq": 7
+  },
+  {
+    "type": "disconnect",
+    "reason": "shutting down"
+  },
+  {
+    "type": "proxied_request",
+    "requestId": "req-1",
+    "principal": "ada",
+    "payload": [
+      123,
+      125
+    ]
+  },
+  {
+    "type": "proxied_response",
+    "requestId": "req-1",
+    "payload": [
+      123,
+      125
+    ]
+  },
+  {
+    "type": "stream_chunk",
+    "requestId": "req-1",
+    "seq": 1,
+    "payload": [
+      123,
+      125
+    ]
+  },
+  {
+    "type": "stream_end",
+    "requestId": "req-1"
+  },
+  {
+    "type": "stream_iteration",
+    "requestId": "req-1",
+    "iteration": 2
+  },
+  {
+    "type": "principal_registration_rejected",
+    "registrationId": "reg-1",
+    "message": "already linked"
+  },
+  {
+    "type": "principal_registered",
+    "registrationId": "reg-1",
+    "localId": "prin_ada",
+    "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "signingDid": "did:key:z6MkPrincipal"
+  },
+  {
+    "type": "principal_unlinked",
+    "localId": "prin_ada",
+    "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb"
+  },
+  {
+    "type": "principal_transfer",
+    "requestId": "xfer-1",
+    "localId": "prin_ada",
+    "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "ownerId": "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d"
+  },
+  {
+    "type": "principal_transfer_rejected",
+    "requestId": "xfer-1",
+    "message": "not the owner"
+  },
+  {
+    "type": "principal_owner_changed",
+    "requestId": "xfer-1",
+    "localId": "prin_ada",
+    "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "ownerId": "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d"
+  },
+  {
+    "type": "instance_deregister",
+    "payload": {
+      "id": "inst-1"
+    }
+  },
+  {
+    "type": "instance_announce",
+    "payload": {
+      "id": "inst-1",
+      "type": "principal",
+      "name": "ada",
+      "registrationId": "reg-1",
+      "localId": "prin_ada",
+      "identityKey": "3f0f6b1e-0000-4000-8000-000000000001",
+      "agentDid": "did:key:z6MkPrincipal",
+      "principalDid": "did:key:z6MkPrincipal",
+      "principalPop": "header.payload.signature",
+      "owner": {
+        "kind": "user",
+        "id": "hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d"
+      },
+      "bundleRef": "alice/ada:1.0.0",
+      "runtimeDisplayName": "peko-runtime",
+      "status": "online",
+      "exposure": "public",
+      "capabilities": [
+        "chat"
+      ],
+      "metadata": {},
+      "avatar": "🦉"
+    }
+  },
+  {
+    "type": "instance_heartbeat",
+    "payload": {
+      "id": "inst-1",
+      "status": "busy",
+      "timestamp": "2026-11-01T10:00:00Z"
+    }
+  },
+  {
+    "type": "exposure_update",
+    "payload": {
+      "instanceId": "inst-1",
+      "exposure": "private"
+    }
+  },
+  {
+    "type": "status_update",
+    "payload": {
+      "instanceId": "inst-1",
+      "status": "offline"
+    }
+  },
+  {
+    "type": "tunnel_channel_event",
+    "requestId": "evt-created",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "channelId": "group:research",
+    "event": {
+      "kind": "created",
+      "channel": "group:research",
+      "creator": "did:key:z6MkPrincipal",
+      "name": "research",
+      "at": "2026-11-01T10:00:00Z"
+    },
+    "signature": "runtime-signature",
+    "authorSignature": "author-signature"
+  },
+  {
+    "type": "tunnel_channel_event",
+    "requestId": "evt-posted",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "channelId": "group:research",
+    "event": {
+      "kind": "posted",
+      "channel": "group:research",
+      "author": "did:key:z6MkPrincipal",
+      "parent": "msg-0",
+      "text": "hello",
+      "at": "2026-11-01T10:00:00Z",
+      "via": "/user-alice",
+      "msg_id": "msg-1",
+      "reply_to": "msg-0",
+      "attachments": [
+        {
+          "name": "notes.md",
+          "path": "attachments/notes.md",
+          "mime": "text/markdown",
+          "size": 42
+        }
+      ]
+    },
+    "signature": "runtime-signature",
+    "authorSignature": "author-signature"
+  },
+  {
+    "type": "tunnel_channel_event",
+    "requestId": "evt-member_joined",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "channelId": "group:research",
+    "event": {
+      "kind": "member_joined",
+      "channel": "group:research",
+      "member": "did:key:z6MkOther",
+      "at": "2026-11-01T10:00:00Z"
+    },
+    "signature": "runtime-signature",
+    "authorSignature": "author-signature"
+  },
+  {
+    "type": "tunnel_channel_event",
+    "requestId": "evt-member_left",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "channelId": "group:research",
+    "event": {
+      "kind": "member_left",
+      "channel": "group:research",
+      "member": "did:key:z6MkOther",
+      "at": "2026-11-01T10:00:00Z"
+    },
+    "signature": "runtime-signature",
+    "authorSignature": "author-signature"
+  },
+  {
+    "type": "tunnel_channel_event",
+    "requestId": "evt-received",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "did:key:z6MkPrincipal",
+    "channelId": "group:research",
+    "event": {
+      "kind": "received",
+      "channel": "group:research",
+      "request_ids": [
+        "evt-posted"
+      ],
+      "at": "2026-11-01T10:00:00Z"
+    },
+    "signature": "runtime-signature",
+    "authorSignature": "author-signature"
+  },
+  {
+    "type": "tunnel_channel_invite",
+    "requestId": "inv-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "dm_0123",
+    "creator": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "creatorDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "name": "dm",
+    "kind": "dm",
+    "initialMembers": [
+      {
+        "principalDid": "did:key:z6MkPrincipal",
+        "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "identityKey": "3f0f6b1e-0000-4000-8000-000000000001",
+        "name": "ada",
+        "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+      }
+    ],
+    "signature": "runtime-signature",
+    "authorSignature": ""
+  }
+]
