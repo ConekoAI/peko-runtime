@@ -7,6 +7,8 @@ pub mod a2a_signature;
 pub mod backoff;
 pub(crate) mod channel_outbox;
 pub mod client;
+#[cfg(test)]
+mod contract;
 pub mod credential;
 pub mod cross_runtime;
 pub mod cross_runtime_channel;
