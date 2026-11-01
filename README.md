@@ -106,6 +106,7 @@ The full reference is [CLI_REFERENCE.md](docs/user-guide/CLI_REFERENCE.md);
 ```bash
 peko create <NAME> --model <MODEL_ID>     # Create a peko and wait for its first turn
 peko create <NAME> -s <SEED.toml>         # Grow a peko from a seed
+peko seed <NAME> [-o <PATH>]              # Export its seed (definition, no identity)
 peko list                                 # List pekos
 peko show <NAME>                          # Identity, model, roles, tool catalog
 peko export <NAME> [-o <PATH>]            # Snapshot to a .peko package
@@ -203,7 +204,8 @@ peko daemon status
 peko daemon restart
 peko daemon stop
 
-peko runtime register --api-key <KEY>     # Link this runtime and its local user to PekoHub
+peko runtime register                     # Link this runtime and its local user to PekoHub
+                                          # (shows a code to approve on pekohub.ai)
 peko register <NAME> [--public]           # Put a peko online (private by default)
 peko unregister <NAME>
 
@@ -260,6 +262,15 @@ and plans, with a flat `manifest.toml` of SHA-256 checksums. Import checks
 every checksum, prints hook and MCP commands and skill ids before restoring,
 and audits them. A runtime holds one copy of a peko, so importing it where it
 already lives is refused.
+
+
+### Seeds
+
+A seed is a peko's definition without its existence: `peko seed <NAME>`
+writes its `principal.toml` minus identity, owner, grants, lifecycle and
+deployment state, and the operator's quota. Publish it at
+[pekohub.ai/seeds/new](https://pekohub.ai/seeds/new); anyone can download it
+and grow a new peko, with its own identity, using `peko create <NAME> -s <FILE>`.
 
 ---
 

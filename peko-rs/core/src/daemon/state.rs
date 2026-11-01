@@ -2365,6 +2365,40 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
     async fn tunnel_connected(&self) -> bool {
         AppState::tunnel_connected(self).await
     }
+
+    async fn register_runtime(
+        &self,
+        hub: &str,
+        token: &str,
+    ) -> anyhow::Result<crate::tunnel::registration::RuntimeRegistration> {
+        let registered = crate::tunnel::registration::register_runtime(
+            &self.path_resolver,
+            Arc::clone(&self.vault),
+            hub,
+            token,
+        )
+        .await?;
+        // Connect now rather than at the next daemon start.
+        AppState::stop_tunnel(self).await;
+        if let Err(e) = self
+            .start_tunnel(crate::tunnel::DEFAULT_MAX_RECONNECT_ATTEMPTS)
+            .await
+        {
+            tracing::warn!("registered with PekoHub, but the tunnel didn't start: {e:#}");
+        }
+        Ok(registered)
+    }
+
+    async fn unregister_runtime(&self, token: &str) -> anyhow::Result<()> {
+        crate::tunnel::registration::unregister_runtime(
+            &self.path_resolver,
+            Arc::clone(&self.vault),
+            token,
+        )
+        .await?;
+        AppState::stop_tunnel(self).await;
+        Ok(())
+    }
 }
 
 /// Project a catalog [`ModelConfig`](peko_providers::catalog::ModelConfig)
