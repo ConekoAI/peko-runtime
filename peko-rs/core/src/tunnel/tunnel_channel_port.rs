@@ -59,6 +59,10 @@ use crate::tunnel::channel_outbox::{ChannelOutbox, OutboxEntry, OutboxItem, Rece
 use crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx;
 use std::str::FromStr;
 
+#[path = "user_dm.rs"]
+mod user_dm;
+pub use user_dm::{human_dm_channel_id, HubDm};
+
 /// Unanswered sends to one runtime before the sender asks the directory
 /// whether the members it reaches there moved (ADR-081 D7).
 const RELINK_AFTER_ATTEMPTS: u32 = 3;
@@ -238,9 +242,7 @@ impl TunnelChannelPort {
     /// (ADR-081 D7). Ask the directory where each member reached there is
     /// linked now and follow it. Returns whether `entry` was retargeted.
     async fn relink(&self, ctx: &CrossRuntimeChannelCtx, entry: &OutboxEntry) -> bool {
-        let channel = match &entry.item {
-            OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => channel,
-        };
+        let channel = entry.item.channel();
         let Ok(members) = self.local.list_remote_members(channel).await else {
             return false;
         };
@@ -344,11 +346,7 @@ impl TunnelChannelPort {
         for entry in self.outbox.due(force).await {
             // Each (channel, runtime) pair asks the directory once a pass.
             if entry.attempts >= RELINK_AFTER_ATTEMPTS {
-                let channel = match &entry.item {
-                    OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => {
-                        channel.clone()
-                    }
-                };
+                let channel = entry.item.channel().clone();
                 if relinked.insert((channel, entry.recipient_runtime_id.clone()))
                     && self.relink(&ctx, &entry).await
                 {
@@ -448,6 +446,16 @@ impl TunnelChannelPort {
                     channel,
                     inviter,
                     creator_did,
+                    invitee,
+                    &entry.recipient_runtime_id,
+                )
+                .await
+            }
+            OutboxItem::UserInvite { channel, invitee } => {
+                self.user_invite_envelope(
+                    ctx,
+                    &entry.request_id,
+                    channel,
                     invitee,
                     &entry.recipient_runtime_id,
                 )

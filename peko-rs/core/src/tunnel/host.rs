@@ -140,4 +140,15 @@ pub trait TunnelHost: Send + Sync {
         &self,
         invite: DmChannelInviteBootstrap,
     ) -> anyhow::Result<()>;
+
+    /// ADR-090 D5: a person's root post arrived over the tunnel and was
+    /// appended to `channel`. When `channel` is a DM, the host starts the
+    /// turn of the peko bound there, as any ingress path would. Must not
+    /// block on the turn.
+    async fn human_dm_post(
+        &self,
+        channel: peko_protocol::channel::ChannelId,
+        author: peko_subject::ActorRef,
+        text: String,
+    );
 }

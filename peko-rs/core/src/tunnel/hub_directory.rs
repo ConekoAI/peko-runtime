@@ -134,6 +134,16 @@ pub trait AgentDirectory: Send + Sync {
     ) -> Result<AgentResolution, DirectoryError> {
         self.resolve_by_handle(owner, name).await
     }
+    /// Resolve a Hub ID on behalf of the runtime's local user (ADR-090 D2):
+    /// `bearer` is the user's Hub access token, sent for this request only.
+    /// Without one, only public principals resolve.
+    async fn resolve_by_hub_id_for_user(
+        &self,
+        hub_id: &str,
+        _bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.resolve_by_hub_id(hub_id).await
+    }
     /// Resolve a `did:peko:agent:...` to its host.
     async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
 
@@ -287,6 +297,22 @@ impl HubAgentDirectoryClient {
 
 #[async_trait]
 impl AgentDirectory for HubAgentDirectoryClient {
+    async fn resolve_by_hub_id_for_user(
+        &self,
+        hub_id: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        let url = format!("{}/v1/principals/by-hub-id/{hub_id}", self.base_url);
+        let mut request = self.http.get(&url);
+        if let Some(token) = bearer.filter(|t| !t.is_empty()) {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DirectoryError::Transport(e.to_string()))?;
+        Self::handle_response(response).await
+    }
     async fn resolve_by_hub_id_as(
         &self,
         did: &str,
@@ -671,5 +697,47 @@ mod tests {
 
         let res = fake.resolve_by_handle("alice", "helper").await.unwrap();
         assert_eq!(res, sample_resolution());
+    }
+
+    /// ADR-090 D2: the user's token goes with the lookup as `Bearer`;
+    /// without one the lookup is anonymous.
+    #[tokio::test]
+    async fn resolving_for_the_user_sends_its_token() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                seen_tx
+                    .send(String::from_utf8_lossy(&buf[..n]).to_lowercase())
+                    .unwrap();
+                let body = r#"{"runtimeId":"did:key:zR","instanceId":"i","hubId":"h","localId":"l","identityKey":"k","agentDid":"did:key:zP","ownerPrincipal":{"kind":"public"},"exposure":"private"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = HubAgentDirectoryClient::new(base);
+        let resolved = client
+            .resolve_by_hub_id_for_user("h", Some("desktop-token"))
+            .await
+            .unwrap();
+        assert_eq!(resolved.runtime_id, "did:key:zR");
+        let request = seen.recv().await.unwrap();
+        assert!(
+            request.starts_with("get /v1/principals/by-hub-id/h "),
+            "{request}"
+        );
+        assert!(
+            request.contains("authorization: bearer desktop-token"),
+            "{request}"
+        );
+        client.resolve_by_hub_id_for_user("h", None).await.unwrap();
+        assert!(!seen.recv().await.unwrap().contains("authorization"));
     }
 }

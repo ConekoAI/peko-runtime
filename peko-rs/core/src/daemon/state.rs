@@ -1923,6 +1923,10 @@ impl crate::tunnel::TunnelHost for AppState {
         &self,
         invite: crate::tunnel::DmChannelInviteBootstrap,
     ) -> anyhow::Result<()> {
+        // ADR-090 D3: the dispatcher let a person's DM invite through.
+        if invite.creator.starts_with("user:") {
+            return self.human_dm_mirror_bootstrap(invite).await;
+        }
         // 1. WHICH local principal was invited: the invitee row (the
         //    one with `runtime_id: None` — "addressed to you")
         //    carries the invited principal's DID.
@@ -2172,6 +2176,196 @@ impl crate::tunnel::TunnelHost for AppState {
             .ensure_subscriber(principal.id.clone(), channel);
         Ok(())
     }
+
+    /// ADR-090 D5: start the turn of each peko bound to DM `channel` for a
+    /// person's post that arrived over the tunnel. The turn runs in the
+    /// background; the dispatcher does not wait for it.
+    async fn human_dm_post(
+        &self,
+        channel: peko_protocol::channel::ChannelId,
+        author: ActorRef,
+        text: String,
+    ) {
+        for principal in self.human_dm_recipients(&channel).await {
+            let manager = Arc::clone(&self.principal_manager);
+            let (channel, author, text) = (channel.clone(), author.clone(), text.clone());
+            tokio::spawn(async move {
+                if let Err(e) = manager
+                    .receive_channel_dm_post(&principal, &author, &channel, &text)
+                    .await
+                {
+                    tracing::warn!(%channel, "remote DM post turn failed: {e:#}");
+                }
+            });
+        }
+    }
+}
+
+impl AppState {
+    /// The pekos hosted here that are bound to DM `channel` (ADR-090 D5):
+    /// who a person's post there wakes. Empty for a group.
+    pub(crate) async fn human_dm_recipients(
+        &self,
+        channel: &peko_channel::ChannelId,
+    ) -> Vec<peko_subject::PrincipalId> {
+        let port = &self.tunnel_channel_port;
+        if !matches!(
+            port.conversation_kind(channel).await,
+            Ok(peko_channel::ConversationKind::Dm)
+        ) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for member in port.list_members(channel).await.unwrap_or_default() {
+            let ActorRef::Principal(route) = &member else {
+                continue;
+            };
+            let id = peko_subject::PrincipalId::from_did(route);
+            if self.principal_manager.get(id.clone()).await.is_some()
+                && matches!(port.binding_for(channel, &id).await, Ok(Some(_)))
+            {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// ADR-090 D3–D4: bootstrap the mirror of a DM a person on another
+    /// runtime opened with a peko hosted here. The invite must be exactly
+    /// the person (on the source runtime) and the peko (addressed here).
+    async fn human_dm_mirror_bootstrap(
+        &self,
+        invite: crate::tunnel::DmChannelInviteBootstrap,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            invite.kind == peko_channel::ConversationKind::Dm,
+            "A person can open only a DM"
+        );
+        let human: ActorRef = invite
+            .creator
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid human creator"))?;
+        let account = human
+            .route()
+            .filter(|r| r.is_hub())
+            .map(|r| r.id().to_string())
+            .ok_or_else(|| anyhow::anyhow!("A person's invite needs a Hub account"))?;
+        let [first, second] = invite.initial_members.as_slice() else {
+            anyhow::bail!("A DM invite names exactly two members");
+        };
+        let (addressed, person) = if first.runtime_id.is_none() {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        anyhow::ensure!(
+            addressed.runtime_id.is_none()
+                && person.principal_did == invite.creator
+                && person.runtime_id.as_deref() == Some(invite.source_runtime_id.as_str()),
+            "A DM invite names the person on its runtime and the peko addressed here"
+        );
+        let Some(principal) = self
+            .principal_manager
+            .find_by_did(&addressed.principal_did)
+            .await
+        else {
+            tracing::warn!(
+                channel = %invite.channel_id,
+                invitee_did = %addressed.principal_did,
+                "DM mirror bootstrap: invitee DID matches no loaded principal; skipping"
+            );
+            return Ok(());
+        };
+        let port = &self.tunnel_channel_port;
+        let target = port.actor_info(&ActorRef::from(&principal.id)).await;
+        anyhow::ensure!(
+            target.hub_id.is_some()
+                && addressed.hub_id == target.hub_id
+                && addressed.identity_key.as_deref() == Some(target.identity_key.as_str()),
+            "Invite target is not this registered actor"
+        );
+        anyhow::ensure!(
+            invite.channel_id
+                == crate::tunnel::human_dm_channel_id(&target.identity_key, &invite.creator)
+                    .as_str(),
+            "DM invite does not identify its participant pair"
+        );
+        let person_actor = port
+            .register_actor(
+                &human,
+                Some(&account),
+                None,
+                None,
+                None,
+                peko_channel::Registration::Registered,
+            )
+            .await?;
+        {
+            let config = principal.config.read().await;
+            anyhow::ensure!(
+                config.exposure != peko_auth::Exposure::LocalOnly,
+                "Channel target is local-only"
+            );
+            if config.exposure == peko_auth::Exposure::Private {
+                peko_auth::ownership::check_permission(
+                    &peko_auth::ownership::principal_resource(&*config),
+                    peko_auth::ownership::Permission::Chat,
+                    &human,
+                    &peko_channel::PortKeys(port.as_ref()),
+                )
+                .map_err(|e| anyhow::anyhow!("Channel invite denied: {e}"))?;
+            }
+        }
+
+        // D4: the peko's session for this conversation, in its own
+        // compartment; a Hub-proxy conversation with the same pair id
+        // keeps its session.
+        let (owner, agent_name) = {
+            let config = principal.config.read().await;
+            (
+                config.owner.clone(),
+                crate::principal::child_turns::peer_child_session_agent_name(
+                    &config,
+                    &principal.workspace_path,
+                ),
+            )
+        };
+        let session_manager = crate::principal::child_turns::peer_child_session_manager(
+            &principal,
+            &agent_name,
+            &owner,
+        );
+        let subject = person_actor.subject();
+        let child_id = crate::principal::peer_children::ensure_channel_child(
+            &agent_name,
+            &invite.channel_id,
+            &crate::principal::peer_children::peer_child_slug(&subject)?,
+            &subject.to_string(),
+            &session_manager,
+        )
+        .await?;
+        let slug = crate::principal::peer_dm::peer_child_slug_readback(
+            &session_manager,
+            &child_id,
+            &subject,
+        )
+        .await?;
+        let channel = peko_channel::ChannelId(invite.channel_id.clone());
+        port.join_remote(
+            &channel,
+            &invite.creator,
+            &invite.name,
+            &invite.initial_members,
+            &principal.id,
+            &invite.source_runtime_id,
+            invite.kind,
+            Some(format!("/{slug}")),
+        )
+        .await?;
+        self.channel_binding_supervisor()
+            .ensure_subscriber(principal.id.clone(), channel);
+        Ok(())
+    }
 }
 
 /// F7 first narrow handle: the port the `system` IPC domain handler uses
@@ -2311,6 +2505,10 @@ impl crate::ipc::handlers::channel::ChannelHost for AppState {
         );
         self.channel_binding_supervisor()
             .ensure_subscriber(creator.clone(), channel.clone());
+    }
+
+    fn tunnel_channel_port(&self) -> Option<Arc<crate::tunnel::TunnelChannelPort>> {
+        Some(Arc::clone(&self.tunnel_channel_port))
     }
 }
 

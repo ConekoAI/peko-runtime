@@ -897,6 +897,22 @@ pub enum RequestPacket {
     #[serde(rename = "channel_info")]
     ChannelInfo { request_id: u64, channel: String },
 
+    /// Open, or find, the local user's DM with the peko whose PekoHub ID
+    /// is `hub_id`, hosted on another runtime (ADR-090 D2). The runtime
+    /// resolves it through PekoHub — with `token`, the caller's PekoHub
+    /// access token, when given (needed for a private peko; used for that
+    /// one request and never stored) — and invites it over the tunnel.
+    /// Then post and read with `channel_post` / `channel_peek` /
+    /// `channel_events_watch`. Local callers only. Answered with
+    /// `channel_remote_dm_opened`.
+    #[serde(rename = "channel_open_remote_dm")]
+    ChannelOpenRemoteDm {
+        request_id: u64,
+        hub_id: String,
+        #[serde(default)]
+        token: Option<String>,
+    },
+
     /// Set what starts a turn for `principal_name` in a group
     /// (`human` / `mention` / `off`, ADR-082 D3). Groups only — a DM
     /// always wakes on human posts — and only the peko's owner.
@@ -987,6 +1003,7 @@ impl RequestPacket {
             | Self::ChannelLeave { request_id, .. }
             | Self::ChannelPinToShared { request_id, .. }
             | Self::ChannelInfo { request_id, .. }
+            | Self::ChannelOpenRemoteDm { request_id, .. }
             | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
@@ -1354,6 +1371,22 @@ pub enum ResponsePacket {
         /// policy. A DM's is always `human`; a group binding not yet
         /// written reads as the group default, `mention`.
         pekos: Vec<ChannelPekoWake>,
+    },
+
+    /// Response to `ChannelOpenRemoteDm` (ADR-090 D2).
+    #[serde(rename = "channel_remote_dm_opened")]
+    ChannelRemoteDmOpened {
+        request_id: u64,
+        /// The DM (`dm_<sha256>`) on this runtime.
+        channel: peko_protocol::channel::ChannelId,
+        /// The peko's address, `principal:hub:<UUID>`.
+        peer: String,
+        hub_id: String,
+        /// The peko's name, when PekoHub gave one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Whether this request created the DM.
+        created: bool,
     },
 
     /// Response to `ChannelSetWake`: the policy now stored.
@@ -2570,6 +2603,7 @@ impl ResponsePacket {
             | Self::ChannelMemberLeft { request_id, .. }
             | Self::ChannelPinnedToShared { request_id, .. }
             | Self::ChannelInfoResult { request_id, .. }
+            | Self::ChannelRemoteDmOpened { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
@@ -2655,6 +2689,7 @@ impl ResponsePacket {
             Self::ChannelMemberLeft { .. } => "ChannelMemberLeft",
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
+            Self::ChannelRemoteDmOpened { .. } => "ChannelRemoteDmOpened",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
         }
     }

@@ -675,6 +675,83 @@ impl ChannelStore {
         .await
     }
 
+    /// Find-or-create a DM between a human here and a principal hosted on
+    /// another runtime (ADR-090 D1). The pair id is the caller's: both
+    /// runtimes derive it from the wire, not from this registry. The DM has
+    /// both as members and no binding — no local principal takes part.
+    /// Returns whether it was created.
+    pub async fn ensure_human_dm(
+        &self,
+        human: &ActorRef,
+        peer: &ActorRef,
+        channel: &ChannelId,
+        name: &str,
+    ) -> Result<bool> {
+        if !channel.is_pair_id() {
+            return Err(ChannelError::Adapter(format!(
+                "a DM must have a pair id, not {channel}"
+            )));
+        }
+        let mut expected = vec![
+            self.actor_info(human).await.address,
+            self.actor_info(peer).await.address,
+        ];
+        expected.sort();
+        let _guard = self.dm_lock.lock().await;
+        let _provision_guard = self.lock_dm(channel).await?;
+        let dir = self.cfg.channel_dir(channel);
+        if dir.join(META_FILE).exists() {
+            let meta = MetaJson::load(&dir, channel).await?;
+            let mut stored = meta
+                .participants
+                .iter()
+                .map(|p| self.canonical_address(p))
+                .collect::<Vec<_>>();
+            stored.sort();
+            if meta.kind != ConversationKind::Dm || stored != expected {
+                return Err(ChannelError::Adapter(
+                    "DM participant identity conflicts with stored channel".into(),
+                ));
+            }
+            return Ok(false);
+        }
+        fs::create_dir_all(&dir).await?;
+        let now = Utc::now();
+        MetaJson {
+            creator: member_row(human),
+            name: name.to_string(),
+            created_at: now,
+            tier: Tier::Runtime,
+            kind: ConversationKind::Dm,
+            bindings: HashMap::new(),
+            participants: expected,
+        }
+        .save(&dir)
+        .await?;
+        MembersJson {
+            members: vec![member_row(human), member_row(peer)],
+            remote_members: Vec::new(),
+        }
+        .save(&dir)
+        .await?;
+        let event = ChannelEvent::Created {
+            channel: channel.clone(),
+            creator: member_row(human),
+            name: name.to_string(),
+            at: now.to_rfc3339(),
+        };
+        self.append_event(Tier::Runtime, channel, &event, EventOrigin::Local)
+            .await?;
+        Ok(true)
+    }
+
+    /// The channel's display name (`meta.json`).
+    pub async fn channel_name(&self, channel: &ChannelId) -> Result<String> {
+        let tier = self.resolve_tier(channel).await?;
+        let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
+        Ok(meta.name)
+    }
+
     /// Drop the local user's Hub alias (ADR-081 D3). The account stops
     /// resolving to the local user at once — it is not kept as a historical
     /// alias, so a remote caller using it is no longer the local user.
@@ -3904,6 +3981,60 @@ mod tests {
             store.set_wake(&dm, &alice, WakePolicy::Off).await.is_err(),
             "a DM's policy is fixed"
         );
+    }
+
+    /// ADR-090 D1: the local user's DM with a remote principal — both are
+    /// members, no binding, the pair id the caller derived; reopening is a
+    /// no-op and another pair under that id is refused.
+    #[tokio::test]
+    async fn ensure_human_dm_holds_the_user_and_the_remote_peko() {
+        let store = ChannelStore::new(tmp_cfg("human-dm"));
+        store.ensure_local_user("did:key:zHere").await.unwrap();
+        let user = ActorRef::User("local".into());
+        let peko = ActorRef::Principal(peko_subject::Route::hub("peko-hub".to_string()));
+        store
+            .register_actor(
+                &peko,
+                Some("peko-hub"),
+                Some("did:key:zPeko"),
+                Some("peko-key"),
+                Some("peko"),
+                Registration::Public,
+            )
+            .await
+            .unwrap();
+        let dm = crate::dm_channel_id("peko-key", "user:hub:acct");
+        assert!(store
+            .ensure_human_dm(&user, &peko, &dm, "dm-peko")
+            .await
+            .unwrap());
+        assert!(!store
+            .ensure_human_dm(&user, &peko, &dm, "dm-peko")
+            .await
+            .unwrap());
+        assert_eq!(
+            store.conversation_kind(&dm).await.unwrap(),
+            ConversationKind::Dm
+        );
+        assert_eq!(store.channel_name(&dm).await.unwrap(), "dm-peko");
+        let members = store.list_members(&dm).await.unwrap();
+        assert!(members.contains(&user) && members.contains(&peko));
+        assert_eq!(
+            store
+                .binding_for(&dm, &PrincipalId("did:key:zPeko".into()))
+                .await
+                .unwrap(),
+            None
+        );
+        let stranger = ActorRef::User("bob".into());
+        assert!(store
+            .ensure_human_dm(&stranger, &peko, &dm, "dm-peko")
+            .await
+            .is_err());
+        assert!(store
+            .ensure_human_dm(&user, &peko, &ChannelId("chan_abc".into()), "x")
+            .await
+            .is_err());
     }
 
     #[tokio::test]

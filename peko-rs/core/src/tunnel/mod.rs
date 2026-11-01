@@ -45,7 +45,7 @@ pub use invite_token::{
 pub use local_directory::LocalFirstAgentDirectory;
 pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
-pub use tunnel_channel_port::TunnelChannelPort;
+pub use tunnel_channel_port::{human_dm_channel_id, HubDm, TunnelChannelPort};
 pub use tunnel_channel_signature::{
     jws_sign, jws_verify, sign_channel_event, sign_channel_invite, verify_author_signature,
     verify_channel_event, verify_channel_invite, ChannelEventPayload, ChannelInvitePayload,

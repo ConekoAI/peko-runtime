@@ -57,6 +57,23 @@ pub(crate) enum OutboxItem {
         creator_did: String,
         invitee: PrincipalId,
     },
+    /// The local user's DM invite to a remote principal (ADR-090 D3,
+    /// `TunnelChannelPort::open_hub_dm`); `invitee` is its signing DID.
+    UserInvite {
+        channel: ChannelId,
+        invitee: PrincipalId,
+    },
+}
+
+impl OutboxItem {
+    /// The channel this item belongs to.
+    pub(crate) fn channel(&self) -> &ChannelId {
+        match self {
+            Self::Event { channel, .. }
+            | Self::Invite { channel, .. }
+            | Self::UserInvite { channel, .. } => channel,
+        }
+    }
 }
 
 /// One envelope awaiting its recipient's receipt.
@@ -120,10 +137,7 @@ impl ChannelOutbox {
             .values_mut()
             .filter(|e| e.recipient_runtime_id == old)
         {
-            let target = match &entry.item {
-                OutboxItem::Event { channel, .. } | OutboxItem::Invite { channel, .. } => channel,
-            };
-            if target != channel {
+            if entry.item.channel() != channel {
                 continue;
             }
             entry.recipient_runtime_id = new.into();
