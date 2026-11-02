@@ -5579,7 +5579,14 @@ mod tests {
                 } => assert!(again == channel && !created),
                 other => panic!("expected the same DM, got {other:?}"),
             }
-            assert!(a.sent().is_empty(), "no second invite");
+            // Opening also starts a catch-up from the host (ADR-091 D4),
+            // which may already have sent a history request.
+            assert!(
+                !a.sent()
+                    .iter()
+                    .any(|m| matches!(m, TunnelMessage::TunnelChannelInvite { .. })),
+                "no second invite"
+            );
         }
 
         // On B, the account's Hub-proxy conversation is this same DM.
