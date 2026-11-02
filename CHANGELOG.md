@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: cross-runtime messages arrive as soon as the other computer is back (2026-11-02)
+
+- An envelope to an offline runtime waited in the outbox for its next
+  backoff tick, up to an hour after that runtime reconnected. PekoHub now
+  remembers which runtime waits on which (ids only, never the envelope)
+  and sends `peer_runtime_online { runtimeId }` when the recipient
+  connects; the runtime resends everything pending for it at once
+  (`TunnelChannelPort::on_peer_runtime_online`,
+  `ChannelOutbox::pending_for`). Delivery still needs both computers
+  online at some moment (ADR-090 D6).
+
 ### Feature: pekos send files with `Attach` (2026-11-02, ADR-088 D7)
 
 - Attachments were inbound only. The new `Attach` built-in (24th) takes

@@ -42,6 +42,7 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::PrincipalRegistrationRejected { .. } => "principal_registration_rejected",
         TunnelMessage::PrincipalRegistered { .. } => "principal_registered",
         TunnelMessage::PrincipalUnlinked { .. } => "principal_unlinked",
+        TunnelMessage::PeerRuntimeOnline { .. } => "peer_runtime_online",
         TunnelMessage::PrincipalTransfer { .. } => "principal_transfer",
         TunnelMessage::PrincipalTransferRejected { .. } => "principal_transfer_rejected",
         TunnelMessage::PrincipalOwnerChanged { .. } => "principal_owner_changed",
@@ -71,6 +72,7 @@ const ALL_VARIANTS: &[&str] = &[
     "principal_registration_rejected",
     "principal_registered",
     "principal_unlinked",
+    "peer_runtime_online",
     "principal_transfer",
     "principal_transfer_rejected",
     "principal_owner_changed",
@@ -160,6 +162,9 @@ fn samples() -> Vec<TunnelMessage> {
         TunnelMessage::PrincipalUnlinked {
             local_id: "prin_ada".into(),
             hub_id: HUB_ID.into(),
+        },
+        TunnelMessage::PeerRuntimeOnline {
+            runtime_id: "did:key:z6MkPeerRuntime".into(),
         },
         TunnelMessage::PrincipalTransfer {
             request_id: "xfer-1".into(),
