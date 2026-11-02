@@ -4,7 +4,7 @@
 
 use crate::common::paths::PathResolver;
 use crate::tools::builtin::{
-    channel, messaging, AgentCatalogTool, AsyncTool, BashTool, CallerAwareSessionTool,
+    channel, messaging, AgentCatalogTool, AsyncTool, AttachTool, BashTool, CallerAwareSessionTool,
     ChannelReadTool, EditTool, GlobTool, GrepTool, ModelCallTool, ModelListTool, PlanTool,
     ReadTool, SkillTool, TaskTool, ToolLogTool, WorkflowTool, WriteTool,
 };
@@ -54,7 +54,7 @@ macro_rules! builtin_manifest {
 builtin_manifest! {
     RUNTIME_TOOL_NAMES: Runtime, Runtime, false => [
         "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-        "Cron", "ChannelRead"
+        "Cron", "ChannelRead", "Attach"
     ];
     DAEMON_TOOL_NAMES: Runtime, Daemon, false => ["ModelCall", "Workflow"];
     DAEMON_CALLER_TOOL_NAMES: Runtime, Daemon, true => ["Session", "Agent"];
@@ -140,6 +140,8 @@ pub async fn install_runtime(
         // boundary is preserved because the principal invokes the
         // tool itself.
         Arc::new(ChannelReadTool::new(channel_port.clone())),
+        // ADR-088 D7 — the peko sends files in its conversation.
+        Arc::new(AttachTool::new(channel_port.clone())),
     ];
 
     install_defaults(
