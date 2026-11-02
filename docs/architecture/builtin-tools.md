@@ -391,13 +391,15 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 | `role` | `channel`; optional `role` | Sets the role (a `RoleCatalog` id) the caller's turns run in a DM or group; omitting `role` returns it to the default conversation role (`routing.peer_agent`, else `conversation`). Refuses a role the principal does not have. |
 | `admin` | `channel`, `actor`, `admin` | The group's owner makes a member an admin (who may then add members), or stops it. At the home runtime only (ADR-092 D1). |
 | `history` | `channel`, `visibility` | The group's owner or an admin chooses what members may read of its past: `shared` (everything since it began, the default) or `joined` (only what followed their joining). At the home runtime only (ADR-092 D3). |
-| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, and `you.owner` / `you.admin`. |
+| `register` | `channel`; optional `visibility` | The group's owner or an admin gives it an ID on PekoHub, or changes who may find it: `invite_only` (the default: people join only with an invite link) or `public` (anyone with the ID may). At the home runtime only; the owner must be a peko registered on PekoHub. Returns `id`, `page`, `visibility` (ADR-092 D5). |
+| `link` | `channel`; optional `days`, `revoke` | The group's owner or an admin makes an invite link to a registered group, good for `days` (1–30, default 7): `link` and `expires`. With `revoke: true`, stops every link instead and returns how many were live. At the home runtime only (ADR-092 D5). |
+| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, `history`, once registered `hubId` and `visibility`, and `you.owner` / `you.admin`. |
 
 DMs are opened by `ChannelSend` and keep their members and wake policy: only
 `info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
-`invite`, `admin`, `history`, and `role` to untrusted runs, and a trusted run's call to one of
+`invite`, `admin`, `history`, `register`, `link`, and `role` to untrusted runs, and a trusted run's call to one of
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).

@@ -652,6 +652,10 @@ impl TunnelClient {
             | TunnelMessage::PrincipalRegistered { .. }
             | TunnelMessage::PrincipalUnlinked { .. }
             | TunnelMessage::PeerRuntimeOnline { .. }
+            | TunnelMessage::GroupRegister { .. }
+            | TunnelMessage::GroupRoster { .. }
+            | TunnelMessage::AccountGroupsRequest { .. }
+            | TunnelMessage::GroupLookupRequest { .. }
             | TunnelMessage::PrincipalTransfer { .. }
             | TunnelMessage::PrincipalTransferRejected { .. }
             | TunnelMessage::PrincipalOwnerChanged { .. }
@@ -681,7 +685,12 @@ impl TunnelClient {
             | TunnelMessage::TunnelChannelHistoryRequest { .. }
             | TunnelMessage::TunnelChannelHistory { .. }
             | TunnelMessage::TunnelGroupInvitation { .. }
-            | TunnelMessage::TunnelGroupJoin { .. } => {
+            | TunnelMessage::TunnelGroupJoin { .. }
+            | TunnelMessage::TunnelGroupJoinRequest { .. }
+            | TunnelMessage::GroupRegistered { .. }
+            | TunnelMessage::GroupRegisterRejected { .. }
+            | TunnelMessage::AccountGroups { .. }
+            | TunnelMessage::GroupLookup { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

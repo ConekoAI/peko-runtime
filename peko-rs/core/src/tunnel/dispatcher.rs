@@ -713,6 +713,8 @@ impl TunnelDispatcher {
                     port.on_tunnel_ready().await;
                     // ADR-091 D4: catch up remote DMs.
                     port.sync_remote_dms(None).await;
+                    // ADR-092 D4: the account's groups follow it here.
+                    port.sync_account_groups().await;
                 });
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
@@ -882,6 +884,49 @@ impl TunnelDispatcher {
                     )
                     .await;
             }
+            TunnelMessage::TunnelGroupJoinRequest {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                invite,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_group_join_request(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        source_principal_did,
+                        channel_id,
+                        invite,
+                        signature,
+                    )
+                    .await;
+            }
+            // ADR-092 D4/D5: PekoHub's answers to this runtime's group
+            // requests.
+            answer @ (TunnelMessage::GroupRegistered { .. }
+            | TunnelMessage::GroupRegisterRejected { .. }
+            | TunnelMessage::AccountGroups { .. }
+            | TunnelMessage::GroupLookup { .. }) => {
+                let request_id = match &answer {
+                    TunnelMessage::GroupRegistered { request_id, .. }
+                    | TunnelMessage::GroupRegisterRejected { request_id, .. }
+                    | TunnelMessage::AccountGroups { request_id, .. }
+                    | TunnelMessage::GroupLookup { request_id, .. } => request_id.clone(),
+                    _ => unreachable!(),
+                };
+                if !self
+                    .host
+                    .tunnel_channel_port()
+                    .on_hub_answer(&request_id, answer)
+                {
+                    debug!(request_id, "a PekoHub answer nothing waits for; dropped");
+                }
+            }
             TunnelMessage::TunnelChannelHistory {
                 request_id,
                 source_runtime_id,
@@ -990,6 +1035,22 @@ impl TunnelDispatcher {
             )
             .await
             .ok();
+
+        // ADR-092 D3: a group's history is gated by membership, not by the
+        // owning peko's exposure (PekoHub proxies it in that peko's name).
+        if bridge_payload["body"]["kind"].as_str() == Some("history")
+            && bridge_payload["body"]["group"].is_string()
+        {
+            return self
+                .send_proxied_history(
+                    &handle,
+                    &request_id,
+                    &principal_name,
+                    &bridge_payload,
+                    &caller_principal,
+                )
+                .await;
+        }
 
         // Defense-in-depth: enforce the local exposure ACL against the
         // resolved caller identity (see the reorder note above).
@@ -2617,6 +2678,16 @@ impl TunnelDispatcher {
         if !(matches!(caller, ActorRef::User(_)) && caller.is_hub_route()) {
             return empty;
         }
+        // ADR-092 D3: a group the caller is a member of, kept here.
+        if let Some(group) = body["group"].as_str() {
+            return self
+                .proxied_group_page(group, body, caller)
+                .await
+                .unwrap_or_else(|e| {
+                    debug!(group, "proxied group history refused: {e}");
+                    empty
+                });
+        }
         let Some(principal) = self
             .host
             .principal_manager()
@@ -2773,24 +2844,84 @@ impl TunnelDispatcher {
             }
             _ => anyhow::bail!("only a member may ask for a group's history"),
         };
+        self.group_page_for(
+            channel,
+            &address,
+            request.before.as_deref(),
+            request.after.as_deref(),
+            request.limit,
+        )
+        .await
+    }
+
+    /// A page of `channel` for its member `address`, as the group's
+    /// history setting lets them read it (ADR-092 D3).
+    async fn group_page_for(
+        &self,
+        channel: &peko_channel::ChannelId,
+        address: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+    ) -> anyhow::Result<crate::tunnel::HistoryPage> {
+        let port = self.host.tunnel_channel_port();
         let since = match port.local().history_visibility(channel).await? {
             peko_channel::HistoryVisibility::Shared => None,
             peko_channel::HistoryVisibility::Joined => Some(
                 port.local()
-                    .joined_at(channel, &address)
+                    .joined_at(channel, address)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("no record of their joining"))?,
             ),
         };
         Ok(port
-            .group_history_page(
-                channel,
-                request.before.as_deref(),
-                request.after.as_deref(),
-                request.limit,
-                since.as_deref(),
-            )
+            .group_history_page(channel, before, after, limit, since.as_deref())
             .await)
+    }
+
+    /// A group's page for a person without a runtime, proxied by PekoHub
+    /// in the owning peko's name (ADR-092 D3 as ADR-091 D6): only at the
+    /// home, only for a member.
+    async fn proxied_group_page(
+        &self,
+        group: &str,
+        body: &serde_json::Value,
+        caller: &ActorRef,
+    ) -> anyhow::Result<crate::tunnel::HistoryPage> {
+        let channel = peko_channel::ChannelId::parse(group)
+            .ok_or_else(|| anyhow::anyhow!("not a channel"))?;
+        let port = self.host.tunnel_channel_port();
+        anyhow::ensure!(
+            port.conversation_kind(&channel).await? == peko_channel::ConversationKind::Group,
+            "not a group"
+        );
+        if let Some(home) = port.local().group_home(&channel).await? {
+            anyhow::ensure!(
+                home.runtime == self.host.runtime_did(),
+                "not the group's home"
+            );
+        }
+        let address = port.actor_info(caller).await.address;
+        let mut member = false;
+        for m in port.list_members(&channel).await? {
+            if port.actor_info(&m).await.address == address {
+                member = true;
+            }
+        }
+        anyhow::ensure!(member, "not a member");
+        let limit = body["limit"]
+            .as_u64()
+            .map_or(crate::tunnel::HISTORY_PAGE_LIMIT, |l| {
+                u32::try_from(l).unwrap_or(crate::tunnel::HISTORY_PAGE_LIMIT)
+            });
+        self.group_page_for(
+            &channel,
+            &address,
+            body["before"].as_str(),
+            body["after"].as_str(),
+            limit,
+        )
+        .await
     }
 }
 
@@ -5444,10 +5575,16 @@ mod tests {
                 history @ (TunnelMessage::TunnelChannelHistoryRequest { .. }
                 | TunnelMessage::TunnelChannelHistory { .. }
                 | TunnelMessage::TunnelGroupInvitation { .. }
-                | TunnelMessage::TunnelGroupJoin { .. }) => {
+                | TunnelMessage::TunnelGroupJoin { .. }
+                | TunnelMessage::TunnelGroupJoinRequest { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
+                // To PekoHub itself (ADR-092 D4–D6), not to a runtime.
+                TunnelMessage::GroupRoster { .. }
+                | TunnelMessage::GroupRegister { .. }
+                | TunnelMessage::AccountGroupsRequest { .. }
+                | TunnelMessage::GroupLookupRequest { .. } => {}
                 other => panic!("unexpected envelope {other:?}"),
             }
         }
@@ -6035,6 +6172,454 @@ mod tests {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    /// Deliver what `from` sent to whichever of `to` it is addressed to,
+    /// until nothing moves. Messages to PekoHub itself are dropped.
+    async fn route(runtimes: &mut [&mut DmRuntime]) {
+        loop {
+            let mut moved = false;
+            for i in 0..runtimes.len() {
+                for message in runtimes[i].sent() {
+                    let to = serde_json::to_value(&message).unwrap()["recipientRuntimeId"]
+                        .as_str()
+                        .map(str::to_string);
+                    for rt in runtimes.iter() {
+                        if to.as_deref() == Some(rt.app.runtime_did().as_str()) {
+                            rt.receive(message.clone()).await;
+                            moved = true;
+                        }
+                    }
+                }
+            }
+            if !moved {
+                return;
+            }
+        }
+    }
+
+    /// Wait for `rt` to send a message `pick` recognizes, and answer it as
+    /// PekoHub would with `answer`.
+    async fn hub_answers(
+        rt: &mut DmRuntime,
+        pick: impl Fn(&TunnelMessage) -> Option<String>,
+        answer: impl FnOnce(String) -> TunnelMessage,
+    ) -> Vec<TunnelMessage> {
+        let mut seen = Vec::new();
+        for _ in 0..500 {
+            for message in rt.sent() {
+                if let Some(request_id) = pick(&message) {
+                    let handle = rt.app.tunnel_handle_slot().read().await.clone().unwrap();
+                    rt.dispatcher
+                        .dispatch(answer(request_id), handle)
+                        .await
+                        .unwrap();
+                    return seen;
+                }
+                seen.push(message);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the runtime never asked PekoHub; sent {seen:?}");
+    }
+
+    /// ADR-092 D4–D6 end to end: the home registers its group on PekoHub
+    /// and mints an invite link; a person joins with it from their
+    /// runtime, which becomes their route; their second device finds the
+    /// group through PekoHub and joins as a member, with no link; a
+    /// revoked link and a link-less request to an invite-only group admit
+    /// no one; and a member without a runtime reads the group's history
+    /// through PekoHub's proxy.
+    #[tokio::test]
+    async fn people_join_a_registered_group_by_link_and_on_new_devices() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, CreateOpts, GroupVisibility};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let person = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let group_id = "1234567890123456789".to_string();
+
+        // H: the group's home, with its peko as owner.
+        let mut h = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &h.app,
+            "host",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let h_port = h.app.tunnel_channel_port();
+        h_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("host"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        let channel = h_port
+            .create(&peko.id, CreateOpts::runtime("book club"))
+            .await
+            .unwrap();
+        // The home's own person (signed in to PekoHub) is in it too, as the
+        // desktop makes groups.
+        let owner_account = uuid::Uuid::new_v4().to_string();
+        h_port
+            .local()
+            .link_local_user(&h.app.runtime_did(), &owner_account)
+            .await
+            .unwrap();
+        // Once registered, the store keeps them by their Hub address.
+        h_port
+            .invite(
+                &channel,
+                &peko.id,
+                &ActorRef::User(peko_subject::Route::hub(owner_account.clone())),
+            )
+            .await
+            .unwrap();
+        h_port
+            .post(
+                &channel,
+                &ActorRef::from(&peko.id),
+                peko_channel::PostMsg::root("welcome, readers"),
+            )
+            .await
+            .unwrap();
+
+        // No link before the group is registered.
+        assert!(h_port
+            .group_invite_link(&channel, &peko.id, 7)
+            .await
+            .is_err());
+
+        // Register: PekoHub assigns the ID and the page.
+        let registering = {
+            let port = Arc::clone(&h_port);
+            let (channel, by) = (channel.clone(), peko.id.clone());
+            tokio::spawn(async move {
+                port.register_group(&channel, &by, GroupVisibility::InviteOnly)
+                    .await
+            })
+        };
+        let gid = group_id.clone();
+        let sent_before = hub_answers(
+            &mut h,
+            |m| match m {
+                TunnelMessage::GroupRegister {
+                    request_id,
+                    owner_address,
+                    visibility,
+                    name,
+                    ..
+                } => {
+                    assert_eq!(owner_address, &format!("principal:hub:{hub_id}"));
+                    assert_eq!(visibility, "invite_only");
+                    assert_eq!(name, "book club");
+                    Some(request_id.clone())
+                }
+                _ => None,
+            },
+            |request_id| TunnelMessage::GroupRegistered {
+                request_id,
+                group_id: gid.clone(),
+                page_url: format!("https://hub.test/g/{gid}"),
+            },
+        )
+        .await;
+        assert!(sent_before.is_empty(), "{sent_before:?}");
+        let hub = registering.await.unwrap().unwrap();
+        assert_eq!(hub.id, group_id);
+        assert!(
+            matches!(&h.sent()[..], [TunnelMessage::GroupRoster { group_id: g, accounts }]
+                if *g == group_id && *accounts == vec![owner_account.clone()]),
+            "the home reports who is in it: its own person, so far"
+        );
+
+        let (link, _) = h_port
+            .group_invite_link(&channel, &peko.id, 7)
+            .await
+            .unwrap();
+        assert!(link.starts_with(&format!("https://hub.test/g/{group_id}?invite=")));
+        let token = link.split_once("invite=").unwrap().1.to_string();
+
+        // P: the person's runtime joins with the link.
+        let mut p = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let p_port = p.app.tunnel_channel_port();
+        p_port
+            .local()
+            .link_local_user(&p.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let lookup = |home: String, channel: String, gid: String| {
+            move |request_id: String| TunnelMessage::GroupLookup {
+                request_id,
+                group: Some(crate::tunnel::AccountGroup {
+                    group_id: gid,
+                    name: "book club".into(),
+                    home_runtime: home,
+                    channel_id: channel,
+                }),
+            }
+        };
+        let joining = {
+            let port = Arc::clone(&p_port);
+            let link = link.clone();
+            tokio::spawn(async move { port.join_group(&link).await })
+        };
+        hub_answers(
+            &mut p,
+            |m| match m {
+                TunnelMessage::GroupLookupRequest {
+                    request_id,
+                    group_id: g,
+                    invite,
+                } => {
+                    assert_eq!(g, &group_id);
+                    assert_eq!(invite.as_deref(), Some(token.as_str()));
+                    Some(request_id.clone())
+                }
+                _ => None,
+            },
+            lookup(
+                h.app.runtime_did(),
+                channel.as_str().into(),
+                group_id.clone(),
+            ),
+        )
+        .await;
+        let (joined, name) = joining.await.unwrap().unwrap();
+        assert_eq!(
+            (joined.clone(), name.as_str()),
+            (channel.clone(), "book club")
+        );
+        assert!(
+            p.ipc(RequestPacket::ChannelInvitations { request_id: 1 })
+                .await
+                .matches_empty_invitations(),
+            "a request is not an invitation to answer"
+        );
+        route(&mut [&mut h, &mut p]).await;
+        assert!(h_port
+            .local()
+            .is_remote_member(
+                &channel,
+                &p.app.runtime_did(),
+                &format!("user:hub:{account}")
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            p_port
+                .local()
+                .remote_dm_account(&channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(account.as_str()),
+            "the home's roster completes the join"
+        );
+        // …and the group catches up from its home.
+        let mut caught_up = false;
+        for _ in 0..100 {
+            route(&mut [&mut h, &mut p]).await;
+            let events = p_port
+                .local()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .unwrap();
+            if posts(&events).iter().any(|(_, t)| t == "welcome, readers") {
+                caught_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            caught_up,
+            "a group joined by link reads what was said before"
+        );
+
+        // The desktop sees where the group is managed, and its ID.
+        for (rt, home_here) in [(&h, true), (&p, false)] {
+            match rt
+                .ipc(RequestPacket::ChannelInfo {
+                    request_id: 9,
+                    channel: channel.as_str().into(),
+                })
+                .await
+            {
+                ResponsePacket::ChannelInfoResult {
+                    group: Some(group), ..
+                } => {
+                    assert_eq!(group.home_here, home_here);
+                    if home_here {
+                        assert_eq!(group.hub_id.as_deref(), Some(group_id.as_str()));
+                        assert_eq!(group.visibility.as_deref(), Some("invite_only"));
+                    }
+                }
+                other => panic!("expected a group's info, got {other:?}"),
+            }
+        }
+
+        // P2: the same person's new device finds the group through PekoHub
+        // and joins as a member, with no link.
+        let mut p2 = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let p2_port = p2.app.tunnel_channel_port();
+        p2_port
+            .local()
+            .link_local_user(&p2.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let syncing = {
+            let port = Arc::clone(&p2_port);
+            tokio::spawn(async move { port.sync_account_groups().await })
+        };
+        let (home, chan, gid) = (
+            h.app.runtime_did(),
+            channel.as_str().to_string(),
+            group_id.clone(),
+        );
+        hub_answers(
+            &mut p2,
+            |m| match m {
+                TunnelMessage::AccountGroupsRequest { request_id } => Some(request_id.clone()),
+                _ => None,
+            },
+            move |request_id| TunnelMessage::AccountGroups {
+                request_id,
+                groups: vec![crate::tunnel::AccountGroup {
+                    group_id: gid,
+                    name: "book club".into(),
+                    home_runtime: home,
+                    channel_id: chan,
+                }],
+            },
+        )
+        .await;
+        syncing.await.unwrap();
+        route(&mut [&mut h, &mut p, &mut p2]).await;
+        assert_eq!(
+            p2_port
+                .local()
+                .remote_dm_account(&channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(account.as_str()),
+            "a member's new device joins without a link"
+        );
+
+        // A post from one of their devices reaches the other.
+        p2.ipc(RequestPacket::ChannelPost {
+            request_id: 10,
+            channel: channel.as_str().into(),
+            sender_name: None,
+            text: "from my laptop".into(),
+            parent: None,
+        })
+        .await;
+        route(&mut [&mut h, &mut p, &mut p2]).await;
+        for rt in [&h, &p] {
+            let events = rt
+                .app
+                .tunnel_channel_port()
+                .local()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .unwrap();
+            assert!(
+                posts(&events)
+                    .iter()
+                    .any(|(_, text)| text == "from my laptop"),
+                "{:?}",
+                posts(&events)
+            );
+        }
+
+        // Q: someone else. A revoked link and a link-less request to an
+        // invite-only group admit no one.
+        assert_eq!(
+            h_port.revoke_group_links(&channel, &peko.id).await.unwrap(),
+            1
+        );
+        for invite in [Some(token.clone()), None] {
+            let stranger = uuid::Uuid::new_v4().to_string();
+            let mut q = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+            let q_port = q.app.tunnel_channel_port();
+            q_port
+                .local()
+                .link_local_user(&q.app.runtime_did(), &stranger)
+                .await
+                .unwrap();
+            let input = invite.clone().unwrap_or_else(|| group_id.clone());
+            let joining = {
+                let port = Arc::clone(&q_port);
+                tokio::spawn(async move { port.join_group(&input).await })
+            };
+            hub_answers(
+                &mut q,
+                |m| match m {
+                    TunnelMessage::GroupLookupRequest { request_id, .. } => {
+                        Some(request_id.clone())
+                    }
+                    _ => None,
+                },
+                lookup(
+                    h.app.runtime_did(),
+                    channel.as_str().into(),
+                    group_id.clone(),
+                ),
+            )
+            .await;
+            joining.await.unwrap().unwrap();
+            route(&mut [&mut h, &mut q]).await;
+            assert!(
+                !h_port
+                    .local()
+                    .is_remote_member(
+                        &channel,
+                        &q.app.runtime_did(),
+                        &format!("user:hub:{stranger}")
+                    )
+                    .await
+                    .unwrap(),
+                "admitted with {invite:?}"
+            );
+            assert!(q_port.conversation_kind(&channel).await.is_err());
+        }
+
+        // A member without a runtime reads the group through PekoHub's
+        // proxy; someone else reads nothing.
+        let page = h
+            .dispatcher
+            .proxied_group_page(channel.as_str(), &serde_json::json!({}), &person)
+            .await
+            .unwrap();
+        assert_eq!(
+            posts(&page.events)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>(),
+            vec!["welcome, readers".to_string(), "from my laptop".to_string()]
+        );
+        let stranger = ActorRef::User(peko_subject::Route::hub(uuid::Uuid::new_v4().to_string()));
+        assert!(h
+            .dispatcher
+            .proxied_group_page(channel.as_str(), &serde_json::json!({}), &stranger)
+            .await
+            .is_err());
     }
 
     /// ADR-092 D2 end to end: a group's home invites a person by account;

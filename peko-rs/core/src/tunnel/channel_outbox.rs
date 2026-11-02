@@ -70,6 +70,12 @@ pub(crate) enum OutboxItem {
     /// The local user's answer to a group's invitation (ADR-092 D2),
     /// to the group's home.
     GroupJoin { channel: ChannelId, accept: bool },
+    /// The local user's request to join a group (ADR-092 D5), to its
+    /// home: with an invite link's token, or none for a public group.
+    GroupJoinRequest {
+        channel: ChannelId,
+        invite: Option<String>,
+    },
 }
 
 impl OutboxItem {
@@ -80,7 +86,8 @@ impl OutboxItem {
             | Self::Invite { channel, .. }
             | Self::UserInvite { channel, .. }
             | Self::GroupInvitation { channel, .. }
-            | Self::GroupJoin { channel, .. } => channel,
+            | Self::GroupJoin { channel, .. }
+            | Self::GroupJoinRequest { channel, .. } => channel,
         }
     }
 }

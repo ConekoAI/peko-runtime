@@ -584,6 +584,89 @@ pub enum TunnelMessage {
         accept: bool,
         signature: String,
     },
+
+    /// ADR-092 D5: a person asks a group's home to let them in, from one
+    /// of their runtimes: with an invite link's token (`invite`), or
+    /// without one for a public group. PekoHub relays it only from a
+    /// runtime registered to `source_principal_did`'s account; the home
+    /// decides. `signature` covers every other field
+    /// (`GroupJoinRequestPayload`).
+    #[serde(rename = "tunnel_group_join_request", rename_all = "camelCase")]
+    TunnelGroupJoinRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<String>,
+        signature: String,
+    },
+
+    /// ADR-092 D5: a group's home registers it with PekoHub (or updates
+    /// its name and visibility). `owner_address` is the owner's Hub
+    /// address (`principal:hub:<id>` or `user:hub:<id>`).
+    #[serde(rename = "group_register", rename_all = "camelCase")]
+    GroupRegister {
+        request_id: String,
+        channel_id: String,
+        name: String,
+        owner_address: String,
+        /// `invite_only` or `public`.
+        visibility: String,
+    },
+    /// Hub → home: the group's ID, a bare number, and its page on the
+    /// website, where invite links point.
+    #[serde(rename = "group_registered", rename_all = "camelCase")]
+    GroupRegistered {
+        request_id: String,
+        group_id: String,
+        page_url: String,
+    },
+    #[serde(rename = "group_register_rejected", rename_all = "camelCase")]
+    GroupRegisterRejected { request_id: String, message: String },
+    /// ADR-092 D4/D6: the home reports the Hub accounts in a registered
+    /// group, so each person's devices can find it.
+    #[serde(rename = "group_roster", rename_all = "camelCase")]
+    GroupRoster {
+        group_id: String,
+        accounts: Vec<String>,
+    },
+    /// ADR-092 D4: this runtime asks for the groups of the account it is
+    /// registered to.
+    #[serde(rename = "account_groups_request", rename_all = "camelCase")]
+    AccountGroupsRequest { request_id: String },
+    #[serde(rename = "account_groups", rename_all = "camelCase")]
+    AccountGroups {
+        request_id: String,
+        groups: Vec<AccountGroup>,
+    },
+    /// ADR-092 D5: what PekoHub shows of a group to someone with its ID
+    /// (and, for an invite-only group, a valid invite).
+    #[serde(rename = "group_lookup_request", rename_all = "camelCase")]
+    GroupLookupRequest {
+        request_id: String,
+        group_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invite: Option<String>,
+    },
+    /// `group` is absent when no such group is open to the asker.
+    #[serde(rename = "group_lookup", rename_all = "camelCase")]
+    GroupLookup {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<AccountGroup>,
+    },
+}
+
+/// A registered group as PekoHub lists it (ADR-092 D4/D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountGroup {
+    pub group_id: String,
+    pub name: String,
+    pub home_runtime: String,
+    pub channel_id: String,
 }
 
 /// One row of the `initialMembers` list on

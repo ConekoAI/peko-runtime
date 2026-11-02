@@ -515,6 +515,11 @@ pub const GROUP_INVITATION_VERSION: &str = "peko-group-invitation/1";
 
 /// Payload version tag for a group join answer (ADR-092 D2).
 pub const GROUP_JOIN_VERSION: &str = "peko-group-join/1";
+/// Version tag of a `TunnelGroupJoinRequest`'s signed payload (ADR-092 D5).
+pub const GROUP_JOIN_REQUEST_VERSION: &str = "peko-group-join-request/1";
+/// Version tag of a group invite link's token (ADR-092 D5); PekoHub
+/// checks it too.
+pub const GROUP_INVITE_TOKEN_VERSION: &str = "peko-group-invite/1";
 
 /// The signed payload of a `TunnelGroupInvitation`. `initial_members_b64u`
 /// is base64url-no-pad of the serialized roster.
@@ -589,6 +594,95 @@ pub fn verify_group_join(runtime_key: &VerifyingKey, compact: &str) -> Result<Gr
     }
     check_freshness(payload.iat, payload.exp)?;
     Ok(payload)
+}
+
+/// The signed payload of a `TunnelGroupJoinRequest` (ADR-092 D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupJoinRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub source_principal_did: String,
+    pub channel_id: String,
+    pub invite: Option<String>,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify a join request's runtime signature, version tag, and freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_group_join_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<GroupJoinRequestPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: GroupJoinRequestPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("group join request payload is not valid JSON: {e}"))?;
+    if payload.v != GROUP_JOIN_REQUEST_VERSION {
+        return Err(anyhow!(
+            "group join request version must be {GROUP_JOIN_REQUEST_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// An invite link's token (ADR-092 D5): the group's Hub ID `g`, channel
+/// `c`, home runtime `h`, expiry `exp` (unix seconds) and nonce `n`,
+/// signed by the home runtime's key. Anyone can read it; only the home
+/// can make one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInviteToken {
+    pub v: String,
+    pub g: String,
+    pub c: String,
+    pub h: String,
+    pub exp: i64,
+    pub n: String,
+}
+
+impl GroupInviteToken {
+    /// Read a token's claims without checking its signature (the joiner
+    /// learns where to ask; the home checks).
+    ///
+    /// # Errors
+    ///
+    /// Not a compact JWS with these claims.
+    pub fn read_unverified(compact: &str) -> Result<Self> {
+        let payload = compact
+            .split('.')
+            .nth(1)
+            .ok_or_else(|| anyhow!("not an invite token"))?;
+        let bytes = URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|_| anyhow!("not an invite token"))?;
+        let token: Self =
+            serde_json::from_slice(&bytes).map_err(|_| anyhow!("not an invite token"))?;
+        if token.v != GROUP_INVITE_TOKEN_VERSION {
+            return Err(anyhow!("not a group invite"));
+        }
+        Ok(token)
+    }
+
+    /// Verify a token against the home's key; returns its claims, expired
+    /// or not.
+    ///
+    /// # Errors
+    ///
+    /// The JWS does not verify or is not an invite token.
+    pub fn verify(home_key: &VerifyingKey, compact: &str) -> Result<Self> {
+        let (_, bytes) = jws_verify(home_key, compact)?;
+        let token: Self =
+            serde_json::from_slice(&bytes).map_err(|_| anyhow!("not an invite token"))?;
+        if token.v != GROUP_INVITE_TOKEN_VERSION {
+            return Err(anyhow!("not a group invite"));
+        }
+        Ok(token)
+    }
 }
 
 #[cfg(test)]

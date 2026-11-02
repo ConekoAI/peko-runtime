@@ -1,8 +1,10 @@
 //! `Channel` — a principal manages its groups (ADR-082 D4–D6).
 //!
-//! Six actions: `create` a group, `invite` an actor into one, `leave`
-//! it, set its own `wake` policy there, choose the `role` its turns run
-//! in a channel (ADR-087), and read a channel's `info`. DMs are opened
+//! Actions: `create` a group, `invite` an actor into one, `leave` it, set
+//! its own `wake` policy there, choose the `role` its turns run in a
+//! channel (ADR-087), make a member an `admin`, choose what members read
+//! of its `history`, `register` it on PekoHub and make invite `link`s
+//! (ADR-092), and read a channel's `info`. DMs are opened
 //! by `ChannelSend` and keep their members and wake policy: only `info`
 //! and `role` accept one.
 //!
@@ -117,6 +119,24 @@ impl ChannelTool {
                     "visibility":{"type":"string", "enum":["shared", "joined"],
                         "description":"shared: members read everything since the group began; joined: only what followed their joining."}
                 }, "required":["channel", "visibility"], "additionalProperties":false}),
+            ),
+            (
+                "register",
+                json!({"type":"object", "properties":{
+                    "channel": channel,
+                    "visibility":{"type":"string", "enum":["invite_only", "public"],
+                        "description":"invite_only (default): people join only with an invite link; public: anyone with the group's ID may join."}
+                }, "required":["channel"], "additionalProperties":false}),
+            ),
+            (
+                "link",
+                json!({"type":"object", "properties":{
+                    "channel": channel,
+                    "days":{"type":"integer", "minimum":1, "maximum":30,
+                        "description":"How long the link works; default 7."},
+                    "revoke":{"type":"boolean",
+                        "description":"true stops every link to the group from working instead of making one."}
+                }, "required":["channel"], "additionalProperties":false}),
             ),
             (
                 "info",
@@ -268,6 +288,11 @@ impl ChannelTool {
             info["owner"] = json!(group.owner);
             info["admins"] = json!(group.admins);
             info["history"] = json!(group.history);
+            // ADR-092 D5: its PekoHub ID, once registered.
+            if let Some(hub_id) = group.hub_id {
+                info["hubId"] = json!(hub_id);
+                info["visibility"] = json!(group.visibility);
+            }
         }
         Ok(info)
     }
@@ -293,11 +318,16 @@ impl Tool for ChannelTool {
          RoleCatalog) your turns run in a DM or group, or returns it to your default \
          conversation role when omitted; admin lets a member add members, or stops it (the \
          group's owner only); history chooses what a group's members may read of its past \
-         (shared, the default: everything; joined: only what followed their joining); info shows a channel's kind, creator, participants, a group's \
-         home runtime, owner and admins, and your wake policy and role. A group's members \
-         change at its home runtime, by its owner or an admin. DMs are opened by ChannelSend \
-         and keep their members and wake policy. Only the owner decides create, invite, \
-         admin, history, and role: a run acting for anyone else waits for the owner's approval."
+         (shared, the default: everything; joined: only what followed their joining); \
+         register gives a group an ID on PekoHub (invite_only, the default: people join only \
+         with an invite link; public: anyone with the ID may); link makes an invite link to a \
+         registered group (default 7 days, at most 30), or with revoke stops all of them; info \
+         shows a channel's kind, creator, participants, a group's home runtime, owner, admins \
+         and PekoHub ID, and your wake policy and role. A group's members and settings change \
+         at its home runtime, by its owner or an admin. DMs are opened by ChannelSend and keep \
+         their members and wake policy. Only the owner decides create, invite, admin, \
+         history, register, link, and role: a run acting for anyone else waits for the \
+         owner's approval."
             .into()
     }
 
@@ -392,6 +422,52 @@ impl Tool for ChannelTool {
                     .await
                     .map_err(|e| anyhow::anyhow!("Channel: history: {e}"))?;
                 Ok(json!({"channel": channel.as_str(), "history": visibility}))
+            }
+            Some("register") => {
+                let channel = Self::channel_arg(&params, &stamp)?;
+                self.require_group(&channel).await?;
+                self.require_member(&channel, &id).await?;
+                let visibility = match params["visibility"].as_str() {
+                    Some("public") => peko_channel::GroupVisibility::Public,
+                    _ => peko_channel::GroupVisibility::InviteOnly,
+                };
+                let hub = self
+                    .port
+                    .register_group(&channel, &id, visibility)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: register: {e}"))?;
+                Ok(json!({
+                    "channel": channel.as_str(),
+                    "id": hub.id,
+                    "page": hub.page,
+                    "visibility": hub.visibility,
+                }))
+            }
+            Some("link") => {
+                let channel = Self::channel_arg(&params, &stamp)?;
+                self.require_group(&channel).await?;
+                self.require_member(&channel, &id).await?;
+                if params["revoke"].as_bool() == Some(true) {
+                    let revoked = self
+                        .port
+                        .revoke_group_links(&channel, &id)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Channel: link: {e}"))?;
+                    return Ok(json!({"channel": channel.as_str(), "revoked": revoked}));
+                }
+                let days = params["days"]
+                    .as_u64()
+                    .and_then(|d| u32::try_from(d).ok())
+                    .unwrap_or(crate::tunnel::tunnel_channel_port::INVITE_LINK_DAYS);
+                let (link, expires) = self
+                    .port
+                    .group_invite_link(&channel, &id, days)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: link: {e}"))?;
+                let expires = chrono::DateTime::from_timestamp(expires, 0)
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_default();
+                Ok(json!({"channel": channel.as_str(), "link": link, "expires": expires}))
             }
             Some("leave") => {
                 let channel = Self::channel_arg(&params, &stamp)?;

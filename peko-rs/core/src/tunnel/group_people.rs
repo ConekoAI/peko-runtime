@@ -260,6 +260,7 @@ impl TunnelChannelPort {
             self.sync_group_roster(ctx, channel).await
         } else {
             self.local.leave_actor(channel, person).await?;
+            self.report_group_roster(ctx, channel).await;
             Ok(())
         }
     }
@@ -297,6 +298,8 @@ impl TunnelChannelPort {
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
         }
+        // ADR-092 D6: PekoHub hears who is in a registered group.
+        self.report_group_roster(ctx, channel).await;
         Ok(())
     }
 
@@ -362,6 +365,7 @@ impl TunnelChannelPort {
             account,
             initial_members,
             received_at: chrono::Utc::now(),
+            requested: false,
         };
         if let Err(e) = self.local.save_invitation(&invitation).await {
             warn!("could not keep a group invitation: {e}");
@@ -392,7 +396,13 @@ impl TunnelChannelPort {
             .local_account()
             .await
             .ok_or_else(|| anyhow::anyhow!("Register this runtime with PekoHub first"))?;
-        Ok(self.local.invitations(&account).await?)
+        Ok(self
+            .local
+            .invitations(&account)
+            .await?
+            .into_iter()
+            .filter(|i| !i.requested)
+            .collect())
     }
 
     /// The person answers an invitation (ADR-092 D2): accepting joins the
@@ -421,7 +431,7 @@ impl TunnelChannelPort {
             .local
             .take_invitation(channel)
             .await?
-            .filter(|i| i.account == account)
+            .filter(|i| i.account == account && !i.requested)
             .ok_or_else(|| anyhow::anyhow!("No invitation to {channel} is waiting"))?;
         if accept {
             self.join_as_person(&invitation.channel, &invitation, &account)
@@ -460,10 +470,23 @@ impl TunnelChannelPort {
             .await
             .map(|a| a.address)
             .unwrap_or_else(|_| invitation.inviter.clone());
+        // Their other devices stay as routes (ADR-092 D4), so a post from
+        // one reaches the others; this runtime is not a route to itself.
+        let here = self
+            .ctx
+            .read()
+            .await
+            .as_ref()
+            .map(|c| c.caller_runtime_id.clone());
         let members: Vec<InitialMember> = invitation
             .initial_members
             .iter()
-            .filter(|m| m.principal_did != me)
+            .filter(|m| {
+                m.principal_did != me
+                    || m.runtime_id
+                        .as_ref()
+                        .is_some_and(|r| Some(r) != here.as_ref())
+            })
             .cloned()
             .collect();
         self.local
@@ -541,16 +564,23 @@ impl TunnelChannelPort {
             .as_deref()
             == Some(account.as_str());
         if !joined_here {
-            let waiting = self
+            // An invitation waiting here takes the roster once it shows them
+            // joined from another of their runtimes; a request they made
+            // here (by link, ID, or as a new device, ADR-092 D4/D5) takes
+            // it as the home's yes.
+            let Some(waiting) = self
                 .local
                 .invitations(&account)
                 .await?
                 .into_iter()
-                .any(|i| &i.channel == channel && i.home_runtime == source_runtime_id);
+                .find(|i| &i.channel == channel && i.home_runtime == source_runtime_id)
+            else {
+                return Ok(false);
+            };
             let joined_elsewhere = members
                 .iter()
                 .any(|m| m.principal_did == me && m.runtime_id.is_some());
-            if !(waiting && joined_elsewhere) {
+            if !(waiting.requested || joined_elsewhere) {
                 return Ok(false);
             }
             let _ = self.local.take_invitation(channel).await;
@@ -563,8 +593,19 @@ impl TunnelChannelPort {
             account: account.clone(),
             initial_members: members.to_vec(),
             received_at: chrono::Utc::now(),
+            requested: false,
         };
         self.join_as_person(channel, &invitation, &account).await?;
+        if !joined_here {
+            // ADR-092 D3: a group just joined here catches up from its home.
+            let port = self.clone();
+            let joined = channel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = port.sync_history(&joined).await {
+                    debug!(channel = %joined, "group catch-up skipped: {e}");
+                }
+            });
+        }
         Ok(true)
     }
 

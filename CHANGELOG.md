@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: groups get IDs, invite links, and follow you to new devices (2026-11-03, ADR-092 D4–D6)
+
+- `Channel register { channel, visibility }` (also `peko channel register
+  [--public]`, desktop Share) gives a group a number ID on PekoHub, at its
+  home and by its owner or an admin: `invite_only` (default) or `public`.
+- `Channel link { channel, days }` (`peko channel link`) makes an invite
+  link signed by the home, good for up to 30 days; `revoke` stops them all.
+- `peko channel join <link | group ID>` (desktop: Join a group) asks the
+  group's home to let you in: with a live link, or to a public group; the
+  group appears with the home's roster.
+- A runtime registered to your account joins your registered groups on
+  connecting; PekoHub keeps which accounts are in each group, and the home
+  reports it after every roster change. A group you join catches up from its
+  home at once, and your post from one device reaches your others.
+- People without a runtime read a group they are in through PekoHub
+  (`GET /v1/groups/:id/history`); the home checks membership.
+
 ### Feature: group members read the group's history from its home (2026-11-02, ADR-092 D3)
 
 - A group's home answers the history messages (ADR-091) for its members:

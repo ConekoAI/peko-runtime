@@ -365,6 +365,56 @@ pub struct MetaJson {
     /// the home; absent is `shared`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryVisibility>,
+    /// ADR-092 D5: the group's PekoHub registration. Kept at the home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubGroup>,
+}
+
+/// A group as PekoHub knows it (ADR-092 D5), kept at its home.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubGroup {
+    /// The ID PekoHub assigned: a bare number, as a string.
+    pub id: String,
+    /// The group's page on the website, as PekoHub gave it.
+    #[serde(default)]
+    pub page: String,
+    pub visibility: GroupVisibility,
+    /// The invite links the home minted; checked when someone joins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<InviteLink>,
+}
+
+/// Who may find and join a registered group (ADR-092 D5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupVisibility {
+    /// Only with an invite link.
+    #[default]
+    InviteOnly,
+    /// Anyone with the group's ID.
+    Public,
+}
+
+impl GroupVisibility {
+    /// The wire form PekoHub uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InviteOnly => "invite_only",
+            Self::Public => "public",
+        }
+    }
+}
+
+/// One invite link a group's home minted (ADR-092 D5). The token itself
+/// is signed by the home; the home keeps its nonce to honour or revoke it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InviteLink {
+    pub nonce: String,
+    /// Unix seconds.
+    pub exp: i64,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 /// What a group's members may read of its past (ADR-092 D3).
@@ -393,6 +443,11 @@ pub struct GroupInvitation {
     /// The roster as the home sent it.
     pub initial_members: Vec<peko_protocol::channel::InitialMember>,
     pub received_at: chrono::DateTime<Utc>,
+    /// The person asked to join (with a link or a group's ID, or from a
+    /// new device, ADR-092 D4/D5); it waits for the home's roster, not
+    /// for an answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requested: bool,
 }
 
 /// A group's home, owner and admins (ADR-092 D1), as `Channel info` shows.
@@ -405,6 +460,12 @@ pub struct GroupInfo {
     pub admins: Vec<String>,
     /// What members may read of the past (ADR-092 D3).
     pub history: HistoryVisibility,
+    /// The group's PekoHub ID, once registered (ADR-092 D5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_id: Option<String>,
+    /// Who may find and join it on PekoHub, once registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<GroupVisibility>,
 }
 
 /// Where a group's record lives and who owns it (ADR-092 D1).
@@ -443,6 +504,8 @@ struct MetaJsonOnDisk {
     admins: Vec<String>,
     #[serde(default)]
     history: Option<HistoryVisibility>,
+    #[serde(default)]
+    hub: Option<HubGroup>,
 }
 
 #[derive(Deserialize)]
@@ -484,6 +547,7 @@ impl From<MetaJsonOnDisk> for MetaJson {
             home: raw.home,
             admins: raw.admins,
             history: raw.history,
+            hub: raw.hub,
         }
     }
 }
@@ -831,6 +895,7 @@ impl ChannelStore {
             home: None,
             admins: Vec::new(),
             history: None,
+            hub: None,
         }
         .save(&dir)
         .await?;
@@ -1093,6 +1158,7 @@ impl ChannelStore {
             }),
             admins: Vec::new(),
             history: None,
+            hub: None,
         }
         .save(&chan_dir)
         .await?;
@@ -1269,6 +1335,31 @@ impl ChannelStore {
         }
         meta.history = Some(visibility);
         meta.save(&dir).await
+    }
+
+    /// A group's PekoHub registration, kept at its home (ADR-092 D5).
+    pub async fn hub_group(&self, channel: &ChannelId) -> Result<Option<HubGroup>> {
+        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
+        Ok(meta.hub)
+    }
+
+    /// Change a group's PekoHub registration under its lock: `edit` gets
+    /// the current one (`None` before the first) and returns the new one.
+    pub async fn update_hub_group(
+        &self,
+        channel: &ChannelId,
+        edit: impl FnOnce(Option<HubGroup>) -> HubGroup,
+    ) -> Result<HubGroup> {
+        let dir = self.cfg.channel_dir(channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if meta.kind != ConversationKind::Group {
+            return Err(ChannelError::Adapter(format!("{channel} is not a group")));
+        }
+        let hub = edit(meta.hub.take());
+        meta.hub = Some(hub.clone());
+        meta.save(&dir).await?;
+        Ok(hub)
     }
 
     /// When `address` (canonical) joined `channel`: the `at` of the newest
@@ -2698,6 +2789,7 @@ impl ChannelStore {
             home: None,
             admins: Vec::new(),
             history: None,
+            hub: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -3136,6 +3228,8 @@ impl ChannelPort for ChannelStore {
             owner: self.group_owner(channel).await?,
             admins: self.group_admins(channel).await?,
             history: self.history_visibility(channel).await?,
+            hub_id: self.hub_group(channel).await?.map(|h| h.id),
+            visibility: self.hub_group(channel).await?.map(|h| h.visibility),
         }))
     }
 
@@ -3344,6 +3438,7 @@ impl ChannelPort for ChannelStore {
             home: None,
             admins: Vec::new(),
             history: None,
+            hub: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -5067,6 +5162,7 @@ mod tests {
             home: None,
             admins: Vec::new(),
             history: None,
+            hub: None,
         };
         let raw = serde_json::to_string(&m).unwrap();
         assert!(raw.contains(r#""kind":"group""#), "{raw}");

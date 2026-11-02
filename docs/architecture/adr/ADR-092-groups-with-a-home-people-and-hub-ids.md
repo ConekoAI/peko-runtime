@@ -1,6 +1,6 @@
 # ADR-092: Groups have a home runtime, take people as members, keep their history, and get Hub IDs
 
-**Status:** Accepted (2026-11-02)
+**Status:** Accepted (2026-11-02); phases 1–4 built (2026-11-03), open items in §6 phase 4 notes
 **Date:** 2026-11-02
 **Builds on:** [ADR-049](ADR-049-multi-party-group-channels.md) / [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (group channels, the `Channel` tool, who may manage them), [ADR-090](ADR-090-local-user-dms-a-remote-peko-over-the-tunnel.md) (a person on the tunnel, vouched for by their runtime and the Hub), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (history from the conversation's record, gated to the people in it; a runtime that changes hands forgets), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (one owner per peko, online links).
 **Counterpart:** PekoHub ADR-009 (one ID format per kind, exact lookup only); a new PekoHub ADR for the group registry and invite links.
@@ -66,7 +66,7 @@ A group may be **registered** on PekoHub, like a peko:
 
 - **ID.** A number PekoHub assigns when the group is registered, like a Discord server ID: a 64-bit, time-ordered snowflake written in decimal (`1203948571029384756`). Groups live in their own ID space, apart from people and pekos (`@…`) and seeds (`owner/name`), so a bare number is always a group. The **name** is free text, needn't be unique, and can change; the ID never does. Page `pekohub.ai/g/<id>`; the search box reads an all-digit query as a group ID (PekoHub ADR-009 D4). The runtime keeps its own channel id (`group:<slug>` / `chan_*`) and records the number in `meta.hub_id`.
 - **Visibility.** `invite-only` (default): joining needs an invite link or the owner's approval. `public`: anyone signed in who has the ID may join. Never listed or searched by text (PekoHub ADR-009 D2).
-- **Invite links.** The owner (or an admin) mints a link on the home runtime: a token signed by the home, with an optional expiry and use count, listed and revocable there. `pekohub.ai/@alice/+team?invite=<token>` opens the desktop (deep link) or the website, which shows the group's name and owner and a Join button.
+- **Invite links.** The owner (or an admin) mints a link on the home runtime: a token signed by the home, with an optional expiry and use count, listed and revocable there. `pekohub.ai/g/<id>?invite=<token>` opens the group's page on the website, which shows its name and owner and how to join in Peko.
 - **Joining.** The person's runtime sends a signed join request (the person, the token if any) to the home over the tunnel. The home checks the token or the visibility, or asks the owner (the ADR-078 owner-approval path: desktop Approve/Deny, `peko approve`), then adds the person to the roster and sends the invite to every runtime registered to that account that is online. PekoHub records the membership for D4.
 - **Unregistered groups** keep working exactly as today, among their members, with no ID.
 
@@ -115,3 +115,28 @@ Hub ID.
 
    *Phase 3 notes (as built).* The home answers the ADR-091 history messages for a group: to a person who is a member, by their Hub-vouched account (any of their runtimes, so a new device can read too), and to a peko member by its signing DID from the runtime that is its route (PekoHub relays a peko's request only from the runtime its online link points at). `Channel history { channel, visibility }` sets `shared` / `joined` at the home (owner or admin; an owner decision under ADR-082 D6); under `joined` a member reads only posts at or after the `MemberJoined` that admitted them. A person's group catches up on joining, on `tunnel_ready`, and on `peer_runtime_online` for the home; a peko's runtime catches up when the peko is added to a group that already talked; the desktop's group view reads earlier pages from the home on request, unstored. A phone's route for groups needs a group's Hub ID, so it comes with phase 4. Moving a home when its owner moves is still open (§4).
 4. **Hub IDs and invites** — PekoHub group registry, pages, invite links; join requests; per-account group list (D4); desktop deep link and Join.
+
+   *Phase 4 notes (as built).*
+   - **Registering.** `Channel register { channel, visibility }` (also `peko channel register`, desktop Share) runs at the home, by the owner or an admin, as an owner decision (ADR-082 D6). The home sends `group_register` with the owner's Hub address; PekoHub refuses unless the owner is a peko whose online link is that runtime, or the person the runtime is registered to. It answers `group_registered { groupId, pageUrl }`, which the home keeps in `meta.hub` with the visibility. Registering again changes the visibility and keeps the ID.
+   - **Invite links.** `Channel link { channel, days }` mints a compact JWS signed by the home runtime, `{ v: "peko-group-invite/1", g, c, h, exp, n }`, good for 1–30 days (default 7); the link is `pageUrl?invite=<token>`. The home keeps each nonce; `link { revoke: true }` stops them all. PekoHub checks a token's signature and expiry only to show an invite-only group's page; the home decides joins.
+   - **Joining.** A person pastes a link or a public group's ID (desktop Join a group, `peko channel join <link|id>`). Their runtime asks PekoHub (`group_lookup_request` → `group_lookup`), which shows a public group, or an invite-only one only with a valid invite. It then keeps a *requested* entry (not shown as an invitation) and sends `tunnel_group_join_request` (signed by the runtime, with the token) to the home. PekoHub relays it only from a runtime registered to that person. The home admits a member, a live link it minted, or anyone to a public group, adds the person with that runtime as their route, and sends the roster. The requested entry takes the roster as the home's yes; a refusal leaves it waiting, and nothing arrives.
+   - **Devices (D4).** After every change to a registered group's roster, the home sends `group_roster { groupId, accounts }` with the persons who joined (a route, or its own local user), never invitees. On `tunnel_ready` a runtime asks `account_groups_request`. For each group of its account that is not here, it sends the same join request without a token, which the home admits because the person is a member. A group joined by link, by ID, or on a new device catches up from the home (phase 3) as soon as the roster arrives. Each of a person's runtimes keeps their other runtimes as routes, so a post from one device reaches the others directly.
+   - **Phones.** `GET /v1/groups/:id/history` proxies a member's read to the home in the owning peko's name. The home checks membership and the history setting, not the peko's exposure.
+   - **Open.** These are not built:
+     - links carry no use count, and are revoked all at once;
+     - an invite-only group refuses a link-less request instead of asking the owner;
+     - only a peko can own a registered group, because roster snapshots are signed by the owning peko;
+     - there is no desktop deep link: the website tells the person to paste the link in Peko;
+     - moving the home with its owner (D1) remains open;
+     - a request the home refuses gets no answer, so the person's runtime keeps waiting.
+
+   *Verified live (2026-11-03)* with a local PekoHub (this branch) and seven runtimes on one machine:
+   - a group was registered, made public, and made invite-only again;
+   - people joined by link and by a public ID, and new devices of alice and bob joined;
+   - an invite-only ID and a revoked link were refused;
+   - every runtime caught up the history;
+   - posts went in every direction;
+   - a member read the group through the phone proxy, and a non-member got an empty page;
+   - `/g/<id>` showed the right page with and without an invite.
+
+   The check found a bug outside this ADR, fixed separately: on boot, a registered runtime's own person lost its local address, so the owner could not read their own groups and DMs.

@@ -68,7 +68,11 @@ mod dm_history;
 
 #[path = "group_people.rs"]
 mod group_people;
+
+#[path = "group_hub.rs"]
+mod group_hub;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
+pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
 
 /// Unanswered sends to one runtime before the sender asks the directory
 /// whether the members it reaches there moved (ADR-081 D7).
@@ -117,6 +121,8 @@ pub struct TunnelChannelPort {
     resender_started: Arc<std::sync::atomic::AtomicBool>,
     /// History requests waiting for the host's answer (ADR-091 D2).
     history_pending: Arc<std::sync::Mutex<HashMap<String, dm_history::PendingHistory>>>,
+    /// Requests to PekoHub waiting for its answer (ADR-092 D4/D5).
+    hub_pending: group_hub::HubPending,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -147,7 +153,23 @@ impl TunnelChannelPort {
             received: Arc::new(ReceivedLog::new(delivery_dir.join("received.jsonl"))),
             resender_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             history_pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            hub_pending: Arc::default(),
         }
+    }
+
+    /// ADR-092 D5: only a group's owner or an admin `does` this.
+    async fn may_manage(&self, channel: &ChannelId, by: &PrincipalId, does: &str) -> Result<()> {
+        if self
+            .local
+            .may_manage_group(channel, &ActorRef::from(by))
+            .await?
+        {
+            return Ok(());
+        }
+        let owner = self.local.group_owner(channel).await?;
+        Err(peko_channel::ChannelError::Adapter(format!(
+            "Only the group's owner ({owner}) or an admin {does}"
+        )))
     }
 
     /// Install the cross-runtime dispatch context. Idempotent: a
@@ -504,6 +526,16 @@ impl TunnelChannelPort {
                     channel,
                     &entry.recipient_runtime_id,
                     *accept,
+                )
+                .await
+            }
+            OutboxItem::GroupJoinRequest { channel, invite } => {
+                self.group_join_request_envelope(
+                    ctx,
+                    &entry.request_id,
+                    channel,
+                    &entry.recipient_runtime_id,
+                    invite.clone(),
                 )
                 .await
             }
@@ -1446,6 +1478,34 @@ impl ChannelPort for TunnelChannelPort {
             }
         }
         self.local.set_group_history(channel, by, visibility).await
+    }
+    async fn register_group(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        visibility: peko_channel::GroupVisibility,
+    ) -> Result<peko_channel::HubGroup> {
+        self.may_manage(channel, by, "registers it").await?;
+        self.register_group_at_home(channel, visibility)
+            .await
+            .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))
+    }
+    async fn group_invite_link(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        days: u32,
+    ) -> Result<(String, i64)> {
+        self.may_manage(channel, by, "makes invite links").await?;
+        self.invite_link_at_home(channel, days)
+            .await
+            .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))
+    }
+    async fn revoke_group_links(&self, channel: &ChannelId, by: &PrincipalId) -> Result<usize> {
+        self.may_manage(channel, by, "revokes invite links").await?;
+        self.revoke_links_at_home(channel)
+            .await
+            .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))
     }
     async fn ensure_dm(
         &self,
