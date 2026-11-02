@@ -1429,6 +1429,24 @@ impl ChannelPort for TunnelChannelPort {
         }
         self.local.set_group_admin(channel, by, actor, admin).await
     }
+    async fn set_group_history(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        visibility: peko_channel::HistoryVisibility,
+    ) -> Result<()> {
+        // ADR-092 D3: the setting lives, and is checked, at the home.
+        let ctx = self.ctx.read().await.clone();
+        if let (Some(ctx), Some(home)) = (ctx, self.local.group_home(channel).await?) {
+            if home.runtime != ctx.caller_runtime_id {
+                return Err(peko_channel::ChannelError::Adapter(format!(
+                    "A group's settings are kept at its home runtime ({})",
+                    home.runtime
+                )));
+            }
+        }
+        self.local.set_group_history(channel, by, visibility).await
+    }
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,

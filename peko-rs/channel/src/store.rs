@@ -361,6 +361,21 @@ pub struct MetaJson {
     /// addresses). Kept at the home.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<String>,
+    /// ADR-092 D3: what a group's members may read of its past. Kept at
+    /// the home; absent is `shared`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryVisibility>,
+}
+
+/// What a group's members may read of its past (ADR-092 D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryVisibility {
+    /// Everything since the group was created, while a member.
+    #[default]
+    Shared,
+    /// Only what was posted after they joined.
+    Joined,
 }
 
 /// A group's invitation waiting for the person's answer (ADR-092 D2),
@@ -388,6 +403,8 @@ pub struct GroupInfo {
     pub owner: String,
     /// Canonical addresses; kept at the home.
     pub admins: Vec<String>,
+    /// What members may read of the past (ADR-092 D3).
+    pub history: HistoryVisibility,
 }
 
 /// Where a group's record lives and who owns it (ADR-092 D1).
@@ -424,6 +441,8 @@ struct MetaJsonOnDisk {
     home: Option<GroupHome>,
     #[serde(default)]
     admins: Vec<String>,
+    #[serde(default)]
+    history: Option<HistoryVisibility>,
 }
 
 #[derive(Deserialize)]
@@ -464,6 +483,7 @@ impl From<MetaJsonOnDisk> for MetaJson {
             account: raw.account,
             home: raw.home,
             admins: raw.admins,
+            history: raw.history,
         }
     }
 }
@@ -810,6 +830,7 @@ impl ChannelStore {
             account: Some(account.to_string()),
             home: None,
             admins: Vec::new(),
+            history: None,
         }
         .save(&dir)
         .await?;
@@ -1071,6 +1092,7 @@ impl ChannelStore {
                 owner: None,
             }),
             admins: Vec::new(),
+            history: None,
         }
         .save(&chan_dir)
         .await?;
@@ -1225,6 +1247,80 @@ impl ChannelStore {
             }
         }
         Ok(out)
+    }
+
+    /// A group's history visibility (ADR-092 D3).
+    pub async fn history_visibility(&self, channel: &ChannelId) -> Result<HistoryVisibility> {
+        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
+        Ok(meta.history.unwrap_or_default())
+    }
+
+    /// Set a group's history visibility (ADR-092 D3).
+    pub async fn set_history_visibility(
+        &self,
+        channel: &ChannelId,
+        visibility: HistoryVisibility,
+    ) -> Result<()> {
+        let dir = self.cfg.channel_dir(channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if meta.kind != ConversationKind::Group {
+            return Err(ChannelError::Adapter(format!("{channel} is not a group")));
+        }
+        meta.history = Some(visibility);
+        meta.save(&dir).await
+    }
+
+    /// When `address` (canonical) joined `channel`: the `at` of the newest
+    /// `MemberJoined` naming it, or the channel's creation for its creator.
+    /// `None` when the log never shows it joining.
+    pub async fn joined_at(&self, channel: &ChannelId, address: &str) -> Result<Option<String>> {
+        let tier = self.resolve_tier(channel).await?;
+        let mut joined = None;
+        for (_, ev) in self.read_events(tier, channel, &Checkpoint::zero()).await? {
+            match &ev {
+                ChannelEvent::MemberJoined { member, at, .. }
+                    if self.creator_address(member).await == address =>
+                {
+                    joined = Some(at.clone());
+                }
+                ChannelEvent::Created { creator, at, .. }
+                    if joined.is_none() && self.creator_address(creator).await == address =>
+                {
+                    joined = Some(at.clone());
+                }
+                _ => {}
+            }
+        }
+        Ok(joined)
+    }
+
+    /// [`Self::history_page`] limited to posts at or after `since` (RFC
+    /// 3339), for a member who may read only what followed their joining.
+    pub async fn history_page_since(
+        &self,
+        channel: &ChannelId,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+        since: &str,
+    ) -> Result<(Vec<ChannelEvent>, bool)> {
+        let (page, _) = self
+            .history_page(channel, before, after, usize::MAX / 4)
+            .await?;
+        let visible: Vec<ChannelEvent> = page.into_iter().filter(|ev| ev.at() >= since).collect();
+        let limit = limit.max(1);
+        let (start, end) = if after.is_some() {
+            (0, limit.min(visible.len()))
+        } else {
+            (visible.len().saturating_sub(limit), visible.len())
+        };
+        let more = if after.is_some() {
+            end < visible.len()
+        } else {
+            start > 0
+        };
+        Ok((visible[start..end].to_vec(), more))
     }
 
     /// Delete every DM with a remote peko that does not belong to
@@ -2601,6 +2697,7 @@ impl ChannelStore {
             account: None,
             home: None,
             admins: Vec::new(),
+            history: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -3038,7 +3135,23 @@ impl ChannelPort for ChannelStore {
             home: self.group_home(channel).await?,
             owner: self.group_owner(channel).await?,
             admins: self.group_admins(channel).await?,
+            history: self.history_visibility(channel).await?,
         }))
+    }
+
+    async fn set_group_history(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        visibility: HistoryVisibility,
+    ) -> Result<()> {
+        if !self.may_manage_group(channel, &ActorRef::from(by)).await? {
+            let owner = self.group_owner(channel).await?;
+            return Err(ChannelError::Adapter(format!(
+                "Only the group's owner ({owner}) or an admin chooses what members may read"
+            )));
+        }
+        self.set_history_visibility(channel, visibility).await
     }
 
     async fn set_group_admin(
@@ -3230,6 +3343,7 @@ impl ChannelPort for ChannelStore {
             account: None,
             home: None,
             admins: Vec::new(),
+            history: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -4952,6 +5066,7 @@ mod tests {
             account: None,
             home: None,
             admins: Vec::new(),
+            history: None,
         };
         let raw = serde_json::to_string(&m).unwrap();
         assert!(raw.contains(r#""kind":"group""#), "{raw}");
