@@ -319,5 +319,34 @@
     ],
     "hasMore": true,
     "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_group_invitation",
+    "requestId": "ginv-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientAccount": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "chan_0123abcd",
+    "name": "book club",
+    "inviter": "principal:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "initialMembers": [
+      {
+        "principalDid": "did:key:z6MkPrincipal",
+        "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "identityKey": "3f0f6b1e-0000-4000-8000-000000000001",
+        "name": "ada",
+        "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+      }
+    ],
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_group_join",
+    "requestId": "gjoin-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "chan_0123abcd",
+    "accept": true,
+    "signature": "runtime-signature"
   }
 ]

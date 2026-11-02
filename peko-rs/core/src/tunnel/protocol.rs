@@ -549,6 +549,41 @@ pub enum TunnelMessage {
         has_more: bool,
         signature: String,
     },
+
+    /// ADR-092 D2: a group's home invites a person by Hub account.
+    /// PekoHub delivers it to every runtime registered to
+    /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending
+    /// invitation until the person answers. `initial_members` is the
+    /// roster as the home sends it, `inviter` the inviting member's
+    /// address. `signature` is the home runtime's compact JWS over every
+    /// other field (`sign_group_invitation`).
+    #[serde(rename = "tunnel_group_invitation", rename_all = "camelCase")]
+    TunnelGroupInvitation {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_account: String,
+        channel_id: String,
+        name: String,
+        inviter: String,
+        initial_members: Vec<InitialMember>,
+        signature: String,
+    },
+
+    /// ADR-092 D2: a person answers an invitation, from one of their
+    /// runtimes, to the group's home. `source_principal_did` is the
+    /// person (`user:hub:<id>`); PekoHub relays it only from a runtime
+    /// registered to that account. On `accept` the home records the
+    /// source runtime as the person's route.
+    #[serde(rename = "tunnel_group_join", rename_all = "camelCase")]
+    TunnelGroupJoin {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        accept: bool,
+        signature: String,
+    },
 }
 
 /// One row of the `initialMembers` list on

@@ -931,6 +931,27 @@ pub enum RequestPacket {
         before: String,
     },
 
+    /// The groups inviting this runtime's person (ADR-092 D2), newest
+    /// first. Local callers only; answered with `ChannelInvitationsResult`.
+    #[serde(rename = "channel_invitations")]
+    ChannelInvitations { request_id: u64 },
+
+    /// The groups this runtime's person joined from other runtimes
+    /// (ADR-092 D2). Local callers only; answered with
+    /// `ChannelPersonGroupsResult`.
+    #[serde(rename = "channel_person_groups")]
+    ChannelPersonGroups { request_id: u64 },
+
+    /// Accept or decline a group's invitation (ADR-092 D2): accepting
+    /// joins the group here and tells its home. Local callers only;
+    /// answered with `Done`.
+    #[serde(rename = "channel_invitation_answer")]
+    ChannelInvitationAnswer {
+        request_id: u64,
+        channel: String,
+        accept: bool,
+    },
+
     /// Set what starts a turn for `principal_name` in a group
     /// (`human` / `mention` / `off`, ADR-082 D3). Groups only — a DM
     /// always wakes on human posts — and only the peko's owner.
@@ -1023,6 +1044,9 @@ impl RequestPacket {
             | Self::ChannelInfo { request_id, .. }
             | Self::ChannelOpenRemoteDm { request_id, .. }
             | Self::ChannelHistoryOlder { request_id, .. }
+            | Self::ChannelInvitations { request_id }
+            | Self::ChannelPersonGroups { request_id }
+            | Self::ChannelInvitationAnswer { request_id, .. }
             | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
@@ -1207,6 +1231,16 @@ impl PrincipalLogMessage {
 }
 
 /// Response sent from Daemon → CLI
+/// A group this runtime's person joined from another runtime (ADR-092 D2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonGroup {
+    pub channel: peko_protocol::channel::ChannelId,
+    pub name: String,
+    /// The group's home runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ResponsePacket {
@@ -1390,6 +1424,20 @@ pub enum ResponsePacket {
         /// policy. A DM's is always `human`; a group binding not yet
         /// written reads as the group default, `mention`.
         pekos: Vec<ChannelPekoWake>,
+    },
+
+    /// Response to `ChannelPersonGroups` (ADR-092 D2).
+    #[serde(rename = "channel_person_groups_result")]
+    ChannelPersonGroupsResult {
+        request_id: u64,
+        groups: Vec<PersonGroup>,
+    },
+
+    /// Response to `ChannelInvitations` (ADR-092 D2).
+    #[serde(rename = "channel_invitations_result")]
+    ChannelInvitationsResult {
+        request_id: u64,
+        invitations: Vec<peko_channel::GroupInvitation>,
     },
 
     /// Response to `ChannelHistoryOlder` (ADR-091 D4): posts, oldest
@@ -2634,6 +2682,8 @@ impl ResponsePacket {
             | Self::ChannelInfoResult { request_id, .. }
             | Self::ChannelRemoteDmOpened { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
+            | Self::ChannelInvitationsResult { request_id, .. }
+            | Self::ChannelPersonGroupsResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
@@ -2721,6 +2771,8 @@ impl ResponsePacket {
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
             Self::ChannelRemoteDmOpened { .. } => "ChannelRemoteDmOpened",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
+            Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",
+            Self::ChannelPersonGroupsResult { .. } => "ChannelPersonGroupsResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
         }
     }

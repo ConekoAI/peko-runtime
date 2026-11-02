@@ -363,6 +363,23 @@ pub struct MetaJson {
     pub admins: Vec<String>,
 }
 
+/// A group's invitation waiting for the person's answer (ADR-092 D2),
+/// kept on each of their runtimes until they accept or decline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInvitation {
+    pub channel: ChannelId,
+    pub name: String,
+    /// The inviting member's address.
+    pub inviter: String,
+    /// The group's home runtime, which sent it.
+    pub home_runtime: String,
+    /// The Hub account it is for.
+    pub account: String,
+    /// The roster as the home sent it.
+    pub initial_members: Vec<peko_protocol::channel::InitialMember>,
+    pub received_at: chrono::DateTime<Utc>,
+}
+
 /// A group's home, owner and admins (ADR-092 D1), as `Channel info` shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfo {
@@ -908,12 +925,173 @@ impl ChannelStore {
         self.actor_info(&subject).await.address
     }
 
-    /// The Hub account a DM with a remote peko belongs to (ADR-091 D5);
-    /// `None` for every other channel.
+    fn invitations_dir(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("group_invitations")
+    }
+
+    /// Keep an invitation until the person answers (ADR-092 D2). A newer
+    /// one for the same group replaces it.
+    pub async fn save_invitation(&self, invitation: &GroupInvitation) -> Result<()> {
+        let dir = self.invitations_dir();
+        fs::create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.json", channel_dir_name(&invitation.channel)));
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(invitation)?).await?;
+        fs::rename(temp, path).await?;
+        Ok(())
+    }
+
+    /// The invitations waiting for `account`'s answer, newest first.
+    pub async fn invitations(&self, account: &str) -> Result<Vec<GroupInvitation>> {
+        let mut out = Vec::new();
+        let Ok(mut rd) = fs::read_dir(self.invitations_dir()).await else {
+            return Ok(out);
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(bytes) = fs::read(entry.path()).await {
+                if let Ok(invitation) = serde_json::from_slice::<GroupInvitation>(&bytes) {
+                    if invitation.account == account {
+                        out.push(invitation);
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|i| std::cmp::Reverse(i.received_at));
+        Ok(out)
+    }
+
+    /// Remove and return the invitation to `channel`, if any.
+    pub async fn take_invitation(&self, channel: &ChannelId) -> Result<Option<GroupInvitation>> {
+        let path = self
+            .invitations_dir()
+            .join(format!("{}.json", channel_dir_name(channel)));
+        let Ok(bytes) = fs::read(&path).await else {
+            return Ok(None);
+        };
+        let _ = fs::remove_file(&path).await;
+        Ok(serde_json::from_slice(&bytes).ok())
+    }
+
+    /// Delete every invitation not for `keep` (ADR-091 D5 / ADR-092 D4:
+    /// the runtime changed hands).
+    pub async fn purge_invitations(&self, keep: Option<&str>) -> Result<()> {
+        let Ok(mut rd) = fs::read_dir(self.invitations_dir()).await else {
+            return Ok(());
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let theirs = match fs::read(entry.path()).await {
+                Ok(bytes) => serde_json::from_slice::<GroupInvitation>(&bytes)
+                    .map_or(true, |i| Some(i.account.as_str()) != keep),
+                Err(_) => true,
+            };
+            if theirs {
+                let _ = fs::remove_file(entry.path()).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// The runtime's local user joins a group from another runtime (ADR-092
+    /// D2), or takes a newer roster for one it is in. `members` is the
+    /// home's roster; rows with a runtime become routes. The copy belongs
+    /// to `account` and lives at `home_runtime`.
+    pub async fn join_remote_person(
+        &self,
+        channel: &ChannelId,
+        name: &str,
+        creator: &str,
+        members: &[peko_protocol::channel::InitialMember],
+        account: &str,
+        home_runtime: &str,
+    ) -> Result<bool> {
+        let _dm_guard = self.dm_lock.lock().await;
+        let _provision_guard = self.lock_dm(channel).await?;
+        let chan_dir = self.cfg.channel_dir(channel);
+        let me = member_row(&ActorRef::User("local".into()));
+        let routes = || -> Vec<RemoteMember> {
+            let mut seen = std::collections::HashSet::new();
+            members
+                .iter()
+                .filter_map(|m| {
+                    let rid = m.runtime_id.clone()?;
+                    seen.insert((rid.clone(), m.principal_did.clone()))
+                        .then(|| RemoteMember {
+                            runtime_id: rid,
+                            principal_id: m.principal_did.clone(),
+                        })
+                })
+                .collect()
+        };
+        if chan_dir.join(META_FILE).exists() {
+            let _members_guard = self.lock_members(&chan_dir).await?;
+            let meta = MetaJson::load(&chan_dir, channel).await?;
+            if meta.kind != ConversationKind::Group || meta.account.as_deref() != Some(account) {
+                return Err(ChannelError::Adapter(format!(
+                    "{channel} is not this account's group"
+                )));
+            }
+            let mut stored = MembersJson::load(&chan_dir).await?;
+            stored.remote_members = routes();
+            if !stored.members.contains(&me) {
+                stored.members.push(me);
+            }
+            stored.save(&chan_dir).await?;
+            return Ok(false);
+        }
+        fs::create_dir_all(&chan_dir).await?;
+        MembersJson {
+            members: vec![me],
+            remote_members: routes(),
+        }
+        .save(&chan_dir)
+        .await?;
+        let now = Utc::now();
+        MetaJson {
+            creator: creator.to_string(),
+            name: name.to_string(),
+            created_at: now,
+            tier: Tier::Runtime,
+            kind: ConversationKind::Group,
+            bindings: HashMap::new(),
+            participants: {
+                let mut addresses = members
+                    .iter()
+                    .map(|m| member_subject(&m.principal_did).to_string())
+                    .collect::<Vec<_>>();
+                addresses.sort();
+                addresses.dedup();
+                addresses
+            },
+            account: Some(account.to_string()),
+            home: Some(GroupHome {
+                runtime: home_runtime.to_string(),
+                owner: None,
+            }),
+            admins: Vec::new(),
+        }
+        .save(&chan_dir)
+        .await?;
+        let ev = ChannelEvent::Created {
+            channel: channel.clone(),
+            creator: creator.to_string(),
+            name: name.to_string(),
+            at: now.to_rfc3339(),
+        };
+        self.append_event(Tier::Runtime, channel, &ev, EventOrigin::Local)
+            .await?;
+        Ok(true)
+    }
+
+    /// The Hub account a conversation of this runtime's person belongs to
+    /// (ADR-091 D5: a DM with a remote peko; ADR-092 D4: a group joined
+    /// from another runtime); `None` for every other channel.
     pub async fn remote_dm_account(&self, channel: &ChannelId) -> Result<Option<String>> {
         let tier = self.resolve_tier(channel).await?;
         let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
-        Ok(meta.account.filter(|_| meta.kind == ConversationKind::Dm))
+        Ok(meta.account)
     }
 
     /// Append `events` from the host's record of this DM (ADR-091 D1):
@@ -990,6 +1168,31 @@ impl ChannelStore {
 
     /// Every DM with a remote peko that belongs to `account` (ADR-091 D4).
     pub async fn remote_dms(&self, account: &str) -> Result<Vec<ChannelId>> {
+        self.account_channels(account, ConversationKind::Dm).await
+    }
+
+    /// Every group `account`'s person joined from another runtime (ADR-092
+    /// D2), with its name and home runtime.
+    pub async fn person_groups(
+        &self,
+        account: &str,
+    ) -> Result<Vec<(ChannelId, String, Option<String>)>> {
+        let mut out = Vec::new();
+        for channel in self
+            .account_channels(account, ConversationKind::Group)
+            .await?
+        {
+            let meta = MetaJson::load(&self.cfg.channel_dir(&channel), &channel).await?;
+            out.push((channel, meta.name, meta.home.map(|h| h.runtime)));
+        }
+        Ok(out)
+    }
+
+    async fn account_channels(
+        &self,
+        account: &str,
+        kind: ConversationKind,
+    ) -> Result<Vec<ChannelId>> {
         let root = self.cfg.channels_dir();
         let mut out = Vec::new();
         let mut rd = match fs::read_dir(&root).await {
@@ -1016,7 +1219,7 @@ impl ChannelStore {
                 continue;
             };
             if let Ok(meta) = MetaJson::load(&entry.path(), &channel).await {
-                if meta.kind == ConversationKind::Dm && meta.account.as_deref() == Some(account) {
+                if meta.kind == kind && meta.account.as_deref() == Some(account) {
                     out.push(channel);
                 }
             }
@@ -1061,7 +1264,9 @@ impl ChannelStore {
             let Ok(meta) = MetaJson::load(&dir, &channel).await else {
                 continue;
             };
-            if meta.kind != ConversationKind::Dm {
+            // A group joined as this runtime's person (ADR-092 D4) carries
+            // its account too; other groups are the pekos'.
+            if meta.kind != ConversationKind::Dm && meta.account.is_none() {
                 continue;
             }
             let theirs = match meta.account.as_deref() {

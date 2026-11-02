@@ -316,6 +316,7 @@ async fn forget_remote_dms(
     store: &ChannelStore,
     keep: Option<&str>,
 ) -> Result<()> {
+    store.purge_invitations(keep).await?;
     let purged = store.purge_remote_dms(keep).await?;
     if !purged.is_empty() {
         tracing::info!(

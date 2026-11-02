@@ -510,6 +510,87 @@ pub fn verify_history(runtime_key: &VerifyingKey, compact: &str) -> Result<Chann
     Ok(payload)
 }
 
+/// Payload version tag for a group invitation (ADR-092 D2).
+pub const GROUP_INVITATION_VERSION: &str = "peko-group-invitation/1";
+
+/// Payload version tag for a group join answer (ADR-092 D2).
+pub const GROUP_JOIN_VERSION: &str = "peko-group-join/1";
+
+/// The signed payload of a `TunnelGroupInvitation`. `initial_members_b64u`
+/// is base64url-no-pad of the serialized roster.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInvitationPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_account: String,
+    pub channel_id: String,
+    pub name: String,
+    pub inviter: String,
+    pub initial_members_b64u: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+impl GroupInvitationPayload {
+    /// The serialized roster this payload signs.
+    #[must_use]
+    pub fn members_b64u_of(members_bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(members_bytes)
+    }
+}
+
+/// The signed payload of a `TunnelGroupJoin`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupJoinPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub source_principal_did: String,
+    pub channel_id: String,
+    pub accept: bool,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify a group invitation's runtime signature, version tag, and freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_group_invitation(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<GroupInvitationPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: GroupInvitationPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("group invitation payload is not valid JSON: {e}"))?;
+    if payload.v != GROUP_INVITATION_VERSION {
+        return Err(anyhow!(
+            "group invitation version must be {GROUP_INVITATION_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Verify a group join answer's runtime signature, version tag, and freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_group_join(runtime_key: &VerifyingKey, compact: &str) -> Result<GroupJoinPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: GroupJoinPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("group join payload is not valid JSON: {e}"))?;
+    if payload.v != GROUP_JOIN_VERSION {
+        return Err(anyhow!("group join version must be {GROUP_JOIN_VERSION:?}"));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

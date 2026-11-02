@@ -55,6 +55,8 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelChannelInvite { .. } => "tunnel_channel_invite",
         TunnelMessage::TunnelChannelHistoryRequest { .. } => "tunnel_channel_history_request",
         TunnelMessage::TunnelChannelHistory { .. } => "tunnel_channel_history",
+        TunnelMessage::TunnelGroupInvitation { .. } => "tunnel_group_invitation",
+        TunnelMessage::TunnelGroupJoin { .. } => "tunnel_group_join",
     }
 }
 
@@ -87,6 +89,8 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_channel_invite",
     "tunnel_channel_history_request",
     "tunnel_channel_history",
+    "tunnel_group_invitation",
+    "tunnel_group_join",
 ];
 
 const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -323,6 +327,31 @@ fn samples() -> Vec<TunnelMessage> {
                 }],
             }],
             has_more: true,
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelGroupInvitation {
+            request_id: "ginv-1".into(),
+            source_runtime_id: RUNTIME_B.into(),
+            recipient_account: format!("user:hub:{ACCOUNT}"),
+            channel_id: "chan_0123abcd".into(),
+            name: "book club".into(),
+            inviter: format!("principal:hub:{HUB_ID}"),
+            initial_members: vec![InitialMember {
+                principal_did: "did:key:z6MkPrincipal".into(),
+                hub_id: Some(HUB_ID.into()),
+                identity_key: Some("3f0f6b1e-0000-4000-8000-000000000001".into()),
+                name: Some("ada".into()),
+                runtime_id: Some(RUNTIME_B.into()),
+            }],
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelGroupJoin {
+            request_id: "gjoin-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_runtime_id: RUNTIME_B.into(),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            channel_id: "chan_0123abcd".into(),
+            accept: true,
             signature: "runtime-signature".into(),
         },
     ]

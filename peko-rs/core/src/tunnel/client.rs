@@ -679,7 +679,9 @@ impl TunnelClient {
             | TunnelMessage::TunnelChannelEvent { .. }
             | TunnelMessage::TunnelChannelInvite { .. }
             | TunnelMessage::TunnelChannelHistoryRequest { .. }
-            | TunnelMessage::TunnelChannelHistory { .. } => {
+            | TunnelMessage::TunnelChannelHistory { .. }
+            | TunnelMessage::TunnelGroupInvitation { .. }
+            | TunnelMessage::TunnelGroupJoin { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

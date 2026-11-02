@@ -836,6 +836,52 @@ impl TunnelDispatcher {
                 self.handle_history_request(request, &signature, &handle)
                     .await;
             }
+            TunnelMessage::TunnelGroupInvitation {
+                request_id,
+                source_runtime_id,
+                recipient_account,
+                channel_id,
+                name,
+                inviter,
+                initial_members,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_group_invitation(
+                        request_id,
+                        source_runtime_id,
+                        recipient_account,
+                        channel_id,
+                        name,
+                        inviter,
+                        initial_members,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelGroupJoin {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                accept,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_group_join(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        source_principal_did,
+                        channel_id,
+                        accept,
+                        signature,
+                    )
+                    .await;
+            }
             TunnelMessage::TunnelChannelHistory {
                 request_id,
                 source_runtime_id,
@@ -2246,6 +2292,38 @@ impl TunnelDispatcher {
                     );
                     return Ok(());
                 }
+            }
+        }
+        // ADR-092 D2: a roster addressed to this runtime's person keeps their
+        // copy of a group they joined (and is ignored otherwise).
+        if group {
+            let addressed = initial_members
+                .iter()
+                .find(|m| m.runtime_id.is_none())
+                .map(|m| m.principal_did.clone());
+            if addressed.as_deref().is_some_and(|a| a.starts_with("user:")) {
+                let applied = port
+                    .on_person_roster(
+                        &channel_typed,
+                        &name,
+                        &creator,
+                        &initial_members,
+                        &source_runtime_id,
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            request_id,
+                            "group roster for this runtime's person not applied: {e}"
+                        );
+                        false
+                    });
+                if applied {
+                    port.mark_applied(&request_id).await;
+                    port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
+                        .await;
+                }
+                return Ok(());
             }
         }
 
@@ -5275,7 +5353,9 @@ mod tests {
                     .await
                     .unwrap(),
                 history @ (TunnelMessage::TunnelChannelHistoryRequest { .. }
-                | TunnelMessage::TunnelChannelHistory { .. }) => {
+                | TunnelMessage::TunnelChannelHistory { .. }
+                | TunnelMessage::TunnelGroupInvitation { .. }
+                | TunnelMessage::TunnelGroupJoin { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -5329,6 +5409,15 @@ mod tests {
             for message in to_a {
                 a.receive(message).await;
             }
+        }
+    }
+
+    trait EmptyInvitations {
+        fn matches_empty_invitations(&self) -> bool;
+    }
+    impl EmptyInvitations for ResponsePacket {
+        fn matches_empty_invitations(&self) -> bool {
+            matches!(self, ResponsePacket::ChannelInvitationsResult { invitations, .. } if invitations.is_empty())
         }
     }
 
@@ -5857,6 +5946,204 @@ mod tests {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    /// ADR-092 D2 end to end: a group's home invites a person by account;
+    /// their runtime keeps the invitation until they accept, joins, and
+    /// becomes their route; then they and the group's peko talk both
+    /// ways. Declining leaves the roster; a roster for a group they never
+    /// accepted is ignored.
+    #[tokio::test]
+    async fn a_person_joins_a_group_on_another_runtime() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, Checkpoint, CreateOpts};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let person = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+
+        // H: the group's home, with its peko as owner.
+        let mut h = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &h.app,
+            "host",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Public,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let h_port = h.app.tunnel_channel_port();
+        h_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("host"),
+                peko_channel::Registration::Public,
+            )
+            .await
+            .unwrap();
+        let channel = h_port
+            .create(&peko.id, CreateOpts::runtime("book club"))
+            .await
+            .unwrap();
+        h_port.invite(&channel, &peko.id, &person).await.unwrap();
+
+        // P: the person's runtime, registered to their account.
+        let mut p = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let p_port = p.app.tunnel_channel_port();
+        p_port
+            .local()
+            .link_local_user(&p.app.runtime_did(), &account)
+            .await
+            .unwrap();
+
+        // The invitation waits on P; nothing is joined yet.
+        relay(&mut h, &mut p).await;
+        let ResponsePacket::ChannelInvitationsResult { invitations, .. } = p
+            .ipc(RequestPacket::ChannelInvitations { request_id: 1 })
+            .await
+        else {
+            panic!("expected invitations");
+        };
+        assert_eq!(invitations.len(), 1);
+        assert_eq!(invitations[0].channel, channel);
+        assert_eq!(invitations[0].name, "book club");
+        assert!(
+            p_port.conversation_kind(&channel).await.is_err(),
+            "not joined before the answer"
+        );
+
+        // The person accepts: P joins and becomes their route at H.
+        let answered = p
+            .ipc(RequestPacket::ChannelInvitationAnswer {
+                request_id: 2,
+                channel: channel.as_str().into(),
+                accept: true,
+            })
+            .await;
+        assert!(
+            matches!(answered, ResponsePacket::Done { success: true, .. }),
+            "{answered:?}"
+        );
+        relay(&mut h, &mut p).await;
+        assert!(h_port
+            .local()
+            .is_remote_member(
+                &channel,
+                &p.app.runtime_did(),
+                &format!("user:hub:{account}")
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            p_port
+                .local()
+                .remote_dm_account(&channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(account.as_str())
+        );
+        assert!(p
+            .ipc(RequestPacket::ChannelInvitations { request_id: 3 })
+            .await
+            .matches_empty_invitations());
+        match p
+            .ipc(RequestPacket::ChannelPersonGroups { request_id: 3 })
+            .await
+        {
+            ResponsePacket::ChannelPersonGroupsResult { groups, .. } => {
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].channel, channel);
+                assert_eq!(groups[0].name, "book club");
+                assert_eq!(
+                    groups[0].home.as_deref(),
+                    Some(h.app.runtime_did().as_str())
+                );
+            }
+            other => panic!("expected the person's groups, got {other:?}"),
+        }
+
+        // They post from P; it reaches H. The peko answers on H; it reaches P.
+        let posted = p
+            .ipc(RequestPacket::ChannelPost {
+                request_id: 4,
+                channel: channel.as_str().into(),
+                sender_name: None,
+                text: "chapter 3 was wild".into(),
+                parent: None,
+            })
+            .await;
+        assert!(
+            matches!(posted, ResponsePacket::ChannelPosted { .. }),
+            "{posted:?}"
+        );
+        relay(&mut h, &mut p).await;
+        h_port
+            .post(
+                &channel,
+                &ActorRef::from(&peko.id),
+                peko_channel::PostMsg::root("agreed!"),
+            )
+            .await
+            .unwrap();
+        relay(&mut h, &mut p).await;
+        for (port, label) in [(&h_port, "home"), (&p_port, "person")] {
+            let texts: Vec<_> = posts(&port.peek(&channel, &Checkpoint::zero()).await.unwrap())
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect();
+            assert_eq!(texts, ["chapter 3 was wild", "agreed!"], "{label}");
+        }
+
+        // A roster for a group they never accepted changes nothing.
+        let stranger_group = peko_channel::ChannelId::generate();
+        assert!(!p_port
+            .on_person_roster(
+                &stranger_group,
+                "spam",
+                "principal:hub:x",
+                &[],
+                "did:key:zStranger"
+            )
+            .await
+            .unwrap());
+        assert!(p_port.conversation_kind(&stranger_group).await.is_err());
+
+        // Declining a second group's invitation takes them off its roster.
+        let second = h_port
+            .create(&peko.id, CreateOpts::runtime("chess"))
+            .await
+            .unwrap();
+        h_port.invite(&second, &peko.id, &person).await.unwrap();
+        relay(&mut h, &mut p).await;
+        let declined = p
+            .ipc(RequestPacket::ChannelInvitationAnswer {
+                request_id: 5,
+                channel: second.as_str().into(),
+                accept: false,
+            })
+            .await;
+        assert!(
+            matches!(declined, ResponsePacket::Done { success: true, .. }),
+            "{declined:?}"
+        );
+        relay(&mut h, &mut p).await;
+        let members = h_port.list_members(&second).await.unwrap();
+        assert!(
+            !members.iter().any(|m| matches!(m, ActorRef::User(_))),
+            "{members:?}"
+        );
+        assert!(p_port.conversation_kind(&second).await.is_err());
     }
 
     /// ADR-090 D3: an unsigned invite is a person's only in the exact
