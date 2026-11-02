@@ -6281,8 +6281,13 @@ mod tests {
             .link_local_user(&h.app.runtime_did(), &owner_account)
             .await
             .unwrap();
+        // Once registered, the store keeps them by their Hub address.
         h_port
-            .invite(&channel, &peko.id, &ActorRef::User("local".into()))
+            .invite(
+                &channel,
+                &peko.id,
+                &ActorRef::User(peko_subject::Route::hub(owner_account.clone())),
+            )
             .await
             .unwrap();
         h_port
@@ -6426,6 +6431,25 @@ mod tests {
             Some(account.as_str()),
             "the home's roster completes the join"
         );
+        // …and the group catches up from its home.
+        let mut caught_up = false;
+        for _ in 0..100 {
+            route(&mut [&mut h, &mut p]).await;
+            let events = p_port
+                .local()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .unwrap();
+            if posts(&events).iter().any(|(_, t)| t == "welcome, readers") {
+                caught_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            caught_up,
+            "a group joined by link reads what was said before"
+        );
 
         // The desktop sees where the group is managed, and its ID.
         for (rt, home_here) in [(&h, true), (&p, false)] {
@@ -6497,6 +6521,33 @@ mod tests {
             "a member's new device joins without a link"
         );
 
+        // A post from one of their devices reaches the other.
+        p2.ipc(RequestPacket::ChannelPost {
+            request_id: 10,
+            channel: channel.as_str().into(),
+            sender_name: None,
+            text: "from my laptop".into(),
+            parent: None,
+        })
+        .await;
+        route(&mut [&mut h, &mut p, &mut p2]).await;
+        for rt in [&h, &p] {
+            let events = rt
+                .app
+                .tunnel_channel_port()
+                .local()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .unwrap();
+            assert!(
+                posts(&events)
+                    .iter()
+                    .any(|(_, text)| text == "from my laptop"),
+                "{:?}",
+                posts(&events)
+            );
+        }
+
         // Q: someone else. A revoked link and a link-less request to an
         // invite-only group admit no one.
         assert_eq!(
@@ -6561,7 +6612,7 @@ mod tests {
                 .into_iter()
                 .map(|(_, text)| text)
                 .collect::<Vec<_>>(),
-            vec!["welcome, readers".to_string()]
+            vec!["welcome, readers".to_string(), "from my laptop".to_string()]
         );
         let stranger = ActorRef::User(peko_subject::Route::hub(uuid::Uuid::new_v4().to_string()));
         assert!(h

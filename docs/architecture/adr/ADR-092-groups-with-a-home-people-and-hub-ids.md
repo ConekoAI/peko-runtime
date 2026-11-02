@@ -120,11 +120,23 @@ Hub ID.
    - **Registering.** `Channel register { channel, visibility }` (also `peko channel register`, desktop Share) runs at the home, by the owner or an admin, as an owner decision (ADR-082 D6). The home sends `group_register` with the owner's Hub address; PekoHub refuses unless the owner is a peko whose online link is that runtime, or the person the runtime is registered to. It answers `group_registered { groupId, pageUrl }`, which the home keeps in `meta.hub` with the visibility. Registering again changes the visibility and keeps the ID.
    - **Invite links.** `Channel link { channel, days }` mints a compact JWS signed by the home runtime, `{ v: "peko-group-invite/1", g, c, h, exp, n }`, good for 1–30 days (default 7); the link is `pageUrl?invite=<token>`. The home keeps each nonce; `link { revoke: true }` stops them all. PekoHub checks a token's signature and expiry only to show an invite-only group's page; the home decides joins.
    - **Joining.** A person pastes a link or a public group's ID (desktop Join a group, `peko channel join <link|id>`). Their runtime asks PekoHub (`group_lookup_request` → `group_lookup`), which shows a public group, or an invite-only one only with a valid invite. It then keeps a *requested* entry (not shown as an invitation) and sends `tunnel_group_join_request` (signed by the runtime, with the token) to the home. PekoHub relays it only from a runtime registered to that person. The home admits a member, a live link it minted, or anyone to a public group, adds the person with that runtime as their route, and sends the roster. The requested entry takes the roster as the home's yes; a refusal leaves it waiting, and nothing arrives.
-   - **Devices (D4).** After every change to a registered group's roster, the home sends `group_roster { groupId, accounts }` with the persons who joined (a route, or its own local user), never invitees. On `tunnel_ready` a runtime asks `account_groups_request`. For each group of its account that is not here, it sends the same join request without a token, which the home admits because the person is a member. The group then catches up from the home (phase 3).
+   - **Devices (D4).** After every change to a registered group's roster, the home sends `group_roster { groupId, accounts }` with the persons who joined (a route, or its own local user), never invitees. On `tunnel_ready` a runtime asks `account_groups_request`. For each group of its account that is not here, it sends the same join request without a token, which the home admits because the person is a member. A group joined by link, by ID, or on a new device catches up from the home (phase 3) as soon as the roster arrives. Each of a person's runtimes keeps their other runtimes as routes, so a post from one device reaches the others directly.
    - **Phones.** `GET /v1/groups/:id/history` proxies a member's read to the home in the owning peko's name. The home checks membership and the history setting, not the peko's exposure.
    - **Open.** These are not built:
      - links carry no use count, and are revoked all at once;
      - an invite-only group refuses a link-less request instead of asking the owner;
      - only a peko can own a registered group, because roster snapshots are signed by the owning peko;
      - there is no desktop deep link: the website tells the person to paste the link in Peko;
-     - moving the home with its owner (D1) remains open.
+     - moving the home with its owner (D1) remains open;
+     - a request the home refuses gets no answer, so the person's runtime keeps waiting.
+
+   *Verified live (2026-11-03)* with a local PekoHub (this branch) and seven runtimes on one machine:
+   - a group was registered, made public, and made invite-only again;
+   - people joined by link and by a public ID, and new devices of alice and bob joined;
+   - an invite-only ID and a revoked link were refused;
+   - every runtime caught up the history;
+   - posts went in every direction;
+   - a member read the group through the phone proxy, and a non-member got an empty page;
+   - `/g/<id>` showed the right page with and without an invite.
+
+   The check found a bug outside this ADR, fixed separately: on boot, a registered runtime's own person lost its local address, so the owner could not read their own groups and DMs.

@@ -295,13 +295,20 @@ impl TunnelChannelPort {
                 }
             }
         }
-        let me = ActorRef::User("local".into());
         if let (Some(account), Ok(members)) = (
             self.hub_account().await,
             self.local.list_members(channel).await,
         ) {
-            if members.contains(&me) && !accounts.contains(&account) {
-                accounts.push(account);
+            // This runtime's person: `user:local:local`, or by their Hub
+            // address once the runtime is registered.
+            for member in members {
+                let info = self.local.actor_info(&member).await;
+                let mine = info.kind == "user"
+                    && (info.local_id.as_deref() == Some("local")
+                        || info.hub_id.as_deref() == Some(account.as_str()));
+                if mine && !accounts.contains(&account) {
+                    accounts.push(account.clone());
+                }
             }
         }
         let Some(handle) = ctx.tunnel.read().await.clone() else {

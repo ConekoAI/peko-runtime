@@ -16,7 +16,8 @@ All notable changes to Peko.
   group appears with the home's roster.
 - A runtime registered to your account joins your registered groups on
   connecting; PekoHub keeps which accounts are in each group, and the home
-  reports it after every roster change.
+  reports it after every roster change. A group you join catches up from its
+  home at once, and your post from one device reaches your others.
 - People without a runtime read a group they are in through PekoHub
   (`GET /v1/groups/:id/history`); the home checks membership.
 

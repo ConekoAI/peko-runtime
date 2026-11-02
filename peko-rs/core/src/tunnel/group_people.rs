@@ -470,10 +470,23 @@ impl TunnelChannelPort {
             .await
             .map(|a| a.address)
             .unwrap_or_else(|_| invitation.inviter.clone());
+        // Their other devices stay as routes (ADR-092 D4), so a post from
+        // one reaches the others; this runtime is not a route to itself.
+        let here = self
+            .ctx
+            .read()
+            .await
+            .as_ref()
+            .map(|c| c.caller_runtime_id.clone());
         let members: Vec<InitialMember> = invitation
             .initial_members
             .iter()
-            .filter(|m| m.principal_did != me)
+            .filter(|m| {
+                m.principal_did != me
+                    || m.runtime_id
+                        .as_ref()
+                        .is_some_and(|r| Some(r) != here.as_ref())
+            })
             .cloned()
             .collect();
         self.local
@@ -583,6 +596,16 @@ impl TunnelChannelPort {
             requested: false,
         };
         self.join_as_person(channel, &invitation, &account).await?;
+        if !joined_here {
+            // ADR-092 D3: a group just joined here catches up from its home.
+            let port = self.clone();
+            let joined = channel.clone();
+            tokio::spawn(async move {
+                if let Err(e) = port.sync_history(&joined).await {
+                    debug!(channel = %joined, "group catch-up skipped: {e}");
+                }
+            });
+        }
         Ok(true)
     }
 
