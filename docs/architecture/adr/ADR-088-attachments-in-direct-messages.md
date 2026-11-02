@@ -62,6 +62,12 @@ An agent can look at an image, listen to audio, or watch video at any time, not 
 
 The session keeps the tool's text; the block rides the in-flight conversation for the rest of the run. Anthropic `tool_result` content carries images (audio and video become a placeholder); the OpenAI protocols take only text in tool outputs, so a turn's tool media goes in one `user` message right after its tool outputs.
 
+### D7 — The peko sends files too: `Attach` (amended 2026-11-02)
+
+Attachments were inbound only: a peko could make a chart or a report but could hand it over only as a path in its text. The `Attach` built-in takes `paths` (1–8) and an optional caption `text`. Each path passes the same floor as `Read` (ADR-078); the files are copied into `attachments/` under the D1 limits and D2 naming, and posted on the run's conversation channel — the stamp's compartment — as one message from the principal with the D3 attachment records. Clients read it like any post: `principal_log` rows carry absolute paths, and the desktop shows images (SVG included) inline, plays audio and video, and opens the rest.
+
+A post is its own message beside the reply, not part of it: the reply projection stays text, and a file sent mid-run shows before the answer that refers to it. `Attach` is refused outside a conversation (cron and internal runs have no one to send to) and in a conversation with any member on the Hub or another runtime, since a post carries paths on this host, not the bytes.
+
 ### D5 — A busy peko gets the notes only
 
 A message sent while the peko is working is queued as steering, which is text: it carries the notes, not image blocks.
@@ -80,6 +86,7 @@ A message sent while the peko is working is queued as steering, which is text: i
 - A model takes media only as its catalog spec says: `peko model add --spec '{"image_input":true,"audio_input":true,"video_input":true,…}'`.
 - Attachments count toward the workspace's size and are exported with it.
 - Remote clients and groups cannot attach yet.
+- A peko sends files with `Attach` in local conversations (DMs and groups); files do not cross runtimes yet.
 
 ## 5. Implementation
 
@@ -89,3 +96,4 @@ A message sent while the peko is working is queued as steering, which is text: i
 4. **CLI.** `peko send --attach <path>` (repeatable); `peko log` lists each message's attachments with the path of the peko's copy.
 5. **Desktop.** Attach button and drag-and-drop; chips before sending; thumbnails and file chips in the thread.
 6. **Tools (D6).** `Read` returns `media`; `peko_message::media::MediaKind` and `peko_engine::media` hold the shared kinds, limits, and loading; adapters carry media in tool results.
+7. **Attach (D7).** `tools/builtin/channel/attach.rs`; the desktop renders the peko's attachment posts with the same chips and thumbnails.

@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **23 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **24 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -34,11 +34,11 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 22-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 24-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
 | Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
@@ -394,6 +394,21 @@ reaches only its own conversation's channel. The floor refuses `create`,
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).
+
+### Attach
+
+Send files to the person the run is talking to (ADR-088 D7) — the counterpart of a user's attachments.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/attach.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `paths` | string[] | yes | 1–8 items |
+| `text` | string | no | — |
+
+Each path (absolute, `~/…`, or relative to the workspace) passes the same floor as `Read` (ADR-078: untrusted runs stay inside the workspace), then the file is copied to `<workspace>/attachments/<YYYY-MM-DD>/<8 hex>-<name>` under the inbound limits (at most 8 files, 20 MB each, regular files only; nothing is copied unless every file passes). The copies are posted on the run's conversation channel — the stamp's compartment — as one message from the principal with `text` as its caption, so `principal_log` and the desktop show them beside the reply. Returns `{success, channel, id, attachments: [{name, path, mime, size}]}` with absolute paths.
+
+A non-owner run's call goes to the policy reviewer first, as `Read` does. Refused outside a conversation (cron, internal work) and in a conversation with any member on the Hub or another runtime: posts carry paths on this host, not the files. Calls run alone (not parallel).
 
 ## Inference and workflows
 

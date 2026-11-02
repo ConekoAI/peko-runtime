@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: pekos send files with `Attach` (2026-11-02, ADR-088 D7)
+
+- Attachments were inbound only. The new `Attach` built-in (24th) takes
+  `paths` (1–8) and an optional caption `text`, copies each file into the
+  workspace's `attachments/` folder under the inbound limits (20 MB each),
+  and posts them in the run's conversation as the peko's own message.
+  `peko log`, `principal_log`, and the desktop show them like the user's.
+- Each path passes the same trust floor as `Read`; the tool refuses runs
+  outside a conversation and conversations with anyone on the Hub or
+  another runtime (files do not cross runtimes yet).
+
 ### Feature: the local user talks to a peko on another runtime over channels (2026-11-01, ADR-090)
 
 - New IPC `channel_open_remote_dm { hub_id, token? }` →

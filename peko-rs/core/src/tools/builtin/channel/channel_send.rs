@@ -619,7 +619,7 @@ impl ChannelSendTool {
 /// sessions dir, an unreadable store, or a session absent from it all
 /// yield `None` — attribution is audit metadata and must never fail a
 /// send.
-async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String> {
+pub(crate) async fn via_for_ctx(ctx: &peko_tools_core::exec::ToolContext) -> Option<String> {
     let session_id = peko_session::id::SessionId::parse(ctx.session_id.as_deref()?)?;
     let workspace = ctx.workspace.as_deref().filter(|w| !w.is_empty())?;
     let sessions_dir = crate::principal::child_turns::sessions_dir_for_workspace(workspace)?;

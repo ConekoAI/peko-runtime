@@ -1,6 +1,6 @@
 //! Dispatcher-level harness for built-in tool tests.
 //!
-//! [`ToolHarness::new`] installs all 20 built-in tools behind the real
+//! [`ToolHarness::new`] installs every built-in tool behind the real
 //! [`ToolDispatcher`](crate::tools::dispatcher::ToolDispatcher) — argument
 //! validation, workspace injection, hooks, timeout routing, and the
 //! `tool.call` audit sink — and calls them the way an agentic loop does:
@@ -13,7 +13,7 @@
 //! |---|---|
 //! | temp workspace | Bash, Read, Write, Edit, Glob, Grep, Skill, RoleCatalog |
 //! | real `AsyncExecutor` over this catalog | Async, Bash `run_in_background` |
-//! | real `ChannelStore` | ChannelRead, ChannelSend (local branches) |
+//! | real `ChannelStore` | ChannelRead, ChannelSend (local branches), Attach |
 //! | real `CronScheduler` files (`peko_cron::testing`) | Cron |
 //! | real `ModelCatalog` file | ModelList |
 //! | real `TodoStorage` / `PlanStorage` in a tempdir | Task, Plan |
@@ -196,6 +196,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
             Arc::new(crate::ipc::run_tokens::RunTokenRegistry::new()),
         )),
         Arc::new(ChannelReadTool::new(backends.channels.clone())),
+        Arc::new(AttachTool::new(backends.channels.clone())),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -542,11 +543,19 @@ mod tests {
                 "\"tool\":\"Bash\"",
             ),
         ];
-        // Unbound in the harness: these need a PrincipalManager and must
-        // fail closed rather than run unattributed.
+        // Unbound in the harness: ModelCall and Workflow need a
+        // PrincipalManager and must fail closed rather than run
+        // unattributed; Attach needs a conversation, and the default
+        // caller works in the internal tree (its success path is covered
+        // in `channel::attach`).
         let fails_closed: Vec<(&str, Value, &str)> = vec![
             ("ModelCall", json!({"prompt":"hi"}), "rincipal"),
             ("Workflow", json!({"path":"flow.py"}), "rincipal"),
+            (
+                "Attach",
+                json!({"paths":["notes/hello.txt"]}),
+                "not in a conversation",
+            ),
         ];
 
         let mut covered = BTreeSet::new();
