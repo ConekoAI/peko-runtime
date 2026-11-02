@@ -7,15 +7,16 @@ use std::path::{Component, Path, PathBuf};
 
 use peko_tools_core::ActingFor;
 
-/// Built-in tools an untrusted run never gets: the shell (the master key
-/// every other rule depends on) and the owner's MCP administration.
-pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["Bash", "MCP"];
+/// Built-in tools an untrusted run never gets: the owner's MCP
+/// administration (the shell is owner-only, [`OWNER_ONLY_TOOLS`]).
+pub const UNTRUSTED_DENIED_TOOLS: &[&str] = &["MCP"];
 
-/// Built-in tools only an owner run gets: the principal's internal work.
-/// `Plan` reads and writes every plan the principal holds, and plans have
-/// no compartment, so a run acting for anyone else would reach the
-/// owner's.
-pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan"];
+/// Built-in tools only an owner run gets. `Plan` reads and writes every
+/// plan the principal holds, and plans have no compartment, so a run
+/// acting for anyone else would reach the owner's. `Bash` runs as the OS
+/// user, so no path rule holds it: it would read every conversation the
+/// runtime keeps, its keys, and its settings.
+pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
 
 /// `Channel` actions only the owner decides: `create` / `invite` change
 /// who can reach the principal and whom it can reach (ADR-082 D6);
@@ -85,6 +86,76 @@ pub const PROTECTED_DIRS: &[&str] = &[
 /// Where proposals land. The runtime writes here; no run may.
 pub const INBOX_DIR: &str = "kb/inbox";
 
+/// The Peko home a principal workspace sits in: `<home>/principals/<name>`.
+fn peko_home(workspace: &Path) -> Option<&Path> {
+    let root = workspace.parent()?;
+    if root.file_name()? != "principals" {
+        return None;
+    }
+    root.parent()
+}
+
+/// Whether `path` lies in some principal's runtime-local tree
+/// (`…/principals/<name>/local/`): its sessions, ledger, plans, memory
+/// index, and schedules. `path` must already be [`resolve`]d.
+#[must_use]
+pub fn in_principal_local(path: &Path) -> bool {
+    let parts: Vec<_> = path.components().map(Component::as_os_str).collect();
+    parts
+        .windows(3)
+        .any(|w| w[0] == "principals" && w[2] == "local")
+}
+
+/// Whether `path` is the runtime's own state, which only owner runs reach:
+/// anything in the Peko home outside `workspace` (every conversation's
+/// channel log, the runtime's identity and vault, its settings) and any
+/// principal's runtime-local tree, wherever the data directory is.
+/// Both arguments must already be [`resolve`]d.
+#[must_use]
+pub fn is_runtime_state(workspace: Option<&Path>, path: &Path) -> bool {
+    if in_principal_local(path) {
+        return true;
+    }
+    let Some(workspace) = workspace else {
+        return false;
+    };
+    peko_home(workspace).is_some_and(|home| path.starts_with(home) && !path.starts_with(workspace))
+}
+
+/// Why a non-owner run may not search from `root`, if it may not: a
+/// recursive `Glob` / `Grep` from an ancestor of the runtime's state would
+/// read it. `data_dir` is the runtime's data directory (sessions live
+/// there when it is outside the Peko home).
+#[must_use]
+pub fn search_root_refusal(
+    stamp: &ActingFor,
+    workspace: Option<&Path>,
+    data_dir: Option<&Path>,
+    root: &Path,
+) -> Option<String> {
+    if stamp.is_owner() {
+        return None;
+    }
+    let root = resolve(root);
+    let workspace = workspace.map(resolve);
+    let home = workspace
+        .as_deref()
+        .and_then(peko_home)
+        .map(Path::to_path_buf);
+    let reaches = |state: &Path| state.starts_with(&root);
+    let covers_state = home.as_deref().is_some_and(reaches)
+        || data_dir.map(resolve).as_deref().is_some_and(reaches);
+    covers_state.then(|| {
+        format!(
+            "a search from {} would read the runtime's conversations and keys; while acting \
+             for {} ({}) search inside the workspace or a project folder",
+            root.display(),
+            stamp.actor,
+            stamp.trust.as_str()
+        )
+    })
+}
+
 /// Whether `path` lies in some principal's tool ledger
 /// (`…/principals/<name>/local/ledger/`, ADR-079 D5). Only the
 /// dispatcher writes there. `path` must already be [`resolve`]d.
@@ -113,6 +184,14 @@ pub fn tool_refusal(
     }
     if stamp.is_owner() {
         return None;
+    }
+    if tool_name == "Bash" {
+        return Some(format!(
+            "`Bash` is not available while acting for {} ({}): only the owner's runs get the \
+             shell. Use the file tools inside the workspace, or ask the owner for the result.",
+            stamp.actor,
+            stamp.trust.as_str()
+        ));
     }
     if OWNER_ONLY_TOOLS.contains(&tool_name) {
         return Some(format!(
@@ -198,8 +277,10 @@ pub enum PathDecision {
 ///
 /// - Every run: no write into another principal's workspace (ADR-066 D9),
 ///   into the proposal inbox, or into any tool ledger (ADR-079).
-/// - Non-owner runs: no read of another principal's workspace, and a
-///   write to a protected file becomes a proposal.
+/// - Non-owner runs: no read of another principal's workspace or of the
+///   runtime's own state ([`is_runtime_state`]: conversation logs,
+///   sessions, keys, settings), and a write to a protected file becomes a
+///   proposal.
 /// - Untrusted runs: nothing outside the principal's own workspace.
 #[must_use]
 pub fn check_path(
@@ -229,6 +310,13 @@ pub fn check_path(
                 ));
             }
         }
+    }
+    if !stamp.is_owner() && is_runtime_state(workspace.as_deref(), &target) {
+        return PathDecision::Deny(format!(
+            "{} is the runtime's own state (conversations, keys, settings); only the owner's \
+             runs reach it",
+            target.display()
+        ));
     }
     if stamp.is_untrusted() {
         let inside = workspace
@@ -276,7 +364,7 @@ pub fn file_tool_target(tool_name: &str, params: &serde_json::Value) -> Option<(
     Some((crate::tools::builtin::paths::expand_tilde(raw), write))
 }
 
-/// Glob patterns an untrusted run may not use: absolute, home-relative,
+/// Glob patterns a non-owner run may not use: absolute, home-relative,
 /// or climbing out of their base.
 #[must_use]
 pub fn glob_pattern_escapes(pattern: &str) -> bool {
@@ -325,14 +413,105 @@ mod tests {
     }
 
     #[test]
-    fn untrusted_runs_lose_the_shell_and_unmarked_mcp() {
+    fn untrusted_runs_lose_unmarked_mcp() {
         let low = stamp(Trust::Untrusted);
-        assert!(tool_refusal(&low, "Bash", None).is_some());
         assert!(tool_refusal(&low, "MCP", None).is_some());
         assert!(tool_refusal(&low, "mcp__mail__send", Some(false)).is_some());
         assert!(tool_refusal(&low, "mcp__docs__search", Some(true)).is_none());
         assert!(tool_refusal(&low, "Read", None).is_none());
-        assert!(tool_refusal(&stamp(Trust::Trusted), "Bash", None).is_none());
+        assert!(tool_refusal(&stamp(Trust::Trusted), "MCP", None).is_none());
+    }
+
+    #[test]
+    fn only_owner_runs_get_the_shell() {
+        for trust in [Trust::Untrusted, Trust::Trusted] {
+            let reason = tool_refusal(&stamp(trust), "Bash", None).expect("refused");
+            assert!(reason.contains("owner"), "{reason}");
+        }
+        assert!(tool_refusal(&stamp(Trust::Owner), "Bash", None).is_none());
+        assert!(tool_refusal(&ActingFor::runtime(), "Bash", None).is_none());
+    }
+
+    /// The runtime's conversations, keys and settings are the owner's:
+    /// a trusted run reads its workspace and the owner's projects, not them.
+    #[test]
+    fn only_owner_runs_reach_the_runtimes_own_state() {
+        let t = tree();
+        let home = t.mine.parent().unwrap().parent().unwrap().to_path_buf();
+        let dir = tempfile::tempdir().unwrap();
+        let data = resolve(dir.path());
+        let project = data.join("projects/site/README.md");
+        let state = [
+            home.join("runtime/channels/dm_abc/events.jsonl"),
+            home.join("runtime/identity.toml"),
+            home.join("vault.enc"),
+            home.join("principals/channels/chan_x/events.jsonl"),
+            data.join("principals/mine/local/sessions/s.jsonl"),
+            data.join("principals/other/local/sessions/s.jsonl"),
+            t.mine.join("local/sessions/s.jsonl"),
+        ];
+        for trust in [Trust::Untrusted, Trust::Trusted] {
+            for path in &state {
+                for write in [false, true] {
+                    assert!(
+                        matches!(
+                            check_path(&stamp(trust), Some(&t.mine), path, write),
+                            PathDecision::Deny(_)
+                        ),
+                        "{trust:?} {} write={write}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        for path in &state[..3] {
+            assert_eq!(
+                check_path(&stamp(Trust::Owner), Some(&t.mine), path, false),
+                PathDecision::Allow
+            );
+        }
+        assert_eq!(
+            check_path(
+                &stamp(Trust::Trusted),
+                Some(&t.mine),
+                &t.mine.join("notes.md"),
+                false
+            ),
+            PathDecision::Allow
+        );
+        assert_eq!(
+            check_path(&stamp(Trust::Trusted), Some(&t.mine), &project, false),
+            PathDecision::Allow,
+            "a trusted run still reads the owner's projects"
+        );
+    }
+
+    #[test]
+    fn non_owner_searches_may_not_start_above_the_runtimes_state() {
+        let t = tree();
+        let home = t.mine.parent().unwrap().parent().unwrap().to_path_buf();
+        let dir = tempfile::tempdir().unwrap();
+        let data = resolve(&dir.path().join("Application Support/peko"));
+        let trusted = stamp(Trust::Trusted);
+        for root in [
+            home.clone(),
+            home.parent().unwrap().to_path_buf(),
+            PathBuf::from("/"),
+        ] {
+            assert!(
+                search_root_refusal(&trusted, Some(&t.mine), Some(&data), &root).is_some(),
+                "{}",
+                root.display()
+            );
+        }
+        assert!(search_root_refusal(&trusted, Some(&t.mine), Some(&data), dir.path()).is_some());
+        assert!(search_root_refusal(&trusted, Some(&t.mine), Some(&data), &t.mine).is_none());
+        assert!(
+            search_root_refusal(&trusted, Some(&t.mine), Some(&data), &data.join("x")).is_none()
+        );
+        assert!(
+            search_root_refusal(&stamp(Trust::Owner), Some(&t.mine), Some(&data), &home).is_none()
+        );
     }
 
     #[test]

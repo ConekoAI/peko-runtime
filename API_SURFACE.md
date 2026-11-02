@@ -158,14 +158,16 @@ This document defines the public API surface for Peko, including the new Unified
   `with_acting_for`; `AgentView::acting_for` replaces `conversation_peer`;
   `TurnPromptContext.acting_for`, `PromptSectionRequest.acting_for`;
   `ToolFunnel::list_tool_definitions(principal, acting_for)` narrows the wire
-  catalog for every non-owner run (the floor's refusals: `Bash`/`MCP` below
-  trusted, `Plan` below owner). `AgenticLoop::with_caller_id` and the
+  catalog for every non-owner run (the floor's refusals: `MCP` below
+  trusted, `Plan` and `Bash` below owner). `AgenticLoop::with_caller_id` and the
   `caller_id` parameters of the funnel, tool executor, and `Agent` run
   methods are removed.
 - `peko::security`: `stamps` (`Stamps`, `TrustSource`, `Driver`,
   `trust_for`, `compartment_of`, `visible_metas`, `may_reach`), `floor`
-  (`OWNER_ONLY_TOOLS`: `Plan` is refused to every non-owner run and is no
-  longer in `judge::EXEMPT_TOOLS`), `proposals` (`file`, `file_held`, `pending`), `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
+  (`OWNER_ONLY_TOOLS`: `Plan` and `Bash` are refused to every non-owner run;
+  `Plan` is no longer in `judge::EXEMPT_TOOLS`; `is_runtime_state`,
+  `in_principal_local`, `search_root_refusal`: non-owner file tools never
+  reach the runtime's own state), `proposals` (`file`, `file_held`, `pending`), `policy` (`Policy`, `seed`, `load`), `judge` (`PolicyGate`,
   `GatedCall`, `Verdict`, `needs_review`), `memory_gate` (ADR-080 D4:
   `is_scheduled_owner`, `is_memory_run`, `sources`, `cited`, `screen`,
   `SourceClass`, `Held`, and ADR-085's `Claim`, `ClaimCheck`, `claims`,
