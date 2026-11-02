@@ -99,6 +99,7 @@ pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use store::{
     member_row, new_msg_id, ChannelConfig, ChannelStore, GroupHome, GroupInfo, GroupInvitation,
+    HistoryVisibility,
 };
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

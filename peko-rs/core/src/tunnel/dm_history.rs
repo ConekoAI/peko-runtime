@@ -51,6 +51,52 @@ impl TunnelChannelPort {
             .hub_id
     }
 
+    /// Who asks for `channel`'s history, and which runtime holds it: this
+    /// runtime's person for their DM with a remote peko (its host) or a
+    /// group they joined (its home, ADR-092 D3); else a peko hosted here
+    /// that is a member of a group whose home is elsewhere, by its signing
+    /// DID.
+    async fn history_requester(
+        &self,
+        ctx: &crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx,
+        channel: &ChannelId,
+    ) -> anyhow::Result<(String, String)> {
+        let home = self.local.group_home(channel).await?.map(|h| h.runtime);
+        let account = self.current_account().await;
+        let owner = self.local.remote_dm_account(channel).await?;
+        if owner.is_some() {
+            let account = account
+                .filter(|a| owner.as_deref() == Some(a.as_str()))
+                .ok_or_else(|| anyhow::anyhow!("{channel} is not your conversation"))?;
+            let host = match home {
+                Some(home) => home,
+                None => self
+                    .local
+                    .list_remote_members(channel)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|m| m.runtime_id)
+                    .ok_or_else(|| anyhow::anyhow!("No runtime is known to host this peko"))?,
+            };
+            return Ok((format!("user:hub:{account}"), host));
+        }
+        let home = home
+            .filter(|h| h != &ctx.caller_runtime_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("{channel} has no history to ask another runtime for")
+            })?;
+        for member in self.local.list_members(channel).await? {
+            if let ActorRef::Principal(id) = &member {
+                let pid = peko_subject::PrincipalId::from_did(id);
+                if let Some(did) = ctx.principal_keys.did_for_principal(&pid).await {
+                    return Ok((did, home));
+                }
+            }
+        }
+        anyhow::bail!("no member here can ask for {channel}'s history")
+    }
+
     /// Ask `channel`'s host for one page; the receiver yields the answer.
     async fn ask_history(
         &self,
@@ -58,35 +104,19 @@ impl TunnelChannelPort {
         before: Option<&str>,
         after: Option<&str>,
     ) -> anyhow::Result<tokio::sync::oneshot::Receiver<HistoryPage>> {
-        let account = self
-            .current_account()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Register this runtime with PekoHub first"))?;
-        anyhow::ensure!(
-            self.local.remote_dm_account(channel).await?.as_deref() == Some(account.as_str()),
-            "{channel} is not your conversation with a remote peko"
-        );
-        let host = self
-            .local
-            .list_remote_members(channel)
-            .await?
-            .into_iter()
-            .next()
-            .map(|m| m.runtime_id)
-            .ok_or_else(|| anyhow::anyhow!("No runtime is known to host this peko"))?;
         let ctx = self
             .ctx
             .read()
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("This runtime has no PekoHub connection"))?;
+        let (person, host) = self.history_requester(&ctx, channel).await?;
         let handle = ctx
             .tunnel
             .read()
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Not connected to PekoHub"))?;
-        let person = format!("user:hub:{account}");
         let request_id = uuid::Uuid::new_v4().to_string();
         let iat = chrono::Utc::now().timestamp();
         let payload = ChannelHistoryRequestPayload {
@@ -231,9 +261,13 @@ impl TunnelChannelPort {
         let Some(account) = self.current_account().await else {
             return;
         };
-        let Ok(channels) = self.local.remote_dms(&account).await else {
+        let Ok(mut channels) = self.local.remote_dms(&account).await else {
             return;
         };
+        // ADR-092 D3: the groups this person joined catch up from their homes.
+        if let Ok(groups) = self.local.person_groups(&account).await {
+            channels.extend(groups.into_iter().map(|(channel, _, _)| channel));
+        }
         for channel in channels {
             if let Some(host) = host {
                 let hosted = self
@@ -370,6 +404,30 @@ impl TunnelChannelPort {
         HistoryPage {
             events,
             has_more: page.has_more,
+        }
+    }
+
+    /// One page of a group at its home (ADR-092 D3), from `since` when the
+    /// member may read only what followed their joining.
+    pub(crate) async fn group_history_page(
+        &self,
+        channel: &ChannelId,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+        since: Option<&str>,
+    ) -> HistoryPage {
+        let Some(since) = since else {
+            return self.history_page(channel, before, after, limit).await;
+        };
+        let limit = limit.clamp(1, HISTORY_PAGE_LIMIT) as usize;
+        match self
+            .local
+            .history_page_since(channel, before, after, limit, since)
+            .await
+        {
+            Ok((events, has_more)) => HistoryPage { events, has_more },
+            Err(_) => HistoryPage::default(),
         }
     }
 

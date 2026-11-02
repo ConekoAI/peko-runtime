@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: group members read the group's history from its home (2026-11-02, ADR-092 D3)
+
+- A group's home answers the history messages (ADR-091) for its members:
+  a person by their Hub-vouched account, a peko by its signing DID from the
+  runtime that is its route. Anyone else reads an empty page.
+- `Channel history { channel, visibility }` (owner or admin, at the home):
+  `shared` (default: everything since the group began) or `joined` (only
+  what followed their joining, from the `MemberJoined` that admitted them).
+- A person's group catches up on joining and when its home comes back; a
+  peko's runtime catches up when the peko joins a group that already
+  talked.
+
 ### Feature: people join groups on other computers (2026-11-02, ADR-092 D2)
 
 - A group's owner or admin invites a person by Hub account (`peko channel

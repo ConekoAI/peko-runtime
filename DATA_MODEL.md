@@ -2156,6 +2156,9 @@ same as the `Channel` tool's `wake` action.
 "admins": ["principal:hub:6f1c…"]
 ```
 
+`history` (`"shared"` / `"joined"`, ADR-092 D3; absent is `shared`) says what
+members may read of the group's past; it is kept at the home.
+
 `home.runtime` is where the group was created; there `home.owner` is its
 owner (the creator) and `admins` lists the members the owner lets manage the
 roster. Other member runtimes record only `home.runtime`, learned from the

@@ -180,6 +180,20 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
+    /// ADR-092 D3: a group's owner or admin (`by`) chooses what members may
+    /// read of its past.
+    async fn set_group_history(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        visibility: crate::store::HistoryVisibility,
+    ) -> Result<()> {
+        let _ = (channel, by, visibility);
+        Err(ChannelError::Adapter(
+            "this channel port does not keep group settings".into(),
+        ))
+    }
+
     /// Ensure an opaque pair DM and its principal-local session binding.
     async fn ensure_dm(
         &self,

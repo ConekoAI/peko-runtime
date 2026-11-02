@@ -390,13 +390,14 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 | `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |
 | `role` | `channel`; optional `role` | Sets the role (a `RoleCatalog` id) the caller's turns run in a DM or group; omitting `role` returns it to the default conversation role (`routing.peer_agent`, else `conversation`). Refuses a role the principal does not have. |
 | `admin` | `channel`, `actor`, `admin` | The group's owner makes a member an admin (who may then add members), or stops it. At the home runtime only (ADR-092 D1). |
+| `history` | `channel`, `visibility` | The group's owner or an admin chooses what members may read of its past: `shared` (everything since it began, the default) or `joined` (only what followed their joining). At the home runtime only (ADR-092 D3). |
 | `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, and `you.owner` / `you.admin`. |
 
 DMs are opened by `ChannelSend` and keep their members and wake policy: only
 `info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
-`invite`, `admin`, and `role` to untrusted runs, and a trusted run's call to one of
+`invite`, `admin`, `history`, and `role` to untrusted runs, and a trusted run's call to one of
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).

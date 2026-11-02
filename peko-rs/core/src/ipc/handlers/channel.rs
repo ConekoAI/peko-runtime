@@ -470,6 +470,16 @@ impl ChannelHandler {
         };
         match port.answer_group_invitation(&channel, accept).await {
             Ok(()) => {
+                // ADR-092 D3: a group just joined catches up from its home.
+                if accept {
+                    let sync = Arc::clone(&port);
+                    let joined = channel.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = sync.sync_history(&joined).await {
+                            tracing::debug!(channel = %joined, "group catch-up skipped: {e}");
+                        }
+                    });
+                }
                 send_response(
                     sink,
                     ResponsePacket::Done {

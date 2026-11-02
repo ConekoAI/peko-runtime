@@ -111,6 +111,14 @@ impl ChannelTool {
                 }, "required":["channel", "actor", "admin"], "additionalProperties":false}),
             ),
             (
+                "history",
+                json!({"type":"object", "properties":{
+                    "channel": channel,
+                    "visibility":{"type":"string", "enum":["shared", "joined"],
+                        "description":"shared: members read everything since the group began; joined: only what followed their joining."}
+                }, "required":["channel", "visibility"], "additionalProperties":false}),
+            ),
+            (
                 "info",
                 json!({"type":"object", "properties":{"channel": channel},
                     "required":["channel"], "additionalProperties":false}),
@@ -259,6 +267,7 @@ impl ChannelTool {
             info["home"] = json!(group.home.map(|h| h.runtime));
             info["owner"] = json!(group.owner);
             info["admins"] = json!(group.admins);
+            info["history"] = json!(group.history);
         }
         Ok(info)
     }
@@ -283,11 +292,12 @@ impl Tool for ChannelTool {
          nothing; posts by principals and replies never do); role chooses the role (from \
          RoleCatalog) your turns run in a DM or group, or returns it to your default \
          conversation role when omitted; admin lets a member add members, or stops it (the \
-         group's owner only); info shows a channel's kind, creator, participants, a group's \
+         group's owner only); history chooses what a group's members may read of its past \
+         (shared, the default: everything; joined: only what followed their joining); info shows a channel's kind, creator, participants, a group's \
          home runtime, owner and admins, and your wake policy and role. A group's members \
          change at its home runtime, by its owner or an admin. DMs are opened by ChannelSend \
          and keep their members and wake policy. Only the owner decides create, invite, \
-         admin, and role: a run acting for anyone else waits for the owner's approval."
+         admin, history, and role: a run acting for anyone else waits for the owner's approval."
             .into()
     }
 
@@ -368,6 +378,20 @@ impl Tool for ChannelTool {
                     "actor": self.port.actor_info(&actor).await.address,
                     "admin": admin,
                 }))
+            }
+            Some("history") => {
+                let channel = Self::channel_arg(&params, &stamp)?;
+                self.require_group(&channel).await?;
+                self.require_member(&channel, &id).await?;
+                let visibility = match params["visibility"].as_str() {
+                    Some("joined") => peko_channel::HistoryVisibility::Joined,
+                    _ => peko_channel::HistoryVisibility::Shared,
+                };
+                self.port
+                    .set_group_history(&channel, &id, visibility)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: history: {e}"))?;
+                Ok(json!({"channel": channel.as_str(), "history": visibility}))
             }
             Some("leave") => {
                 let channel = Self::channel_arg(&params, &stamp)?;
