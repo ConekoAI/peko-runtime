@@ -952,6 +952,37 @@ pub enum RequestPacket {
         accept: bool,
     },
 
+    /// Join a group by its invite link, or a public one by its ID
+    /// (ADR-092 D5): PekoHub says where it lives, and its home decides.
+    /// Local callers only; answered with `ChannelGroupJoined` once the
+    /// request is on its way (the group arrives with the home's roster).
+    #[serde(rename = "channel_group_join")]
+    ChannelGroupJoin { request_id: u64, link: String },
+
+    /// Register a group with PekoHub, or change who may find it
+    /// (ADR-092 D5), at its home and as its owner peko. Only that peko's
+    /// owner; answered with `ChannelGroupRegistered`.
+    #[serde(rename = "channel_group_register")]
+    ChannelGroupRegister {
+        request_id: u64,
+        channel: String,
+        /// `invite_only` or `public`.
+        visibility: String,
+    },
+
+    /// Make an invite link to a registered group good for `days` (default
+    /// 7, at most 30), or with `revoke` stop every link (ADR-092 D5). As
+    /// for `ChannelGroupRegister`; answered with `ChannelGroupLinkResult`.
+    #[serde(rename = "channel_group_link")]
+    ChannelGroupLink {
+        request_id: u64,
+        channel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        days: Option<u32>,
+        #[serde(default)]
+        revoke: bool,
+    },
+
     /// Set what starts a turn for `principal_name` in a group
     /// (`human` / `mention` / `off`, ADR-082 D3). Groups only — a DM
     /// always wakes on human posts — and only the peko's owner.
@@ -1047,6 +1078,9 @@ impl RequestPacket {
             | Self::ChannelInvitations { request_id }
             | Self::ChannelPersonGroups { request_id }
             | Self::ChannelInvitationAnswer { request_id, .. }
+            | Self::ChannelGroupJoin { request_id, .. }
+            | Self::ChannelGroupRegister { request_id, .. }
+            | Self::ChannelGroupLink { request_id, .. }
             | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
@@ -1424,6 +1458,9 @@ pub enum ResponsePacket {
         /// policy. A DM's is always `human`; a group binding not yet
         /// written reads as the group default, `mention`.
         pekos: Vec<ChannelPekoWake>,
+        /// A group's home and PekoHub registration (ADR-092 D1/D5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<ChannelGroupSummary>,
     },
 
     /// Response to `ChannelPersonGroups` (ADR-092 D2).
@@ -1431,6 +1468,41 @@ pub enum ResponsePacket {
     ChannelPersonGroupsResult {
         request_id: u64,
         groups: Vec<PersonGroup>,
+    },
+
+    /// Response to `ChannelGroupJoin` (ADR-092 D5): the request is on its
+    /// way to the group's home.
+    #[serde(rename = "channel_group_joined")]
+    ChannelGroupJoined {
+        request_id: u64,
+        channel: String,
+        name: String,
+    },
+
+    /// Response to `ChannelGroupRegister` (ADR-092 D5).
+    #[serde(rename = "channel_group_registered")]
+    ChannelGroupRegistered {
+        request_id: u64,
+        channel: String,
+        /// The group's PekoHub ID, a bare number.
+        id: String,
+        /// Its page on the website.
+        page: String,
+        visibility: String,
+    },
+
+    /// Response to `ChannelGroupLink` (ADR-092 D5): the new link and its
+    /// expiry (RFC 3339), or how many links `revoke` stopped.
+    #[serde(rename = "channel_group_link_result")]
+    ChannelGroupLinkResult {
+        request_id: u64,
+        channel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revoked: Option<usize>,
     },
 
     /// Response to `ChannelInvitations` (ADR-092 D2).
@@ -2316,6 +2388,26 @@ pub struct ModelPresetInfo {
     pub models: Vec<ModelTemplateInfo>,
 }
 
+/// A group's home and PekoHub registration in a `ChannelInfoResult`
+/// (ADR-092 D1/D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelGroupSummary {
+    /// This runtime is the group's home: its settings, roster, PekoHub
+    /// registration and invite links are managed here.
+    pub home_here: bool,
+    /// The owner's address.
+    pub owner: String,
+    /// The group's PekoHub ID, once registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_id: Option<String>,
+    /// Its page on the website, once registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+    /// `invite_only` or `public`, once registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+}
+
 /// One peko hosted on this runtime in a `ChannelInfoResult`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelPekoWake {
@@ -2684,6 +2776,9 @@ impl ResponsePacket {
             | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelInvitationsResult { request_id, .. }
             | Self::ChannelPersonGroupsResult { request_id, .. }
+            | Self::ChannelGroupJoined { request_id, .. }
+            | Self::ChannelGroupRegistered { request_id, .. }
+            | Self::ChannelGroupLinkResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
@@ -2773,6 +2868,9 @@ impl ResponsePacket {
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",
             Self::ChannelPersonGroupsResult { .. } => "ChannelPersonGroupsResult",
+            Self::ChannelGroupJoined { .. } => "ChannelGroupJoined",
+            Self::ChannelGroupRegistered { .. } => "ChannelGroupRegistered",
+            Self::ChannelGroupLinkResult { .. } => "ChannelGroupLinkResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
         }
     }

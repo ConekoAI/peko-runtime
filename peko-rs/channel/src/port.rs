@@ -194,6 +194,43 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
+    /// ADR-092 D5: a group's owner or admin (`by`) registers it with
+    /// PekoHub, or changes who may find it. Returns the registration.
+    async fn register_group(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        visibility: crate::store::GroupVisibility,
+    ) -> Result<crate::store::HubGroup> {
+        let _ = (channel, by, visibility);
+        Err(ChannelError::Adapter(
+            "this channel port does not register groups".into(),
+        ))
+    }
+
+    /// ADR-092 D5: a group's owner or admin (`by`) mints an invite link
+    /// good for `days`. Returns the link and its expiry (unix seconds).
+    async fn group_invite_link(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        days: u32,
+    ) -> Result<(String, i64)> {
+        let _ = (channel, by, days);
+        Err(ChannelError::Adapter(
+            "this channel port does not make invite links".into(),
+        ))
+    }
+
+    /// ADR-092 D5: a group's owner or admin (`by`) stops every invite
+    /// link from working. Returns how many were live.
+    async fn revoke_group_links(&self, channel: &ChannelId, by: &PrincipalId) -> Result<usize> {
+        let _ = (channel, by);
+        Err(ChannelError::Adapter(
+            "this channel port does not make invite links".into(),
+        ))
+    }
+
     /// Ensure an opaque pair DM and its principal-local session binding.
     async fn ensure_dm(
         &self,

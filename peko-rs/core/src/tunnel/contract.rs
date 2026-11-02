@@ -12,8 +12,9 @@
 //! `UPDATE_TUNNEL_FIXTURE=1 cargo test -p peko --lib tunnel::contract`.
 
 use super::protocol::{
-    ExposureUpdatePayload, InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure,
-    InstanceHeartbeatPayload, InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
+    AccountGroup, ExposureUpdatePayload, InstanceAnnouncePayload, InstanceDeregisterPayload,
+    InstanceExposure, InstanceHeartbeatPayload, InstanceStatus, InstanceType, StatusUpdatePayload,
+    TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -57,6 +58,15 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelChannelHistory { .. } => "tunnel_channel_history",
         TunnelMessage::TunnelGroupInvitation { .. } => "tunnel_group_invitation",
         TunnelMessage::TunnelGroupJoin { .. } => "tunnel_group_join",
+        TunnelMessage::TunnelGroupJoinRequest { .. } => "tunnel_group_join_request",
+        TunnelMessage::GroupRegister { .. } => "group_register",
+        TunnelMessage::GroupRegistered { .. } => "group_registered",
+        TunnelMessage::GroupRegisterRejected { .. } => "group_register_rejected",
+        TunnelMessage::GroupRoster { .. } => "group_roster",
+        TunnelMessage::AccountGroupsRequest { .. } => "account_groups_request",
+        TunnelMessage::AccountGroups { .. } => "account_groups",
+        TunnelMessage::GroupLookupRequest { .. } => "group_lookup_request",
+        TunnelMessage::GroupLookup { .. } => "group_lookup",
     }
 }
 
@@ -91,6 +101,15 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_channel_history",
     "tunnel_group_invitation",
     "tunnel_group_join",
+    "tunnel_group_join_request",
+    "group_register",
+    "group_registered",
+    "group_register_rejected",
+    "group_roster",
+    "account_groups_request",
+    "account_groups",
+    "group_lookup_request",
+    "group_lookup",
 ];
 
 const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -353,6 +372,61 @@ fn samples() -> Vec<TunnelMessage> {
             channel_id: "chan_0123abcd".into(),
             accept: true,
             signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelGroupJoinRequest {
+            request_id: "gjreq-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_runtime_id: RUNTIME_B.into(),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            channel_id: "chan_0123abcd".into(),
+            invite: Some("home-signed-invite".into()),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::GroupRegister {
+            request_id: "greg-1".into(),
+            channel_id: "chan_0123abcd".into(),
+            name: "book club".into(),
+            owner_address: format!("principal:hub:{HUB_ID}"),
+            visibility: "invite_only".into(),
+        },
+        TunnelMessage::GroupRegistered {
+            request_id: "greg-1".into(),
+            group_id: "1234567890123456789".into(),
+            page_url: "https://pekohub.ai/g/1234567890123456789".into(),
+        },
+        TunnelMessage::GroupRegisterRejected {
+            request_id: "greg-2".into(),
+            message: "this runtime is not registered".into(),
+        },
+        TunnelMessage::GroupRoster {
+            group_id: "1234567890123456789".into(),
+            accounts: vec![ACCOUNT.into()],
+        },
+        TunnelMessage::AccountGroupsRequest {
+            request_id: "agroups-1".into(),
+        },
+        TunnelMessage::AccountGroups {
+            request_id: "agroups-1".into(),
+            groups: vec![AccountGroup {
+                group_id: "1234567890123456789".into(),
+                name: "book club".into(),
+                home_runtime: RUNTIME_B.into(),
+                channel_id: "chan_0123abcd".into(),
+            }],
+        },
+        TunnelMessage::GroupLookupRequest {
+            request_id: "glookup-1".into(),
+            group_id: "1234567890123456789".into(),
+            invite: Some("home-signed-invite".into()),
+        },
+        TunnelMessage::GroupLookup {
+            request_id: "glookup-1".into(),
+            group: Some(AccountGroup {
+                group_id: "1234567890123456789".into(),
+                name: "book club".into(),
+                home_runtime: RUNTIME_B.into(),
+                channel_id: "chan_0123abcd".into(),
+            }),
         },
     ]
 }

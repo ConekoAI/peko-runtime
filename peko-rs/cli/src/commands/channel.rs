@@ -164,9 +164,11 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Accept a group's invitation: join it here and tell its home.
+    /// Join a group: accept its invitation, or ask its home with an invite
+    /// link (or a public group's ID) from PekoHub (ADR-092 D5).
     Join {
-        /// Channel id from `peko channel invitations`.
+        /// Channel id from `peko channel invitations`, an invite link, or a
+        /// public group's ID.
         channel: String,
         /// Output as JSON.
         #[arg(long)]
@@ -177,6 +179,33 @@ pub enum ChannelCommands {
     Decline {
         /// Channel id from `peko channel invitations`.
         channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Give a group an ID on PekoHub, or change who may find it (ADR-092 D5).
+    Register {
+        /// The group's channel id (its home is this computer).
+        channel: String,
+        /// Anyone with the ID may join; otherwise only with an invite link.
+        #[arg(long)]
+        public: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Make an invite link to a registered group, or stop them all.
+    Link {
+        /// The group's channel id.
+        channel: String,
+        /// How long the link works (1–30 days).
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// Stop every link to the group from working instead.
+        #[arg(long)]
+        revoke: bool,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -198,7 +227,9 @@ impl ChannelCommands {
             | ChannelCommands::PinToShared { json, .. }
             | ChannelCommands::Invitations { json }
             | ChannelCommands::Join { json, .. }
-            | ChannelCommands::Decline { json, .. } => *json,
+            | ChannelCommands::Decline { json, .. }
+            | ChannelCommands::Register { json, .. }
+            | ChannelCommands::Link { json, .. } => *json,
         }
     }
 }
@@ -598,9 +629,114 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
 
-        ChannelCommands::Join { channel, .. } => answer_invitation(&channel, true, json).await,
+        ChannelCommands::Join { channel, .. }
+            if channel.starts_with("chan_") || channel.starts_with("group:") =>
+        {
+            answer_invitation(&channel, true, json).await
+        }
+        ChannelCommands::Join { channel: link, .. } => {
+            let resp = group_request(RequestPacket::ChannelGroupJoin {
+                request_id: 0,
+                link,
+            })
+            .await?;
+            let ResponsePacket::ChannelGroupJoined { channel, name, .. } = resp else {
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "channel": channel, "name": name, "requested": true })
+                );
+            } else {
+                println!(
+                    "Asked to join \"{name}\" ({channel}). It appears here when its home lets you in."
+                );
+            }
+            Ok(())
+        }
+        ChannelCommands::Register {
+            channel, public, ..
+        } => {
+            let resp = group_request(RequestPacket::ChannelGroupRegister {
+                request_id: 0,
+                channel,
+                visibility: if public { "public" } else { "invite_only" }.into(),
+            })
+            .await?;
+            let ResponsePacket::ChannelGroupRegistered {
+                channel,
+                id,
+                page,
+                visibility,
+                ..
+            } = resp
+            else {
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "channel": channel, "id": id, "page": page, "visibility": visibility })
+                );
+            } else {
+                println!("{channel} is group {id} on PekoHub ({visibility}): {page}");
+            }
+            Ok(())
+        }
+        ChannelCommands::Link {
+            channel,
+            days,
+            revoke,
+            ..
+        } => {
+            let resp = group_request(RequestPacket::ChannelGroupLink {
+                request_id: 0,
+                channel,
+                days: Some(days),
+                revoke,
+            })
+            .await?;
+            let ResponsePacket::ChannelGroupLinkResult {
+                channel,
+                link,
+                expires,
+                revoked,
+                ..
+            } = resp
+            else {
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "channel": channel, "link": link, "expires": expires, "revoked": revoked })
+                );
+            } else if let Some(n) = revoked {
+                println!("Stopped {n} invite link(s) to {channel}.");
+            } else {
+                println!(
+                    "{}\nWorks until {}.",
+                    link.unwrap_or_default(),
+                    expires.unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
         ChannelCommands::Decline { channel, .. } => answer_invitation(&channel, false, json).await,
     }
+}
+
+/// Send a group request to the daemon (ADR-092 D5), failing on its error.
+async fn group_request(packet: RequestPacket) -> Result<ResponsePacket> {
+    let client = DaemonClient::connect()
+        .await
+        .context("Groups on PekoHub need the daemon: start it with `peko daemon start`")?;
+    let resp = client.request_response(packet).await?;
+    if let ResponsePacket::Error { message, .. } = resp {
+        anyhow::bail!("{message}");
+    }
+    Ok(resp)
 }
 
 /// Accept or decline a group's invitation through the daemon (ADR-092 D2).

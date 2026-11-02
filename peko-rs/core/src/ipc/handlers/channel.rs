@@ -247,6 +247,28 @@ impl ChannelHandler {
                     wake,
                 });
             }
+            let group = match port.group_info(&ch).await? {
+                Some(info) => {
+                    let page = match self.host.tunnel_channel_port() {
+                        Some(tunnel) => tunnel
+                            .local()
+                            .hub_group(&ch)
+                            .await?
+                            .map(|h| h.page)
+                            .filter(|p| !p.is_empty()),
+                        None => None,
+                    };
+                    Some(crate::ipc::packet::ChannelGroupSummary {
+                        // Only the home records the owner in its `GroupHome`.
+                        home_here: info.home.as_ref().is_none_or(|h| h.owner.is_some()),
+                        owner: info.owner,
+                        hub_id: info.hub_id,
+                        page,
+                        visibility: info.visibility.map(|v| v.as_str().to_string()),
+                    })
+                }
+                None => None,
+            };
             Ok::<_, peko_channel::ChannelError>(ResponsePacket::ChannelInfoResult {
                 request_id,
                 channel: ch.clone(),
@@ -254,6 +276,7 @@ impl ChannelHandler {
                 name,
                 members,
                 pekos,
+                group,
             })
         };
         match read.await {
@@ -447,6 +470,195 @@ impl ChannelHandler {
 
     /// `ChannelInvitationAnswer` (ADR-092 D2): the local user accepts or
     /// declines a group's invitation.
+    async fn channel_group_join(
+        &self,
+        request_id: u64,
+        link: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] local callers only".into(),
+            )
+            .await;
+        }
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(sink, request_id, "PekoHub is not set up here".into()).await;
+        };
+        match port.join_group(link).await {
+            Ok((channel, name)) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelGroupJoined {
+                        request_id,
+                        channel: channel.as_str().into(),
+                        name,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
+    /// The group's owner peko, when the caller is that peko's owner
+    /// (ADR-092 D5: the desktop registers a group and makes links as it).
+    async fn group_owner_for_caller(
+        &self,
+        channel: &ChannelId,
+        caller: &CallerContext,
+    ) -> Result<PrincipalId, String> {
+        let port = self.host.channel_port();
+        let owner = port
+            .group_info(channel)
+            .await
+            .map_err(|e| format!("{e}"))?
+            .ok_or_else(|| format!("[bad_request] {channel} is not a group"))?
+            .owner;
+        let owner = port
+            .resolve_actor(&owner)
+            .await
+            .map_err(|e| format!("{e}"))?;
+        let local_id = owner
+            .local_id
+            .filter(|_| owner.kind == "principal")
+            .ok_or_else(|| {
+                "[bad_request] the group's owner is not a peko on this computer".to_string()
+            })?;
+        let id = PrincipalId(local_id);
+        let manager = self
+            .host
+            .principal_manager()
+            .ok_or_else(|| "no principal manager".to_string())?;
+        let principal = manager
+            .get(id.clone())
+            .await
+            .ok_or_else(|| format!("[not_found] {id} is not loaded"))?;
+        let peko_owner = principal.config.read().await.owner.clone();
+        if !crate::security::shared_actor_keys(Some(Arc::clone(&port)))
+            .same_actor(&peko_owner, &caller.permission_subject(&peko_owner))
+        {
+            return Err("[forbidden] only the owner of the group's peko manages it".into());
+        }
+        Ok(id)
+    }
+
+    async fn channel_group_register(
+        &self,
+        request_id: u64,
+        channel: &str,
+        visibility: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !self
+            .gate_principal_operator(caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let visibility = match visibility {
+            "public" => peko_channel::GroupVisibility::Public,
+            "invite_only" | "" => peko_channel::GroupVisibility::InviteOnly,
+            other => {
+                return error_reply(
+                    sink,
+                    request_id,
+                    format!("[bad_request] visibility is invite_only or public (got {other:?})"),
+                )
+                .await
+            }
+        };
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let by = match self.group_owner_for_caller(&ch, caller).await {
+            Ok(by) => by,
+            Err(e) => return error_reply(sink, request_id, e).await,
+        };
+        match self
+            .host
+            .channel_port()
+            .register_group(&ch, &by, visibility)
+            .await
+        {
+            Ok(hub) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelGroupRegistered {
+                        request_id,
+                        channel: ch.as_str().into(),
+                        id: hub.id,
+                        page: hub.page,
+                        visibility: hub.visibility.as_str().into(),
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e}")).await,
+        }
+    }
+
+    async fn channel_group_link(
+        &self,
+        request_id: u64,
+        channel: &str,
+        days: Option<u32>,
+        revoke: bool,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !self
+            .gate_principal_operator(caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let by = match self.group_owner_for_caller(&ch, caller).await {
+            Ok(by) => by,
+            Err(e) => return error_reply(sink, request_id, e).await,
+        };
+        let port = self.host.channel_port();
+        let answer = if revoke {
+            port.revoke_group_links(&ch, &by)
+                .await
+                .map(|n| (None, None, Some(n)))
+        } else {
+            port.group_invite_link(
+                &ch,
+                &by,
+                days.unwrap_or(crate::tunnel::tunnel_channel_port::INVITE_LINK_DAYS),
+            )
+            .await
+            .map(|(link, exp)| {
+                let expires = chrono::DateTime::from_timestamp(exp, 0).map(|t| t.to_rfc3339());
+                (Some(link), expires, None)
+            })
+        };
+        match answer {
+            Ok((link, expires, revoked)) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelGroupLinkResult {
+                        request_id,
+                        channel: ch.as_str().into(),
+                        link,
+                        expires,
+                        revoked,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e}")).await,
+        }
+    }
+
     async fn channel_invitation_answer(
         &self,
         request_id: u64,
@@ -608,6 +820,9 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelInvitations { .. }
                 | RequestPacket::ChannelPersonGroups { .. }
                 | RequestPacket::ChannelInvitationAnswer { .. }
+                | RequestPacket::ChannelGroupJoin { .. }
+                | RequestPacket::ChannelGroupRegister { .. }
+                | RequestPacket::ChannelGroupLink { .. }
         )
     }
 
@@ -1323,6 +1538,30 @@ impl RequestHandler for ChannelHandler {
                 accept,
             } => {
                 self.channel_invitation_answer(request_id, &channel, accept, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelGroupJoin { request_id, link } => {
+                self.channel_group_join(request_id, &link, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelGroupRegister {
+                request_id,
+                channel,
+                visibility,
+            } => {
+                self.channel_group_register(request_id, &channel, &visibility, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelGroupLink {
+                request_id,
+                channel,
+                days,
+                revoke,
+            } => {
+                self.channel_group_link(request_id, &channel, days, revoke, caller, sink)
                     .await?
             }
 

@@ -2159,6 +2159,18 @@ same as the `Channel` tool's `wake` action.
 `history` (`"shared"` / `"joined"`, ADR-092 D3; absent is `shared`) says what
 members may read of the group's past; it is kept at the home.
 
+`hub` (ADR-092 D5), kept at the home once the group is registered on PekoHub:
+
+```json
+"hub": { "id": "1203948571029384756", "page": "https://pekohub.ai/g/1203948571029384756",
+         "visibility": "invite_only",
+         "links": [{ "nonce": "…", "exp": 1794237865, "revoked": false }] }
+```
+
+`links` are the invite links the home minted; a link's token is a compact JWS
+signed by the home runtime over `{ "v": "peko-group-invite/1", "g": <id>,
+"c": <channel>, "h": <home runtime>, "exp": <unix s>, "n": <nonce> }`.
+
 `home.runtime` is where the group was created; there `home.owner` is its
 owner (the creator) and `admins` lists the members the owner lets manage the
 roster. Other member runtimes record only `home.runtime`, learned from the
@@ -2297,11 +2309,28 @@ proxy's) is reused.
 
 Groups (ADR-092 D2): a group's home invites a person by account, and each of
 their runtimes keeps the invitation in `<runtime>/group_invitations/<channel>.json`
-until they answer; a joined group's `meta.json` carries `account` and `home`.
+until they answer; a joined group's `meta.json` carries `account` and `home`. An
+entry with `"requested": true` is the person's own request to join (by link,
+by ID, or from a new device, ADR-092 D4/D5): it is not listed as an
+invitation and takes the home's roster as the answer.
 
 ```json
 {"type":"tunnel_group_invitation","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","channelId":"chan_…","name":"book club","inviter":"principal:hub:<UUID>","initialMembers":[…],"signature":"<JWS>"}
 {"type":"tunnel_group_join","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"user:hub:<account>","channelId":"chan_…","accept":true,"signature":"<JWS>"}
+{"type":"tunnel_group_join_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"user:hub:<account>","channelId":"chan_…","invite":"<token>","signature":"<JWS>"}
+```
+
+Between a runtime and PekoHub (ADR-092 D4–D6), unsigned:
+
+```json
+{"type":"group_register","requestId":"…","channelId":"chan_…","name":"book club","ownerAddress":"principal:hub:<UUID>","visibility":"invite_only"}
+{"type":"group_registered","requestId":"…","groupId":"1203948571029384756","pageUrl":"https://pekohub.ai/g/1203948571029384756"}
+{"type":"group_register_rejected","requestId":"…","message":"…"}
+{"type":"group_roster","groupId":"…","accounts":["<account>"]}
+{"type":"account_groups_request","requestId":"…"}
+{"type":"account_groups","requestId":"…","groups":[{"groupId":"…","name":"book club","homeRuntime":"did:key:…","channelId":"chan_…"}]}
+{"type":"group_lookup_request","requestId":"…","groupId":"…","invite":"<token>"}
+{"type":"group_lookup","requestId":"…","group":{"groupId":"…","name":"book club","homeRuntime":"did:key:…","channelId":"chan_…"}}
 ```
 
 History (ADR-091): the peko's runtime holds the record; the user's copy

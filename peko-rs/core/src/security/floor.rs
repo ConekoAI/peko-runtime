@@ -23,7 +23,9 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
 /// `role` changes the instructions it follows in a conversation (ADR-087
 /// D6); `admin` changes who may manage a group (ADR-092 D1). An untrusted run never gets them; a trusted run's call waits for
 /// the owner ([`crate::security::judge::owner_decides`]).
-pub const CHANNEL_OWNER_ACTIONS: &[&str] = &["create", "invite", "role", "admin", "history"];
+pub const CHANNEL_OWNER_ACTIONS: &[&str] = &[
+    "create", "invite", "role", "admin", "history", "register", "link",
+];
 
 /// The `Channel` owner action `params` call, if any.
 #[must_use]

@@ -348,5 +348,73 @@
     "channelId": "chan_0123abcd",
     "accept": true,
     "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_group_join_request",
+    "requestId": "gjreq-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "chan_0123abcd",
+    "invite": "home-signed-invite",
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "group_register",
+    "requestId": "greg-1",
+    "channelId": "chan_0123abcd",
+    "name": "book club",
+    "ownerAddress": "principal:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "visibility": "invite_only"
+  },
+  {
+    "type": "group_registered",
+    "requestId": "greg-1",
+    "groupId": "1234567890123456789",
+    "pageUrl": "https://pekohub.ai/g/1234567890123456789"
+  },
+  {
+    "type": "group_register_rejected",
+    "requestId": "greg-2",
+    "message": "this runtime is not registered"
+  },
+  {
+    "type": "group_roster",
+    "groupId": "1234567890123456789",
+    "accounts": [
+      "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d"
+    ]
+  },
+  {
+    "type": "account_groups_request",
+    "requestId": "agroups-1"
+  },
+  {
+    "type": "account_groups",
+    "requestId": "agroups-1",
+    "groups": [
+      {
+        "groupId": "1234567890123456789",
+        "name": "book club",
+        "homeRuntime": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        "channelId": "chan_0123abcd"
+      }
+    ]
+  },
+  {
+    "type": "group_lookup_request",
+    "requestId": "glookup-1",
+    "groupId": "1234567890123456789",
+    "invite": "home-signed-invite"
+  },
+  {
+    "type": "group_lookup",
+    "requestId": "glookup-1",
+    "group": {
+      "groupId": "1234567890123456789",
+      "name": "book club",
+      "homeRuntime": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+      "channelId": "chan_0123abcd"
+    }
   }
 ]
