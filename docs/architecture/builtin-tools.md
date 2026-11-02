@@ -6,8 +6,8 @@ JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
 
 Every registered tool appears in the native wire catalog (ADR-066), except the
-ones the ADR-078 trust floor refuses the run: `Bash` and `MCP` below trusted,
-`Plan` below owner. ToolCatalog
+ones the ADR-078 trust floor refuses the run: `MCP` below trusted, `Plan` and
+`Bash` below owner. ToolCatalog
 owns registration/lookup; ToolDispatcher validates arguments, writes each call
 to its principal's tool ledger (ADR-079), and emits one attributed audit event. Every principal can use every registered tool. There is
 no tool allowlist or capability filter. Principal bindings select workspace and
@@ -187,6 +187,11 @@ context overrides context_before/context_after. Content/context controls apply o
 ### Bash
 
 Execute shell commands, synchronously or in the background.
+
+**Owner runs only (ADR-078 D6, amended 2026-11-02).** The shell runs as the OS
+user, so no path rule can hold it: a run acting for anyone else would read every
+conversation the runtime keeps. The floor refuses it to trusted and untrusted
+peers alike and leaves it out of their wire catalog.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/bash.rs)
 

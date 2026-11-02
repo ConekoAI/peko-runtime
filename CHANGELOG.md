@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Security: conversations, keys and the shell are the owner's (2026-11-02, ADR-078 D6)
+
+- A run acting for a trusted person could `Read`/`Grep` the runtime's
+  conversation records — other people's DMs with the peko, every session
+  log — and run `Bash`, held back only by the AI policy reviewer. Now the
+  floor refuses, before review:
+  - `Bash` to every non-owner run (it is gone from their catalog);
+  - non-owner file-tool access to the runtime's own state: the Peko home
+    outside the peko's workspace (channel logs, runtime identity, vault,
+    settings) and any `principals/<name>/local/` tree (sessions, ledger,
+    plans, memory index), wherever the data directory is
+    (`security::floor::is_runtime_state`);
+  - a non-owner `Glob`/`Grep` rooted above that state
+    (`search_root_refusal`). Non-owner relative paths now anchor in the
+    workspace and `Glob` patterns may not climb out, as for untrusted runs.
+
 ### Fix: cross-runtime messages arrive as soon as the other computer is back (2026-11-02)
 
 - An envelope to an offline runtime waited in the outbox for its next
