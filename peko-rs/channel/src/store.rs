@@ -92,6 +92,21 @@ impl ActorRecord {
         self.info = info;
     }
 
+    /// The runtime's one local user: its key is `local@<runtime DID>`.
+    fn is_local_user(&self) -> bool {
+        self.info.kind == "user" && self.identity_key.starts_with("local@")
+    }
+
+    /// Give the local user back its local address, keeping its Hub alias.
+    fn rehost_local_user(&mut self) {
+        let mut info =
+            ActorInfo::from_subject(&ActorRef::User("local".into()), self.info.name.as_deref());
+        info.hub_id = self.info.hub_id.clone();
+        info.registration = self.info.registration;
+        self.historical_aliases.extend(self.aliases());
+        self.info = info;
+    }
+
     fn info(&self) -> ActorInfo {
         let mut info = self.info.clone();
         info.identity_key = self.identity_key.clone();
@@ -746,6 +761,16 @@ impl ChannelStore {
         let mut records = load_actors(&path)?;
         let mut changed = false;
         for record in &mut records {
+            // The runtime's own person (ADR-081 D3) stays local once the
+            // runtime is registered; its Hub account is an alias. Boots
+            // before this fix moved it to its Hub address; move it back.
+            if record.is_local_user() {
+                if record.info.local_id.is_none() {
+                    record.rehost_local_user();
+                    changed = true;
+                }
+                continue;
+            }
             if record.info.hub_id.is_some()
                 && record.info.local_id.as_ref().is_some_and(|id| {
                     record.info.kind != "principal" || !hosted.iter().any(|p| &p.0 == id)
@@ -3804,6 +3829,50 @@ mod tests {
             runtime_id: runtime.to_string(),
             principal_id: principal.to_string(),
         }
+    }
+
+    /// ADR-081 D3: a registered runtime's own person stays local across
+    /// boots (reconciliation used to move it to its Hub address, so it no
+    /// longer matched `user:local` in membership checks), and a record a
+    /// boot already moved comes back.
+    #[tokio::test]
+    async fn the_local_user_stays_local_when_the_runtime_boots() {
+        let store = ChannelStore::new(tmp_cfg("local-user-boot"));
+        let account = "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01";
+        store
+            .link_local_user("did:key:zHere", account)
+            .await
+            .unwrap();
+        let local = ActorRef::User("local".into());
+        store.reconcile_actor_locality(&[]).await.unwrap();
+        let info = store.actor_info(&local).await;
+        assert_eq!(info.local_id.as_deref(), Some("local"));
+        assert_eq!(info.hub_id.as_deref(), Some(account));
+
+        // A record an earlier boot moved to the Hub address comes back.
+        let path = store.cfg.runtime_dir.join("actors.json");
+        let mut records = load_actors(&path).unwrap();
+        for record in &mut records {
+            if record.is_local_user() {
+                record.unhost();
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+        store.reconcile_actor_locality(&[]).await.unwrap();
+        let info = store.actor_info(&local).await;
+        assert_eq!(info.local_id.as_deref(), Some("local"));
+        assert_eq!(info.address, "user:local:local");
+        assert_eq!(
+            store
+                .actor_info(&ActorRef::User(peko_subject::Route::hub(
+                    account.to_string()
+                )))
+                .await
+                .local_id
+                .as_deref(),
+            Some("local"),
+            "the Hub account is still an alias of the local user"
+        );
     }
 
     // -- back-compat -----------------------------------------------------
