@@ -2147,6 +2147,21 @@ always `human`; a group member without a binding yet reads as `mention`.
 Setting a wake writes the binding first if the principal has none, the
 same as the `Channel` tool's `wake` action.
 
+
+**Group home (ADR-092 D1).** A group's `meta.json` may carry `home` and
+`admins`:
+
+```json
+"home": { "runtime": "did:key:z6Mk…", "owner": "principal:local:prin_ab12" },
+"admins": ["principal:hub:6f1c…"]
+```
+
+`home.runtime` is where the group was created; there `home.owner` is its
+owner (the creator) and `admins` lists the members the owner lets manage the
+roster. Other member runtimes record only `home.runtime`, learned from the
+first roster snapshot's signed source, and accept later snapshots only from
+it. A group with no `home` never left its creator's runtime.
+
 ### 5¾.2½ `posted` event `via` attribution (2026-09-12)
 
 `posted` lines in `events.jsonl` may carry an optional `via` field:

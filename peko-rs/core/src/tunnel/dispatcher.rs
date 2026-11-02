@@ -2233,6 +2233,21 @@ impl TunnelDispatcher {
                 .await;
             return Ok(());
         }
+        // ADR-092 D1: a group's roster comes from its home runtime only.
+        let group = kind == peko_protocol::channel::ConversationKind::Group;
+        if group {
+            if let Ok(Some(home)) = port.local().group_home(&channel_typed).await {
+                if home.runtime != source_runtime_id {
+                    warn!(
+                        request_id,
+                        channel_id,
+                        home = %home.runtime,
+                        "inbound TunnelChannelInvite: dropping a group roster change from a runtime that is not the group's home"
+                    );
+                    return Ok(());
+                }
+            }
+        }
 
         // 5. Bootstrap the local mirror through the host (Phase
         // 12a): principal resolution + receiver-local DM binding +
@@ -2259,6 +2274,22 @@ impl TunnelDispatcher {
                  (request_id={request_id}, channel_id={channel_id}, creator={creator}): {e}"
             );
             return Ok(());
+        }
+        // ADR-092 D1: the first roster to arrive names the home: invites
+        // leave a group only from there.
+        if group {
+            if let Ok(None) = port.local().group_home(&channel_typed).await {
+                let _ = port
+                    .local()
+                    .set_group_home(
+                        &channel_typed,
+                        peko_channel::GroupHome {
+                            runtime: source_runtime_id.clone(),
+                            owner: None,
+                        },
+                    )
+                    .await;
+            }
         }
         port.mark_applied(&request_id).await;
         port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
@@ -4781,7 +4812,7 @@ mod tests {
             .tooling()
             .services()
             .set_cross_runtime_a2a_ctx(Arc::new(crate::tunnel::CrossRuntimeA2aCtx {
-                directory,
+                directory: directory.clone(),
                 caller_runtime_id: app.runtime_did(),
                 principal_manager: app.principal_manager().clone(),
                 channel_port: app.tunnel_channel_port(),
@@ -4846,7 +4877,7 @@ mod tests {
                 source_did.clone(),
                 "registered conversation".into(),
                 kind,
-                members,
+                members.clone(),
                 signature,
                 author_signature,
             )
@@ -4941,6 +4972,95 @@ mod tests {
             "only the authenticated author's post is accepted"
         );
         assert!(matches!(&events[1], ChannelEvent::Posted {author,..} if author==&profile.address));
+        if dm {
+            return;
+        }
+        // ADR-092 D1: the first roster names the group's home; a roster
+        // from any other runtime — even correctly signed, even reusing
+        // the id — changes nothing.
+        let home = port.local().group_home(&channel).await.unwrap().unwrap();
+        assert_eq!(home.runtime, source_runtime);
+        assert_eq!(home.owner, None, "only the home knows the owner");
+        let other_runtime = peko_identity::keys::KeyPair::generate();
+        let other_signer = peko_identity::keys::KeyPair::generate();
+        let other_runtime_did =
+            crate::tunnel::verifying_key_to_did_key(&other_runtime.verifying_key);
+        let other_did = crate::tunnel::verifying_key_to_did_key(&other_signer.verifying_key);
+        // A real, registered principal on another runtime: only the home
+        // rule stands between it and this group's roster.
+        let intruder_hub = uuid::Uuid::new_v4().to_string();
+        directory.register_hub_id(
+            &intruder_hub,
+            AgentResolution {
+                name: None,
+                hub_id: intruder_hub.clone(),
+                local_id: "prin_intruder".into(),
+                identity_key: "intruder-key".into(),
+                runtime_id: other_runtime_did.clone(),
+                instance_id: "intruder-instance".into(),
+                agent_did: other_did.clone(),
+                owner_principal: ActorRef::Public,
+                exposure: ResolvedExposure::Public,
+            },
+        );
+        let mut more = members.clone();
+        more.push(peko_protocol::channel::InitialMember {
+            principal_did: other_did.clone(),
+            runtime_id: Some(other_runtime_did.clone()),
+            hub_id: Some(intruder_hub.clone()),
+            identity_key: Some("intruder-key".into()),
+            name: Some("intruder".into()),
+        });
+        let bytes = serde_json::to_vec(&more).unwrap();
+        let intruder = format!("principal:hub:{intruder_hub}");
+        let fields = crate::tunnel::ChannelInviteSignedFields {
+            request_id: "foreign-roster",
+            source_runtime_id: &other_runtime_did,
+            recipient_runtime_id: &app.runtime_did(),
+            source_principal_did: &other_did,
+            channel_id: channel.as_str(),
+            creator: &intruder,
+            creator_did: &other_did,
+            name: "registered conversation",
+            kind: kind.as_str(),
+            initial_members_bytes: &bytes,
+        };
+        let (signature, author_signature) = crate::tunnel::sign_channel_invite(
+            &other_runtime.signing_key,
+            Some(&other_signer.signing_key),
+            fields,
+            now,
+            now + 300,
+        );
+        dispatcher
+            .handle_inbound_tunnel_channel_invite(
+                "foreign-roster".into(),
+                other_runtime_did.clone(),
+                app.runtime_did(),
+                other_did.clone(),
+                channel.0.clone(),
+                intruder,
+                other_did,
+                "registered conversation".into(),
+                kind,
+                more,
+                signature,
+                author_signature,
+            )
+            .await
+            .unwrap();
+        assert_eq!(port.participants(&channel).await.unwrap().len(), 2);
+        assert!(!port
+            .local()
+            .list_remote_members(&channel)
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.runtime_id == other_runtime_did));
+        assert_eq!(
+            port.local().group_home(&channel).await.unwrap().unwrap(),
+            home
+        );
     }
 
     #[tokio::test]

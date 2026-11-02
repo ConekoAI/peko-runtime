@@ -938,6 +938,48 @@ impl TunnelChannelPort {
     }
 
     /// Announce the current roster to every remote principal after a group addition.
+    /// ADR-092 D1: a group's roster changes at its home, by its owner or
+    /// an admin. A group with no home recorded never left its creator's
+    /// runtime, so this is its home.
+    pub(crate) async fn check_roster_change(
+        &self,
+        channel: &ChannelId,
+        actor: &PrincipalId,
+        ctx: Option<&CrossRuntimeChannelCtx>,
+    ) -> Result<()> {
+        let subject = ActorRef::from(actor);
+        if !self.local.may_manage_group(channel, &subject).await? {
+            let owner = self.local.group_owner(channel).await?;
+            return Err(peko_channel::ChannelError::Adapter(format!(
+                "Only the group's owner ({owner}) or an admin changes who is in it; ask them"
+            )));
+        }
+        let Some(ctx) = ctx else {
+            return Ok(());
+        };
+        match self.local.group_home(channel).await? {
+            Some(home) if home.runtime != ctx.caller_runtime_id => {
+                Err(peko_channel::ChannelError::Adapter(format!(
+                    "Members are added at the group's home runtime ({}); ask its owner",
+                    home.runtime
+                )))
+            }
+            Some(_) => Ok(()),
+            None => {
+                let owner = self.local.group_owner(channel).await?;
+                self.local
+                    .set_group_home(
+                        channel,
+                        peko_channel::GroupHome {
+                            runtime: ctx.caller_runtime_id.clone(),
+                            owner: Some(owner),
+                        },
+                    )
+                    .await
+            }
+        }
+    }
+
     async fn sync_group_membership(
         &self,
         channel: &ChannelId,
@@ -1332,6 +1374,28 @@ impl ChannelPort for TunnelChannelPort {
     ) -> Result<peko_channel::Binding> {
         self.local.set_role(channel, principal, role).await
     }
+    async fn group_info(&self, channel: &ChannelId) -> Result<Option<peko_channel::GroupInfo>> {
+        self.local.group_info(channel).await
+    }
+    async fn set_group_admin(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        actor: &ActorRef,
+        admin: bool,
+    ) -> Result<()> {
+        // ADR-092 D1: admins are kept, and checked, at the home.
+        let ctx = self.ctx.read().await.clone();
+        if let (Some(ctx), Some(home)) = (ctx, self.local.group_home(channel).await?) {
+            if home.runtime != ctx.caller_runtime_id {
+                return Err(peko_channel::ChannelError::Adapter(format!(
+                    "Admins are chosen at the group's home runtime ({})",
+                    home.runtime
+                )));
+            }
+        }
+        self.local.set_group_admin(channel, by, actor, admin).await
+    }
     async fn ensure_dm(
         &self,
         principal: &PrincipalId,
@@ -1341,7 +1405,27 @@ impl ChannelPort for TunnelChannelPort {
         self.local.ensure_dm(principal, peer, binding).await
     }
     async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
-        self.local.create(creator, opts).await
+        let channel = self.local.create(creator, opts).await?;
+        // ADR-092 D1: a group's home is where it is created.
+        if self.local.conversation_kind(&channel).await? == peko_channel::ConversationKind::Group {
+            if let Some(ctx) = self.ctx.read().await.clone() {
+                let owner = self
+                    .local
+                    .actor_info(&ActorRef::from(creator))
+                    .await
+                    .address;
+                self.local
+                    .set_group_home(
+                        &channel,
+                        peko_channel::GroupHome {
+                            runtime: ctx.caller_runtime_id.clone(),
+                            owner: Some(owner),
+                        },
+                    )
+                    .await?;
+            }
+        }
+        Ok(channel)
     }
 
     async fn invite(
@@ -1350,7 +1434,12 @@ impl ChannelPort for TunnelChannelPort {
         inviter: &PrincipalId,
         invitee: &ActorRef,
     ) -> Result<()> {
-        let Some(ctx) = self.ctx.read().await.clone() else {
+        let ctx = self.ctx.read().await.clone();
+        if self.local.conversation_kind(channel).await? == peko_channel::ConversationKind::Group {
+            self.check_roster_change(channel, inviter, ctx.as_deref())
+                .await?;
+        }
+        let Some(ctx) = ctx else {
             return self.local.invite(channel, inviter, invitee).await;
         };
         let known = self.local.actor_info(invitee).await;
@@ -2124,6 +2213,45 @@ mod tests {
             }
         }
         recipients
+    }
+
+    /// ADR-092 D1: a group lives where it was created, owned by its
+    /// creator; a copy whose home is elsewhere adds no one.
+    #[tokio::test]
+    async fn a_group_lives_where_it_was_created() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+        let (ctx, _rx) = build_test_ctx(&port, "did:key:zRuntimeLocal").await;
+        port.set_ctx(ctx).await;
+        let alice = PrincipalId("prin_alice".into());
+        let channel = port
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let home = store.group_home(&channel).await.unwrap().unwrap();
+        assert_eq!(home.runtime, "did:key:zRuntimeLocal");
+        assert_eq!(home.owner.as_deref(), Some("principal:local:prin_alice"));
+
+        store
+            .set_group_home(
+                &channel,
+                peko_channel::GroupHome {
+                    runtime: "did:key:zElsewhere".into(),
+                    owner: home.owner.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let err = port
+            .invite(&channel, &alice, &ActorRef::User("bob".into()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("home runtime"), "{err}");
     }
 
     /// `peer_runtime_online`: what waits for that runtime is resent at

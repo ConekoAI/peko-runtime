@@ -378,24 +378,25 @@ Accepts chan_<id> or group:<slug>; caller membership is required. limit defaults
 
 ### Channel
 
-A principal manages its groups (ADR-082) and the role it runs in each conversation (ADR-087). Requires `action`.
+A principal manages its groups (ADR-082, ADR-092) and the role it runs in each conversation (ADR-087). Requires `action`.
 
 [Implementation](../../peko-rs/core/src/tools/builtin/channel/channel_tool.rs)
 
 | Action | Parameters | Effect |
 |---|---|---|
 | `create` | `name`; optional `slug`, `members` | Creates a group (`group:<slug>`, else `chan_*`) with the caller as creator and first member, provisions its group session and binding (`wake: mention`), and invites each member as `invite` does. Returns `channel` and the `invited` addresses. |
-| `invite` | `channel`, `actor` | Adds one actor to a group the caller belongs to: the caller's owner, or a principal in its contact book (`Contacts resolve` first). Any other human is refused — the owner adds them with `peko channel invite`. Remote members receive the signed roster snapshot. |
+| `invite` | `channel`, `actor` | Adds one actor to a group the caller belongs to: the caller's owner, or a principal in its contact book (`Contacts resolve` first). Any other human is refused — the owner adds them with `peko channel invite`. Only the group's owner or an admin adds members, and only at the group's home runtime (ADR-092 D1). Remote members receive the signed roster snapshot. |
 | `leave` | `channel` | Removes the caller from a group and deletes its binding; the session stays as history. |
 | `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |
 | `role` | `channel`; optional `role` | Sets the role (a `RoleCatalog` id) the caller's turns run in a DM or group; omitting `role` returns it to the default conversation role (`routing.peer_agent`, else `conversation`). Refuses a role the principal does not have. |
-| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). |
+| `admin` | `channel`, `actor`, `admin` | The group's owner makes a member an admin (who may then add members), or stops it. At the home runtime only (ADR-092 D1). |
+| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, and `you.owner` / `you.admin`. |
 
 DMs are opened by `ChannelSend` and keep their members and wake policy: only
 `info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
-`invite`, and `role` to untrusted runs, and a trusted run's call to one of
+`invite`, `admin`, and `role` to untrusted runs, and a trusted run's call to one of
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).
