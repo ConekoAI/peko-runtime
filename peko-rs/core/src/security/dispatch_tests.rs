@@ -61,20 +61,22 @@ impl PolicyGate for FakeGate {
 }
 
 #[tokio::test]
-async fn untrusted_runs_lose_the_shell_and_never_see_it() {
+async fn only_owner_runs_get_the_shell_and_others_never_see_it() {
     let h = ToolHarness::new().await;
-    let out = h
-        .call_as(
-            &Caller::acting_for(guest(Trust::Untrusted)),
-            "Bash",
-            json!({"command": "echo hi"}),
-        )
-        .await;
-    assert!(
-        !out.success && out.display.contains("not available"),
-        "{}",
-        out.display
-    );
+    for trust in [Trust::Untrusted, Trust::Trusted] {
+        let out = h
+            .call_as(
+                &Caller::acting_for(guest(trust)),
+                "Bash",
+                json!({"command": "echo hi"}),
+            )
+            .await;
+        assert!(
+            !out.success && out.display.contains("not available"),
+            "{trust:?}: {}",
+            out.display
+        );
+    }
 
     let principal = PrincipalId(PRINCIPAL.into());
     let names = |snapshot: peko_engine::tooling::ToolCatalogSnapshot| -> Vec<String> {
@@ -92,7 +94,54 @@ async fn untrusted_runs_lose_the_shell_and_never_see_it() {
             .list_tool_definitions(&principal, Some(&guest(Trust::Trusted)))
             .await,
     );
-    assert!(trusted.contains(&"Bash".to_string()), "{trusted:?}");
+    assert!(!trusted.contains(&"Bash".to_string()), "{trusted:?}");
+    assert!(trusted.contains(&"Read".to_string()), "{trusted:?}");
+}
+
+/// A trusted run reads the owner's files, but not another conversation's
+/// session log, wherever the data directory is — even when the policy
+/// reviewer would allow it: the floor comes first.
+#[tokio::test]
+async fn a_trusted_run_cannot_read_the_runtimes_conversation_records() {
+    let h = ToolHarness::new().await;
+    h.tooling
+        .dispatcher()
+        .set_policy_gate(FakeGate::new(Verdict::Allow));
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = dir.path().join("data/principals/other/local/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let log = sessions.join("s.jsonl");
+    std::fs::write(&log, "{\"text\":\"private\"}").unwrap();
+    let project = dir.path().join("project.md");
+    std::fs::write(&project, "shared notes").unwrap();
+    let trusted = Caller::acting_for(guest(Trust::Trusted));
+
+    let out = h.call_as(&trusted, "Read", json!({"file_path": log})).await;
+    assert!(
+        !out.success && out.display.contains("runtime's own state"),
+        "{}",
+        out.display
+    );
+    let out = h
+        .call_as(
+            &trusted,
+            "Grep",
+            json!({"pattern": "private", "path": sessions}),
+        )
+        .await;
+    assert!(!out.success, "{}", out.display);
+    let out = h
+        .call_as(&trusted, "Read", json!({"file_path": project}))
+        .await;
+    assert!(out.success, "{}", out.display);
+    let out = h
+        .call_as(&trusted, "Glob", json!({"pattern": "../**/*.jsonl"}))
+        .await;
+    assert!(
+        !out.success && out.display.contains("base path"),
+        "{}",
+        out.display
+    );
 }
 
 #[tokio::test]

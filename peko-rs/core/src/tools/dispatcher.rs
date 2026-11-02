@@ -739,24 +739,39 @@ impl ToolDispatcher {
         // ADR-078 path floor: confinement, the cross-principal boundary,
         // and protected files (a non-owner's write becomes a proposal).
         let workspace = principal_workspace;
-        if stamp.is_untrusted() {
-            // The file tools default to a runtime-wide directory; an
-            // untrusted run's relative paths are its workspace's instead.
+        if !stamp.is_owner() {
+            // The file tools default to a runtime-wide directory; a
+            // non-owner run's relative paths are its workspace's instead.
             confine_relative_paths(&mut params, &tool_name, workspace.as_deref());
         }
         if let Some((target, write)) = crate::security::floor::file_tool_target(&tool_name, &params)
         {
-            if stamp.is_untrusted()
+            if !stamp.is_owner()
                 && tool_name == "Glob"
                 && params["pattern"]
                     .as_str()
                     .is_some_and(crate::security::floor::glob_pattern_escapes)
             {
-                let reason = "Glob patterns may not leave their base path while acting for an \
-                              untrusted actor";
+                let reason = "Glob patterns may not leave their base path while acting for \
+                              someone other than the owner";
                 self.emit_floor_denial(call, &stamp, reason).await;
                 let text = format!("Error: {reason}");
                 return Ok(Dispatched::refused(text, Outcome::FloorDenied));
+            }
+            // A recursive search from above the runtime's state would read
+            // it file by file; the per-path check below sees only the root.
+            if matches!(tool_name.as_str(), "Glob" | "Grep") {
+                let data_dir = crate::common::paths::default_data_dir();
+                if let Some(reason) = crate::security::floor::search_root_refusal(
+                    &stamp,
+                    workspace.as_deref(),
+                    Some(&data_dir),
+                    &target,
+                ) {
+                    self.emit_floor_denial(call, &stamp, &reason).await;
+                    let text = format!("Error: {reason}");
+                    return Ok(Dispatched::refused(text, Outcome::FloorDenied));
+                }
             }
             match crate::security::floor::check_path(&stamp, workspace.as_deref(), &target, write) {
                 crate::security::floor::PathDecision::Allow => {}
