@@ -407,6 +407,83 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelInvitations` (ADR-092 D2): the groups inviting the local user.
+    async fn channel_invitations(
+        &self,
+        request_id: u64,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] local callers only".into(),
+            )
+            .await;
+        }
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".into(),
+            )
+            .await;
+        };
+        match port.group_invitations().await {
+            Ok(invitations) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelInvitationsResult {
+                        request_id,
+                        invitations,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
+    /// `ChannelInvitationAnswer` (ADR-092 D2): the local user accepts or
+    /// declines a group's invitation.
+    async fn channel_invitation_answer(
+        &self,
+        request_id: u64,
+        channel: &str,
+        accept: bool,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] local callers only".into(),
+            )
+            .await;
+        }
+        let (Some(port), Some(channel)) =
+            (self.host.tunnel_channel_port(), ChannelId::parse(channel))
+        else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        match port.answer_group_invitation(&channel, accept).await {
+            Ok(()) => {
+                send_response(
+                    sink,
+                    ResponsePacket::Done {
+                        request_id,
+                        success: true,
+                        error: None,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     /// `ChannelHistoryOlder` (ADR-091 D4): one older page from the host.
     async fn channel_history_older(
         &self,
@@ -518,6 +595,9 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelSetWake { .. }
                 | RequestPacket::ChannelOpenRemoteDm { .. }
                 | RequestPacket::ChannelHistoryOlder { .. }
+                | RequestPacket::ChannelInvitations { .. }
+                | RequestPacket::ChannelPersonGroups { .. }
+                | RequestPacket::ChannelInvitationAnswer { .. }
         )
     }
 
@@ -1181,6 +1261,58 @@ impl RequestHandler for ChannelHandler {
                 before,
             } => {
                 self.channel_history_older(request_id, &channel, &before, caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelInvitations { request_id } => {
+                self.channel_invitations(request_id, caller, sink).await?
+            }
+
+            RequestPacket::ChannelPersonGroups { request_id } => {
+                if !caller.is_local() {
+                    return error_reply(
+                        sink,
+                        request_id,
+                        "[permission_denied] local callers only".into(),
+                    )
+                    .await;
+                }
+                let Some(port) = self.host.tunnel_channel_port() else {
+                    return error_reply(
+                        sink,
+                        request_id,
+                        "This runtime has no PekoHub connection".into(),
+                    )
+                    .await;
+                };
+                match port.person_groups().await {
+                    Ok(groups) => {
+                        send_response(
+                            sink,
+                            ResponsePacket::ChannelPersonGroupsResult {
+                                request_id,
+                                groups: groups
+                                    .into_iter()
+                                    .map(|(channel, name, home)| crate::ipc::packet::PersonGroup {
+                                        channel,
+                                        name,
+                                        home,
+                                    })
+                                    .collect(),
+                            },
+                        )
+                        .await?
+                    }
+                    Err(e) => error_reply(sink, request_id, format!("{e:#}")).await?,
+                }
+            }
+
+            RequestPacket::ChannelInvitationAnswer {
+                request_id,
+                channel,
+                accept,
+            } => {
+                self.channel_invitation_answer(request_id, &channel, accept, caller, sink)
                     .await?
             }
 

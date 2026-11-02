@@ -65,6 +65,9 @@ pub use user_dm::{human_dm_channel_id, HubDm};
 
 #[path = "dm_history.rs"]
 mod dm_history;
+
+#[path = "group_people.rs"]
+mod group_people;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 
 /// Unanswered sends to one runtime before the sender asks the directory
@@ -487,6 +490,20 @@ impl TunnelChannelPort {
                     channel,
                     invitee,
                     &entry.recipient_runtime_id,
+                )
+                .await
+            }
+            OutboxItem::GroupInvitation { channel, account } => {
+                self.group_invitation_envelope(ctx, &entry.request_id, channel, account)
+                    .await
+            }
+            OutboxItem::GroupJoin { channel, accept } => {
+                self.group_join_envelope(
+                    ctx,
+                    &entry.request_id,
+                    channel,
+                    &entry.recipient_runtime_id,
+                    *accept,
                 )
                 .await
             }
@@ -1012,6 +1029,109 @@ impl TunnelChannelPort {
         Ok(())
     }
 
+    /// A group's roster as the receiver at `invitee_runtime_id` sees it:
+    /// this runtime's members (by their wire ids) on this runtime, and every
+    /// remote route, without the invitee itself (ADR-092: also a
+    /// person's invitation, where the invitee runtime is their account).
+    async fn roster_rows(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        channel: &ChannelId,
+        invitee_bare: &str,
+        invitee_runtime_id: &str,
+    ) -> std::result::Result<Vec<peko_protocol::channel::InitialMember>, String> {
+        // Build `initial_members` re-keyed to the receiver's view
+        // (Phase 12a): the source's own rows are remote from the
+        // receiver's side, so they carry `Some(caller_runtime_id)`;
+        // pre-existing remote rows keep their runtime; the invitee
+        // row carries `None` — "addressed to you". The invitee's
+        // local row (written by `ChannelStore::invite` when the
+        // caller came through the trait) and its just-recorded
+        // remote row are both excluded — the invitee is neither
+        // local to the source nor remote-to-itself.
+        let local = self.local.list_members(channel).await.map_err(|e| {
+            format!(
+                "list_members failed while building invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+        let remote = self.local.list_remote_members(channel).await.map_err(|e| {
+            format!(
+                "list_remote_members failed while building invite envelope (channel={}): {e}",
+                channel.as_str()
+            )
+        })?;
+        // ADR-058 D2: source-local principal rows are emitted under
+        // the principal's vault-backed `did:key` DID when one exists —
+        // the receiver files these rows as its `remote_members`, and
+        // its inbound author gate (`is_remote_member`) matches the
+        // event envelope's `source_principal_did`, which is the same
+        // DID. Without the re-key the receiver would hold a local-id
+        // row that a did:key-authored event can never match.
+        let invitee_profile = self.local.actor_info(&wire_subject(invitee_bare)).await;
+        let mut remote_addresses = Vec::new();
+        for member in &remote {
+            let subject = ActorRef::Principal(member.principal_id.clone().into());
+            remote_addresses.push(self.local.actor_info(&subject).await.address);
+        }
+        let mut local_rows: Vec<peko_protocol::channel::InitialMember> = Vec::new();
+        for p in &local {
+            let profile = self.local.actor_info(p).await;
+            // ADR-092 D2: a person on another runtime is a member here only
+            // through their routes (the remote rows), never this runtime.
+            if matches!(p, ActorRef::User(_)) && profile.local_id.as_deref() != Some("local") {
+                continue;
+            }
+            if profile.address == invitee_profile.address
+                || remote_addresses.contains(&profile.address)
+            {
+                continue;
+            }
+            if profile.hub_id.is_none() {
+                return Err("Register channel participants before sharing through Hub".into());
+            }
+            let resolved = profile
+                .hub_address()
+                .unwrap_or_else(|| profile.address.clone());
+            let mut wire = resolved
+                .parse::<ActorRef>()
+                .map(|s| s.canonical_address())
+                .unwrap_or_else(|_| p.canonical_address());
+            if let ActorRef::Principal(did) = p {
+                let pid = PrincipalId::from_did(did);
+                if let Some(vault_did) = ctx.principal_keys.did_for_principal(&pid).await {
+                    wire = vault_did;
+                }
+            }
+            local_rows.push(peko_protocol::channel::InitialMember {
+                hub_id: profile.hub_id,
+                identity_key: Some(profile.identity_key),
+                name: profile.name,
+                principal_did: wire,
+                runtime_id: Some(ctx.caller_runtime_id.clone()),
+            });
+        }
+        let mut initial_members = local_rows;
+        for member in remote
+            .iter()
+            .filter(|rm| !(rm.runtime_id == invitee_runtime_id && rm.principal_id == *invitee_bare))
+        {
+            let subject = member
+                .principal_id
+                .parse::<ActorRef>()
+                .unwrap_or_else(|_| ActorRef::Principal(member.principal_id.clone().into()));
+            let profile = self.local.actor_info(&subject).await;
+            initial_members.push(peko_protocol::channel::InitialMember {
+                principal_did: member.principal_id.clone(),
+                runtime_id: Some(member.runtime_id.clone()),
+                hub_id: profile.hub_id,
+                identity_key: Some(profile.identity_key),
+                name: profile.name,
+            });
+        }
+        Ok(initial_members)
+    }
+
     /// Build and sign the `TunnelChannelInvite` for `invitee` under
     /// `request_id`, from the channel's current meta and membership.
     async fn invite_envelope(
@@ -1056,97 +1176,10 @@ impl TunnelChannelPort {
             )
         })?;
 
-        // Build `initial_members` re-keyed to the receiver's view
-        // (Phase 12a): the source's own rows are remote from the
-        // receiver's side, so they carry `Some(caller_runtime_id)`;
-        // pre-existing remote rows keep their runtime; the invitee
-        // row carries `None` — "addressed to you". The invitee's
-        // local row (written by `ChannelStore::invite` when the
-        // caller came through the trait) and its just-recorded
-        // remote row are both excluded — the invitee is neither
-        // local to the source nor remote-to-itself.
-        let local = self.local.list_members(channel).await.map_err(|e| {
-            format!(
-                "list_members failed while building invite envelope (channel={}): {e}",
-                channel.as_str()
-            )
-        })?;
-        let remote = self.local.list_remote_members(channel).await.map_err(|e| {
-            format!(
-                "list_remote_members failed while building invite envelope (channel={}): {e}",
-                channel.as_str()
-            )
-        })?;
-        // ADR-058 D2: source-local principal rows are emitted under
-        // the principal's vault-backed `did:key` DID when one exists —
-        // the receiver files these rows as its `remote_members`, and
-        // its inbound author gate (`is_remote_member`) matches the
-        // event envelope's `source_principal_did`, which is the same
-        // DID. Without the re-key the receiver would hold a local-id
-        // row that a did:key-authored event can never match.
-        let invitee_profile = self
-            .local
-            .actor_info(&ActorRef::Principal(invitee_bare.clone().into()))
-            .await;
-        let mut remote_addresses = Vec::new();
-        for member in &remote {
-            let subject = ActorRef::Principal(member.principal_id.clone().into());
-            remote_addresses.push(self.local.actor_info(&subject).await.address);
-        }
-        let mut local_rows: Vec<peko_protocol::channel::InitialMember> = Vec::new();
-        for p in &local {
-            let profile = self.local.actor_info(p).await;
-            if profile.address == invitee_profile.address
-                || remote_addresses.contains(&profile.address)
-            {
-                continue;
-            }
-            if profile.hub_id.is_none() {
-                return Err("Register channel participants before sharing through Hub".into());
-            }
-            let resolved = profile
-                .hub_address()
-                .unwrap_or_else(|| profile.address.clone());
-            let mut wire = resolved
-                .parse::<ActorRef>()
-                .map(|s| s.canonical_address())
-                .unwrap_or_else(|_| p.canonical_address());
-            if let ActorRef::Principal(did) = p {
-                let pid = PrincipalId::from_did(did);
-                if let Some(vault_did) = ctx.principal_keys.did_for_principal(&pid).await {
-                    wire = vault_did;
-                }
-            }
-            local_rows.push(peko_protocol::channel::InitialMember {
-                hub_id: profile.hub_id,
-                identity_key: Some(profile.identity_key),
-                name: profile.name,
-                principal_did: wire,
-                runtime_id: Some(ctx.caller_runtime_id.clone()),
-            });
-        }
-        let mut initial_members = local_rows;
-        for member in remote
-            .iter()
-            .filter(|rm| !(rm.runtime_id == invitee_runtime_id && rm.principal_id == invitee_bare))
-        {
-            let subject = member
-                .principal_id
-                .parse::<ActorRef>()
-                .unwrap_or_else(|_| ActorRef::Principal(member.principal_id.clone().into()));
-            let profile = self.local.actor_info(&subject).await;
-            initial_members.push(peko_protocol::channel::InitialMember {
-                principal_did: member.principal_id.clone(),
-                runtime_id: Some(member.runtime_id.clone()),
-                hub_id: profile.hub_id,
-                identity_key: Some(profile.identity_key),
-                name: profile.name,
-            });
-        }
-        let profile = self
-            .local
-            .actor_info(&ActorRef::Principal(invitee_bare.clone().into()))
-            .await;
+        let mut initial_members = self
+            .roster_rows(ctx, channel, &invitee_bare, invitee_runtime_id)
+            .await?;
+        let profile = self.local.actor_info(&wire_subject(&invitee_bare)).await;
         initial_members.push(peko_protocol::channel::InitialMember {
             principal_did: invitee_bare.clone(),
             runtime_id: None,
@@ -1442,6 +1475,12 @@ impl ChannelPort for TunnelChannelPort {
         let Some(ctx) = ctx else {
             return self.local.invite(channel, inviter, invitee).await;
         };
+        // ADR-092 D2: a person on other runtimes is invited by account.
+        if self.local.conversation_kind(channel).await? == peko_channel::ConversationKind::Group
+            && self.is_remote_person(invitee).await
+        {
+            return self.invite_person(&ctx, channel, inviter, invitee).await;
+        }
         let known = self.local.actor_info(invitee).await;
         let hosted = if let Some(local_id) = &known.local_id {
             ctx.principal_keys
@@ -1752,6 +1791,13 @@ impl ChannelPort for TunnelChannelPort {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// An actor named on the wire: a typed reference when it parses as one,
+/// else a principal by id or signing DID.
+fn wire_subject(id: &str) -> ActorRef {
+    id.parse::<ActorRef>()
+        .unwrap_or_else(|_| ActorRef::Principal(id.to_string().into()))
+}
 
 #[cfg(test)]
 mod tests {
