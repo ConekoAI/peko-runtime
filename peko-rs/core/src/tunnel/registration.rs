@@ -282,9 +282,11 @@ pub async fn register_runtime(
         "PekoHub registered the runtime under a different account"
     );
 
-    actor_store(resolver)
-        .link_local_user(&runtime_did, &account)
-        .await?;
+    let store = actor_store(resolver);
+    store.link_local_user(&runtime_did, &account).await?;
+    // ADR-091 D5: another person's conversations do not survive a change
+    // of hands, whatever path removed the old registration.
+    forget_remote_dms(resolver, &store, Some(&account)).await?;
     PekoHubCredential {
         url: tunnel_url(&origin),
         runtime_id: runtime_did.clone(),
@@ -299,15 +301,62 @@ pub async fn register_runtime(
     })
 }
 
+/// The outbox directory of this runtime's cross-runtime channels.
+fn outbox_dir(resolver: &PathResolver) -> std::path::PathBuf {
+    resolver
+        .runtime_dir()
+        .join("channel_delivery")
+        .join("outbox")
+}
+
+/// Delete the DMs with remote pekos that do not belong to `keep`, and
+/// what waits to be sent in them (ADR-091 D5).
+async fn forget_remote_dms(
+    resolver: &PathResolver,
+    store: &ChannelStore,
+    keep: Option<&str>,
+) -> Result<()> {
+    let purged = store.purge_remote_dms(keep).await?;
+    if !purged.is_empty() {
+        tracing::info!(
+            count = purged.len(),
+            "deleted another account's remote conversations"
+        );
+        crate::tunnel::channel_outbox::forget_channels(&outbox_dir(resolver), &purged).await;
+    }
+    Ok(())
+}
+
 /// Remove this runtime's Hub registration: Hub forgets the runtime, the
 /// local user loses its Hub alias, and the registration file is deleted.
-/// Registered principals must be unregistered first.
+/// Registered principals must be unregistered first. The person's
+/// conversations with remote pekos are deleted (their hosts keep them,
+/// ADR-091 D5); with posts in them still unsent, this refuses unless
+/// `discard_unsent`.
 pub async fn unregister_runtime(
     resolver: &PathResolver,
     vault: Arc<Vault>,
     api_key: &str,
+    discard_unsent: bool,
 ) -> Result<()> {
     use peko_channel::ChannelPort;
+    let store = actor_store(resolver);
+    if let Some(account) = store
+        .actor_info(&peko_subject::ActorRef::User("local".into()))
+        .await
+        .hub_id
+    {
+        let remote = store.remote_dms(&account).await?;
+        let unsent =
+            crate::tunnel::channel_outbox::unsent_posts_in(&outbox_dir(resolver), &remote).await;
+        anyhow::ensure!(
+            unsent == 0 || discard_unsent,
+            "{unsent} message(s) to pekos on other computers have not been delivered yet. \
+             Unregistering deletes this runtime's copy of those conversations (their hosts keep \
+             the rest), so the undelivered messages would be lost. Wait until they are \
+             delivered, or unregister with --discard-unsent."
+        );
+    }
     let registered: Vec<String> = actor_store(resolver)
         .known_actors()
         .await?
@@ -339,7 +388,8 @@ pub async fn unregister_runtime(
         status.is_success() || status == reqwest::StatusCode::NOT_FOUND,
         "PekoHub refused to unregister the runtime: HTTP {status}"
     );
-    actor_store(resolver).unlink_local_user().await?;
+    store.unlink_local_user().await?;
+    forget_remote_dms(resolver, &store, None).await?;
     std::fs::remove_file(&path)?;
     Ok(())
 }

@@ -52,7 +52,7 @@ pub(crate) trait TunnelHost: Send + Sync {
     ) -> anyhow::Result<crate::tunnel::registration::RuntimeRegistration>;
 
     /// Remove the Hub registration and close the tunnel.
-    async fn unregister_runtime(&self, token: &str) -> anyhow::Result<()>;
+    async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()>;
 }
 
 /// `tunnel` domain request handler. Constructed with an `Arc<dyn TunnelHost>`
@@ -148,8 +148,12 @@ impl RequestHandler for TunnelHandler {
                 send_response(sink, response).await?;
             }
 
-            RequestPacket::RuntimeUnregister { request_id, token } => {
-                let response = match self.host.unregister_runtime(&token).await {
+            RequestPacket::RuntimeUnregister {
+                request_id,
+                token,
+                discard_unsent,
+            } => {
+                let response = match self.host.unregister_runtime(&token, discard_unsent).await {
                     Ok(()) => ResponsePacket::Done {
                         request_id,
                         success: true,
@@ -203,7 +207,11 @@ mod tests {
                 account: "0b6c7a4e-0000-4000-8000-000000000000".to_string(),
             })
         }
-        async fn unregister_runtime(&self, _token: &str) -> anyhow::Result<()> {
+        async fn unregister_runtime(
+            &self,
+            _token: &str,
+            _discard_unsent: bool,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
     }

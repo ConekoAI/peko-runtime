@@ -53,6 +53,8 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::StatusUpdate { .. } => "status_update",
         TunnelMessage::TunnelChannelEvent { .. } => "tunnel_channel_event",
         TunnelMessage::TunnelChannelInvite { .. } => "tunnel_channel_invite",
+        TunnelMessage::TunnelChannelHistoryRequest { .. } => "tunnel_channel_history_request",
+        TunnelMessage::TunnelChannelHistory { .. } => "tunnel_channel_history",
     }
 }
 
@@ -83,6 +85,8 @@ const ALL_VARIANTS: &[&str] = &[
     "status_update",
     "tunnel_channel_event",
     "tunnel_channel_invite",
+    "tunnel_channel_history_request",
+    "tunnel_channel_history",
 ];
 
 const RUNTIME_A: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
@@ -285,6 +289,41 @@ fn samples() -> Vec<TunnelMessage> {
             }],
             signature: "runtime-signature".into(),
             author_signature: String::new(),
+        },
+        TunnelMessage::TunnelChannelHistoryRequest {
+            request_id: "hist-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_runtime_id: RUNTIME_B.into(),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            channel_id: "dm_0123".into(),
+            before: Some("msg-older".into()),
+            after: Some("msg-newer".into()),
+            limit: 100,
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelChannelHistory {
+            request_id: "hist-1".into(),
+            source_runtime_id: RUNTIME_B.into(),
+            recipient_runtime_id: RUNTIME_A.into(),
+            channel_id: "dm_0123".into(),
+            events: vec![ChannelEvent::Posted {
+                channel: ChannelId("dm_0123".into()),
+                author: format!("user:hub:{ACCOUNT}"),
+                parent: None,
+                text: "hello again".into(),
+                at: "2026-11-02T10:00:00Z".into(),
+                via: None,
+                msg_id: Some("msg-1".into()),
+                reply_to: Some("msg-0".into()),
+                attachments: vec![Attachment {
+                    name: "notes.pdf".into(),
+                    path: String::new(),
+                    mime: "application/pdf".into(),
+                    size: 2048,
+                }],
+            }],
+            has_more: true,
+            signature: "runtime-signature".into(),
         },
     ]
 }

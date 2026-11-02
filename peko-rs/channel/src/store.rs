@@ -350,6 +350,10 @@ pub struct MetaJson {
     pub bindings: HashMap<String, Binding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<String>,
+    /// ADR-091 D5: on the person's side of a DM with a remote peko, the
+    /// Hub account it was opened under. `None` everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// `meta.json` as read. Files written before ADR-082 have no `kind`
@@ -369,6 +373,8 @@ struct MetaJsonOnDisk {
     bindings: HashMap<String, BindingOnDisk>,
     #[serde(default)]
     participants: Vec<String>,
+    #[serde(default)]
+    account: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -406,6 +412,7 @@ impl From<MetaJsonOnDisk> for MetaJson {
             kind,
             bindings,
             participants: raw.participants,
+            account: raw.account,
         }
     }
 }
@@ -538,6 +545,14 @@ fn member_subject(entry: &str) -> ActorRef {
 #[must_use]
 pub fn member_row(subject: &ActorRef) -> String {
     subject.canonical_address()
+}
+
+/// A `Posted` event's stable id, if it has one.
+fn posted_msg_id(ev: &ChannelEvent) -> Option<&str> {
+    match ev {
+        ChannelEvent::Posted { msg_id, .. } => msg_id.as_deref(),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -679,13 +694,15 @@ impl ChannelStore {
     /// another runtime (ADR-090 D1). The pair id is the caller's: both
     /// runtimes derive it from the wire, not from this registry. The DM has
     /// both as members and no binding — no local principal takes part.
-    /// Returns whether it was created.
+    /// Returns whether it was created. `account` is the Hub account it
+    /// belongs to (ADR-091 D5), recorded in `meta.json`.
     pub async fn ensure_human_dm(
         &self,
         human: &ActorRef,
         peer: &ActorRef,
         channel: &ChannelId,
         name: &str,
+        account: &str,
     ) -> Result<bool> {
         if !channel.is_pair_id() {
             return Err(ChannelError::Adapter(format!(
@@ -713,6 +730,20 @@ impl ChannelStore {
                     "DM participant identity conflicts with stored channel".into(),
                 ));
             }
+            match meta.account.as_deref() {
+                Some(owner) if owner != account => {
+                    return Err(ChannelError::Adapter(
+                        "This conversation belongs to another PekoHub account".into(),
+                    ));
+                }
+                Some(_) => {}
+                // Opened before ADR-091: the pair id names the account.
+                None => {
+                    let mut meta = meta;
+                    meta.account = Some(account.to_string());
+                    meta.save(&dir).await?;
+                }
+            }
             return Ok(false);
         }
         fs::create_dir_all(&dir).await?;
@@ -725,6 +756,7 @@ impl ChannelStore {
             kind: ConversationKind::Dm,
             bindings: HashMap::new(),
             participants: expected,
+            account: Some(account.to_string()),
         }
         .save(&dir)
         .await?;
@@ -743,6 +775,182 @@ impl ChannelStore {
         self.append_event(Tier::Runtime, channel, &event, EventOrigin::Local)
             .await?;
         Ok(true)
+    }
+
+    /// The Hub account a DM with a remote peko belongs to (ADR-091 D5);
+    /// `None` for every other channel.
+    pub async fn remote_dm_account(&self, channel: &ChannelId) -> Result<Option<String>> {
+        let tier = self.resolve_tier(channel).await?;
+        let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
+        Ok(meta.account.filter(|_| meta.kind == ConversationKind::Dm))
+    }
+
+    /// Append `events` from the host's record of this DM (ADR-091 D1):
+    /// only `Posted` events with a `msg_id` this copy lacks, oldest first.
+    /// Returns how many were appended.
+    pub async fn append_synced_events(
+        &self,
+        channel: &ChannelId,
+        events: Vec<ChannelEvent>,
+    ) -> Result<usize> {
+        let tier = self.resolve_tier(channel).await?;
+        let _guard = self.lock_dm(channel).await?;
+        let known: std::collections::HashSet<String> = self
+            .read_events(tier, channel, &Checkpoint::zero())
+            .await?
+            .into_iter()
+            .filter_map(|(_, ev)| posted_msg_id(&ev).map(str::to_string))
+            .collect();
+        let mut fresh: Vec<ChannelEvent> = events
+            .into_iter()
+            .filter(|ev| posted_msg_id(ev).is_some_and(|id| !known.contains(id)))
+            .collect();
+        fresh.sort_by(|a, b| a.at().cmp(b.at()));
+        fresh.dedup_by(|a, b| posted_msg_id(a) == posted_msg_id(b));
+        for ev in &fresh {
+            self.append_event(tier, channel, ev, EventOrigin::VerifiedRemote)
+                .await?;
+        }
+        Ok(fresh.len())
+    }
+
+    /// One page of a DM's posts for its host to serve (ADR-091 D2):
+    /// `Posted` events with a `msg_id`, oldest first. `before` / `after`
+    /// are `msg_id` cursors; with neither, the newest page. An unknown
+    /// cursor reads as the newest page. Returns the page and whether
+    /// more lie beyond it in the direction read.
+    pub async fn history_page(
+        &self,
+        channel: &ChannelId,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<ChannelEvent>, bool)> {
+        let tier = self.resolve_tier(channel).await?;
+        let posts: Vec<ChannelEvent> = self
+            .read_events(tier, channel, &Checkpoint::zero())
+            .await?
+            .into_iter()
+            .map(|(_, ev)| ev)
+            .filter(|ev| posted_msg_id(ev).is_some())
+            .collect();
+        let position = |cursor: &str| {
+            posts
+                .iter()
+                .position(|ev| posted_msg_id(ev) == Some(cursor))
+        };
+        let limit = limit.max(1);
+        let (start, end, more) = match (after.and_then(position), before.and_then(position)) {
+            (Some(i), _) => {
+                let end = (i + 1 + limit).min(posts.len());
+                (i + 1, end, end < posts.len())
+            }
+            (None, Some(i)) => {
+                let start = i.saturating_sub(limit);
+                (start, i, start > 0)
+            }
+            (None, None) => {
+                let start = posts.len().saturating_sub(limit);
+                (start, posts.len(), start > 0)
+            }
+        };
+        Ok((posts[start..end].to_vec(), more))
+    }
+
+    /// Every DM with a remote peko that belongs to `account` (ADR-091 D4).
+    pub async fn remote_dms(&self, account: &str) -> Result<Vec<ChannelId>> {
+        let root = self.cfg.channels_dir();
+        let mut out = Vec::new();
+        let mut rd = match fs::read_dir(&root).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    root.display()
+                )))
+            }
+        };
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", root.display())))?
+        {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(channel) =
+                ChannelId::parse(&name).or_else(|| crate::fs::channel_dir_name_inverse(&name))
+            else {
+                continue;
+            };
+            if let Ok(meta) = MetaJson::load(&entry.path(), &channel).await {
+                if meta.kind == ConversationKind::Dm && meta.account.as_deref() == Some(account) {
+                    out.push(channel);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete every DM with a remote peko that does not belong to
+    /// `keep` (ADR-091 D5): the runtime's Hub account changed or went
+    /// away, and the host still holds each conversation. A DM opened
+    /// before `account` was recorded counts as the previous account's
+    /// when the local user created it and a remote runtime hosts its
+    /// peer. Returns the deleted channels.
+    pub async fn purge_remote_dms(&self, keep: Option<&str>) -> Result<Vec<ChannelId>> {
+        let root = self.cfg.channels_dir();
+        let mut purged = Vec::new();
+        let mut rd = match fs::read_dir(&root).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(purged),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    root.display()
+                )))
+            }
+        };
+        let local_user = member_row(&ActorRef::User("local".into()));
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", root.display())))?
+        {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(channel) =
+                ChannelId::parse(&name).or_else(|| crate::fs::channel_dir_name_inverse(&name))
+            else {
+                continue;
+            };
+            let dir = entry.path();
+            let Ok(meta) = MetaJson::load(&dir, &channel).await else {
+                continue;
+            };
+            if meta.kind != ConversationKind::Dm {
+                continue;
+            }
+            let theirs = match meta.account.as_deref() {
+                Some(account) => Some(account) != keep,
+                None => {
+                    meta.creator == local_user
+                        && !MembersJson::load(&dir)
+                            .await
+                            .map(|m| m.remote_members.is_empty())
+                            .unwrap_or(true)
+                }
+            };
+            if theirs {
+                fs::remove_dir_all(&dir)
+                    .await
+                    .map_err(|e| ChannelError::Adapter(format!("remove {}: {e}", dir.display())))?;
+                purged.push(channel);
+            }
+        }
+        Ok(purged)
     }
 
     /// The channel's display name (`meta.json`).
@@ -802,6 +1010,14 @@ impl ChannelStore {
                         .unwrap_or_else(|_| address.to_string())
                 }
             })
+    }
+
+    /// `event` with its actors named as this store names them on read
+    /// (an alias becomes its canonical address), for events shown without
+    /// being stored (ADR-091 scroll-back).
+    #[must_use]
+    pub fn normalized(&self, event: ChannelEvent) -> ChannelEvent {
+        self.normalize_event(event)
     }
 
     fn normalize_event(&self, mut event: ChannelEvent) -> ChannelEvent {
@@ -2046,6 +2262,7 @@ impl ChannelStore {
                 addresses.dedup();
                 addresses
             },
+            account: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -2645,6 +2862,7 @@ impl ChannelPort for ChannelStore {
             kind: opts.kind,
             bindings: HashMap::new(),
             participants: Vec::new(),
+            account: None,
         };
         meta.save(&chan_dir).await?;
 
@@ -4005,11 +4223,11 @@ mod tests {
             .unwrap();
         let dm = crate::dm_channel_id("peko-key", "user:hub:acct");
         assert!(store
-            .ensure_human_dm(&user, &peko, &dm, "dm-peko")
+            .ensure_human_dm(&user, &peko, &dm, "dm-peko", "acct-1")
             .await
             .unwrap());
         assert!(!store
-            .ensure_human_dm(&user, &peko, &dm, "dm-peko")
+            .ensure_human_dm(&user, &peko, &dm, "dm-peko", "acct-1")
             .await
             .unwrap());
         assert_eq!(
@@ -4028,13 +4246,156 @@ mod tests {
         );
         let stranger = ActorRef::User("bob".into());
         assert!(store
-            .ensure_human_dm(&stranger, &peko, &dm, "dm-peko")
+            .ensure_human_dm(&stranger, &peko, &dm, "dm-peko", "acct-1")
             .await
             .is_err());
         assert!(store
-            .ensure_human_dm(&user, &peko, &ChannelId("chan_abc".into()), "x")
+            .ensure_human_dm(&user, &peko, &ChannelId("chan_abc".into()), "x", "acct-1")
             .await
             .is_err());
+    }
+
+    fn synced_post(channel: &ChannelId, id: &str, at: &str) -> ChannelEvent {
+        ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "user:hub:acct-1".into(),
+            parent: None,
+            text: format!("message {id}"),
+            at: at.into(),
+            via: None,
+            msg_id: Some(id.into()),
+            reply_to: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    async fn remote_dm(store: &ChannelStore, account: &str) -> ChannelId {
+        store.ensure_local_user("did:key:zHere").await.unwrap();
+        let peko = ActorRef::Principal(peko_subject::Route::hub(format!("peko-{account}")));
+        store
+            .register_actor(
+                &peko,
+                Some(&format!("peko-{account}")),
+                Some("did:key:zPeko"),
+                Some(&format!("key-{account}")),
+                Some("peko"),
+                Registration::Public,
+            )
+            .await
+            .unwrap();
+        let dm = crate::dm_channel_id(&format!("key-{account}"), &format!("user:hub:{account}"));
+        store
+            .ensure_human_dm(
+                &ActorRef::User("local".into()),
+                &peko,
+                &dm,
+                "dm-peko",
+                account,
+            )
+            .await
+            .unwrap();
+        store
+            .add_remote_member(&dm, "did:key:zHost", "did:key:zPeko")
+            .await
+            .unwrap();
+        dm
+    }
+
+    /// ADR-091 D5: a remote DM records its account, and no other account
+    /// reopens it.
+    #[tokio::test]
+    async fn a_remote_dm_belongs_to_one_account() {
+        let store = ChannelStore::new(tmp_cfg("dm-account"));
+        let dm = remote_dm(&store, "acct-1").await;
+        assert_eq!(
+            store.remote_dm_account(&dm).await.unwrap().as_deref(),
+            Some("acct-1")
+        );
+        let peko = ActorRef::Principal(peko_subject::Route::hub("peko-acct-1".to_string()));
+        let refused = store
+            .ensure_human_dm(
+                &ActorRef::User("local".into()),
+                &peko,
+                &dm,
+                "dm-peko",
+                "acct-2",
+            )
+            .await;
+        assert!(refused.is_err());
+    }
+
+    /// ADR-091 D1: synced posts merge by `msg_id`, oldest first, once.
+    #[tokio::test]
+    async fn synced_posts_merge_by_id_in_time_order() {
+        let store = ChannelStore::new(tmp_cfg("dm-sync"));
+        let dm = remote_dm(&store, "acct-1").await;
+        let page = vec![
+            synced_post(&dm, "m2", "2026-11-02T10:02:00Z"),
+            synced_post(&dm, "m1", "2026-11-02T10:01:00Z"),
+            ChannelEvent::MemberLeft {
+                channel: dm.clone(),
+                member: "x".into(),
+                at: "2026-11-02T10:00:00Z".into(),
+            },
+        ];
+        assert_eq!(
+            store.append_synced_events(&dm, page.clone()).await.unwrap(),
+            2
+        );
+        assert_eq!(store.append_synced_events(&dm, page).await.unwrap(), 0);
+        let ids: Vec<String> = store
+            .peek(&dm, &Checkpoint::zero())
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|ev| posted_msg_id(ev).map(str::to_string))
+            .collect();
+        assert_eq!(ids, ["m1", "m2"]);
+    }
+
+    /// ADR-091 D2: the host pages a DM by `msg_id` cursors.
+    #[tokio::test]
+    async fn history_pages_by_message_id() {
+        let store = ChannelStore::new(tmp_cfg("dm-pages"));
+        let dm = remote_dm(&store, "acct-1").await;
+        let posts: Vec<_> = (1..=5)
+            .map(|i| synced_post(&dm, &format!("m{i}"), &format!("2026-11-02T10:0{i}:00Z")))
+            .collect();
+        store.append_synced_events(&dm, posts).await.unwrap();
+        let ids = |page: &[ChannelEvent]| -> Vec<String> {
+            page.iter()
+                .filter_map(|ev| posted_msg_id(ev).map(str::to_string))
+                .collect()
+        };
+        let (newest, more) = store.history_page(&dm, None, None, 2).await.unwrap();
+        assert_eq!((ids(&newest), more), (vec!["m4".into(), "m5".into()], true));
+        let (older, more) = store.history_page(&dm, Some("m4"), None, 2).await.unwrap();
+        assert_eq!((ids(&older), more), (vec!["m2".into(), "m3".into()], true));
+        let (oldest, more) = store.history_page(&dm, Some("m2"), None, 2).await.unwrap();
+        assert_eq!((ids(&oldest), more), (vec!["m1".into()], false));
+        let (newer, more) = store.history_page(&dm, None, Some("m2"), 2).await.unwrap();
+        assert_eq!((ids(&newer), more), (vec!["m3".into(), "m4".into()], true));
+        let (unknown, _) = store.history_page(&dm, None, Some("zz"), 2).await.unwrap();
+        assert_eq!(ids(&unknown), ["m4", "m5"]);
+    }
+
+    /// ADR-091 D5: a runtime that changes hands deletes the previous
+    /// person's remote DMs and nothing else.
+    #[tokio::test]
+    async fn purging_keeps_the_current_account_and_local_channels() {
+        let store = ChannelStore::new(tmp_cfg("dm-purge"));
+        let mine = remote_dm(&store, "acct-1").await;
+        let theirs = remote_dm(&store, "acct-2").await;
+        let alice = pid("prin_alice");
+        let local = dm_with_user(&store, &alice).await;
+        let purged = store.purge_remote_dms(Some("acct-1")).await.unwrap();
+        assert_eq!(purged, vec![theirs.clone()]);
+        assert!(store.conversation_kind(&mine).await.is_ok());
+        assert!(store.conversation_kind(&local).await.is_ok());
+        assert!(store.conversation_kind(&theirs).await.is_err());
+        let purged = store.purge_remote_dms(None).await.unwrap();
+        assert_eq!(purged, vec![mine]);
+        assert!(store.conversation_kind(&local).await.is_ok());
     }
 
     #[tokio::test]
@@ -4221,6 +4582,7 @@ mod tests {
                 Binding::new("/group-team", WakePolicy::Off),
             )]),
             participants: Vec::new(),
+            account: None,
         };
         let raw = serde_json::to_string(&m).unwrap();
         assert!(raw.contains(r#""kind":"group""#), "{raw}");

@@ -677,7 +677,9 @@ impl TunnelClient {
             // envelope at `debug!` because no dispatcher registers
             // the handler yet) — safe default, no silent bootstrap.
             | TunnelMessage::TunnelChannelEvent { .. }
-            | TunnelMessage::TunnelChannelInvite { .. } => {
+            | TunnelMessage::TunnelChannelInvite { .. }
+            | TunnelMessage::TunnelChannelHistoryRequest { .. }
+            | TunnelMessage::TunnelChannelHistory { .. } => {
                 if let Some(handler) = request_handler {
                     handler(msg, handle.clone()).await;
                 } else {

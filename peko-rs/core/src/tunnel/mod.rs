@@ -47,10 +47,14 @@ pub use invite_token::{
 pub use local_directory::LocalFirstAgentDirectory;
 pub use protocol::TunnelMessage;
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
-pub use tunnel_channel_port::{human_dm_channel_id, HubDm, TunnelChannelPort};
+pub use tunnel_channel_port::{
+    human_dm_channel_id, HistoryPage, HubDm, TunnelChannelPort, HISTORY_PAGE_LIMIT,
+};
 pub use tunnel_channel_signature::{
-    jws_sign, jws_verify, sign_channel_event, sign_channel_invite, verify_author_signature,
-    verify_channel_event, verify_channel_invite, ChannelEventPayload, ChannelInvitePayload,
-    ChannelInviteSignedFields, ChannelSignedFields, CHANNEL_EVENT_PAYLOAD_VERSION,
-    CHANNEL_INVITE_PAYLOAD_VERSION,
+    jws_sign, jws_verify, sign_channel_event, sign_channel_invite, sign_history,
+    verify_author_signature, verify_channel_event, verify_channel_invite, verify_history,
+    verify_history_request, ChannelEventPayload, ChannelHistoryPayload,
+    ChannelHistoryRequestPayload, ChannelInvitePayload, ChannelInviteSignedFields,
+    ChannelSignedFields, CHANNEL_EVENT_PAYLOAD_VERSION, CHANNEL_HISTORY_REQUEST_VERSION,
+    CHANNEL_HISTORY_VERSION, CHANNEL_INVITE_PAYLOAD_VERSION,
 };

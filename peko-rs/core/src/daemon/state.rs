@@ -2587,11 +2587,12 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
         Ok(registered)
     }
 
-    async fn unregister_runtime(&self, token: &str) -> anyhow::Result<()> {
+    async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()> {
         crate::tunnel::registration::unregister_runtime(
             &self.path_resolver,
             Arc::clone(&self.vault),
             token,
+            discard_unsent,
         )
         .await?;
         AppState::stop_tunnel(self).await;

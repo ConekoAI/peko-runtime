@@ -278,5 +278,46 @@
     ],
     "signature": "runtime-signature",
     "authorSignature": ""
+  },
+  {
+    "type": "tunnel_channel_history_request",
+    "requestId": "hist-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "dm_0123",
+    "before": "msg-older",
+    "after": "msg-newer",
+    "limit": 100,
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_channel_history",
+    "requestId": "hist-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "channelId": "dm_0123",
+    "events": [
+      {
+        "kind": "posted",
+        "channel": "dm_0123",
+        "author": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+        "parent": null,
+        "text": "hello again",
+        "at": "2026-11-02T10:00:00Z",
+        "msg_id": "msg-1",
+        "reply_to": "msg-0",
+        "attachments": [
+          {
+            "name": "notes.pdf",
+            "path": "",
+            "mime": "application/pdf",
+            "size": 2048
+          }
+        ]
+      }
+    ],
+    "hasMore": true,
+    "signature": "runtime-signature"
   }
 ]

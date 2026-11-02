@@ -319,6 +319,30 @@ impl ChannelOutbox {
     }
 }
 
+/// Unsent posts in `channels`, read from the outbox directory `dir` on
+/// disk (ADR-091 D5: what unregistering would lose).
+pub(crate) async fn unsent_posts_in(dir: &Path, channels: &[ChannelId]) -> usize {
+    load_entries(dir)
+        .await
+        .values()
+        .filter(|e| {
+            matches!(&e.item, OutboxItem::Event { channel, event: ChannelEvent::Posted { .. }, .. }
+                if channels.contains(channel))
+        })
+        .count()
+}
+
+/// Delete the outbox entries of `channels` from the outbox directory
+/// `dir` on disk (ADR-091 D5: their conversations were deleted).
+pub(crate) async fn forget_channels(dir: &Path, channels: &[ChannelId]) {
+    for entry in load_entries(dir).await.values() {
+        if channels.contains(entry.item.channel()) {
+            let file = dir.join(format!("{:020}-{}.json", entry.seq, entry.request_id));
+            let _ = tokio::fs::remove_file(file).await;
+        }
+    }
+}
+
 async fn load_entries(dir: &Path) -> BTreeMap<u64, OutboxEntry> {
     let mut out = BTreeMap::new();
     let Ok(mut read) = tokio::fs::read_dir(dir).await else {

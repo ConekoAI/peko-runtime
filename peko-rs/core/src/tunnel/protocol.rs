@@ -514,6 +514,41 @@ pub enum TunnelMessage {
         /// is a `did:key`.
         author_signature: String,
     },
+
+    /// ADR-091 D2: a person's runtime asks a peko's host for one page of
+    /// their DM. `source_principal_did` is the person (`user:hub:<id>`);
+    /// the Hub relays it only from the runtime registered to that
+    /// account. `before` / `after` are `msg_id` cursors (neither: the
+    /// newest page). `signature` is the source runtime's compact JWS
+    /// over every other field (`tunnel_channel_signature::sign_history`).
+    #[serde(rename = "tunnel_channel_history_request", rename_all = "camelCase")]
+    TunnelChannelHistoryRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        limit: u32,
+        signature: String,
+    },
+
+    /// ADR-091 D2: the host's page, answering the request with the same
+    /// `request_id`: `Posted` events, oldest first, without host-local
+    /// fields. A refusal is an empty page with `has_more: false`.
+    #[serde(rename = "tunnel_channel_history", rename_all = "camelCase")]
+    TunnelChannelHistory {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        channel_id: String,
+        events: Vec<peko_protocol::channel::ChannelEvent>,
+        has_more: bool,
+        signature: String,
+    },
 }
 
 /// One row of the `initialMembers` list on
