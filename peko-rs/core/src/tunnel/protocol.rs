@@ -301,6 +301,15 @@ pub enum TunnelMessage {
         #[serde(rename = "hubId")]
         hub_id: String,
     },
+    /// Hub → runtime: a runtime this one sent channel envelopes to while
+    /// it was offline has connected again. Resend what waits for it now
+    /// instead of at the next backoff tick. The Hub keeps only who waits
+    /// on whom, never the envelopes.
+    #[serde(rename = "peer_runtime_online")]
+    PeerRuntimeOnline {
+        #[serde(rename = "runtimeId")]
+        runtime_id: String,
+    },
     /// ADR-081 D4: ask Hub to transfer an online principal. Hub allows it
     /// when the principal is linked here and this runtime's account is its
     /// recorded owner.

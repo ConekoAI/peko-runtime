@@ -597,6 +597,10 @@ impl TunnelDispatcher {
             TunnelMessage::PrincipalUnlinked { local_id, hub_id } => {
                 self.unlink_principal(&local_id, &hub_id).await?;
             }
+            TunnelMessage::PeerRuntimeOnline { runtime_id } => {
+                let port = self.host.tunnel_channel_port();
+                tokio::spawn(async move { port.on_peer_runtime_online(&runtime_id).await });
+            }
             TunnelMessage::PrincipalOwnerChanged {
                 request_id,
                 local_id,

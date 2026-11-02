@@ -45,7 +45,7 @@ use peko_channel::{
 use peko_protocol::channel::ChannelEvent;
 use peko_subject::{ActorRef, PrincipalId};
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// Type alias re-exported so the trait impl below reads naturally.
@@ -330,12 +330,28 @@ impl TunnelChannelPort {
         self.flush(true).await;
     }
 
+    /// The Hub says `runtime_id` is back: resend what waits for it now,
+    /// whatever its backoff (`peer_runtime_online`).
+    pub(crate) async fn on_peer_runtime_online(&self, runtime_id: &str) {
+        let entries = self.outbox.pending_for(runtime_id).await;
+        if !entries.is_empty() {
+            debug!(recipient = %runtime_id, count = entries.len(), "channel outbox: peer runtime online; resending");
+            self.send_entries(entries).await;
+        }
+    }
+
     /// Send the pending envelopes that are due (all of them with
-    /// `force`), oldest first. Needs a ctx and a live tunnel; a send
+    /// `force`), oldest first.
+    pub(crate) async fn flush(&self, force: bool) {
+        let entries = self.outbox.due(force).await;
+        self.send_entries(entries).await;
+    }
+
+    /// Send `entries` in order. Needs a ctx and a live tunnel; a send
     /// error (tunnel gone) stops the pass. Envelopes whose build fails
     /// stay queued and are retried — the cause (e.g. a locked vault)
     /// may clear.
-    pub(crate) async fn flush(&self, force: bool) {
+    async fn send_entries(&self, entries: Vec<OutboxEntry>) {
         let Some(ctx) = self.ctx.read().await.clone() else {
             return;
         };
@@ -343,7 +359,7 @@ impl TunnelChannelPort {
             return;
         };
         let mut relinked = HashSet::new();
-        for entry in self.outbox.due(force).await {
+        for entry in entries {
             // Each (channel, runtime) pair asks the directory once a pass.
             if entry.attempts >= RELINK_AFTER_ATTEMPTS {
                 let channel = entry.item.channel().clone();
@@ -2095,6 +2111,54 @@ mod tests {
             }
         }
         recipients
+    }
+
+    /// `peer_runtime_online`: what waits for that runtime is resent at
+    /// once, past its backoff; what waits for others keeps its schedule.
+    #[tokio::test]
+    async fn a_peer_coming_online_gets_its_envelopes_resent_at_once() {
+        use ed25519_dalek::SigningKey;
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(ChannelConfig {
+            runtime_dir: tmp.path().to_path_buf(),
+            shared_dir: None,
+        }));
+        let port = TunnelChannelPort::new(store.clone());
+        let (ctx, mut rx) = build_test_ctx(&port, "did:key:zRuntimeLocal").await;
+        port.set_ctx(ctx).await;
+        let alice = PrincipalId("prin_alice".into());
+        let channel = port
+            .create(&alice, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        for (seed, runtime) in [(11u8, "did:key:zRuntimeA"), (12, "did:key:zRuntimeC")] {
+            let member = crate::tunnel::verifying_key_to_did_key(
+                &SigningKey::from_bytes(&[seed; 32]).verifying_key(),
+            );
+            store
+                .add_remote_member(&channel, runtime, &member)
+                .await
+                .unwrap();
+            port.links
+                .lock()
+                .unwrap()
+                .insert(member, (runtime.into(), std::time::Instant::now()));
+        }
+        port.post(&channel, &ActorRef::from(&alice), PostMsg::root("hello"))
+            .await
+            .unwrap();
+        let mut first = sent_to(&mut rx);
+        first.sort();
+        assert_eq!(first, ["did:key:zRuntimeA", "did:key:zRuntimeC"]);
+
+        // Neither answered; both back off.
+        port.flush(false).await;
+        assert!(sent_to(&mut rx).is_empty());
+
+        port.on_peer_runtime_online("did:key:zRuntimeA").await;
+        assert_eq!(sent_to(&mut rx), ["did:key:zRuntimeA"]);
+        port.on_peer_runtime_online("did:key:zRuntimeNobody").await;
+        assert!(sent_to(&mut rx).is_empty());
     }
 
     /// ADR-081 D7: envelopes the old copy leaves unanswered follow the

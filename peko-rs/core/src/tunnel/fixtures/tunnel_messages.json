@@ -83,6 +83,10 @@
     "hubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb"
   },
   {
+    "type": "peer_runtime_online",
+    "runtimeId": "did:key:z6MkPeerRuntime"
+  },
+  {
     "type": "principal_transfer",
     "requestId": "xfer-1",
     "localId": "prin_ada",

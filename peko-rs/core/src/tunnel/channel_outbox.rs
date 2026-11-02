@@ -234,6 +234,18 @@ impl ChannelOutbox {
             .collect()
     }
 
+    /// Every entry waiting for `recipient_runtime_id`, oldest first,
+    /// whatever its backoff.
+    pub(crate) async fn pending_for(&self, recipient_runtime_id: &str) -> Vec<OutboxEntry> {
+        let mut guard = self.state.lock().await;
+        self.loaded(&mut guard)
+            .await
+            .values()
+            .filter(|e| e.recipient_runtime_id == recipient_runtime_id)
+            .cloned()
+            .collect()
+    }
+
     /// Record a send attempt.
     pub(crate) async fn attempted(&self, seq: u64) {
         let mut guard = self.state.lock().await;

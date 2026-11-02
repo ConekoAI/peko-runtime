@@ -69,6 +69,8 @@ A DM always wakes on human posts (ADR-082 D3). A human root post that arrives ov
 
 Delivery is ADR-072 D6's outbox, unchanged: every envelope (the invite first, then posts) waits on its sender's runtime until the recipient's runtime confirms it, resent on a backoff and on every reconnect, for up to 30 days.
 
+*Amended 2026-11-02:* when the Hub drops an envelope because its recipient is offline, it remembers that the sender waits on that runtime (ids only; it never keeps an envelope). When the recipient connects, the Hub sends each waiting sender that is still connected `peer_runtime_online { runtimeId }`, and the sender resends everything pending for that runtime at once instead of at its next backoff tick (up to an hour). A message still needs both runtimes online at some moment; the Hub holds no messages.
+
 - **The peko's runtime is offline.** The user's posts are in their own record at once and are delivered when that runtime is back; the peko answers then. Posts that reach it before the invite are left unconfirmed and resent.
 - **The user's runtime is offline.** The peko's answers wait in its runtime's outbox and arrive when the user's runtime reconnects.
 - **The peko moved to another runtime.** Posts follow its online link (ADR-081 D7); reopening the DM re-sends the invite to the new runtime.
