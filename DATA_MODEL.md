@@ -2292,6 +2292,15 @@ as its only local member with a binding to a new session (compartment
 `remote_members`; an existing conversation with that pair id (the Hub
 proxy's) is reused.
 
+Groups (ADR-092 D2): a group's home invites a person by account, and each of
+their runtimes keeps the invitation in `<runtime>/group_invitations/<channel>.json`
+until they answer; a joined group's `meta.json` carries `account` and `home`.
+
+```json
+{"type":"tunnel_group_invitation","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","channelId":"chan_…","name":"book club","inviter":"principal:hub:<UUID>","initialMembers":[…],"signature":"<JWS>"}
+{"type":"tunnel_group_join","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"user:hub:<account>","channelId":"chan_…","accept":true,"signature":"<JWS>"}
+```
+
 History (ADR-091): the peko's runtime holds the record; the user's copy
 merges posts from it by `msg_id`. Tunnel, runtime-signed, relayed by the
 Hub:

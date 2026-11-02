@@ -156,6 +156,31 @@ pub enum ChannelCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Groups on other computers that invited you (ADR-092 D2).
+    Invitations {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Accept a group's invitation: join it here and tell its home.
+    Join {
+        /// Channel id from `peko channel invitations`.
+        channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Decline a group's invitation.
+    Decline {
+        /// Channel id from `peko channel invitations`.
+        channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl ChannelCommands {
@@ -170,7 +195,10 @@ impl ChannelCommands {
             | ChannelCommands::Ls { json, .. }
             | ChannelCommands::Show { json, .. }
             | ChannelCommands::Leave { json, .. }
-            | ChannelCommands::PinToShared { json, .. } => *json,
+            | ChannelCommands::PinToShared { json, .. }
+            | ChannelCommands::Invitations { json }
+            | ChannelCommands::Join { json, .. }
+            | ChannelCommands::Decline { json, .. } => *json,
         }
     }
 }
@@ -538,7 +566,71 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+
+        ChannelCommands::Invitations { .. } => {
+            let client = DaemonClient::connect()
+                .await
+                .context("Group invitations need the daemon: start it with `peko daemon start`")?;
+            let resp = client
+                .request_response(RequestPacket::ChannelInvitations { request_id: 0 })
+                .await?;
+            let invitations = match resp {
+                ResponsePacket::ChannelInvitationsResult { invitations, .. } => invitations,
+                ResponsePacket::Error { message, .. } => anyhow::bail!("{message}"),
+                other => anyhow::bail!("unexpected reply: {other:?}"),
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&invitations)?);
+            } else if invitations.is_empty() {
+                println!("No group invitations.");
+            } else {
+                for i in &invitations {
+                    println!(
+                        "{}  \"{}\"  from {}  ({} members)",
+                        i.channel,
+                        i.name,
+                        i.inviter,
+                        i.initial_members.len()
+                    );
+                }
+                println!("\nJoin with `peko channel join <channel>`, or `peko channel decline <channel>`.");
+            }
+            Ok(())
+        }
+
+        ChannelCommands::Join { channel, .. } => answer_invitation(&channel, true, json).await,
+        ChannelCommands::Decline { channel, .. } => answer_invitation(&channel, false, json).await,
     }
+}
+
+/// Accept or decline a group's invitation through the daemon (ADR-092 D2).
+async fn answer_invitation(channel: &str, accept: bool, json: bool) -> Result<()> {
+    let client = DaemonClient::connect()
+        .await
+        .context("Group invitations need the daemon: start it with `peko daemon start`")?;
+    let resp = client
+        .request_response(RequestPacket::ChannelInvitationAnswer {
+            request_id: 0,
+            channel: channel.to_string(),
+            accept,
+        })
+        .await?;
+    if let ResponsePacket::Error { message, .. } = resp {
+        anyhow::bail!("{message}");
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "channel": channel, "joined": accept })
+        );
+    } else if accept {
+        println!(
+            "Joined {channel}. Its home is told; the group's messages arrive here from now on."
+        );
+    } else {
+        println!("Declined {channel}.");
+    }
+    Ok(())
 }
 
 /// Use the daemon when reachable, otherwise the in-process router. Once a

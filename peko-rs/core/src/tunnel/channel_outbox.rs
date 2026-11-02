@@ -63,6 +63,13 @@ pub(crate) enum OutboxItem {
         channel: ChannelId,
         invitee: PrincipalId,
     },
+    /// A group's invitation to a person (ADR-092 D2); the entry's
+    /// recipient is their account (`user:hub:<id>`), which PekoHub
+    /// delivers to each of their runtimes. Confirmed by their answer.
+    GroupInvitation { channel: ChannelId, account: String },
+    /// The local user's answer to a group's invitation (ADR-092 D2),
+    /// to the group's home.
+    GroupJoin { channel: ChannelId, accept: bool },
 }
 
 impl OutboxItem {
@@ -71,7 +78,9 @@ impl OutboxItem {
         match self {
             Self::Event { channel, .. }
             | Self::Invite { channel, .. }
-            | Self::UserInvite { channel, .. } => channel,
+            | Self::UserInvite { channel, .. }
+            | Self::GroupInvitation { channel, .. }
+            | Self::GroupJoin { channel, .. } => channel,
         }
     }
 }
@@ -266,6 +275,25 @@ impl ChannelOutbox {
         let mut guard = self.state.lock().await;
         if let Some(entry) = self.loaded(&mut guard).await.remove(&seq) {
             let _ = tokio::fs::remove_file(self.file_for(&entry)).await;
+        }
+    }
+
+    /// Forget every entry for `recipient_runtime_id` in `channel` (ADR-092
+    /// D2: a person answered the group's invitation).
+    pub(crate) async fn forget_for(&self, recipient_runtime_id: &str, channel: &ChannelId) {
+        let mut guard = self.state.lock().await;
+        let entries = self.loaded(&mut guard).await;
+        let done: Vec<u64> = entries
+            .iter()
+            .filter(|(_, e)| {
+                e.recipient_runtime_id == recipient_runtime_id && e.item.channel() == channel
+            })
+            .map(|(seq, _)| *seq)
+            .collect();
+        for seq in done {
+            if let Some(entry) = entries.remove(&seq) {
+                let _ = tokio::fs::remove_file(self.file_for(&entry)).await;
+            }
         }
     }
 

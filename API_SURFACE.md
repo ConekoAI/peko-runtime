@@ -31,6 +31,10 @@ This document defines the public API surface for Peko, including the new Unified
 | `registration::unregister_runtime(…, discard_unsent)` | `core::tunnel::registration` | ⚠️ Changed (ADR-091) | Refuses while remote-DM posts are unsent; deletes the person's remote DMs |
 | `GroupHome`, `GroupInfo`; `ChannelStore::{group_home, set_group_home, group_admins, write_group_admin, may_manage_group, group_owner, creator_address}`; `ChannelPort::{group_info, set_group_admin}` | `peko_channel` | ✅ New (ADR-092 D1) | A group's home runtime, owner and admins; who may change its roster |
 | `TunnelChannelPort::check_roster_change` | `core::tunnel` | ✅ New (ADR-092 D1) | Roster changes at the group's home, by its owner or an admin |
+| `TunnelMessage::{TunnelGroupInvitation, TunnelGroupJoin}`, `GroupInvitationPayload`, `GroupJoinPayload`, `verify_group_invitation`, `verify_group_join` | `core::tunnel` | ✅ New (ADR-092 D2) | A group's invitation to a person's account; their answer to the home |
+| `TunnelChannelPort::{group_invitations, answer_group_invitation, person_groups}` | `core::tunnel` | ✅ New (ADR-092 D2) | The person's pending invitations, their answer, the groups they joined |
+| `GroupInvitation`; `ChannelStore::{save_invitation, invitations, take_invitation, purge_invitations, join_remote_person, person_groups}` | `peko_channel` | ✅ New (ADR-092 D2) | Pending invitations; the local user's copy of a group on another runtime |
+| `RequestPacket::{ChannelInvitations, ChannelInvitationAnswer, ChannelPersonGroups}` / `ResponsePacket::{ChannelInvitationsResult, ChannelPersonGroupsResult}`, `PersonGroup` | `ipc::packet` | ✅ New (ADR-092 D2) | List and answer invitations; list joined groups. Local callers only |
 | `TunnelDispatcher` invite handling | `core::tunnel::dispatcher` | ⚠️ Changed | Accepts an unsigned invite only as a Hub user's two-member DM (`creator = creator_did = source = user:hub:<account>`) |
 | `ChannelHandler` caller registration | `ipc::handlers::channel` | ⚠️ Changed | Registers only an unknown caller; no longer drops the local user's Hub account on every request |
 

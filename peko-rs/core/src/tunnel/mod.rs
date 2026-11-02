@@ -58,3 +58,7 @@ pub use tunnel_channel_signature::{
     ChannelSignedFields, CHANNEL_EVENT_PAYLOAD_VERSION, CHANNEL_HISTORY_REQUEST_VERSION,
     CHANNEL_HISTORY_VERSION, CHANNEL_INVITE_PAYLOAD_VERSION,
 };
+pub use tunnel_channel_signature::{
+    verify_group_invitation, verify_group_join, GroupInvitationPayload, GroupJoinPayload,
+    GROUP_INVITATION_VERSION, GROUP_JOIN_VERSION,
+};

@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: people join groups on other computers (2026-11-02, ADR-092 D2)
+
+- A group's owner or admin invites a person by Hub account (`peko channel
+  invite <group> user:hub:<id>`, or a peko inviting its owner). The home
+  sends `tunnel_group_invitation` to the account; PekoHub delivers it to
+  every runtime registered to it, where it waits until the person answers.
+- The person joins or declines from any of their computers (the desktop's
+  group sidebar, or `peko channel invitations`, `join`, `decline`). Joining
+  creates their copy and tells the home (`tunnel_group_join`, relayed only
+  from a runtime registered to that person); the home records that runtime
+  as their route and sends the roster to everyone. Then they post and read
+  like any member, and the group's pekos wake on their posts by binding.
+- No one is added to a group without accepting: a roster for a group the
+  person never accepted is ignored.
+- `channel_person_groups` lists the groups the person joined; an account
+  change deletes them like remote DMs (ADR-091 D5).
+
 ### Feature: a group has a home, an owner, and admins (2026-11-02, ADR-092 D1)
 
 - A group's home is the runtime it was created on (`meta.json` `home`);
