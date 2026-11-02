@@ -97,7 +97,7 @@ pub use port::{
 };
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
-pub use store::{member_row, new_msg_id, ChannelConfig, ChannelStore};
+pub use store::{member_row, new_msg_id, ChannelConfig, ChannelStore, GroupHome, GroupInfo};
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 
 // Wire types live in `peko-protocol`; re-exported here for ergonomic

@@ -101,6 +101,16 @@ impl ChannelTool {
                 }, "required":["channel"], "additionalProperties":false}),
             ),
             (
+                "admin",
+                json!({"type":"object", "properties":{
+                    "channel": channel,
+                    "actor":{"type":"string", "minLength":1,
+                        "description":"A member, as kind:local:<id> or kind:hub:<id>."},
+                    "admin":{"type":"boolean",
+                        "description":"true makes them an admin (they may add members); false stops it."}
+                }, "required":["channel", "actor", "admin"], "additionalProperties":false}),
+            ),
+            (
                 "info",
                 json!({"type":"object", "properties":{"channel": channel},
                     "required":["channel"], "additionalProperties":false}),
@@ -233,14 +243,24 @@ impl ChannelTool {
         if stamp.is_owner() {
             you["session"] = json!(binding.map(|b| b.session));
         }
-        Ok(json!({
+        let mut info = json!({
             "channel": channel.as_str(),
             "kind": kind,
             "name": membership.name,
             "creator": creator,
             "participants": self.port.participants(channel).await?,
             "you": you,
-        }))
+        });
+        // ADR-092 D1: where the group lives and who runs it.
+        if let Some(group) = self.port.group_info(channel).await? {
+            let me = self.port.actor_info(&ActorRef::from(id)).await.address;
+            info["you"]["owner"] = json!(group.owner == me);
+            info["you"]["admin"] = json!(group.admins.contains(&me));
+            info["home"] = json!(group.home.map(|h| h.runtime));
+            info["owner"] = json!(group.owner);
+            info["admins"] = json!(group.admins);
+        }
+        Ok(info)
     }
 }
 
@@ -262,10 +282,12 @@ impl Tool for ChannelTool {
          group (human: every human root post, mention: only @<your name> — the default, off: \
          nothing; posts by principals and replies never do); role chooses the role (from \
          RoleCatalog) your turns run in a DM or group, or returns it to your default \
-         conversation role when omitted; info shows a channel's kind, creator, participants, \
-         and your wake policy and role. DMs are opened by ChannelSend and keep their members \
-         and wake policy. Only the owner decides create, invite, and role: a run acting for \
-         anyone else waits for the owner's approval."
+         conversation role when omitted; admin lets a member add members, or stops it (the \
+         group's owner only); info shows a channel's kind, creator, participants, a group's \
+         home runtime, owner and admins, and your wake policy and role. A group's members \
+         change at its home runtime, by its owner or an admin. DMs are opened by ChannelSend \
+         and keep their members and wake policy. Only the owner decides create, invite, \
+         admin, and role: a run acting for anyone else waits for the owner's approval."
             .into()
     }
 
@@ -324,6 +346,28 @@ impl Tool for ChannelTool {
                 let reference = params["actor"].as_str().unwrap_or_default();
                 let invited = self.invite_one(&principal, &channel, reference).await?;
                 Ok(json!({"channel": channel.as_str(), "invited": [invited]}))
+            }
+            Some("admin") => {
+                let channel = Self::channel_arg(&params, &stamp)?;
+                self.require_group(&channel).await?;
+                self.require_member(&channel, &id).await?;
+                let reference = params["actor"].as_str().unwrap_or_default();
+                let actor = self
+                    .port
+                    .resolve_actor(reference)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: admin {reference}: {e}"))?
+                    .subject();
+                let admin = params["admin"].as_bool().unwrap_or(false);
+                self.port
+                    .set_group_admin(&channel, &id, &actor, admin)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: admin: {e}"))?;
+                Ok(json!({
+                    "channel": channel.as_str(),
+                    "actor": self.port.actor_info(&actor).await.address,
+                    "admin": admin,
+                }))
             }
             Some("leave") => {
                 let channel = Self::channel_arg(&params, &stamp)?;

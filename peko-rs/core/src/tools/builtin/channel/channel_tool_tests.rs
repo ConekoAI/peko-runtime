@@ -359,3 +359,123 @@ async fn role_picks_a_conversation_role_on_either_kind() {
         Some("conversation")
     );
 }
+
+impl Fixture {
+    /// An owner run of `principal` (not the fixture's caller).
+    fn owner_ctx_of(&self, principal: &Principal) -> ToolContext {
+        let mut ctx =
+            ToolContext::default_for_tool(CHANNEL_TOOL_NAME).with_acting_for(ActingFor::runtime());
+        ctx.principal_id = Some(principal.id.0.clone());
+        ctx
+    }
+}
+
+/// ADR-092 D1: only a group's owner or an admin changes who is in it,
+/// and only the owner chooses admins.
+#[tokio::test]
+async fn the_owner_and_admins_manage_a_group() {
+    let fx = Fixture::new().await;
+    fx.learn(&fx.friend).await;
+    let friend = fx.address(&fx.friend).await;
+    let owner_of_friend = {
+        let owner = fx.friend.config.read().await.owner.clone();
+        fx.port.actor_info(&owner).await.address
+    };
+    fx.call(
+        json!({"action": "create", "name": "crew", "slug": "crew", "members": [friend.clone()]}),
+    )
+    .await
+    .unwrap();
+    let as_friend = fx.owner_ctx_of(&fx.friend);
+
+    // A member who is not the owner or an admin adds no one.
+    let err = fx
+        .tool
+        .execute_with_context(
+            json!({"action": "invite", "channel": "group:crew", "actor": owner_of_friend}),
+            &as_friend,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Only the group's owner"), "{err}");
+    // Nor chooses admins.
+    let err = fx
+        .tool
+        .execute_with_context(
+            json!({"action": "admin", "channel": "group:crew", "actor": friend, "admin": true}),
+            &as_friend,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Only the group's owner"), "{err}");
+
+    // The owner makes them an admin; then they may add people.
+    let made = fx
+        .call(json!({"action": "admin", "channel": "group:crew", "actor": friend, "admin": true}))
+        .await
+        .unwrap();
+    assert_eq!(made["admin"], true);
+    fx.tool
+        .execute_with_context(
+            json!({"action": "invite", "channel": "group:crew", "actor": owner_of_friend}),
+            &as_friend,
+        )
+        .await
+        .unwrap();
+
+    let info = fx
+        .call(json!({"action": "info", "channel": "group:crew"}))
+        .await
+        .unwrap();
+    assert_eq!(info["owner"], fx.address(&fx.caller).await);
+    assert_eq!(info["admins"], json!([friend]));
+    assert_eq!(info["you"]["owner"], true);
+    assert_eq!(info["you"]["admin"], false);
+    let info = fx
+        .tool
+        .execute_with_context(
+            json!({"action": "info", "channel": "group:crew"}),
+            &as_friend,
+        )
+        .await
+        .unwrap();
+    assert_eq!(info["you"]["admin"], true);
+
+    // Only members can be admins.
+    let stranger = fx.address(&fx.stranger).await;
+    let err = fx
+        .call(json!({"action": "admin", "channel": "group:crew", "actor": stranger, "admin": true}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not a member"), "{err}");
+
+    // Taking admin back stops it.
+    fx.call(json!({"action": "admin", "channel": "group:crew", "actor": friend, "admin": false}))
+        .await
+        .unwrap();
+    let info = fx
+        .call(json!({"action": "info", "channel": "group:crew"}))
+        .await
+        .unwrap();
+    assert_eq!(info["admins"], json!([]));
+}
+
+/// ADR-092 D1: choosing admins is the owner's decision (ADR-082 D6).
+#[tokio::test]
+async fn an_untrusted_run_does_not_choose_admins() {
+    let fx = Fixture::new().await;
+    fx.call(json!({"action": "create", "name": "crew", "slug": "crew"}))
+        .await
+        .unwrap();
+    let channel = ChannelId::for_group("crew");
+    let reason = crate::security::floor::action_refusal(
+        &fx.guest_ctx(&channel, Trust::Untrusted).acting_for(),
+        CHANNEL_TOOL_NAME,
+        &json!({"action": "admin", "channel": "group:crew", "actor": "x", "admin": true}),
+    )
+    .expect("refused");
+    assert!(reason.contains("admins"), "{reason}");
+}

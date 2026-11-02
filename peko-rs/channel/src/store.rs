@@ -354,6 +354,34 @@ pub struct MetaJson {
     /// Hub account it was opened under. `None` everywhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// ADR-092 D1: a group's home runtime (and, there, its owner).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<GroupHome>,
+    /// ADR-092 D1: members the owner lets manage the roster (canonical
+    /// addresses). Kept at the home.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admins: Vec<String>,
+}
+
+/// A group's home, owner and admins (ADR-092 D1), as `Channel info` shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupInfo {
+    pub home: Option<GroupHome>,
+    /// The owner's address (the home's record, else the creator).
+    pub owner: String,
+    /// Canonical addresses; kept at the home.
+    pub admins: Vec<String>,
+}
+
+/// Where a group's record lives and who owns it (ADR-092 D1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupHome {
+    /// The home runtime's `did:key`.
+    pub runtime: String,
+    /// The owner's canonical address. Known at the home; other member
+    /// runtimes learn only where the home is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// `meta.json` as read. Files written before ADR-082 have no `kind`
@@ -375,6 +403,10 @@ struct MetaJsonOnDisk {
     participants: Vec<String>,
     #[serde(default)]
     account: Option<String>,
+    #[serde(default)]
+    home: Option<GroupHome>,
+    #[serde(default)]
+    admins: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -413,6 +445,8 @@ impl From<MetaJsonOnDisk> for MetaJson {
             bindings,
             participants: raw.participants,
             account: raw.account,
+            home: raw.home,
+            admins: raw.admins,
         }
     }
 }
@@ -757,6 +791,8 @@ impl ChannelStore {
             bindings: HashMap::new(),
             participants: expected,
             account: Some(account.to_string()),
+            home: None,
+            admins: Vec::new(),
         }
         .save(&dir)
         .await?;
@@ -775,6 +811,101 @@ impl ChannelStore {
         self.append_event(Tier::Runtime, channel, &event, EventOrigin::Local)
             .await?;
         Ok(true)
+    }
+
+    /// A group's home (ADR-092 D1); `None` for a DM, or a group that never
+    /// left its creator's runtime.
+    pub async fn group_home(&self, channel: &ChannelId) -> Result<Option<GroupHome>> {
+        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
+        Ok(meta.home.filter(|_| meta.kind == ConversationKind::Group))
+    }
+
+    /// Record a group's home (ADR-092 D1).
+    pub async fn set_group_home(&self, channel: &ChannelId, home: GroupHome) -> Result<()> {
+        let dir = self.cfg.channel_dir(channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if meta.kind != ConversationKind::Group {
+            return Err(ChannelError::Adapter(format!("{channel} is not a group")));
+        }
+        meta.home = Some(home);
+        meta.save(&dir).await
+    }
+
+    /// A group's admins (ADR-092 D1), as canonical addresses.
+    pub async fn group_admins(&self, channel: &ChannelId) -> Result<Vec<String>> {
+        Ok(MetaJson::load(&self.cfg.channel_dir(channel), channel)
+            .await?
+            .admins)
+    }
+
+    /// Make `actor` an admin of a group, or not (ADR-092 D1). The actor
+    /// must be a member.
+    pub async fn write_group_admin(
+        &self,
+        channel: &ChannelId,
+        actor: &ActorRef,
+        admin: bool,
+    ) -> Result<()> {
+        let address = self.actor_info(actor).await.address;
+        let members = self.list_members(channel).await?;
+        let mut member = false;
+        for m in &members {
+            if self.actor_info(m).await.address == address {
+                member = true;
+            }
+        }
+        if admin && !member {
+            return Err(ChannelError::Adapter(format!(
+                "{address} is not a member of {channel}"
+            )));
+        }
+        let dir = self.cfg.channel_dir(channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if meta.kind != ConversationKind::Group {
+            return Err(ChannelError::Adapter(format!("{channel} is not a group")));
+        }
+        meta.admins.retain(|a| a != &address);
+        if admin {
+            meta.admins.push(address);
+        }
+        meta.save(&dir).await
+    }
+
+    /// Whether `actor` may change a group's roster and settings (ADR-092
+    /// D1): its owner, or an admin. The owner is the home's record, else
+    /// the group's creator.
+    pub async fn may_manage_group(&self, channel: &ChannelId, actor: &ActorRef) -> Result<bool> {
+        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
+        if meta.kind != ConversationKind::Group {
+            return Ok(false);
+        }
+        let address = self.actor_info(actor).await.address;
+        let owner = match meta.home.as_ref().and_then(|h| h.owner.clone()) {
+            Some(owner) => owner,
+            None => self.creator_address(&meta.creator).await,
+        };
+        Ok(owner == address || meta.admins.contains(&address))
+    }
+
+    /// A group's owner as an address (ADR-092 D1): the home's record, else
+    /// the creator.
+    pub async fn group_owner(&self, channel: &ChannelId) -> Result<String> {
+        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
+        Ok(match meta.home.and_then(|h| h.owner) {
+            Some(owner) => owner,
+            None => self.creator_address(&meta.creator).await,
+        })
+    }
+
+    /// A channel creator as an address: a local creator is stored as its
+    /// principal id, a mirror's as the source's address.
+    pub async fn creator_address(&self, creator: &str) -> String {
+        let subject = creator
+            .parse::<ActorRef>()
+            .unwrap_or_else(|_| ActorRef::from(&PrincipalId(creator.to_string())));
+        self.actor_info(&subject).await.address
     }
 
     /// The Hub account a DM with a remote peko belongs to (ADR-091 D5);
@@ -2263,6 +2394,8 @@ impl ChannelStore {
                 addresses
             },
             account: None,
+            home: None,
+            admins: Vec::new(),
         };
         meta.save(&chan_dir).await?;
 
@@ -2692,6 +2825,33 @@ impl ChannelPort for ChannelStore {
         Ok(binding)
     }
 
+    async fn group_info(&self, channel: &ChannelId) -> Result<Option<GroupInfo>> {
+        if self.conversation_kind(channel).await? != ConversationKind::Group {
+            return Ok(None);
+        }
+        Ok(Some(GroupInfo {
+            home: self.group_home(channel).await?,
+            owner: self.group_owner(channel).await?,
+            admins: self.group_admins(channel).await?,
+        }))
+    }
+
+    async fn set_group_admin(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        actor: &ActorRef,
+        admin: bool,
+    ) -> Result<()> {
+        let owner = self.group_owner(channel).await?;
+        if self.actor_info(&ActorRef::from(by)).await.address != owner {
+            return Err(ChannelError::Adapter(format!(
+                "Only the group's owner ({owner}) chooses its admins"
+            )));
+        }
+        self.write_group_admin(channel, actor, admin).await
+    }
+
     async fn set_role(
         &self,
         channel: &ChannelId,
@@ -2863,6 +3023,8 @@ impl ChannelPort for ChannelStore {
             bindings: HashMap::new(),
             participants: Vec::new(),
             account: None,
+            home: None,
+            admins: Vec::new(),
         };
         meta.save(&chan_dir).await?;
 
@@ -4583,6 +4745,8 @@ mod tests {
             )]),
             participants: Vec::new(),
             account: None,
+            home: None,
+            admins: Vec::new(),
         };
         let raw = serde_json::to_string(&m).unwrap();
         assert!(raw.contains(r#""kind":"group""#), "{raw}");

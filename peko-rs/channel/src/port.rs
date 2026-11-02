@@ -160,6 +160,26 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
+    /// ADR-092 D1: a group's home, owner and admins; `None` for a DM.
+    async fn group_info(&self, channel: &ChannelId) -> Result<Option<crate::store::GroupInfo>> {
+        let _ = channel;
+        Ok(None)
+    }
+
+    /// ADR-092 D1: a group's owner (`by`) makes a member an admin, or not.
+    async fn set_group_admin(
+        &self,
+        channel: &ChannelId,
+        by: &PrincipalId,
+        actor: &ActorRef,
+        admin: bool,
+    ) -> Result<()> {
+        let _ = (channel, by, actor, admin);
+        Err(ChannelError::Adapter(
+            "this channel port does not keep group admins".into(),
+        ))
+    }
+
     /// Ensure an opaque pair DM and its principal-local session binding.
     async fn ensure_dm(
         &self,

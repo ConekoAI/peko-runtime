@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a group has a home, an owner, and admins (2026-11-02, ADR-092 D1)
+
+- A group's home is the runtime it was created on (`meta.json` `home`);
+  there its creator is its owner, and the owner chooses admins with the
+  new `Channel admin` action (an owner decision under ADR-082 D6). Only
+  the owner or an admin adds members, and only at the home: a member
+  elsewhere is told to ask the owner.
+- Other member runtimes learn the home from the first roster snapshot's
+  signed source and accept later snapshots only from it, so a correctly
+  signed roster from any other runtime — including one reusing the same
+  `group:<slug>` id — changes nothing.
+- `Channel info` shows a group's `home`, `owner`, `admins`, and whether
+  you are its owner or an admin.
+
 ### Feature: your history with a remote peko follows you (2026-11-02, ADR-091)
 
 - A conversation with a peko on another computer now comes from that
