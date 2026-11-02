@@ -415,6 +415,101 @@ pub fn verify_channel_invite(
     Ok((payload, payload_segment))
 }
 
+/// Payload version tag for a history request (ADR-091 D2).
+pub const CHANNEL_HISTORY_REQUEST_VERSION: &str = "peko-channel-history-request/1";
+
+/// Payload version tag for a history page (ADR-091 D2).
+pub const CHANNEL_HISTORY_VERSION: &str = "peko-channel-history/1";
+
+/// The signed payload of a `TunnelChannelHistoryRequest`: every field of
+/// the envelope but the signature, plus `iat` / `exp`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelHistoryRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub source_principal_did: String,
+    pub channel_id: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub limit: u32,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelChannelHistory` page. `events_b64u`
+/// is base64url-no-pad of the serialized events, so the signed bytes are
+/// the verified bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelHistoryPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub channel_id: String,
+    pub events_b64u: String,
+    pub has_more: bool,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+impl ChannelHistoryPayload {
+    /// The serialized events this payload signs.
+    #[must_use]
+    pub fn events_b64u_of(events_bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(events_bytes)
+    }
+}
+
+/// Sign a history request or page payload with the runtime key.
+#[must_use]
+pub fn sign_history<T: Serialize>(runtime_key: &SigningKey, payload: &T) -> String {
+    let bytes = serde_json::to_vec(payload).expect("history payload serializes");
+    jws_sign(runtime_key, &bytes)
+}
+
+/// Verify a history request's runtime signature, its version tag, and
+/// its freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_history_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<ChannelHistoryRequestPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: ChannelHistoryRequestPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("history request payload is not valid JSON: {e}"))?;
+    if payload.v != CHANNEL_HISTORY_REQUEST_VERSION {
+        return Err(anyhow!(
+            "history request version must be {CHANNEL_HISTORY_REQUEST_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Verify a history page's runtime signature, its version tag, and its
+/// freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_history(runtime_key: &VerifyingKey, compact: &str) -> Result<ChannelHistoryPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: ChannelHistoryPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("history payload is not valid JSON: {e}"))?;
+    if payload.v != CHANNEL_HISTORY_VERSION {
+        return Err(anyhow!(
+            "history version must be {CHANNEL_HISTORY_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -382,6 +382,14 @@ impl ChannelHandler {
         };
         match port.open_hub_dm(hub_id, token).await {
             Ok(dm) => {
+                // ADR-091 D4: catch up from the host in the background.
+                let sync = Arc::clone(&port);
+                let channel = dm.channel.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = sync.sync_history(&channel).await {
+                        tracing::debug!(%channel, "remote DM catch-up skipped: {e}");
+                    }
+                });
                 send_response(
                     sink,
                     ResponsePacket::ChannelRemoteDmOpened {
@@ -391,6 +399,45 @@ impl ChannelHandler {
                         hub_id: hub_id.to_string(),
                         name: dm.peer.name,
                         created: dm.created,
+                    },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
+    /// `ChannelHistoryOlder` (ADR-091 D4): one older page from the host.
+    async fn channel_history_older(
+        &self,
+        request_id: u64,
+        channel: &str,
+        before: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user reads its conversations".to_string(),
+            )
+            .await;
+        }
+        let (Some(port), Some(channel)) =
+            (self.host.tunnel_channel_port(), ChannelId::parse(channel))
+        else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        match port.history_older(&channel, before).await {
+            Ok(page) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelHistoryPage {
+                        request_id,
+                        channel,
+                        events: page.events,
+                        has_more: page.has_more,
                     },
                 )
                 .await
@@ -470,6 +517,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelInfo { .. }
                 | RequestPacket::ChannelSetWake { .. }
                 | RequestPacket::ChannelOpenRemoteDm { .. }
+                | RequestPacket::ChannelHistoryOlder { .. }
         )
     }
 
@@ -503,6 +551,26 @@ impl RequestHandler for ChannelHandler {
                     },
                 )
                 .await?;
+        }
+        // ADR-091 D5: a conversation with a remote peko belongs to the
+        // account it was opened under, not to whoever holds the runtime now.
+        if let RequestPacket::ChannelPost { channel, .. }
+        | RequestPacket::ChannelPeek { channel, .. }
+        | RequestPacket::ChannelEventsWatch { channel, .. }
+        | RequestPacket::ChannelHistoryOlder { channel, .. } = &request
+        {
+            if let (Some(port), Some(id)) =
+                (self.host.tunnel_channel_port(), ChannelId::parse(channel))
+            {
+                if port.belongs_to_another_account(&id).await {
+                    return error_reply(
+                        sink,
+                        request.request_id(),
+                        "[forbidden] This conversation belongs to another PekoHub account".into(),
+                    )
+                    .await;
+                }
+            }
         }
         match request {
             RequestPacket::ChannelCreate {
@@ -1104,6 +1172,15 @@ impl RequestHandler for ChannelHandler {
                 token,
             } => {
                 self.channel_open_remote_dm(request_id, &hub_id, token.as_deref(), caller, sink)
+                    .await?
+            }
+
+            RequestPacket::ChannelHistoryOlder {
+                request_id,
+                channel,
+                before,
+            } => {
+                self.channel_history_older(request_id, &channel, &before, caller, sink)
                     .await?
             }
 

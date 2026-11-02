@@ -63,6 +63,10 @@ use std::str::FromStr;
 mod user_dm;
 pub use user_dm::{human_dm_channel_id, HubDm};
 
+#[path = "dm_history.rs"]
+mod dm_history;
+pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
+
 /// Unanswered sends to one runtime before the sender asks the directory
 /// whether the members it reaches there moved (ADR-081 D7).
 const RELINK_AFTER_ATTEMPTS: u32 = 3;
@@ -108,6 +112,8 @@ pub struct TunnelChannelPort {
     received: Arc<ReceivedLog>,
     /// Set once the periodic resend task runs.
     resender_started: Arc<std::sync::atomic::AtomicBool>,
+    /// History requests waiting for the host's answer (ADR-091 D2).
+    history_pending: Arc<std::sync::Mutex<HashMap<String, dm_history::PendingHistory>>>,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -137,6 +143,7 @@ impl TunnelChannelPort {
             outbox: Arc::new(ChannelOutbox::new(delivery_dir.join("outbox"))),
             received: Arc::new(ReceivedLog::new(delivery_dir.join("received.jsonl"))),
             resender_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            history_pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -360,6 +367,12 @@ impl TunnelChannelPort {
         };
         let mut relinked = HashSet::new();
         for entry in entries {
+            // Its conversation was deleted (ADR-091 D5: the runtime's
+            // account changed): nothing left to deliver.
+            if !self.local.channel_dir(entry.item.channel()).exists() {
+                self.outbox.discard(entry.seq).await;
+                continue;
+            }
             // Each (channel, runtime) pair asks the directory once a pass.
             if entry.attempts >= RELINK_AFTER_ATTEMPTS {
                 let channel = entry.item.channel().clone();

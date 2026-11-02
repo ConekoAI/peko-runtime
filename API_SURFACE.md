@@ -24,6 +24,11 @@ This document defines the public API surface for Peko, including the new Unified
 | `PrincipalManager::receive_channel_dm_post` | `principal::manager` | ✅ New | Ingress for a post already in the channel: drive the bound session's turn acting for the author (steering when a run is active, waits when parked), post the answer |
 | `RequestPacket::ChannelOpenRemoteDm` / `ResponsePacket::ChannelRemoteDmOpened` | `ipc::packet` | ✅ New | `channel_open_remote_dm { hub_id, token? }` → `channel_remote_dm_opened { channel, peer, hub_id, name?, created }`; local callers only |
 | `ChannelHost::tunnel_channel_port` | `ipc::handlers::channel` | ✅ New (defaulted) | The concrete port the open request needs; `None` refuses it |
+| `ChannelStore::{remote_dm_account, remote_dms, append_synced_events, history_page, purge_remote_dms}`; `ensure_human_dm(…, account)` | `peko_channel::store` | ✅ New (ADR-091) | A remote DM's account; merge the host's posts by `msg_id`; page by `msg_id` cursors; delete other accounts' remote DMs |
+| `TunnelChannelPort::{sync_history, history_older, belongs_to_another_account}`, `HistoryPage`, `HISTORY_PAGE_LIMIT` | `core::tunnel` | ✅ New (ADR-091) | Catch up from the host (stored); scroll-back (not stored); the read guard |
+| `TunnelMessage::{TunnelChannelHistoryRequest, TunnelChannelHistory}`, `sign_history`, `verify_history_request`, `verify_history`, `ChannelHistoryRequestPayload`, `ChannelHistoryPayload` | `core::tunnel` | ✅ New (ADR-091) | The runtime-signed history request and page |
+| `RequestPacket::ChannelHistoryOlder` / `ResponsePacket::ChannelHistoryPage`; `RuntimeUnregister.discard_unsent` | `ipc::packet` | ✅ New (ADR-091) | Scroll-back for the desktop; unregistering past undelivered messages |
+| `registration::unregister_runtime(…, discard_unsent)` | `core::tunnel::registration` | ⚠️ Changed (ADR-091) | Refuses while remote-DM posts are unsent; deletes the person's remote DMs |
 | `TunnelDispatcher` invite handling | `core::tunnel::dispatcher` | ⚠️ Changed | Accepts an unsigned invite only as a Hub user's two-member DM (`creator = creator_did = source = user:hub:<account>`) |
 | `ChannelHandler` caller registration | `ipc::handlers::channel` | ⚠️ Changed | Registers only an unknown caller; no longer drops the local user's Hub account on every request |
 

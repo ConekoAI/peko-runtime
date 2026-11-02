@@ -122,6 +122,10 @@ impl TunnelChannelPort {
 
         let channel = human_dm_channel_id(&resolved.identity_key, &user_address);
         let name = format!("dm-{}", resolved.name.as_deref().unwrap_or(hub_id));
+        let account = user
+            .hub_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Register this runtime with PekoHub first"))?;
         let created = self
             .local
             .ensure_human_dm(
@@ -129,6 +133,7 @@ impl TunnelChannelPort {
                 &peer_subject,
                 &channel,
                 &name,
+                &account,
             )
             .await?;
         // Invite on first contact, and again when the peko's runtime

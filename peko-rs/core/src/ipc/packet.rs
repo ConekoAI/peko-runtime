@@ -440,9 +440,16 @@ pub enum RequestPacket {
         token: String,
     },
     /// Remove this runtime's PekoHub registration and close the tunnel.
-    /// Local callers only. Answered with `Done`.
+    /// Local callers only. Answered with `Done`. The person's
+    /// conversations with remote pekos are deleted here (ADR-091 D5); with
+    /// posts in them still unsent, refused unless `discard_unsent`.
     #[serde(rename = "runtime_unregister")]
-    RuntimeUnregister { request_id: u64, token: String },
+    RuntimeUnregister {
+        request_id: u64,
+        token: String,
+        #[serde(default)]
+        discard_unsent: bool,
+    },
 
     // ── Tunnel (ADR-035) ──
     #[serde(rename = "tunnel_stop")]
@@ -913,6 +920,17 @@ pub enum RequestPacket {
         token: Option<String>,
     },
 
+    /// Scroll-back in a DM with a remote peko (ADR-091 D4): the page of
+    /// posts before `before` (a `msg_id`), from the peko's host. Not
+    /// stored on this runtime. Local callers only; answered with
+    /// `ChannelHistoryPage`.
+    #[serde(rename = "channel_history_older")]
+    ChannelHistoryOlder {
+        request_id: u64,
+        channel: String,
+        before: String,
+    },
+
     /// Set what starts a turn for `principal_name` in a group
     /// (`human` / `mention` / `off`, ADR-082 D3). Groups only — a DM
     /// always wakes on human posts — and only the peko's owner.
@@ -1004,6 +1022,7 @@ impl RequestPacket {
             | Self::ChannelPinToShared { request_id, .. }
             | Self::ChannelInfo { request_id, .. }
             | Self::ChannelOpenRemoteDm { request_id, .. }
+            | Self::ChannelHistoryOlder { request_id, .. }
             | Self::ChannelSetWake { request_id, .. } => *request_id,
         }
     }
@@ -1371,6 +1390,16 @@ pub enum ResponsePacket {
         /// policy. A DM's is always `human`; a group binding not yet
         /// written reads as the group default, `mention`.
         pekos: Vec<ChannelPekoWake>,
+    },
+
+    /// Response to `ChannelHistoryOlder` (ADR-091 D4): posts, oldest
+    /// first, and whether older ones remain on the host.
+    #[serde(rename = "channel_history_page")]
+    ChannelHistoryPage {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        events: Vec<peko_protocol::channel::ChannelEvent>,
+        has_more: bool,
     },
 
     /// Response to `ChannelOpenRemoteDm` (ADR-090 D2).
@@ -2604,6 +2633,7 @@ impl ResponsePacket {
             | Self::ChannelPinnedToShared { request_id, .. }
             | Self::ChannelInfoResult { request_id, .. }
             | Self::ChannelRemoteDmOpened { request_id, .. }
+            | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. } => *request_id,
         }
     }
@@ -2690,6 +2720,7 @@ impl ResponsePacket {
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
             Self::ChannelRemoteDmOpened { .. } => "ChannelRemoteDmOpened",
+            Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
         }
     }

@@ -2267,14 +2267,27 @@ another runtime. Its id is `dm_channel_id(<principal actor key>,
 runtime is registered under; both runtimes compute it from the invite.
 
 On the user's runtime, `meta.json` has `kind: "dm"`, `creator:
-"user:local:local"`, `participants` = the two addresses, and no
-`bindings`; `members.json` lists `user:local:local` and
+"user:local:local"`, `participants` = the two addresses, `account` = the
+Hub account it was opened under (ADR-091 D5: deleted when the runtime's
+account changes, refused to any other account), and no `bindings`; `members.json` lists `user:local:local` and
 `principal:hub:<UUID>` as members and the peko's signing DID under its
 runtime in `remote_members`. On the peko's runtime the mirror has the peko
 as its only local member with a binding to a new session (compartment
 `conversation`), and `user:hub:<account>` under the user's runtime in
 `remote_members`; an existing conversation with that pair id (the Hub
 proxy's) is reused.
+
+History (ADR-091): the peko's runtime holds the record; the user's copy
+merges posts from it by `msg_id`. Tunnel, runtime-signed, relayed by the
+Hub:
+
+```json
+{"type":"tunnel_channel_history_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","sourcePrincipalDid":"user:hub:<account>","channelId":"dm_…","before":"<msg_id>","after":"<msg_id>","limit":100,"signature":"<JWS>"}
+{"type":"tunnel_channel_history","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","channelId":"dm_…","events":[{"kind":"posted",…}],"hasMore":true,"signature":"<JWS>"}
+```
+
+The host answers only the person whose pair DM it is (an empty page
+otherwise), with `via`, `parent`, and attachment `path` removed.
 
 IPC (local callers only):
 

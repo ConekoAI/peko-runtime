@@ -4,6 +4,28 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: your history with a remote peko follows you (2026-11-02, ADR-091)
+
+- A conversation with a peko on another computer now comes from that
+  peko's host. A runtime registered to your account catches up when you
+  open the conversation, when its tunnel connects, and when the host comes
+  back online (`sync_history`); older pages are fetched as you scroll
+  (IPC `channel_history_older`, not stored). Two new tunnel messages,
+  `tunnel_channel_history_request` / `tunnel_channel_history`, are
+  runtime-signed and relayed by PekoHub.
+- The host serves a conversation only to the person in it: a Hub person,
+  asking from the runtime PekoHub binds to their account, for exactly
+  their DM with a peko hosted there, while they may still talk to it.
+  Everything else is an empty page. Session paths, host line numbers and
+  attachment paths are not served.
+- A phone (no runtime) reads the same history through PekoHub's proxy: a
+  proxied request with body `{"kind":"history"}`.
+- A runtime that changes hands forgets the previous person: remote DMs
+  record their account (`meta.json` `account`); registering under another
+  account, or unregistering, deletes them (their hosts keep the record),
+  and every read refuses another account's DM. Unregistering refuses while
+  messages are undelivered: `peko runtime unregister --discard-unsent`.
+
 ### Fix: cross-runtime messages arrive as soon as the other computer is back (2026-11-02)
 
 - An envelope to an offline runtime waited in the outbox for its next

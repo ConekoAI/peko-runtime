@@ -29,12 +29,18 @@ pub enum RuntimeCommands {
         #[arg(long, env = "PEKOHUB_API_KEY")]
         api_key: Option<String>,
     },
-    /// Remove this runtime's PekoHub registration
+    /// Remove this runtime's PekoHub registration. Its copies of your
+    /// conversations with pekos on other computers are deleted; their
+    /// hosts keep them
     Unregister {
         /// API key of the Hub account the runtime is registered under
         /// (otherwise you approve a sign-in code on the website)
         #[arg(long, env = "PEKOHUB_API_KEY")]
         api_key: Option<String>,
+        /// Unregister even though some messages to pekos on other
+        /// computers have not been delivered yet (they are lost)
+        #[arg(long)]
+        discard_unsent: bool,
     },
 }
 
@@ -106,7 +112,10 @@ pub async fn handle_runtime(
             }
             Ok(())
         }
-        RuntimeCommands::Unregister { api_key } => {
+        RuntimeCommands::Unregister {
+            api_key,
+            discard_unsent,
+        } => {
             let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
                 paths.resolver().vault(),
             )?);
@@ -122,8 +131,13 @@ pub async fn handle_runtime(
                     sign_in(&origin, json).await?
                 }
             };
-            peko_core::tunnel::registration::unregister_runtime(paths.resolver(), vault, &api_key)
-                .await?;
+            peko_core::tunnel::registration::unregister_runtime(
+                paths.resolver(),
+                vault,
+                &api_key,
+                discard_unsent,
+            )
+            .await?;
             println!("✓ Runtime unregistered; the local user is offline-only.");
             Ok(())
         }

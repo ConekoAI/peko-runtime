@@ -27,6 +27,7 @@
   {"type": "principal_create", "protocol_version": 1, "request_id": 1, "name": "ada", "description": null, "model_id": "anthropic/claude-sonnet-5-5", "seed": "name = \"ada\"\n"},
   {"type": "channel_open_remote_dm", "protocol_version": 1, "request_id": 1, "hub_id": "6f1c2a52-58b6-4b8e-9d1c-6a3f0b6f1a01", "token": "access-token"},
   {"type": "runtime_register", "protocol_version": 1, "request_id": 1, "hub": "https://api.pekohub.ai", "token": "access-token"},
+  {"type": "channel_history_older", "protocol_version": 1, "request_id": 1, "channel": "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "before": "msg-1"},
   {"type": "principal_update", "protocol_version": 1, "request_id": 1, "name": "alice", "description": "helper", "status": null, "exposure": null, "preferred_model_id": null, "avatar": "🦊"},
   {"type": "principal_remove", "protocol_version": 1, "request_id": 1, "name": "alice"},
   {"type": "principal_export", "protocol_version": 1, "request_id": 1, "name": "alice", "output": "/tmp/alice.peko"},
