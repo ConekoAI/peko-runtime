@@ -21,6 +21,15 @@ All notable changes to Peko.
 - People without a runtime read a group they are in through PekoHub
   (`GET /v1/groups/:id/history`); the home checks membership.
 
+### Fix: a registered runtime's own person stays local when the daemon starts (2026-11-03, ADR-081 D3)
+
+- Boot-time actor reconciliation moved the local user to its Hub address
+  once the runtime was registered, so `user:local` no longer matched its
+  own membership: `peko channel peek` and the desktop's group and DM views
+  refused the owner ("requester 'user:local' is not a member"). The local
+  user now keeps its local address with the Hub account as an alias, and a
+  record an earlier boot moved is moved back.
+
 ### Feature: group members read the group's history from its home (2026-11-02, ADR-092 D3)
 
 - A group's home answers the history messages (ADR-091) for its members:
