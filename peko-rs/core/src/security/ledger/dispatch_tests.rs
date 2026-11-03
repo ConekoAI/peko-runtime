@@ -163,8 +163,13 @@ async fn refusals_unknown_tools_and_bad_arguments_are_recorded() {
 #[tokio::test]
 async fn a_failing_command_is_an_error_with_its_exit_code() {
     let h = ToolHarness::new().await;
-    h.call("Bash", json!({"command": "echo out; echo bad >&2; exit 3"}))
-        .await;
+    // `Bash` runs PowerShell on Windows, which has no `>&2`.
+    let command = if cfg!(windows) {
+        "Write-Output out; [Console]::Error.WriteLine('bad'); exit 3"
+    } else {
+        "echo out; echo bad >&2; exit 3"
+    };
+    h.call("Bash", json!({ "command": command })).await;
     let bash = only(&h.ledger_calls(), "Bash");
     assert_eq!(bash.outcome(), Some("error"));
     let end = &bash.ends[0];

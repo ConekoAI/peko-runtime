@@ -121,9 +121,13 @@ pub(crate) fn media(workspace: &Path, attachments: &[Attachment]) -> Vec<MediaIn
         .collect()
 }
 
-/// An attachment's absolute path on this host.
+/// An attachment's absolute path on this host. The stored path is
+/// `/`-separated on every platform; joining it part by part gives native
+/// separators (Windows got `C:\ws\attachments/2026-10-30/…`).
 pub(crate) fn absolute(workspace: &Path, attachment: &Attachment) -> PathBuf {
-    workspace.join(&attachment.path)
+    let mut path = workspace.to_path_buf();
+    path.extend(attachment.path.split('/'));
+    path
 }
 
 /// Keep letters, digits, `.`, `-`, and `_`; everything else becomes `_`.
@@ -223,7 +227,8 @@ mod tests {
         .await;
         assert!(dir.unwrap_err().contains("not a regular file"));
 
-        let missing = ingest(workspace.path(), &["/no/such/file.png".into()]).await;
+        let gone = src.path().join("no-such-file.png");
+        let missing = ingest(workspace.path(), &[gone.display().to_string()]).await;
         assert!(missing.unwrap_err().contains("cannot read"));
 
         let many = vec![ok.display().to_string(); MAX_FILES + 1];
@@ -267,9 +272,20 @@ mod tests {
             mime: "image/png".into(),
             size: 1_258_291,
         };
+        let at = ["attachments", "2026-10-30", "ab12cd34-photo.png"]
+            .iter()
+            .fold(workspace.to_path_buf(), |p, part| p.join(part));
         assert_eq!(
             turn_text("look", workspace, std::slice::from_ref(&a)),
-            "look\n\n[attached: photo.png (image/png, 1.2 MB) at /w/attachments/2026-10-30/ab12cd34-photo.png]"
+            format!(
+                "look\n\n[attached: photo.png (image/png, 1.2 MB) at {}]",
+                at.display()
+            )
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            at,
+            Path::new("/w/attachments/2026-10-30/ab12cd34-photo.png")
         );
         assert!(turn_text("", workspace, &[a]).starts_with("[attached: "));
         assert_eq!(turn_text("plain", workspace, &[]), "plain");

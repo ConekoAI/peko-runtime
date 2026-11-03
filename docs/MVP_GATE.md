@@ -42,12 +42,11 @@ All four decided by the owner on 2026-10-22.
       - Done: README and user's guide state the supported platforms, and
         `unit-windows` keeps running nightly but is non-blocking
         (`continue-on-error` in `integration.yml`).
-      - Post-MVP: Windows named-pipe support (ADR-038) and the `peko_workflow`
-        SDK Windows port.
-      - The one Windows test still failing every night,
-        `security::ledger::dispatch_tests::a_failing_command_is_an_error_with_its_exit_code`,
-        no longer gates. It is still worth fixing. (The four failures this
-        gate used to list now pass.)
+      - Post-MVP: the `peko_workflow` SDK Windows port. Named-pipe support
+        (ADR-038) works for non-elevated users since 2026-11-03.
+      - 2026-11-03: the `peko` lib suite and the native suites pass on
+        Windows 11 as a non-elevated user, including the ledger test this
+        gate used to name.
 - [x] **pekohub-side enforcement shipped; nothing hub-side gates MVP**
       (decided 2026-10-22). This item used to read "out of MVP scope, ships
       unenforced". Both pieces have since landed in pekohub:
@@ -266,9 +265,9 @@ Currently the primary install path is dead: no release has ever been cut, and
       *2026-10-22: all four green on the latest master push (`2471f6fd`);
       no release commit yet.*
 - [x] **Windows tier resolved per gate 0** (2026-10-22). Windows is out of
-      MVP scope; `unit-windows` stays as a non-blocking nightly. The four
-      failures listed here earlier now pass; one ledger test still fails
-      (see gate 0).
+      MVP scope; `unit-windows` stays as a non-blocking nightly, and runs the
+      native suites too since 2026-11-03. All of them pass on a local
+      Windows 11 run (see gate 0); not yet seen on the CI runner.
 - [ ] **Real-LLM tier green** (`make test-integration-llm`) on each of the
       three wire formats against a real endpoint (gate 0), on the release
       commit.
