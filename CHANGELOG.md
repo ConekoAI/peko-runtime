@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: Windows release builds and a PowerShell installer (2026-11-03)
+
+- Tagged releases now also publish `peko-windows-x86_64.zip` (`peko.exe` +
+  `peko-daemon.exe`), built on `windows-latest`. Windows stays experimental.
+- `install.ps1` installs a release on Windows (Windows PowerShell 5.1 or
+  PowerShell 7): `irm .../install.ps1 | iex`, or `-Version` / `-InstallDir` /
+  `-NoPath`. It adds the install directory to the user `PATH`.
+- The release smoke test runs on Windows too: `install.ps1`, then the same
+  quick start as the other four platforms.
+- PRs that change `release.yml` run its build jobs (nothing is published).
+- Release notes point the installer at `master`, not the missing `main`.
+
 ### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
 
 - The daemon read the vault once at start, so a peko provisioned by the

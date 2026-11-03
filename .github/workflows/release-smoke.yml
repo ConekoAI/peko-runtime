@@ -34,8 +34,14 @@ jobs:
             os: macos-15-intel
           - platform: macos-aarch64
             os: macos-latest
+          - platform: windows-x86_64
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    defaults:
+      run:
+        # Git Bash on Windows; release_smoke.sh calls install.ps1 there.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 

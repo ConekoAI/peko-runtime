@@ -47,10 +47,18 @@ other pekos over channels.
 ## Quick start
 
 Supported platforms: macOS (Apple silicon or Intel) and Linux (x86_64 or
-arm64, glibc 2.35+). Windows is not supported in this release.
+arm64, glibc 2.35+). Windows (x86_64) builds are published too, but are
+experimental in this release.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
+```
+
+On Windows, in PowerShell (installs to `%LOCALAPPDATA%\Programs\peko` and
+adds it to your user `PATH`):
+
+```powershell
+irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
 ```
 
 Before the first stable release, name a release candidate:

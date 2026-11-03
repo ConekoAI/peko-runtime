@@ -5,8 +5,9 @@
 #   scripts/ci/release_smoke.sh install <version> <install-dir>
 #   scripts/ci/release_smoke.sh check <install-dir>
 #
-# `install` runs this checkout's install.sh against the GitHub release
-# (version with or without a leading `v`). `check` needs no network or key:
+# `install` runs this checkout's install.sh (install.ps1 on Windows, where
+# this script runs under Git Bash) against the GitHub release (version with
+# or without a leading `v`). `check` needs no network or key:
 # it serves a fake OpenAI-compatible endpoint (scripts/ci/fake_llm.py) and
 # drives model add (--no-key) → model test → daemon start → create → send →
 # log → export → daemon stop. It also checks two regressions:
@@ -19,9 +20,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 step() { printf '\n=== %s\n' "$*"; }
 die() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) WINDOWS=1 ;;
+    *) WINDOWS="" ;;
+esac
+
 cmd_install() {
     local version="${1#v}" dir="$2"
-    # Don't create `dir`: install.sh must create a missing install directory.
+    # Don't create `dir`: the installer must create a missing install directory.
+    if [ -n "$WINDOWS" ]; then
+        step "install.ps1 -Version $version -InstallDir $dir"
+        pwsh -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/install.ps1")" \
+            -Version "$version" -InstallDir "$(cygpath -w "$dir")" -NoPath
+        [ -f "$dir/peko.exe" ] || die "peko.exe not installed in $dir"
+        [ -f "$dir/peko-daemon.exe" ] || die "peko-daemon.exe not installed in $dir"
+        return
+    fi
     step "install.sh --version $version --install-dir $dir"
     bash "$ROOT/install.sh" --version "$version" --install-dir "$dir"
     [ -x "$dir/peko" ] || die "peko not installed in $dir"
@@ -40,9 +54,12 @@ cmd_check() {
     log="$work/fake-llm.jsonl"
     fake_pid=""
     mkdir -p "$work/daemon-cwd" "$work/export-cwd"
+    # Windows runners have `python` but no working `python3`.
+    py=python3
+    "$py" -c '' 2>/dev/null || py=python
 
     # Own output file, so the server never holds the caller's stdout open.
-    python3 "$ROOT/scripts/ci/fake_llm.py" "$port" "$log" >"$work/fake-llm.out" 2>&1 &
+    "$py" "$ROOT/scripts/ci/fake_llm.py" "$port" "$log" >"$work/fake-llm.out" 2>&1 &
     fake_pid=$!
     cleanup() {
         local status=$?
@@ -95,7 +112,7 @@ cmd_check() {
     [ -f "$work/export-cwd/smoke-peko.peko" ] || die "export did not land in the caller's directory"
 
     step "keyless calls carry no Authorization header"
-    python3 - "$log" <<'PY'
+    "$py" - "$log" <<'PY'
 import json, sys
 posts = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["method"] == "POST"]
 assert posts, "the fake model received no chat calls"
