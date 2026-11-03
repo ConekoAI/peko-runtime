@@ -12,12 +12,16 @@ and, for Docker tests, the workflow's `mock_tests` path filter.
 | `make test-integration` | Both native and mock dependencies | Native plus mock integration suites |
 | `make test-integration-llm` | Native dependencies, Docker, real provider environment | Native, tunnel protocol and real-provider CLI/tunnel chat tests (local opt-in) |
 
-The Linux job runs library tests, daemon shutdown tests and `test-native`.
-The Docker job follows it and runs only `test-integration-mock`. Native-only
-test edits skip Docker. Mock/Hub tests, shared fixtures, tool sources, Docker
-assets and workflow/Makefile changes trigger that job; schedule and manual
-dispatch run both tiers. A skipped native job does not suppress a requested
-Docker job, but a failed or cancelled prerequisite does.
+Three Linux jobs run in parallel: library tests; daemon shutdown tests and
+`test-native`; and, when needed, the Docker job, which runs only
+`test-integration-mock`. Native-only test edits skip Docker. Mock/Hub tests,
+shared fixtures, tool sources, Docker assets and workflow/Makefile changes
+trigger that job; schedule and manual dispatch run every tier.
+
+Library tests build `argon2` and `blake2` optimized even in the dev/test
+profile (root `Cargo.toml`). Every test vault and identity key runs an
+Argon2id derivation (64 MB, three passes); unoptimized, those derivations
+alone took over half of the library suite's time on CI runners.
 
 Mock targets unset `LLM_API_KEY`. Native targets also unset `MOCK_LLM_URL` and
 `PEKOHUB_URL`; they do not need either server. Real-provider tests require
