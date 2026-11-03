@@ -377,8 +377,14 @@ impl ConnectionManager {
 
         let name_for_blocking = name.clone();
         let join = tokio::task::spawn_blocking(move || -> std::io::Result<NamedPipeHandle> {
-            let client =
-                tokio::net::windows::named_pipe::ClientOptions::new().open(&name_for_blocking)?;
+            // Message read mode: each read returns one packet. The default
+            // (byte mode) let one read return two packets the daemon wrote
+            // back to back, and the stream dropped both ("trailing
+            // characters"; `peko send` then failed with "Stream closed
+            // unexpectedly" on fast release builds).
+            let client = tokio::net::windows::named_pipe::ClientOptions::new()
+                .pipe_mode(tokio::net::windows::named_pipe::PipeMode::Message)
+                .open(&name_for_blocking)?;
             Ok(NamedPipeHandle {
                 client,
                 name: name_for_blocking,
@@ -633,5 +639,46 @@ mod pipe_tests {
             .unwrap();
         assert_eq!(reply, b"reply");
         daemon.await.unwrap();
+    }
+
+    /// A streamed reply is many packets. Each read must return exactly
+    /// one, even when the daemon wrote several before the client read.
+    /// (Tokio keeps one read pending, which takes the first packet alone;
+    /// the read after it found the other two queued and, in byte mode,
+    /// returned them as one.)
+    #[tokio::test]
+    async fn each_read_returns_one_packet() {
+        let name = format!(r"\\.\pipe\peko-conn-test-{}", uuid::Uuid::new_v4());
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .pipe_mode(PipeMode::Message)
+            .create(&name)
+            .unwrap();
+        let daemon = tokio::spawn(async move {
+            server.connect().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            server.read(&mut buf).await.unwrap(); // the connect ping
+            let pong = crate::ipc::packet::ResponsePacket::Pong {
+                request_id: 0,
+                uptime_secs: 0,
+                version: "test".into(),
+            };
+            server.write_all(&pong.to_bytes().unwrap()).await.unwrap();
+            for packet in [&b"first"[..], b"second", b"third"] {
+                server.write_all(packet).await.unwrap();
+            }
+            server
+        });
+
+        let conn = ConnectionManager::connect_pipe_with_timeout(name, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        // All three are in the pipe before the first read.
+        let _server = daemon.await.unwrap();
+        let mut buf = vec![0u8; 64];
+        for expected in [&b"first"[..], b"second", b"third"] {
+            let n = conn.recv(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], expected);
+        }
     }
 }

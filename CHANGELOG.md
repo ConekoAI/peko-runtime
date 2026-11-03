@@ -31,6 +31,10 @@ All notable changes to Peko.
   `DaemonClient` (every command but `daemon status`) hung after its ping.
   A connection now serves requests until the client closes it, and the
   client reads and writes at once.
+- The CLI read the pipe in byte mode, so packets the daemon wrote back to
+  back could arrive as one and be dropped: on release builds `peko send`
+  often failed with "Stream closed unexpectedly" after the reply printed.
+  It now reads one packet at a time, as the desktop does.
 - A second daemon refuses to start while another serves the pipe, rather
   than starting on UDP. A client given `PEKO_DAEMON_PIPE` talks only to that
   pipe, never to whatever answers the default pipe or UDP.
