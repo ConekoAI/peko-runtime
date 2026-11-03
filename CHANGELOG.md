@@ -4,6 +4,58 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Windows release builds (2026-11-03)
+
+- Releases include `peko-windows-x86_64.zip` (`peko.exe` and
+  `peko-daemon.exe`, linked with the static C runtime, so no Visual C++
+  redistributable is needed). Windows on Arm runs it emulated.
+- `install.ps1` installs it from PowerShell
+  (`irm .../install.ps1 | iex`): per user, into
+  `%LOCALAPPDATA%\Programs\peko\bin`, added to the user `PATH`, no
+  administrator rights. It replaces binaries that are running.
+- `peko update` works on Windows.
+- Fix: `peko update` replaced only `peko`, leaving the old `peko-daemon`
+  beside it on every platform; it now replaces both, and puts the old
+  ones back if either fails.
+- The release smoke test runs on Windows too.
+
+### Fix: Windows commands, shells, and workflows behave as on macOS (2026-11-03)
+
+- A daemon a command started (`peko create`, `peko send`, …) kept that
+  command's output open for its whole life, so a script, test, or IDE
+  reading the output never saw it end. It no longer inherits it.
+- That daemon gets a hidden console of its own: closing the terminal it
+  was started from, or a Ctrl+C there, no longer stops it, and the shells
+  and MCP servers it runs open no windows.
+- The `Bash` tool runs PowerShell without the user's profile, which ran
+  before every command (one that changed directory overrode the
+  workspace), and non-interactively, so a prompt fails instead of hanging.
+- `Workflow` finds Python 3 as `python3`, `python`, or `py -3`, skipping
+  the Microsoft Store's `python3` alias, which only offers the Store.
+- Text files check out with LF everywhere (`.gitattributes`); the tunnel
+  contract and role-template tests failed on CRLF checkouts.
+
+### Fix: on Windows the daemon serves its named pipe, not open UDP (2026-11-03, ADR-038)
+
+- The pipe never bound for a user who wasn't elevated: its permissions
+  named Administrators as owner, which only an elevated process may set
+  (error 1307). Every Windows daemon fell back to UDP on `127.0.0.1:11435`,
+  which any local process can reach. The pipe now admits the user running
+  the daemon (plus LocalSystem and Administrators), and no remote clients.
+- Once bound, the pipe answered only its first request: the CLI's
+  `DaemonClient` (every command but `daemon status`) hung after its ping.
+  A connection now serves requests until the client closes it, and the
+  client reads and writes at once.
+- The CLI read the pipe in byte mode, so packets the daemon wrote back to
+  back could arrive as one and be dropped: on release builds `peko send`
+  often failed with "Stream closed unexpectedly" after the reply printed.
+  It now reads one packet at a time, as the desktop does.
+- A second daemon refuses to start while another serves the pipe, rather
+  than starting on UDP. A client given `PEKO_DAEMON_PIPE` talks only to that
+  pipe, never to whatever answers the default pipe or UDP.
+- Desktop: needs the matching peko-desktop change, which talks to the
+  pipe; the desktop's UDP client worked only because of the first bug.
+
 ### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
 
 - The daemon read the vault once at start, so a peko provisioned by the

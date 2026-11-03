@@ -52,10 +52,13 @@ impl DaemonGuard {
             super::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
         }
 
-        let debug_out =
-            std::fs::File::create("/tmp/peko-daemon-debug.out").expect("create daemon debug out");
-        let debug_err =
-            std::fs::File::create("/tmp/peko-daemon-debug.err").expect("create daemon debug err");
+        // The temp dir, not `/tmp`: on Windows that is `\tmp` on the
+        // current drive, which usually doesn't exist.
+        let tmp = std::env::temp_dir();
+        let debug_out = std::fs::File::create(tmp.join("peko-daemon-debug.out"))
+            .expect("create daemon debug out");
+        let debug_err = std::fs::File::create(tmp.join("peko-daemon-debug.err"))
+            .expect("create daemon debug err");
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground", "-vv"])
@@ -135,6 +138,10 @@ impl DaemonGuard {
 
 /// Ask a PID to shut down gracefully. Best effort — the PID may already
 /// be gone, and `Drop` falls back to `Child::kill()` regardless.
+///
+/// Windows has no SIGTERM for a console process: plain `taskkill` only
+/// posts WM_CLOSE, which a windowless daemon never sees, so it is forced.
+/// `Child::kill()` reaches only the CLI wrapper, never the daemon it runs.
 fn terminate_pid(pid: u32) {
     #[cfg(unix)]
     let _ = std::process::Command::new("kill")
@@ -142,7 +149,9 @@ fn terminate_pid(pid: u32) {
         .status();
     #[cfg(windows)]
     let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string()])
+        .args(["/F", "/PID", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 }
 

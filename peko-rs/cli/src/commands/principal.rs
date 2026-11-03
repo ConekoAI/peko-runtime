@@ -1833,7 +1833,13 @@ mod tests {
             absolute_from_cwd("backups/x.peko").unwrap(),
             cwd.join("backups/x.peko").display().to_string()
         );
-        assert_eq!(absolute_from_cwd("/tmp/x.peko").unwrap(), "/tmp/x.peko");
+        // On Windows `/tmp/x.peko` has no drive, so it isn't absolute.
+        let absolute = if cfg!(windows) {
+            r"C:\tmp\x.peko"
+        } else {
+            "/tmp/x.peko"
+        };
+        assert_eq!(absolute_from_cwd(absolute).unwrap(), absolute);
     }
     use peko_auth::Permission;
 

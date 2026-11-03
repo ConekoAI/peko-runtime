@@ -28,12 +28,16 @@ use peko_tools_core::{BackgroundSpawn, Tool, ToolContext};
 #[cfg(unix)]
 const SHELL: &str = "/bin/sh";
 #[cfg(unix)]
-const SHELL_ARG: &str = "-c";
+const SHELL_ARGS: &[&str] = &["-c"];
 
 #[cfg(windows)]
 const SHELL: &str = "powershell";
+/// `-NoProfile`: the user's PowerShell profile would run before every
+/// command; one that changes directory overrode the workspace `cwd`, and
+/// any profile slows each call and can print into its output.
+/// `-NonInteractive`: a command that prompts fails instead of hanging.
 #[cfg(windows)]
-const SHELL_ARG: &str = "-Command";
+const SHELL_ARGS: &[&str] = &["-NoProfile", "-NonInteractive", "-Command"];
 
 /// Platform-specific shell name for display
 #[cfg(unix)]
@@ -128,7 +132,7 @@ impl BashTool {
         ctx: Option<&ToolContext>,
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
-        cmd.arg(SHELL_ARG).arg(command);
+        cmd.args(SHELL_ARGS).arg(command);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {
@@ -228,7 +232,7 @@ impl BashTool {
         progress: Arc<std::sync::Mutex<String>>,
     ) -> Result<serde_json::Value> {
         let mut cmd = Command::new(SHELL);
-        cmd.arg(SHELL_ARG).arg(command);
+        cmd.args(SHELL_ARGS).arg(command);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(dir) = working_dir {

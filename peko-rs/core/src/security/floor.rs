@@ -497,11 +497,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data = resolve(&dir.path().join("Application Support/peko"));
         let trusted = stamp(Trust::Trusted);
-        for root in [
-            home.clone(),
-            home.parent().unwrap().to_path_buf(),
-            PathBuf::from("/"),
-        ] {
+        // The filesystem root holding the state: `/`, or on Windows the
+        // drive (`/` there is the current drive's root, maybe another one).
+        let fs_root = home.ancestors().last().unwrap().to_path_buf();
+        for root in [home.clone(), home.parent().unwrap().to_path_buf(), fs_root] {
             assert!(
                 search_root_refusal(&trusted, Some(&t.mine), Some(&data), &root).is_some(),
                 "{}",

@@ -1,7 +1,7 @@
 name: Release Smoke Test
 
-# Installs a published release with install.sh on each supported platform
-# and runs the quick start against a local fake model
+# Installs a published release with install.sh (install.ps1 on Windows) on
+# each supported platform and runs the quick start against a local fake model
 # (scripts/ci/release_smoke.sh). Called by release.yml after a tag's
 # release is published; can also be run by hand against any release.
 
@@ -34,8 +34,16 @@ jobs:
             os: macos-15-intel
           - platform: macos-aarch64
             os: macos-latest
+          - platform: windows-x86_64
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # Non-blocking on Windows, which is outside MVP scope (MVP_GATE gate 0).
+    continue-on-error: ${{ matrix.platform == 'windows-x86_64' }}
+    defaults:
+      run:
+        # Git Bash on Windows; the script drives install.ps1 there.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 

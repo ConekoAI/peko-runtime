@@ -5,8 +5,9 @@
 #   scripts/ci/release_smoke.sh install <version> <install-dir>
 #   scripts/ci/release_smoke.sh check <install-dir>
 #
-# `install` runs this checkout's install.sh against the GitHub release
-# (version with or without a leading `v`). `check` needs no network or key:
+# `install` runs this checkout's install.sh (install.ps1 on Windows, under
+# Git Bash) against the GitHub release (version with or without a leading
+# `v`). `check` needs no network or key:
 # it serves a fake OpenAI-compatible endpoint (scripts/ci/fake_llm.py) and
 # drives model add (--no-key) → model test → daemon start → create → send →
 # log → export → daemon stop. It also checks two regressions:
@@ -19,13 +20,37 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 step() { printf '\n=== %s\n' "$*"; }
 die() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) windows=1 EXE=.exe ;;
+    *) windows="" EXE="" ;;
+esac
+
+# A real Python 3. On Windows `python3` is often the Microsoft Store stub,
+# and the interpreter is `python`.
+find_python() {
+    local candidate
+    for candidate in python3 python; do
+        if "$candidate" -c 'import sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then
+            echo "$candidate"
+            return
+        fi
+    done
+    die "no Python 3 on PATH (tried python3, python)"
+}
+
 cmd_install() {
     local version="${1#v}" dir="$2"
-    # Don't create `dir`: install.sh must create a missing install directory.
-    step "install.sh --version $version --install-dir $dir"
-    bash "$ROOT/install.sh" --version "$version" --install-dir "$dir"
-    [ -x "$dir/peko" ] || die "peko not installed in $dir"
-    [ -x "$dir/peko-daemon" ] || die "peko-daemon not installed in $dir"
+    # Don't create `dir`: the installer must create a missing install directory.
+    if [ -n "$windows" ]; then
+        step "install.ps1 -Version $version -InstallDir $dir"
+        powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ROOT/install.ps1")" \
+            -Version "$version" -InstallDir "$(cygpath -w "$dir")" -NoModifyPath
+    else
+        step "install.sh --version $version --install-dir $dir"
+        bash "$ROOT/install.sh" --version "$version" --install-dir "$dir"
+    fi
+    [ -x "$dir/peko$EXE" ] || die "peko not installed in $dir"
+    [ -x "$dir/peko-daemon$EXE" ] || die "peko-daemon not installed in $dir"
 }
 
 cmd_check() {
@@ -40,15 +65,16 @@ cmd_check() {
     log="$work/fake-llm.jsonl"
     fake_pid=""
     mkdir -p "$work/daemon-cwd" "$work/export-cwd"
+    python="$(find_python)"
 
     # Own output file, so the server never holds the caller's stdout open.
-    python3 "$ROOT/scripts/ci/fake_llm.py" "$port" "$log" >"$work/fake-llm.out" 2>&1 &
+    "$python" "$ROOT/scripts/ci/fake_llm.py" "$port" "$log" >"$work/fake-llm.out" 2>&1 &
     fake_pid=$!
     cleanup() {
         local status=$?
         if [ "$status" -ne 0 ]; then
             echo "--- daemon log (tail)"
-            tail -40 "$HOME/.peko/logs/daemon.log" 2>/dev/null || true
+            tail -40 "${PEKO_HOME:-$HOME/.peko}/logs/daemon.log" 2>/dev/null || true
         fi
         (cd "$work/daemon-cwd" && peko daemon stop >/dev/null 2>&1) || true
         # `python3` can be a launcher shim (macOS), so stop the server by its
@@ -95,7 +121,7 @@ cmd_check() {
     [ -f "$work/export-cwd/smoke-peko.peko" ] || die "export did not land in the caller's directory"
 
     step "keyless calls carry no Authorization header"
-    python3 - "$log" <<'PY'
+    "$python" - "$log" <<'PY'
 import json, sys
 posts = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["method"] == "POST"]
 assert posts, "the fake model received no chat calls"

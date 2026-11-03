@@ -275,12 +275,7 @@ impl Tool for WorkflowTool {
         let script = resolve_workflow_path(&workspace, path)?;
 
         // ── 5. Interpreter ───────────────────────────────────────────
-        let python = which::which("python3").map_err(|_| {
-            anyhow!(
-                "Workflow: `python3` not found on PATH — install Python 3 (or put a \
-                 `python3` shim on PATH) to run workflows"
-            )
-        })?;
+        let (python, python_args) = find_python().await?;
 
         // ── 6. Identity env (D6) + run token ─────────────────────────
         let session_key = workflow_session_key(&principal_name, ctx.session_id.as_deref());
@@ -324,6 +319,7 @@ impl Tool for WorkflowTool {
         let started = Instant::now();
         let mut command = tokio::process::Command::new(python);
         command
+            .args(python_args)
             .arg(&script)
             .args(&args)
             .current_dir(&workspace)
@@ -525,6 +521,54 @@ fn workflow_session_key(principal_name: &str, session_id: Option<&str>) -> Strin
 /// The minimal child environment (D6): platform usability vars only,
 /// plus the PEKO identity set. The daemon's full env is never
 /// inherited — secrets must not leak into workflow processes.
+/// The Python 3 interpreter workflows run with, and the arguments that go
+/// before the script.
+///
+/// `python3` on PATH. On Windows Python is usually `python` or the `py`
+/// launcher, and the `python3` found first is often the Microsoft Store's
+/// App Execution Alias: a stub that only offers the Store and exits 9009
+/// while Python isn't installed from it. So on Windows each candidate is
+/// tried in turn and kept only if it really runs Python 3.
+async fn find_python() -> anyhow::Result<(PathBuf, &'static [&'static str])> {
+    #[cfg(not(windows))]
+    {
+        which::which("python3").map(|p| (p, &[][..])).map_err(|_| {
+            anyhow!(
+                "Workflow: `python3` not found on PATH — install Python 3 (or put a \
+                 `python3` shim on PATH) to run workflows"
+            )
+        })
+    }
+    #[cfg(windows)]
+    {
+        const CANDIDATES: [(&str, &[&str]); 3] =
+            [("python3", &[]), ("python", &[]), ("py", &["-3"])];
+        for (name, args) in CANDIDATES {
+            let Ok(exe) = which::which(name) else {
+                continue;
+            };
+            let probe = tokio::process::Command::new(&exe)
+                .args(args)
+                .args(["-c", "import sys; sys.exit(sys.version_info[0] != 3)"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .status();
+            if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(10), probe).await {
+                if status.success() {
+                    return Ok((exe, args));
+                }
+            }
+        }
+        Err(anyhow!(
+            "Workflow: no Python 3 found — tried `python3`, `python` and `py -3` on \
+             PATH (the Microsoft Store's `python3` alias doesn't count until Python \
+             is installed from it). Install Python 3 to run workflows"
+        ))
+    }
+}
+
 fn build_workflow_env(
     workspace: &Path,
     principal: &Principal,
@@ -894,8 +938,8 @@ mod tests {
         std::fs::write(workspace.join("workflows").join(name), body).expect("write workflow");
     }
 
-    fn python3_available() -> bool {
-        which::which("python3").is_ok()
+    async fn python3_available() -> bool {
+        find_python().await.is_ok()
     }
 
     // ── Path guard ───────────────────────────────────────────────────
@@ -1121,7 +1165,7 @@ mod tests {
         use crate::agents::subagent_executor::{ExecutionConfig, SubagentExecutor};
         use peko_providers::core::ProviderRuntimeOptions;
 
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1244,7 +1288,7 @@ Path(os.environ["PEKO_WORKSPACE"], sys.argv[1]).write_text("WORKFLOW_EXECUTED")
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn runs_script_and_injects_identity_env() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1318,7 +1362,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn nonzero_exit_is_reported_not_errored() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1344,7 +1388,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn output_is_capped_to_tail() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1377,7 +1421,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn zero_timeout_means_no_limit() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1398,7 +1442,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn timeout_kills_runaway_script() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1478,7 +1522,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn minted_token_carries_calling_node() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }
@@ -1520,7 +1564,7 @@ print("argv:" + ",".join(sys.argv[1:]))
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn minted_token_without_context_carries_no_node() {
-        if !python3_available() {
+        if !python3_available().await {
             eprintln!("skipping: python3 not on PATH");
             return;
         }

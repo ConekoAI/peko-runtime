@@ -1,0 +1,5 @@
+# Text files are checked out with LF on every platform, as they are
+# committed. With Windows' default core.autocrlf they came out CRLF, and
+# tests that compare files byte for byte (the tunnel contract fixture, the
+# seeded role templates) failed there.
+* text=auto eol=lf

@@ -2,7 +2,7 @@
 
 **Status**: Accepted
 **Date**: 2026-06-14
-**Last Updated**: 2026-06-14
+**Last Updated**: 2026-11-03
 **Author**: Kimi Code CLI + User
 **Depends On**: ADR-021 (Daemon as Central Runtime), ADR-034 (Runtime Authentication and Authorization)
 **Supersedes**: The "Windows falls back to UDP" row in ADR-021 §Consequences (line 422) and the corresponding §Architecture paragraph at ADR-021 line 227.
@@ -27,10 +27,12 @@ This ADR replaces the Windows UDP fallback with **Windows named pipes**, the onl
 
 - **Name:** `\\.\pipe\peko-{username}` by default, where `{username}` is the value of `USERNAME` (with `USER` as a fallback), sanitised to characters valid in a Win32 pipe name (`\`, `?`, `*`, `<`, `>`, `|`, `"` → `_`) and capped at 64 characters. The full pipe path stays under the 256-character `MAX_PATH` limit.
 - **Override:** `PEKO_DAEMON_PIPE` environment variable. Mirrors the existing `PEKO_DAEMON_SOCK` and `PEKO_DAEMON_ADDR` overrides.
-- **DACL:** `O:BAD:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)` — owner-only Generic All, plus LocalSystem and Built-in Administrators for parity with the Unix 0600 mode that still permits system/admin tools to read the socket.
+- **DACL:** `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<user SID>)` — Generic All to the user running the daemon (named by the SID of its process token), plus LocalSystem and Built-in Administrators for parity with the Unix 0600 mode that still permits system/admin tools to read the socket. No owner is set: it defaults to the creating token's (see the 2026-11-03 amendment).
+- **Remote clients:** refused (`PIPE_REJECT_REMOTE_CLIENTS`); the pipe is local IPC only.
 - **Pipe mode:** `PipeMode::Message` — one read = one whole message, capped at 64 KB, matches the existing `MAX_PACKET_SIZE` in `src/ipc/packet.rs:14` and avoids a length prefix in the wire framing.
 - **Max instances:** 64. Allows multiple concurrent clients per pipe name.
-- **First-instance flag:** `true` on bind; `daemon start` refuses if another peko is already bound. Matches the Unix "remove stale socket file, then bind" behavior.
+- **First-instance flag:** `true` on bind; `daemon start` refuses if another peko is already bound, without falling back to UDP. Matches the Unix "socket owned elsewhere" refusal.
+- **Connections:** a connection carries any number of requests, one after another, until the client closes it; each request's whole response stream is written before the next is read. A client may read and write at once (the CLI's receiver task reads while requests go out).
 
 **Discovery ladder (replaces ADR-021 §Daemon Discovery table):**
 
@@ -38,7 +40,7 @@ This ADR replaces the Windows UDP fallback with **Windows named pipes**, the onl
 |------|------|---------|
 | 1 | `PEKO_DAEMON_SOCK` env var (Unix socket) | `PEKO_DAEMON_SOCK` env var (no-op stub) |
 | 2 | `PEKO_DAEMON_ADDR` env var (UDP) | `PEKO_DAEMON_ADDR` env var (UDP) |
-| 3 | — | `PEKO_DAEMON_PIPE` env var (named pipe) |
+| 3 | — | `PEKO_DAEMON_PIPE` env var (named pipe; when set, the only endpoint tried) |
 | 4 | default Unix socket `~/.peko/run/daemon.sock` | default named pipe `\\.\pipe\peko-{user}` |
 | 5 | default UDP `127.0.0.1:11435` | default UDP `127.0.0.1:11435` |
 
@@ -121,6 +123,15 @@ The implementation is contained to the IPC layer (`src/ipc/`), the test harness 
 - **Per-connection dispatch model.** Unix datagram sockets are connectionless (one bound socket, many peers via `send_to`); named pipes are connection-oriented (one accept per connection, one `&mut NamedPipeServer` per task). The `ResponseSink` trait factors this difference out so the giant `handle_request` match is unchanged.
 - **No Windows CI in this PR.** Adding a Windows CI runner is a follow-up. The change is locally testable on a Windows dev box, and the test-gate removal unlocks symmetric CI in a follow-up PR.
 - **One new env var.** `PEKO_DAEMON_PIPE` is added to the discovery ladder. Documentation in `docs/integration/TESTING.md` should follow.
+
+## Amendment (2026-11-03): the pipe works for non-elevated users
+
+Until this date the named pipe never served a non-elevated user, and nothing noticed: the daemon fell back to UDP, and CI's Windows runners run elevated.
+
+- **The bind failed.** The SDDL named Administrators as owner (`O:BA`), which only an elevated token may assign; `CreateNamedPipeW` returned `ERROR_INVALID_OWNER` (1307). The `OW` ACE would also have granted the *owner*, Administrators, rather than the user. The SDDL now leaves the owner to the token and names the user's SID.
+- **The accept loop never served its first client.** The first instance stayed shared with the server state, so it could not be handed to the connection's task.
+- **A connection served one request, but `ConnectionManager` pings and then sends its request on the same connection**, and the CLI's receiver task held the pipe's only lock while it waited to read. The server now serves requests until the client closes; the client splits the pipe into read and write halves.
+- **An explicit `PEKO_DAEMON_PIPE` fell through** to the default pipe and UDP, reaching some other daemon. It is now the only endpoint tried.
 
 ## References
 
