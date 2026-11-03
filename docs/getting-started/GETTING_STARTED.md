@@ -8,10 +8,11 @@ between conversations, and runs in the background on your machine.
 
 ## Prerequisites
 
-- **macOS** (Apple silicon or Intel), or **Linux** (x86_64 or arm64) with
-  glibc 2.35 or newer, such as Ubuntu 22.04+ or Debian 12+. Windows is not
-  supported in this release.
-- `curl` and `tar`.
+- **macOS** (Apple silicon or Intel), **Linux** (x86_64 or arm64) with
+  glibc 2.35 or newer, such as Ubuntu 22.04+ or Debian 12+, or **Windows**
+  10 or 11 (x64; Windows on Arm runs it emulated). Windows builds start with
+  the first release after 0.1.0-rc.5.
+- `curl` and `tar` on macOS and Linux; PowerShell on Windows.
 - **An LLM endpoint** that speaks one of three wire formats:
   `anthropic_messages`, `openai_completions` or `openai_responses`. It can be
   hosted or local. You need its base URL, the model id it expects, and an
@@ -41,6 +42,15 @@ curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/instal
 > `--version`, for example `bash -s -- --version 0.1.0-rc.2`. The
 > [releases page](https://github.com/ConekoAI/peko-runtime/releases) lists
 > them.
+
+On Windows, run the PowerShell installer instead. It installs per user,
+without administrator rights, into `%LOCALAPPDATA%\Programs\peko\bin`, adds
+that directory to your user `PATH`, and takes `-Version` and `-InstallDir`:
+
+```powershell
+irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1))) -Version <version>
+```
 
 Check the install:
 

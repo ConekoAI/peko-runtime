@@ -45,9 +45,20 @@ format, hosted or local.
 curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
 ```
 
-Supported platforms are macOS (Apple silicon or Intel) and Linux (x86_64
-or arm64, glibc 2.35+, such as Ubuntu 22.04+ or Debian 12+). Windows is not
-supported in this release. The installer puts `peko` and `peko-daemon` in
+Supported platforms are macOS (Apple silicon or Intel), Linux (x86_64
+or arm64, glibc 2.35+, such as Ubuntu 22.04+ or Debian 12+), and Windows 10
+or 11 (x64; Windows on Arm runs it emulated). On Windows, install from
+PowerShell instead, per user and without administrator rights:
+
+```powershell
+irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
+```
+
+It puts `peko.exe` and `peko-daemon.exe` in `%LOCALAPPDATA%\Programs\peko\bin`
+and adds that directory to your user `PATH`. Windows builds start with the
+first release after 0.1.0-rc.5.
+
+On macOS and Linux, the installer puts `peko` and `peko-daemon` in
 `/usr/local/bin`; `--install-dir <dir>` picks another directory and
 `--version <version>` a specific release. Before the first stable release,
 pass a release candidate's version, such as `--version 0.1.0-rc.2`.

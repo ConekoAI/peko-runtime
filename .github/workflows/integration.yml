@@ -7,8 +7,8 @@ name: Integration Tests
 # lint         every PR that touches peko-rs/core/src/  < 1 min       scripts/check_*.sh
 # unit-linux   source/tests/build changes           lib tests           cargo test --lib
 # native-linux source/tests/build changes           native tests        shutdown + test-native (parallel with unit-linux)
-# unit-windows `[windows]` / Windows paths / nightly lib tests           gated; expensive runner; non-blocking (Windows out of MVP)
-# native-windows same gate as unit-windows          native tests        test-native suites (parallel with unit-windows); non-blocking
+# unit-windows `[windows]` / Windows paths / nightly lib tests           gated; expensive runner; blocking (Windows in MVP)
+# native-windows same gate as unit-windows          native tests        test-native suites (parallel with unit-windows); blocking
 # integration  PR that touches integration paths    mock/Hub tests      docker compose + PekoHub (parallel with unit tiers)
 #
 # Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
@@ -305,13 +305,12 @@ jobs:
   #   - manual workflow_dispatch
   # Additionally gate on changes to Windows-specific code paths so a
   # Linux-only refactor doesn't accidentally trigger this expensive job.
-  # Windows is out of MVP scope (docs/MVP_GATE.md gate 0), so a failure here
-  # is reported but does not fail the workflow.
+  # Windows is in MVP scope (docs/MVP_GATE.md gate 0), so a failure here
+  # fails the workflow.
   unit-windows:
     name: Unit Tests (windows-latest)
     runs-on: windows-latest
     needs: changes
-    continue-on-error: true
     if: >-
       (needs.changes.outputs.windows_code == 'true'
        || github.event_name == 'schedule'
@@ -340,7 +339,6 @@ jobs:
     name: Native Tests (windows-latest)
     runs-on: windows-latest
     needs: changes
-    continue-on-error: true
     if: >-
       (needs.changes.outputs.windows_code == 'true'
        || github.event_name == 'schedule'

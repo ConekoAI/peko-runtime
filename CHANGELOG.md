@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Change: Windows is in MVP scope; its CI and release jobs block (2026-11-03)
+
+- `docs/MVP_GATE.md` gate 0 now puts Windows 10/11 x64 in scope. The launch
+  targets are five artifacts, and the gate 4 Windows item is open until
+  `unit-windows` and `native-windows` are green on the release commit. The
+  `peko_workflow` SDK Windows port stays post-MVP.
+- `unit-windows`, `native-windows`, the Windows release build and the
+  Windows release smoke run lose `continue-on-error`: a failure fails the
+  workflow, and no release publishes without `peko-windows-x86_64.zip`.
+- Getting Started and the user's guide list Windows and `install.ps1`.
+
 ### Windows release builds (2026-11-03)
 
 - Releases include `peko-windows-x86_64.zip` (`peko.exe` and
