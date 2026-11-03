@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
+
+- The daemon read the vault once at start, so a peko provisioned by the
+  CLI while it ran had no key there: `peko register` failed with
+  "Principal signing proof is invalid" until a restart. A peko's key the
+  daemon doesn't have is now read from the file.
+- Worse, any daemon write to the vault saved its older copy over the
+  file, which could drop a key the CLI had just stored. Every vault write
+  now takes in the file's current contents first.
+
 ### Feature: groups get IDs, invite links, and follow you to new devices (2026-11-03, ADR-092 D4–D6)
 
 - `Channel register { channel, visibility }` (also `peko channel register

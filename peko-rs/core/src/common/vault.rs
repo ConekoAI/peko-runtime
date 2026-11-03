@@ -1002,6 +1002,30 @@ impl Vault {
         Ok(count)
     }
 
+    /// Take in what another process wrote since this vault was read, so a
+    /// write here does not drop it: the CLI and the daemon share one file,
+    /// and a write saves the whole of it. Keeps the in-memory state when
+    /// the file is missing or no longer opens with this key.
+    fn merge_disk_state(&self, state: &mut VaultState) {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return;
+        };
+        let Ok(envelope) = serde_json::from_slice::<VaultEnvelope>(&bytes) else {
+            return;
+        };
+        if envelope.version != VAULT_VERSION {
+            return;
+        }
+        let Ok(plaintext) = Self::decrypt(&envelope, &state.dek) else {
+            return;
+        };
+        let Ok(file) = Self::parse_vault_file(&plaintext) else {
+            return;
+        };
+        state.file = file;
+        state.salt = envelope.salt;
+    }
+
     /// Return how the vault was unlocked.
     #[must_use]
     pub fn unlock_method(&self) -> UnlockMethod {
@@ -1316,10 +1340,20 @@ impl Vault {
     }
 
     /// Get a principal identity private key by key id.
+    ///
+    /// A key another process stored since this vault was read (`peko
+    /// create` provisions a peko in the CLI while the daemon runs) is read
+    /// from the file on a miss.
     pub fn get_principal_identity_private_key(&self, key_id: &str) -> Option<SecretString> {
-        self.get_material_for("principal-identity", key_id)
-            .ok()
-            .flatten()
+        let read = || {
+            self.get_material_for("principal-identity", key_id)
+                .ok()
+                .flatten()
+        };
+        read().or_else(|| {
+            self.reload_unlocked().ok()?;
+            read()
+        })
     }
 
     /// Remove a principal identity private key.
@@ -1457,6 +1491,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             let mut to_store = c.clone();
             if let Some(existing) = inner.file.credentials.get(&c.id) {
                 to_store.created_at = existing.created_at;
@@ -1490,6 +1525,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             inner.file.credentials.remove(id).is_some()
         };
         if removed {
@@ -1635,6 +1671,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             inner
                 .file
                 .rotation_bindings
@@ -1651,6 +1688,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             inner.file.rotation_bindings.remove(slot_key).is_some()
         };
         if removed {
@@ -1668,6 +1706,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             if let Some(c) = inner.file.credentials.get_mut(id) {
                 c.last_tested_at = Some(Utc::now());
                 c.last_tested_ok = Some(ok);
@@ -1735,6 +1774,7 @@ impl Vault {
                 .inner
                 .write()
                 .map_err(|e| VaultError::Backend(format!("vault lock poisoned: {e}")))?;
+            self.merge_disk_state(&mut inner);
             inner.file.legacy_entries.remove(key).is_some()
         };
         if removed {
@@ -2397,6 +2437,50 @@ mod tests {
     /// that wrote to the vault (e.g. `peko credential set`) becomes
     /// visible to the long-running daemon that holds this Vault
     /// instance. Mirrors `ProviderCatalog::reload`.
+    /// The daemon and the CLI share one vault file. A peko's key the CLI
+    /// stores while the daemon runs is found by the daemon, and the
+    /// daemon's next write keeps it rather than saving its older copy over
+    /// it.
+    #[test]
+    #[serial_test::serial]
+    fn a_holder_neither_misses_nor_drops_what_another_wrote() {
+        let dir = TempDir::new().unwrap();
+        std::env::set_var(MASTER_PASSPHRASE_ENV, "test-shared");
+        let daemon = Vault::for_test(dir.path(), "test-shared");
+        let open = || {
+            Vault::load_with_passphrase(
+                dir.path().join(VAULT_FILE_NAME),
+                &SecretString::new("test-shared".into()),
+            )
+            .unwrap()
+        };
+        let cli = open();
+        cli.set_principal_identity_private_key("did:key:zPeko#keys-1", "Ed25519", "c2VjcmV0")
+            .unwrap();
+
+        assert_eq!(
+            daemon
+                .get_principal_identity_private_key("did:key:zPeko#keys-1")
+                .map(|k| k.expose_secret().to_string())
+                .as_deref(),
+            Some("c2VjcmV0")
+        );
+
+        // A write by a holder that never read the CLI's key keeps it.
+        let stale = open();
+        cli.set_principal_identity_private_key("did:key:zOther#keys-1", "Ed25519", "b3RoZXI=")
+            .unwrap();
+        stale
+            .set_provider_key("anthropic", &SecretString::new("sk-ant".into()))
+            .unwrap();
+        let fresh = open();
+        assert!(fresh
+            .get_principal_identity_private_key("did:key:zOther#keys-1")
+            .is_some());
+        assert!(fresh.get_provider_key("anthropic").is_some());
+        std::env::remove_var(MASTER_PASSPHRASE_ENV);
+    }
+
     #[test]
     #[serial_test::serial]
     fn reload_picks_up_keys_written_by_another_holder() {
