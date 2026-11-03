@@ -51,3 +51,14 @@ members = [
 # lives in `peko-rs/cli/Cargo.toml` (Phase 0.Z-B).
 # ---------------------------------------------------------------------------
 [workspace.metadata.cargo-shear]
+
+# Vaults and identity keys derive their keys with Argon2id (64 MB, three
+# passes). Unoptimized, one derivation takes over a second, and nearly every
+# test that creates a principal or opens a vault runs at least one; the lib
+# suite spent most of its time here (488s → 86s locally with these on).
+# Optimizing just the KDF keeps debug builds of our own code unchanged.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
