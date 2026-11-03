@@ -13,14 +13,18 @@ who signs off. If an item can't be verified, it doesn't belong here.
 
 | Gate | Done | Blocking now |
 |---|---|---|
-| 0. Scope declarations | 4 / 4 | — (decided 2026-10-22) |
-| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.4 is the latest candidate) |
+| 0. Scope declarations | 4 / 4 | — (decided 2026-10-22; Windows revised 2026-11-03) |
+| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.5 is the latest candidate; the first with a Windows zip is still to come) |
 | 2. Version bookkeeping | 2 / 3 | No MVP version tag yet (rc tags only) |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 2 / 4 | Linux tiers and the real-LLM tier re-run on the release commit |
+| 4. CI | 1 / 4 | Linux and Windows tiers and the real-LLM tier re-run on the release commit |
 | 5. Field test | 1 / 3 | Non-technical field test (last one 2026-08-13) |
 | 6. Security | 2 / 2 | — |
-| **Total** | **20 / 26** | |
+| **Total** | **19 / 26** | |
+
+2026-11-03: Windows moved into MVP scope (gate 0). Its CI tiers, release
+build and release smoke run are blocking now, so the gate 4 Windows item
+reopened until they are seen green on the CI runner.
 
 2026-10-24: rc.3 is published and smoke-tested on all four platforms; gates 1
 and 3 moved to 5/6 and 4/4.
@@ -34,23 +38,25 @@ the accepted security gaps (gate 6) were written into the user-facing docs.
 
 ## 0. Scope declarations (record a decision, then enforce it)
 
-All four decided by the owner on 2026-10-22.
+All four decided by the owner on 2026-10-22; the Windows decision was
+reversed on 2026-11-03.
 
-- [x] **Windows is out of MVP scope** (decided 2026-10-22).
-      Launch targets are the four release artifacts (linux x64/arm64,
-      darwin x64/arm64).
-      - Done: README and user's guide state the supported platforms, and
-        `unit-windows` keeps running nightly but is non-blocking
-        (`continue-on-error` in `integration.yml`).
+- [x] **Windows is in MVP scope** (decided 2026-11-03; on 2026-10-22 it
+      was out). Launch targets are the five release artifacts (linux
+      x64/arm64, darwin x64/arm64, windows x64; Windows on Arm runs the x64
+      build emulated).
+      - Done: README, Getting Started and the user's guide list Windows 10
+        and 11 and `install.ps1`. `unit-windows`, `native-windows`, the
+        Windows release build and the Windows release smoke run are
+        blocking (no `continue-on-error`): a release needs the Windows zip.
       - Post-MVP: the `peko_workflow` SDK Windows port. Named-pipe support
         (ADR-038) works for non-elevated users since 2026-11-03.
       - 2026-11-03: the `peko` lib suite and the native suites pass on
         Windows 11 as a non-elevated user, including the ledger test this
         gate used to name.
       - 2026-11-03: releases also build `peko-windows-x86_64.zip`
-        (`install.ps1`, `peko update`), non-blocking: a failed Windows build
-        or smoke run doesn't stop the release. The release smoke test
-        passed locally on Windows 11; not yet seen on a CI runner.
+        (`install.ps1`, `peko update`). The release smoke test passed
+        locally on Windows 11; not yet seen on a CI runner.
 - [x] **pekohub-side enforcement shipped; nothing hub-side gates MVP**
       (decided 2026-10-22). This item used to read "out of MVP scope, ships
       unenforced". Both pieces have since landed in pekohub:
@@ -96,8 +102,9 @@ Currently the primary install path is dead: no release has ever been cut, and
 `install.sh` downloads assets that don't exist.
 
 - [ ] **First release cut.** `git tag v<version>` triggers
-      `.github/workflows/release.yml`; all four artifacts (linux x64/arm64,
-      darwin x64/arm64) build and publish successfully.
+      `.github/workflows/release.yml`; all five artifacts (linux x64/arm64,
+      darwin x64/arm64, windows x64) build and publish successfully, and
+      the smoke job passes on all five platforms.
       *2026-10-25: `v0.1.0-rc.4` (`c96f1564`, run 40164710554) built,
       published and passed the smoke job on all four platforms. It adds
       #506 and #507.*
@@ -268,10 +275,13 @@ Currently the primary install path is dead: no release has ever been cut, and
       `lint-workspace`, `unit-linux`, `integration` (mock-LLM Docker tier).
       *2026-10-22: all four green on the latest master push (`2471f6fd`);
       no release commit yet.*
-- [x] **Windows tier resolved per gate 0** (2026-10-22). Windows is out of
-      MVP scope; `unit-windows` stays as a non-blocking nightly, and runs the
-      native suites too since 2026-11-03. All of them pass on a local
-      Windows 11 run (see gate 0); not yet seen on the CI runner.
+- [ ] **Windows tiers green** on the release commit: `unit-windows` and
+      `native-windows`, blocking since 2026-11-03 (gate 0).
+      *2026-11-03: all of their suites pass on a local Windows 11 run as a
+      non-elevated user (see gate 0); not yet seen on the CI runner, which
+      runs elevated.*
+      *2026-10-22: resolved as out of scope (a non-blocking nightly);
+      reopened when Windows moved into MVP scope.*
 - [ ] **Real-LLM tier green** (`make test-integration-llm`) on each of the
       three wire formats against a real endpoint (gate 0), on the release
       commit.
@@ -357,8 +367,8 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
 Recorded here so they stop being ambiguous "follow-ups":
 
-- Windows support, including named pipes (ADR-038) and the `peko_workflow`
-  SDK Windows port (out of scope per gate 0)
+- The `peko_workflow` SDK Windows port (Windows itself is in scope since
+  2026-11-03, gate 0)
 - Hub store-and-forward for runtimes never online together (the rest of
   replay-on-reconnect shipped as the ADR-072 D6 outbox)
 - Hub-blind E2E encryption (ADR-058 D8), delegated authorization

@@ -160,9 +160,8 @@ jobs:
   # Build for Windows x86_64 (also runs on Windows 11 on Arm, emulated)
   build-windows-x86_64:
     runs-on: windows-latest
-    # Windows is outside MVP scope (docs/MVP_GATE.md gate 0): a failure here
-    # must not hold up the release, which then ships without the zip.
-    continue-on-error: true
+    # Windows is in MVP scope (docs/MVP_GATE.md gate 0): no release
+    # publishes without the zip.
     steps:
       - uses: actions/checkout@v4
 
@@ -297,7 +296,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Install each published archive with install.sh and run the quick start
-  # on all four platforms (release-smoke.yml).
+  # on all five platforms (release-smoke.yml).
   smoke:
     needs: create-release
     if: startsWith(github.ref, 'refs/tags/')

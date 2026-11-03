@@ -38,8 +38,6 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    # Non-blocking on Windows, which is outside MVP scope (MVP_GATE gate 0).
-    continue-on-error: ${{ matrix.platform == 'windows-x86_64' }}
     defaults:
       run:
         # Git Bash on Windows; the script drives install.ps1 there.
