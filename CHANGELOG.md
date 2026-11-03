@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: on Windows the daemon serves its named pipe, not open UDP (2026-11-03, ADR-038)
+
+- The pipe never bound for a user who wasn't elevated: its permissions
+  named Administrators as owner, which only an elevated process may set
+  (error 1307). Every Windows daemon fell back to UDP on `127.0.0.1:11435`,
+  which any local process can reach. The pipe now admits the user running
+  the daemon (plus LocalSystem and Administrators), and no remote clients.
+- Once bound, the pipe answered only its first request: the CLI's
+  `DaemonClient` (every command but `daemon status`) hung after its ping.
+  A connection now serves requests until the client closes it, and the
+  client reads and writes at once.
+- A second daemon refuses to start while another serves the pipe, rather
+  than starting on UDP. A client given `PEKO_DAEMON_PIPE` talks only to that
+  pipe, never to whatever answers the default pipe or UDP.
+- Desktop: needs the matching peko-desktop change, which talks to the
+  pipe; the desktop's UDP client worked only because of the first bug.
+
 ### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
 
 - The daemon read the vault once at start, so a peko provisioned by the

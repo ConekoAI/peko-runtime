@@ -27,6 +27,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
@@ -69,10 +71,14 @@ pub enum ConnectionHandle {
         socket: Arc<UdpSocket>,
         addr: String,
     },
-    /// Windows named-pipe client (ADR-038).
+    /// Windows named-pipe client (ADR-038), split into halves with a lock
+    /// each: `DaemonClient`'s receiver task waits in `recv` while requests
+    /// go out through `send`. Under one lock every send waited for the
+    /// receiver's idle timeout to release it.
     #[cfg(windows)]
     NamedPipe {
-        client: Arc<tokio::sync::Mutex<tokio::net::windows::named_pipe::NamedPipeClient>>,
+        reader: Arc<tokio::sync::Mutex<tokio::io::ReadHalf<NamedPipeClient>>>,
+        writer: Arc<tokio::sync::Mutex<tokio::io::WriteHalf<NamedPipeClient>>>,
         name: String,
     },
 }
@@ -92,9 +98,9 @@ impl ConnectionHandle {
                 socket.send_to(bytes, addr).await?;
             }
             #[cfg(windows)]
-            Self::NamedPipe { client, .. } => {
+            Self::NamedPipe { writer, .. } => {
                 use tokio::io::AsyncWriteExt;
-                let mut g = client.lock().await;
+                let mut g = writer.lock().await;
                 g.write_all(bytes).await?;
             }
         }
@@ -111,9 +117,9 @@ impl ConnectionHandle {
             Self::Unix { socket, .. } => socket.recv(buf).await?,
             Self::Udp { socket, .. } => socket.recv(buf).await?,
             #[cfg(windows)]
-            Self::NamedPipe { client, .. } => {
+            Self::NamedPipe { reader, .. } => {
                 use tokio::io::AsyncReadExt;
-                let mut g = client.lock().await;
+                let mut g = reader.lock().await;
                 g.read(buf).await?
             }
         };
@@ -165,13 +171,17 @@ impl ConnectionHandle {
                 })
             }
             #[cfg(windows)]
-            Self::NamedPipe { client, name } => {
-                // Share the same underlying `NamedPipeClient` via `Arc`
-                // clone. The mutex serialises send/recv — uncontended in
-                // practice because the existing `PacketStream` pattern
-                // is sequential send-then-receive.
+            Self::NamedPipe {
+                reader,
+                writer,
+                name,
+            } => {
+                // Share the same underlying `NamedPipeClient` halves via
+                // `Arc` clone: a receiver task on one handle reads while
+                // the other handle sends.
                 Ok(Self::NamedPipe {
-                    client: Arc::clone(client),
+                    reader: Arc::clone(reader),
+                    writer: Arc::clone(writer),
                     name: name.clone(),
                 })
             }
@@ -239,11 +249,13 @@ impl ConnectionManager {
         {
             if let Ok(name) = std::env::var(DAEMON_PIPE_ENV) {
                 debug!("Trying Windows named pipe from env: {}", name);
-                if let Ok(handle) =
-                    Self::connect_pipe_with_timeout(name.clone(), ping_timeout).await
-                {
-                    return Ok(handle);
-                }
+                // An explicit pipe is the only daemon this caller means.
+                // Falling through would reach whatever answers the default
+                // pipe or UDP: the user's own daemon from an isolated test,
+                // or another user's daemon on the shared loopback port.
+                return Self::connect_pipe_with_timeout(name.clone(), ping_timeout)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("No daemon on {name}: {e:#}"));
             }
         }
 
@@ -410,8 +422,10 @@ impl ConnectionManager {
             _ => return Err(crate::ipc::unexpected_response(&response)),
         }
 
+        let (reader, writer) = tokio::io::split(handle.client);
         Ok(ConnectionHandle::NamedPipe {
-            client: Arc::new(tokio::sync::Mutex::new(handle.client)),
+            reader: Arc::new(tokio::sync::Mutex::new(reader)),
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
             name: handle.name,
         })
     }
@@ -561,5 +575,63 @@ mod tests {
         let _ = std::fs::remove_file(
             std::env::temp_dir().join(format!("PEKO_cli_{}.sock", std::process::id())),
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod pipe_tests {
+    use super::ConnectionManager;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::{PipeMode, ServerOptions};
+
+    /// `DaemonClient` keeps a receiver task waiting in `recv` on one handle
+    /// while it sends requests on another. A send must not wait for that
+    /// read: every command but `daemon status` hung after its ping.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sends_while_a_receiver_waits_on_the_same_pipe() {
+        let name = format!(r"\\.\pipe\peko-conn-test-{}", uuid::Uuid::new_v4());
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .pipe_mode(PipeMode::Message)
+            .create(&name)
+            .unwrap();
+        let daemon = tokio::spawn(async move {
+            server.connect().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            server.read(&mut buf).await.unwrap(); // the connect ping
+            let pong = crate::ipc::packet::ResponsePacket::Pong {
+                request_id: 0,
+                uptime_secs: 0,
+                version: "test".into(),
+            };
+            server.write_all(&pong.to_bytes().unwrap()).await.unwrap();
+            let n = server.read(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"request");
+            server.write_all(b"reply").await.unwrap();
+        });
+
+        let conn = ConnectionManager::connect_pipe_with_timeout(name, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let receiver_conn = conn.try_clone().await.unwrap();
+        let receiver = tokio::spawn(async move {
+            let mut buf = vec![0u8; 64];
+            let n = receiver_conn.recv(&mut buf).await.unwrap();
+            buf.truncate(n);
+            buf
+        });
+        tokio::task::yield_now().await;
+
+        tokio::time::timeout(Duration::from_secs(2), conn.send(b"request"))
+            .await
+            .expect("send must not wait for the pending read")
+            .unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(2), receiver)
+            .await
+            .expect("reply")
+            .unwrap();
+        assert_eq!(reply, b"reply");
+        daemon.await.unwrap();
     }
 }

@@ -79,10 +79,12 @@ pub enum ServerSocket {
     #[cfg(windows)]
     NamedPipe {
         // Tokio 1.49 unifies the listener and per-connection end under
-        // `NamedPipeServer`. The variant holds the server end that is
-        // currently waiting on `accept()`, plus a cloneable `ServerOptions`
-        // for creating the next instance per connection.
-        listener: Arc<tokio::net::windows::named_pipe::NamedPipeServer>,
+        // `NamedPipeServer`. The variant holds the first server end until
+        // `run` takes it for the accept loop, plus a cloneable
+        // `ServerOptions` for creating the next instance per connection.
+        // The loop must own each instance outright: one still shared here
+        // could never be handed to its connection's task.
+        listener: Arc<std::sync::Mutex<Option<tokio::net::windows::named_pipe::NamedPipeServer>>>,
         server_options: Arc<tokio::net::windows::named_pipe::ServerOptions>,
     },
 }
@@ -331,6 +333,13 @@ enum UnixBind {
     Failed(String),
 }
 
+/// The Win32 error a failed `bind_named_pipe` carries, if any.
+#[cfg(windows)]
+fn pipe_bind_os_error(e: &anyhow::Error) -> Option<i32> {
+    e.downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::raw_os_error)
+}
+
 /// IPC server that handles CLI requests
 pub struct IpcServer {
     socket: ServerSocket,
@@ -461,15 +470,25 @@ impl IpcServer {
                     info!("IPC server bound to Windows named pipe: {}", pipe_name);
                     return Ok(Self {
                         socket: ServerSocket::NamedPipe {
-                            listener: Arc::new(listener),
+                            listener: Arc::new(std::sync::Mutex::new(Some(listener))),
                             server_options: Arc::new(server_options),
                         },
                         app_state,
                     });
                 }
+                // FILE_FLAG_FIRST_PIPE_INSTANCE: the name is taken —
+                // another daemon serves it (ERROR_ACCESS_DENIED, or
+                // ERROR_PIPE_BUSY while all its instances are in use).
+                // As on Unix, no UDP fallback: that would start a second
+                // daemon rather than stop one.
+                Err(e) if matches!(pipe_bind_os_error(&e), Some(5 | 231)) => {
+                    return Err(anyhow::anyhow!(
+                        "Another daemon already serves the named pipe {pipe_name} ({e:#})"
+                    ));
+                }
                 Err(e) => {
                     warn!(
-                        "Failed to bind Windows named pipe ({}), falling back to UDP",
+                        "Failed to bind Windows named pipe ({:#}), falling back to UDP",
                         e
                     );
                 }
@@ -677,7 +696,9 @@ impl IpcServer {
         // FILE_FLAG_OVERLAPPED (0x40000000)      — required for async I/O
         let open_mode: u32 = 0x03 | 0x00080000 | 0x40000000;
         // PIPE_TYPE_MESSAGE (0x04) | PIPE_READMODE_MESSAGE (0x02) | PIPE_WAIT (0x00)
-        let pipe_mode: u32 = 0x04 | 0x02;
+        // | PIPE_REJECT_REMOTE_CLIENTS (0x08) — local IPC only, like the
+        // follow-up instances (Tokio's `ServerOptions` sets it by default).
+        let pipe_mode: u32 = 0x04 | 0x02 | 0x08;
         let max_instances: u32 = 64;
         let out_buffer: u32 = 65536;
         let in_buffer: u32 = 65536;
@@ -707,7 +728,10 @@ impl IpcServer {
         };
         if handle == 0 || handle == -1isize as HANDLE {
             let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-            anyhow::bail!("CreateNamedPipeW({name}) failed: {err}");
+            return Err(
+                anyhow::Error::new(std::io::Error::from_raw_os_error(err as i32))
+                    .context(format!("CreateNamedPipeW({name}) failed")),
+            );
         }
 
         // Wrap the raw HANDLE in Tokio's NamedPipeServer. `from_raw_handle`
@@ -750,7 +774,11 @@ impl IpcServer {
                 listener,
                 server_options,
             } => {
-                let listener = Arc::clone(listener);
+                let listener = listener
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("the named-pipe server is already running"))?;
                 let opts = Arc::clone(server_options);
                 let pipe_name = std::env::var(super::DAEMON_PIPE_ENV)
                     .unwrap_or_else(|_| super::default_pipe_name());
@@ -880,63 +908,52 @@ impl IpcServer {
     #[cfg(windows)]
     async fn run_pipes(
         &self,
-        listener: Arc<tokio::net::windows::named_pipe::NamedPipeServer>,
+        listener: tokio::net::windows::named_pipe::NamedPipeServer,
         opts: Arc<tokio::net::windows::named_pipe::ServerOptions>,
         pipe_name: String,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
     ) -> anyhow::Result<()> {
         info!("IPC server ready (Windows named pipe), waiting for connections...");
 
-        // `listener` is the first instance, currently not yet connected.
-        let mut current = listener;
+        // The instance waiting for the next client. `None` while a new one
+        // can't be created (every instance is in use): retry until one is.
+        let mut waiting = Some(listener);
 
         loop {
+            let Some(server) = waiting.as_ref() else {
+                tokio::select! {
+                    biased;
+                    _ = shutdown_rx.recv() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+                match opts.create(&pipe_name) {
+                    Ok(next) => waiting = Some(next),
+                    Err(e) => error!("Failed to create next named-pipe instance: {e}"),
+                }
+                continue;
+            };
             tokio::select! {
                 biased;
-                connect = current.connect() => {
+                connect = server.connect() => {
                     if let Err(e) = connect {
                         error!("Named pipe connect error: {e}");
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
-                    // Create the next instance BEFORE handing the current
-                    // one off to a task — this keeps the pipe name bound
-                    // and ready for the next client.
-                    let server = Arc::clone(&current);
-                    match opts.create(&pipe_name) {
-                        Ok(next) => {
-                            current = Arc::new(next);
-                        }
-                        Err(e) => {
-                            error!("Failed to create next named-pipe instance: {e}");
-                            // Keep `current` as the connected server; the
-                            // next iteration will reuse it after the
-                            // connection closes. The shutdown signal
-                            // will eventually tear down the accept loop.
-                        }
-                    }
+                    // Hand the connected instance to its task, and create
+                    // the next one so the pipe name stays bound for the
+                    // next client.
+                    let connected = waiting.take().expect("checked above");
                     let state = self.app_state.clone();
-                    let server = match Arc::try_unwrap(server) {
-                        Ok(s) => s,
-                        Err(arc) => {
-                            // Should never happen — we just cloned above
-                            // and never shared this Arc. Fall back to a
-                            // fresh create to keep the pipe responsive.
-                            error!("Unexpected: current Arc had >1 strong ref");
-                            match opts.create(&pipe_name) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    error!("Recovery create failed: {e}");
-                                    continue;
-                                }
-                            }
-                        }
-                    };
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_pipe_connection(server, state).await {
+                        if let Err(e) = Self::handle_pipe_connection(connected, state).await {
                             error!("Pipe connection error: {e}");
                         }
                     });
+                    match opts.create(&pipe_name) {
+                        Ok(next) => waiting = Some(next),
+                        Err(e) => error!("Failed to create next named-pipe instance: {e}"),
+                    }
                 }
                 _ = shutdown_rx.recv() => {
                     info!("IPC server (named pipe) received shutdown signal, stopping...");
@@ -948,35 +965,46 @@ impl IpcServer {
         Ok(())
     }
 
-    /// Handle a single Windows named-pipe connection (ADR-038).
+    /// Handle a Windows named-pipe connection (ADR-038).
     ///
-    /// Reads one message-mode packet (≤ 64KB per `MAX_PACKET_SIZE`),
-    /// dispatches to `handle_request` with a `PipeSink` over the
-    /// connection, then writes the response stream back. The connection
-    /// is closed when this function returns (the `NamedPipeServer` is
-    /// dropped), which matches the per-request model of the Unix/UDP
-    /// path.
+    /// Serves requests one after another until the client closes the
+    /// pipe: reads one message-mode packet (≤ 64KB per `MAX_PACKET_SIZE`),
+    /// dispatches it to `handle_request` with a `PipeSink` over the
+    /// connection, which writes the whole response stream back, then reads
+    /// the next. `ConnectionManager` pings over a fresh connection and then
+    /// sends its real request on the same one; while this served a single
+    /// request the second always found the pipe closed.
     #[cfg(windows)]
     async fn handle_pipe_connection(
         mut server: tokio::net::windows::named_pipe::NamedPipeServer,
         state: AppState,
     ) -> anyhow::Result<()> {
+        let mut buf = vec![0u8; 65536];
+        while Self::handle_pipe_request(&mut server, &state, &mut buf).await {}
+        Ok(())
+    }
+
+    /// Read and answer one request on a pipe connection. Returns `false`
+    /// once the client has closed it (or it broke), `true` to read the next.
+    #[cfg(windows)]
+    async fn handle_pipe_request(
+        server: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+        state: &AppState,
+        buf: &mut [u8],
+    ) -> bool {
         use tokio::io::AsyncReadExt;
 
-        let mut buf = vec![0u8; 65536];
-
-        // Read one full request. With `PipeMode::Message` (set in
-        // `bind_named_pipe`), `read` returns one full message at a time,
-        // capped at 64KB. We read a single request and respond; if the
-        // client wants another request on the same connection, that's a
-        // future enhancement — today the protocol is one-request-per-
-        // connection to match the existing Unix/UDP semantics.
-        let len = match server.read(&mut buf).await {
-            Ok(0) => return Ok(()), // client closed cleanly without sending
+        // With `PipeMode::Message` (set in `bind_named_pipe`), `read`
+        // returns one full message at a time, capped at 64KB.
+        let len = match server.read(buf).await {
+            Ok(0) => return false, // client closed the connection
             Ok(n) => n,
+            // ERROR_BROKEN_PIPE / ERROR_PIPE_NOT_CONNECTED: the client
+            // went away between requests, the normal end of a connection.
+            Err(e) if matches!(e.raw_os_error(), Some(109 | 233)) => return false,
             Err(e) => {
                 warn!("Named pipe read error: {e}");
-                return Ok(());
+                return false;
             }
         };
 
@@ -984,7 +1012,7 @@ impl IpcServer {
             Ok(e) => e,
             Err(e) => {
                 warn!("Failed to parse request packet on named pipe: {e}");
-                return Ok(());
+                return true;
             }
         };
         let request_id = envelope.request_id();
@@ -994,7 +1022,7 @@ impl IpcServer {
         // checked the client SID at CreateFileW time). Use the unit
         // `PeerAddr::Local` for the auth dispatch.
         let peer = PeerAddr::Local;
-        let caller = match Self::resolve_caller(&envelope, &peer, &state).await {
+        let caller = match Self::resolve_caller(&envelope, &peer, state).await {
             Ok(caller) => caller,
             Err(auth_err) => {
                 warn!("Auth failed for request {}: {}", request_id, auth_err);
@@ -1003,10 +1031,10 @@ impl IpcServer {
                     message: format!("Authentication failed: {}", auth_err),
                 };
                 if let Ok(bytes) = response.to_bytes() {
-                    let sink = sink_for_pipe(&mut server);
+                    let sink = sink_for_pipe(server);
                     let _ = sink.send_bytes(&bytes).await;
                 }
-                return Ok(());
+                return true;
             }
         };
 
@@ -1023,21 +1051,23 @@ impl IpcServer {
                     message: "Rate limit exceeded. Try again later.".to_string(),
                 };
                 if let Ok(bytes) = response.to_bytes() {
-                    let sink = sink_for_pipe(&mut server);
+                    let sink = sink_for_pipe(server);
                     let _ = sink.send_bytes(&bytes).await;
                 }
-                return Ok(());
+                return true;
             }
         }
 
         // Dispatch. The sink borrows `server` mutably for the lifetime
-        // of the call; once `handle_request` returns, the connection is
-        // dropped and the kernel cleans up the per-connection handle.
-        let sink = sink_for_pipe(&mut server);
-        if let Err(e) = Self::handle_request(envelope.packet, caller, state, &*sink, &peer).await {
+        // of the call; once `handle_request` returns, the whole response
+        // has been written and the connection can take the next request.
+        let sink = sink_for_pipe(server);
+        if let Err(e) =
+            Self::handle_request(envelope.packet, caller, state.clone(), &*sink, &peer).await
+        {
             error!("Error handling request {}: {}", request_id, e);
         }
-        Ok(())
+        true
     }
 
     /// Resolve the caller identity from an authenticated request.
@@ -1431,5 +1461,45 @@ mod bind_tests {
         );
         // The incumbent still owns the path: we must not have unlinked it.
         assert!(sock.exists(), "incumbent's socket must survive the refusal");
+    }
+}
+
+#[cfg(all(test, windows))]
+mod pipe_bind_tests {
+    use super::IpcServer;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    /// The daemon binds its named pipe as whichever user runs it, elevated
+    /// or not, and this user can open it. While the descriptor named an
+    /// owner the bind failed for every non-elevated user (ERROR_INVALID_OWNER)
+    /// and the daemon silently fell back to UDP.
+    #[tokio::test]
+    async fn binds_a_pipe_this_user_can_open() {
+        let name = format!(r"\\.\pipe\peko-bind-test-{}", uuid::Uuid::new_v4());
+        let (mut server, _opts) = IpcServer::bind_named_pipe(&name).expect("bind named pipe");
+
+        let mut client = ClientOptions::new()
+            .open(&name)
+            .expect("open as the same user");
+        server.connect().await.expect("connect");
+        client.write_all(b"ping").await.expect("write");
+        let mut buf = [0u8; 16];
+        let n = server.read(&mut buf).await.expect("read");
+        assert_eq!(&buf[..n], b"ping");
+    }
+
+    /// A second daemon may not bind the same pipe name, and the error says
+    /// the name is taken, so `IpcServer::new` refuses instead of falling
+    /// back to UDP as a second daemon.
+    #[tokio::test]
+    async fn refuses_a_second_first_instance() {
+        let name = format!(r"\\.\pipe\peko-bind-test-{}", uuid::Uuid::new_v4());
+        let _first = IpcServer::bind_named_pipe(&name).expect("bind named pipe");
+        let err = IpcServer::bind_named_pipe(&name).expect_err("second bind");
+        assert!(
+            matches!(super::pipe_bind_os_error(&err), Some(5 | 231)),
+            "got {err:#}"
+        );
     }
 }
