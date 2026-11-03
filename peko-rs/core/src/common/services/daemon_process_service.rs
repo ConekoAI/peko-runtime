@@ -417,6 +417,7 @@ impl DaemonProcessService {
         }
         cmd.env("PEKO_CONFIG_DIR", &config_dir)
             .env("PEKO_DATA_DIR", &data_dir)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             // Redirect stderr to `<config_dir>/logs/daemon.log` so the
             // dispatcher warnings + tracing output the daemon process
@@ -436,7 +437,14 @@ impl DaemonProcessService {
             .stderr(Self::open_daemon_log_stdio(&config_dir))
             .kill_on_drop(false);
 
-        let mut child = cmd.spawn()?;
+        // Windows: give the daemon a console of its own, hidden. Sharing
+        // the CLI's would tie it to that terminal (closing the window, or
+        // a Ctrl+C there, ends it), and its console children (shells, MCP
+        // servers) share the hidden console rather than each opening one.
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let mut child = spawn_without_inheriting_std_handles(&mut cmd)?;
 
         // Wait for daemon to be ready (up to 20 seconds)
         let ready = self.wait_for_daemon_ready(Duration::from_secs(20)).await?;
@@ -841,6 +849,60 @@ impl DaemonProcessService {
         }
 
         Ok(())
+    }
+}
+
+/// `CREATE_NO_WINDOW`: the child gets a console of its own, never shown.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Spawn a long-lived background child that must not keep this process's
+/// standard handles open.
+///
+/// On Windows a child inherits every inheritable handle of its parent, not
+/// only the stdio it was given, and this process's own stdin/stdout/stderr
+/// are inheritable (they were inherited). A daemon spawned by `peko create`
+/// therefore held the CLI's output pipe open for its whole life, and
+/// whoever read that output (a script, a test, an IDE) never saw it end.
+/// The standard handles are made non-inheritable for the spawn and
+/// restored after. Unix closes them on exec already (`O_CLOEXEC`).
+fn spawn_without_inheriting_std_handles(cmd: &mut Command) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{
+            GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+        };
+
+        let handles: [HANDLE; 3] = [
+            std::io::stdin().as_raw_handle() as HANDLE,
+            std::io::stdout().as_raw_handle() as HANDLE,
+            std::io::stderr().as_raw_handle() as HANDLE,
+        ];
+        // SAFETY: each handle is this process's live standard handle (or
+        // null, which both calls reject harmlessly); only the inherit
+        // flag changes, and it is restored below.
+        let cleared: Vec<HANDLE> = handles
+            .into_iter()
+            .filter(|&h| {
+                let mut flags = 0u32;
+                unsafe {
+                    GetHandleInformation(h, &mut flags) != 0
+                        && flags & HANDLE_FLAG_INHERIT != 0
+                        && SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) != 0
+                }
+            })
+            .collect();
+        let child = cmd.spawn();
+        for h in cleared {
+            // SAFETY: as above, restoring the flag this function cleared.
+            unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        }
+        child
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.spawn()
     }
 }
 
