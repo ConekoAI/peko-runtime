@@ -157,9 +157,48 @@ jobs:
           name: peko-macos-aarch64
           path: dist/peko-macos-aarch64.tar.gz
 
+  # Build for Windows x86_64 (also runs on Windows 11 on Arm, emulated)
+  build-windows-x86_64:
+    runs-on: windows-latest
+    # Windows is outside MVP scope (docs/MVP_GATE.md gate 0): a failure here
+    # must not hold up the release, which then ships without the zip.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # actions/cache doesn't expand `~/.cargo/...` on Windows runners.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86_64-release
+
+      - name: Build release binary
+        # Static CRT: the binaries don't need the Visual C++ runtime DLLs,
+        # which a clean Windows install may not have.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --target x86_64-pc-windows-msvc -p peko-cli -p peko-daemon
+
+      - name: Create archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $bin = 'target/x86_64-pc-windows-msvc/release'
+          Compress-Archive -Path "$bin/peko.exe", "$bin/peko-daemon.exe" -DestinationPath dist/peko-windows-x86_64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peko-windows-x86_64
+          path: dist/peko-windows-x86_64.zip
+
   # Create GitHub Release
   create-release:
-    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64]
+    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64, build-windows-x86_64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -189,13 +228,20 @@ jobs:
           
           \`\`\`bash
           # One-line installer
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash
           
           # Or manually download for your platform:
           # Linux x86_64: peko-linux-x86_64.tar.gz
           # Linux ARM64:  peko-linux-aarch64.tar.gz
           # macOS x86_64: peko-macos-x86_64.tar.gz
           # macOS ARM64:  peko-macos-aarch64.tar.gz
+          # Windows:      peko-windows-x86_64.zip
+          \`\`\`
+
+          On Windows (PowerShell):
+
+          \`\`\`powershell
+          irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1 | iex
           \`\`\`
           
           ### Quick Start
@@ -225,11 +271,12 @@ jobs:
           | Linux    | ARM64        | peko-linux-aarch64.tar.gz |
           | macOS    | x86_64       | peko-macos-x86_64.tar.gz |
           | macOS    | ARM64        | peko-macos-aarch64.tar.gz |
+          | Windows  | x86_64       | peko-windows-x86_64.zip |
           
           ### Checksums
           EOF
           
-          for file in artifacts/*.tar.gz; do
+          for file in artifacts/*.tar.gz artifacts/*.zip; do
             echo "\`$(basename $file)\`: \`$(sha256sum $file | cut -d' ' -f1)\`" >> RELEASE_NOTES.md
           done
           
@@ -241,7 +288,9 @@ jobs:
         with:
           name: Peko v${{ steps.release_notes.outputs.version }}
           body_path: RELEASE_NOTES.md
-          files: artifacts/*.tar.gz
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
         env:
@@ -258,7 +307,7 @@ jobs:
 
   # Manual release (for workflow_dispatch)
   create-manual-release:
-    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64]
+    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64, build-windows-x86_64]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     permissions:
@@ -285,9 +334,16 @@ jobs:
             
             ### Installation
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash
             ```
-          files: artifacts/*.tar.gz
+
+            On Windows (PowerShell):
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1 | iex
+            ```
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
           draft: false
           prerelease: false
         env:

@@ -46,15 +46,23 @@ other pekos over channels.
 
 ## Quick start
 
-Supported platforms: macOS (Apple silicon or Intel) and Linux (x86_64 or
-arm64, glibc 2.35+). Windows is not supported in this release.
+Supported platforms: macOS (Apple silicon or Intel), Linux (x86_64 or
+arm64, glibc 2.35+), and Windows 10 or 11 (x64; Windows on Arm runs it
+emulated). Windows builds start with the first release after 0.1.0-rc.5.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash
 ```
 
+On Windows, in PowerShell (installs per user, no administrator rights):
+
+```powershell
+irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
+```
+
 Before the first stable release, name a release candidate:
-`... | bash -s -- --version 0.1.0-rc.2`. Then:
+`... | bash -s -- --version 0.1.0-rc.2` (PowerShell: set
+`$env:PEKO_VERSION = '0.1.0-rc.2'` first). Then:
 
 ```bash
 peko model add --id my-model --api-format anthropic_messages \
@@ -68,7 +76,8 @@ peko send my-peko "Hello, what can you do?"
 [Getting Started](docs/getting-started/GETTING_STARTED.md) walks through each
 step with real output.
 
-Optional: Python 3 (`python3` on `PATH`) for the `Workflow` tool, which runs
+Optional: Python 3 (`python3` on `PATH`; on Windows also `python` or
+`py -3`) for the `Workflow` tool, which runs
 workflows the peko writes. Without it, `Workflow` returns an error and
 everything else works.
 

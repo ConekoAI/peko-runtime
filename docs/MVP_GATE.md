@@ -47,6 +47,10 @@ All four decided by the owner on 2026-10-22.
       - 2026-11-03: the `peko` lib suite and the native suites pass on
         Windows 11 as a non-elevated user, including the ledger test this
         gate used to name.
+      - 2026-11-03: releases also build `peko-windows-x86_64.zip`
+        (`install.ps1`, `peko update`), non-blocking: a failed Windows build
+        or smoke run doesn't stop the release. The release smoke test
+        passed locally on Windows 11; not yet seen on a CI runner.
 - [x] **pekohub-side enforcement shipped; nothing hub-side gates MVP**
       (decided 2026-10-22). This item used to read "out of MVP scope, ships
       unenforced". Both pieces have since landed in pekohub:

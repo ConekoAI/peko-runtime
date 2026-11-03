@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Windows release builds (2026-11-03)
+
+- Releases include `peko-windows-x86_64.zip` (`peko.exe` and
+  `peko-daemon.exe`, linked with the static C runtime, so no Visual C++
+  redistributable is needed). Windows on Arm runs it emulated.
+- `install.ps1` installs it from PowerShell
+  (`irm .../install.ps1 | iex`): per user, into
+  `%LOCALAPPDATA%\Programs\peko\bin`, added to the user `PATH`, no
+  administrator rights. It replaces binaries that are running.
+- `peko update` works on Windows.
+- Fix: `peko update` replaced only `peko`, leaving the old `peko-daemon`
+  beside it on every platform; it now replaces both, and puts the old
+  ones back if either fails.
+- The release smoke test runs on Windows too.
+
 ### Fix: Windows commands, shells, and workflows behave as on macOS (2026-11-03)
 
 - A daemon a command started (`peko create`, `peko send`, …) kept that
