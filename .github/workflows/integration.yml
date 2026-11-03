@@ -7,7 +7,8 @@ name: Integration Tests
 # lint         every PR that touches peko-rs/core/src/  < 1 min       scripts/check_*.sh
 # unit-linux   source/tests/build changes           lib tests           cargo test --lib
 # native-linux source/tests/build changes           native tests        shutdown + test-native (parallel with unit-linux)
-# unit-windows `[windows]` / nightly / manual       ~5 min              gated; expensive runner; non-blocking (Windows out of MVP)
+# unit-windows `[windows]` / Windows paths / nightly lib tests           gated; expensive runner; non-blocking (Windows out of MVP)
+# native-windows same gate as unit-windows          native tests        test-native suites (parallel with unit-windows); non-blocking
 # integration  PR that touches integration paths    mock/Hub tests      docker compose + PekoHub (parallel with unit tiers)
 #
 # Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
@@ -325,10 +326,36 @@ jobs:
         with:
           workspaces: .
           shared-key: peko-runtime-rust
+          # Save the build even when tests fail: without it a red run
+          # leaves no Windows cache, and the next run compiles cold again.
+          cache-on-failure: true
       - name: Run unit tests
         # Windows runner images don't ship GNU make, so call cargo
         # directly instead of `make test`.
         run: cargo test --lib
+
+  # The native suites, in parallel with `unit-windows` (as `native-linux`
+  # runs beside `unit-linux`): one job ran both back to back.
+  native-windows:
+    name: Native Tests (windows-latest)
+    runs-on: windows-latest
+    needs: changes
+    continue-on-error: true
+    if: >-
+      (needs.changes.outputs.windows_code == 'true'
+       || github.event_name == 'schedule'
+       || github.event_name == 'workflow_dispatch'
+       || contains(github.event.head_commit.message, '[windows]')
+       || contains(github.ref_name, '[windows]')
+       || startsWith(github.ref_name, 'windows/'))
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+          shared-key: peko-runtime-native
+          cache-on-failure: true
       - name: Run native integration tests
         # The `test-native` suites: the real CLI and daemon over the
         # named pipe (ADR-038). Mirrors the Makefile's NATIVE_TESTS.

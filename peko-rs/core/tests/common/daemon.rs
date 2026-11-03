@@ -52,10 +52,13 @@ impl DaemonGuard {
             super::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
         }
 
-        let debug_out =
-            std::fs::File::create("/tmp/peko-daemon-debug.out").expect("create daemon debug out");
-        let debug_err =
-            std::fs::File::create("/tmp/peko-daemon-debug.err").expect("create daemon debug err");
+        // The temp dir, not `/tmp`: on Windows that is `\tmp` on the
+        // current drive, which usually doesn't exist.
+        let tmp = std::env::temp_dir();
+        let debug_out = std::fs::File::create(tmp.join("peko-daemon-debug.out"))
+            .expect("create daemon debug out");
+        let debug_err = std::fs::File::create(tmp.join("peko-daemon-debug.err"))
+            .expect("create daemon debug err");
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground", "-vv"])
