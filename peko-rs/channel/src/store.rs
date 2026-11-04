@@ -1623,12 +1623,12 @@ impl ChannelStore {
                 }
                 meta.save(&new_dir).await?;
             }
-            fs::remove_dir_all(&old_dir).await?;
+            remove_dir_patiently(&old_dir).await;
             return Ok(());
         }
         let _guard = self.dm_lock.lock().await;
         let _provision = self.lock_dm(old).await?;
-        fs::rename(&old_dir, &new_dir).await.map_err(|e| {
+        move_dir(&old_dir, &new_dir).await.map_err(|e| {
             ChannelError::Adapter(format!(
                 "move {} to {}: {e}",
                 old_dir.display(),
@@ -3461,6 +3461,58 @@ impl ChannelStore {
             .find(|(id, _)| id == line)
             .map(|(_, ev)| ev))
     }
+}
+
+/// Move a channel directory (ADR-095 D7). A rename, retried a few times:
+/// on Windows a directory whose files were just written can refuse it for
+/// a moment ("Access is denied" while a scanner holds a file). If it keeps
+/// refusing, the files are copied and the old directory removed; if the
+/// old one cannot go yet, the next rekey finds the new id taken and merges
+/// what is left (by `msg_id`), so it converges either way.
+async fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut last = None;
+    for attempt in 0..5u64 {
+        match fs::rename(from, to).await {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+    }
+    tracing::warn!(
+        from = %from.display(),
+        "channel directory would not rename ({}); copying it",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    );
+    copy_dir(from, to).await?;
+    remove_dir_patiently(from).await;
+    Ok(())
+}
+
+/// Remove a directory, retrying a refusal for a moment (Windows); one
+/// that stays is left for the next rekey to merge and remove.
+async fn remove_dir_patiently(dir: &Path) {
+    for attempt in 0..5u64 {
+        if fs::remove_dir_all(dir).await.is_ok() || !dir.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+    }
+    tracing::warn!(dir = %dir.display(), "old channel directory left behind; the next rekey merges it");
+}
+
+/// Copy a directory tree.
+async fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to).await?;
+    let mut entries = fs::read_dir(from).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let target = to.join(entry.file_name());
+        if entry.file_type().await?.is_dir() {
+            Box::pin(copy_dir(&entry.path(), &target)).await?;
+        } else {
+            fs::copy(entry.path(), target).await?;
+        }
+    }
+    Ok(())
 }
 
 /// A fresh stable message id.
@@ -5725,6 +5777,29 @@ mod tests {
                 .unwrap(),
             dms[0].1
         );
+    }
+
+    /// The copy that stands in for a refused rename (Windows) carries every
+    /// file and subdirectory.
+    #[tokio::test]
+    async fn copying_a_channel_directory_keeps_everything() {
+        let tmp = std::env::temp_dir().join(format!("peko-copy-dir-{}", uuid::Uuid::new_v4()));
+        let from = tmp.join("from");
+        std::fs::create_dir_all(from.join("files/abc")).unwrap();
+        std::fs::write(from.join("events.jsonl"), "one\n").unwrap();
+        std::fs::write(from.join("files/abc/photo.png"), [1u8, 2, 3]).unwrap();
+        copy_dir(&from, &tmp.join("to")).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("to/events.jsonl")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(
+            std::fs::read(tmp.join("to/files/abc/photo.png")).unwrap(),
+            [1, 2, 3]
+        );
+        remove_dir_patiently(&from).await;
+        assert!(!from.exists());
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     /// ADR-095 D1: a peko-to-peko DM is one that has a bound peko here, a
