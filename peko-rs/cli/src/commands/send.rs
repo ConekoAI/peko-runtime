@@ -109,11 +109,9 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         if args.model.is_some() {
             anyhow::bail!("--model is meaningless for group channels (no bound agent run)");
         }
-        if !args.attach.is_empty() {
-            anyhow::bail!("attachments can only be sent to a peko directly, not to a group");
-        }
         let channel = format!("group:{slug}");
-        return post_to_group(paths, &channel, &message).await;
+        let attachments = absolute_attachments(&args.attach)?;
+        return post_to_group(paths, &channel, &message, attachments).await;
     }
 
     info!("Sending message to principal '{}'", args.principal);
@@ -130,16 +128,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
     // `sent_at` is the client-side timestamp just before ingress; the
     // busy-path `--wait` loop uses it to tell the principal's reply
     // apart from older thread history.
-    // ADR-088: the daemon reads attachments by absolute path.
-    let attachments = args
-        .attach
-        .iter()
-        .map(|path| {
-            std::fs::canonicalize(path)
-                .map(|p| p.display().to_string())
-                .with_context(|| format!("cannot attach {path}"))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let attachments = absolute_attachments(&args.attach)?;
     let sent_at = chrono::Utc::now();
     let stream = client
         .principal_send_stream(&args.principal, message, args.model.clone(), attachments)
@@ -168,13 +157,20 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
 /// `peko channel` dual-path so manual smoke tests work without a
 /// live daemon. The fallback path speaks as the CLI's derived
 /// identity (current Hub account when logged in, else `user:local`).
-async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Result<()> {
+async fn post_to_group(
+    paths: &GlobalPaths,
+    channel: &str,
+    message: &str,
+    attachments: Vec<String>,
+) -> Result<()> {
+    let attached = !attachments.is_empty();
     let packet = RequestPacket::ChannelPost {
         request_id: 0,
         channel: channel.to_string(),
         sender_name: None,
         text: message.to_string(),
         parent: None,
+        attachments,
     };
     if let Ok(client) = DaemonClient::connect().await {
         if let Ok(resp) = client.request_response(packet).await {
@@ -195,6 +191,10 @@ async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Res
         }
     }
 
+    // ADR-094: files go through the daemon, which keeps their copies.
+    if attached {
+        anyhow::bail!("attachments need the daemon running (`peko daemon start`)");
+    }
     let ch = ChannelId::parse(channel).with_context(|| format!("invalid ChannelId: {channel}"))?;
     let port: Arc<dyn peko_channel::ChannelPort> = Arc::new(ChannelStore::new(ChannelConfig {
         runtime_dir: paths.runtime_dir(),
@@ -211,6 +211,19 @@ async fn post_to_group(paths: &GlobalPaths, channel: &str, message: &str) -> Res
         .await?;
     println!("posted → {}", resp.task_id);
     Ok(())
+}
+
+/// `--attach` paths made absolute: the daemon reads attachments by
+/// absolute path (ADR-088, ADR-094).
+pub(crate) fn absolute_attachments(paths: &[String]) -> Result<Vec<String>> {
+    paths
+        .iter()
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .map(|p| p.display().to_string())
+                .with_context(|| format!("cannot attach {path}"))
+        })
+        .collect()
 }
 
 /// Process the response stream from a `PrincipalSend` request.

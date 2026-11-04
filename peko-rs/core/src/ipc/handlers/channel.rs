@@ -376,6 +376,32 @@ impl ChannelHandler {
         }
     }
 
+    /// ADR-094: copy a post's files into the channel's file store, under
+    /// the limits of where the conversation reaches. The error is the
+    /// user-facing reason.
+    async fn channel_post_files(
+        &self,
+        caller: &CallerContext,
+        channel: &ChannelId,
+        paths: &[String],
+    ) -> std::result::Result<Vec<peko_protocol::channel::Attachment>, String> {
+        use crate::principal::attachments;
+        if !caller.is_local() {
+            return Err("[forbidden] attachments can only be sent by the local user".into());
+        }
+        let port = self.host.channel_port();
+        let limits = match attachments::crosses_runtimes(port.as_ref(), channel).await {
+            Ok(true) => attachments::Limits::REMOTE,
+            Ok(false) => attachments::Limits::LOCAL,
+            Err(e) => return Err(format!("channel post failed: {e}")),
+        };
+        let files_dir = port
+            .files_dir(channel)
+            .await
+            .map_err(|e| format!("channel post failed: {e}"))?;
+        attachments::ingest_into_channel(&files_dir, paths, limits).await
+    }
+
     /// `ChannelOpenRemoteDm` (ADR-090 D2): the local user opens, or
     /// finds, its DM with a peko on another runtime. Local callers only —
     /// it speaks as the runtime's local user and may carry its Hub token.
@@ -730,12 +756,18 @@ impl ChannelHandler {
         };
         match port.history_older(&channel, before).await {
             Ok(page) => {
+                let files_dir = port.local().files_dir(&channel).await.ok();
+                let events = page
+                    .events
+                    .into_iter()
+                    .map(|ev| with_received_paths(files_dir.as_deref(), ev))
+                    .collect();
                 send_response(
                     sink,
                     ResponsePacket::ChannelHistoryPage {
                         request_id,
                         channel,
-                        events: page.events,
+                        events,
                         has_more: page.has_more,
                     },
                 )
@@ -1034,6 +1066,7 @@ impl RequestHandler for ChannelHandler {
                 sender_name,
                 text,
                 parent,
+                attachments,
             } => {
                 // ADR-057: user identities are never declared on the
                 // wire. The sender is either the caller's own derived
@@ -1096,7 +1129,23 @@ impl RequestHandler for ChannelHandler {
                         return Ok(());
                     }
                 };
-                match self.router().handle_post(&ch, &sender, &text, parent).await {
+                // ADR-094: the engine reads attached files itself, so only
+                // the runtime's operator — the local user — may attach.
+                let files = if attachments.is_empty() {
+                    Vec::new()
+                } else {
+                    match self.channel_post_files(caller, &ch, &attachments).await {
+                        Ok(files) => files,
+                        Err(message) => {
+                            return error_reply(sink, request_id, message).await;
+                        }
+                    }
+                };
+                match self
+                    .router()
+                    .handle_post_attached(&ch, &sender, &text, parent, files)
+                    .await
+                {
                     Ok(resp) => {
                         let response = ResponsePacket::ChannelPosted {
                             request_id,
@@ -1186,6 +1235,11 @@ impl RequestHandler for ChannelHandler {
                 };
                 match result {
                     Ok((events, event_ids, has_more, resume_before)) => {
+                        let files_dir = self.host.channel_port().files_dir(&ch).await.ok();
+                        let events = events
+                            .into_iter()
+                            .map(|ev| with_received_paths(files_dir.as_deref(), ev))
+                            .collect();
                         let response = ResponsePacket::ChannelPeekResult {
                             request_id,
                             channel: ch,
@@ -1606,6 +1660,27 @@ impl RequestHandler for ChannelHandler {
 // `kind` discriminator on the frontend switches on `channel_event`
 // vs `principal_send_chunk`.
 
+/// ADR-094: a file that came from another runtime has no path on the
+/// post; once it arrived, name the channel's stored copy so a client on
+/// this host can open it. Other paths are left as they are.
+fn with_received_paths(
+    files_dir: Option<&std::path::Path>,
+    mut event: peko_protocol::channel::ChannelEvent,
+) -> peko_protocol::channel::ChannelEvent {
+    if let (Some(files_dir), peko_protocol::channel::ChannelEvent::Posted { attachments, .. }) =
+        (files_dir, &mut event)
+    {
+        for attachment in attachments.iter_mut().filter(|a| a.path.is_empty()) {
+            if let Some(path) =
+                crate::principal::attachments::locate(None, Some(files_dir), attachment)
+            {
+                attachment.path = path.display().to_string();
+            }
+        }
+    }
+    event
+}
+
 /// Run the streaming replay + subscribe loop for `ChannelEventsWatch`.
 async fn run_channel_events_watch(
     request_id: u64,
@@ -1626,11 +1701,13 @@ async fn run_channel_events_watch(
             return Ok(());
         }
     };
+    // ADR-094: posts arrive here only once their files are stored.
+    let files_dir = port.files_dir(&channel).await.ok();
     for ev in replay {
         let response = ResponsePacket::ChannelEventReceived {
             request_id,
             channel: channel.clone(),
-            event: ev,
+            event: with_received_paths(files_dir.as_deref(), ev),
         };
         if let Err(_e) = send_response(sink, response).await {
             // Client disconnected mid-replay — drop the stream.
@@ -1648,7 +1725,7 @@ async fn run_channel_events_watch(
                 let response = ResponsePacket::ChannelEventReceived {
                     request_id,
                     channel: channel.clone(),
-                    event: ev,
+                    event: with_received_paths(files_dir.as_deref(), ev),
                 };
                 if let Err(_e) = send_response(sink, response).await {
                     // Sink closed (client disconnected). Stop the loop.
@@ -2310,6 +2387,7 @@ mod tests {
             sender_name: None,
             text: "hello from alice".into(),
             parent: None,
+            attachments: Vec::new(),
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2356,6 +2434,7 @@ mod tests {
             sender_name: Some("user:alice".into()),
             text: "impersonation".into(),
             parent: None,
+            attachments: Vec::new(),
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2376,6 +2455,7 @@ mod tests {
             sender_name: None,
             text: "hello from local".into(),
             parent: None,
+            attachments: Vec::new(),
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2408,6 +2488,7 @@ mod tests {
             sender_name: None,
             text: "must not land".into(),
             parent: None,
+            attachments: Vec::new(),
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2438,6 +2519,95 @@ mod tests {
     /// wire `requester` anymore). A member reads; a non-member is
     /// refused; an API-key caller has no user identity and stays
     /// ungated.
+    /// ADR-094: the daemon reads attached files from this host, so only
+    /// the local user attaches; their files land in the channel's store
+    /// by digest, and a peek names the stored copy.
+    #[tokio::test]
+    async fn only_the_local_user_attaches_and_files_are_stored_by_digest() {
+        let (tmp, host) = test_host();
+        let handler = ChannelHandler::new(host.clone());
+        let (_adapter, ch) = seed_channel_with_user_member(&host).await;
+        let file = tmp.path().join("notes.txt");
+        std::fs::write(&file, "remember the milk").unwrap();
+        let post = || RequestPacket::ChannelPost {
+            request_id: 1,
+            channel: ch.to_string(),
+            sender_name: None,
+            text: "see attached".into(),
+            parent: None,
+            attachments: vec![file.display().to_string()],
+        };
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
+
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                post(),
+                &CallerContext::from_jwt("alice".to_string()),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::Error { message, .. }] if message.contains("only be sent by the local user")
+            ),
+            "{:?}",
+            captured.lock().unwrap()
+        );
+
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(post(), &test_caller(), &sink, &peer)
+            .await
+            .expect("handle");
+        assert!(
+            matches!(
+                captured.lock().unwrap().as_slice(),
+                [ResponsePacket::ChannelPosted { .. }]
+            ),
+            "{:?}",
+            captured.lock().unwrap()
+        );
+        let (captured, sink) = capture_sink();
+        handler
+            .handle(
+                RequestPacket::ChannelPeek {
+                    request_id: 2,
+                    channel: ch.to_string(),
+                    since: None,
+                    tail: None,
+                    before: None,
+                    query: None,
+                    author: None,
+                },
+                &test_caller(),
+                &sink,
+                &peer,
+            )
+            .await
+            .expect("handle");
+        let captured = captured.lock().unwrap();
+        let [ResponsePacket::ChannelPeekResult { events, .. }] = captured.as_slice() else {
+            panic!("{captured:?}");
+        };
+        let attachment = events
+            .iter()
+            .find_map(|ev| match ev {
+                ChannelEvent::Posted { attachments, .. } => attachments.first().cloned(),
+                _ => None,
+            })
+            .expect("the post carries the file");
+        assert_eq!(attachment.name, "notes.txt");
+        assert!(attachment.sha256.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&attachment.path).unwrap(),
+            "remember the milk"
+        );
+    }
+
     #[tokio::test]
     async fn handler_peek_gates_on_caller_identity() {
         let (tmp, host) = test_host();
@@ -2766,6 +2936,7 @@ mod tests {
             sender_name: sender.map(str::to_string),
             text: "hi".into(),
             parent: None,
+            attachments: Vec::new(),
         };
 
         // Member user posts as themselves (derived identity).
@@ -2865,6 +3036,7 @@ mod tests {
                     sender_name: Some("user:alice".into()),
                     text: "hi".into(),
                     parent: None,
+                    attachments: Vec::new(),
                 },
                 &apikey,
                 &sink,
@@ -2889,6 +3061,7 @@ mod tests {
                     sender_name: None,
                     text: "hi from the key".into(),
                     parent: None,
+                    attachments: Vec::new(),
                 },
                 &apikey,
                 &sink,

@@ -2185,13 +2185,19 @@ impl crate::tunnel::TunnelHost for AppState {
         channel: peko_protocol::channel::ChannelId,
         author: ActorRef,
         text: String,
+        attachments: Vec<peko_protocol::channel::Attachment>,
     ) {
         for principal in self.human_dm_recipients(&channel).await {
             let manager = Arc::clone(&self.principal_manager);
-            let (channel, author, text) = (channel.clone(), author.clone(), text.clone());
+            let (channel, author, text, attachments) = (
+                channel.clone(),
+                author.clone(),
+                text.clone(),
+                attachments.clone(),
+            );
             tokio::spawn(async move {
                 if let Err(e) = manager
-                    .receive_channel_dm_post(&principal, &author, &channel, &text)
+                    .receive_channel_dm_post(&principal, &author, &channel, &text, &attachments)
                     .await
                 {
                     tracing::warn!(%channel, "remote DM post turn failed: {e:#}");

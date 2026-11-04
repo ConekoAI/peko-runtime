@@ -5,6 +5,10 @@
 //! (`attachments/<YYYY-MM-DD>/<8 hex>-<name>`, the same place and limits
 //! as inbound attachments) and posted on the run's conversation channel
 //! as the principal's own message, so clients show it beside the reply.
+//!
+//! ADR-094: in a conversation with anyone on another runtime or the Hub,
+//! the files also go into the channel's file store under their digest,
+//! within the remote limits, and the receiving runtime pulls the bytes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,23 +36,6 @@ impl AttachTool {
     pub fn new(port: Arc<dyn ChannelPort>) -> Self {
         Self { port }
     }
-
-    /// Refuse a conversation with anyone on another runtime or the Hub:
-    /// the copies live on this host, and posts carry only their paths.
-    async fn ensure_local(&self, channel: &ChannelId) -> anyhow::Result<()> {
-        let members = self.port.list_members(channel).await?;
-        let provenance = self.port.members_with_attribution(channel).await?;
-        let remote = members
-            .iter()
-            .any(|m| m.is_hub_route() || m.route_runtime().is_some())
-            || provenance.iter().any(|m| m.runtime_id.is_some());
-        anyhow::ensure!(
-            !remote,
-            "Attach: this conversation includes someone on another runtime or the Hub; \
-             files cannot be sent there yet"
-        );
-        Ok(())
-    }
 }
 
 /// `raw` as an absolute path: `~` expanded, relative paths taken from
@@ -71,7 +58,7 @@ impl Tool for AttachTool {
     fn description(&self) -> String {
         r#"Send files to the person you are talking to. Each file is copied into your workspace's `attachments/` folder and posted in this conversation as a message from you, with `text` as an optional caption; it appears beside your reply (images and SVG inline, audio and video playable, anything else opens in its app). Use it for something you made or found that they should have — a chart, a report, a spreadsheet, a recording. Don't paste a file's contents or path in your reply instead.
 
-Up to 8 files per call, each up to 20 MB. Only in a conversation (not in cron or internal work), and only with people on this computer: files do not reach the Hub or other runtimes yet.
+Up to 8 files per call, each up to 20 MB — or, when someone in the conversation is on another computer, each up to 10 MB and 25 MB in all. Only in a conversation (not in cron or internal work).
 
 ## Result
 `{success, channel, id, attachments: [{name, path, mime, size}]}` — `path` is your copy."#
@@ -155,7 +142,7 @@ Up to 8 files per call, each up to 20 MB. Only in a conversation (not in cron or
                      files to; mention the paths in your result instead"
                 )
             })?;
-        self.ensure_local(&channel).await?;
+        let remote = attachments::crosses_runtimes(self.port.as_ref(), &channel).await?;
 
         // ADR-078: the same reach as `Read` — untrusted runs stay inside
         // the workspace, and no non-owner run reads another principal's.
@@ -167,11 +154,26 @@ Up to 8 files per call, each up to 20 MB. Only in a conversation (not in cron or
             }
             paths.push(path.display().to_string());
         }
+        if remote {
+            attachments::validate(&paths, attachments::Limits::REMOTE)
+                .await
+                .map_err(|e| anyhow::anyhow!("Attach: {e}"))?;
+        }
         let copies = attachments::ingest(&workspace, &paths)
             .await
             .map_err(|e| anyhow::anyhow!("Attach: {e}"))?;
+        // ADR-094: the bytes go to the channel's file store, where the
+        // other runtimes pull them from.
+        let posted = if remote {
+            let files_dir = self.port.files_dir(&channel).await?;
+            attachments::share_with_channel(&files_dir, &workspace, copies.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Attach: {e}"))?
+        } else {
+            copies.clone()
+        };
 
-        let mut msg = PostMsg::root(text).with_attachments(copies.clone());
+        let mut msg = PostMsg::root(text).with_attachments(posted);
         if let Some(via) = crate::tools::builtin::channel::channel_send::via_for_ctx(ctx).await {
             msg = msg.with_via(via);
         }
@@ -325,10 +327,11 @@ mod tests {
         assert!(h.workspace().join("attachments").exists());
     }
 
-    /// The copies live on this host: a conversation with a Hub account
-    /// gets nothing it could open.
+    /// ADR-094: a conversation with a Hub account gets the files too —
+    /// stored under their digest for the other runtime to pull, within
+    /// the remote limits.
     #[tokio::test]
-    async fn conversations_with_remote_members_are_refused() {
+    async fn conversations_with_remote_members_get_files_by_digest() {
         let h = ToolHarness::new().await;
         let channel = h.channel(PRINCIPAL, "chat").await;
         h.channels
@@ -340,14 +343,38 @@ mod tests {
             .await
             .unwrap();
         h.write("ok.txt", "ok");
-        h.call_as(
-            &in_conversation(channel.as_str(), Trust::Owner),
-            "Attach",
-            json!({"paths": ["ok.txt"]}),
-        )
-        .await
-        .err("another runtime or the Hub");
-        assert!(!h.workspace().join("attachments").exists());
+        let caller = in_conversation(channel.as_str(), Trust::Owner);
+        h.call_as(&caller, "Attach", json!({"paths": ["ok.txt"]}))
+            .await
+            .ok();
+        let posted = h
+            .channels
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|e| match e {
+                ChannelEvent::Posted { attachments, .. } if !attachments.is_empty() => {
+                    Some(attachments)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let digest = posted[0].sha256.clone().expect("a digest");
+        let stored = h.channels.files_dir(&channel).await.unwrap().join(&digest);
+        assert_eq!(std::fs::read_to_string(stored).unwrap(), "ok");
+        // The peko keeps its own copy as before.
+        assert!(posted[0].path.starts_with("attachments/"));
+
+        // Over the remote per-file limit: refused, nothing posted.
+        let big = h.workspace().join("big.bin");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(crate::principal::attachments::REMOTE_MAX_FILE_BYTES + 1)
+            .unwrap();
+        h.call_as(&caller, "Attach", json!({"paths": ["big.bin"]}))
+            .await
+            .err("another computer");
     }
 
     /// A missing file refuses the whole call before anything is posted.

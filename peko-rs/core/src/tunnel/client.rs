@@ -685,6 +685,8 @@ impl TunnelClient {
             | TunnelMessage::TunnelChannelInvite { .. }
             | TunnelMessage::TunnelChannelHistoryRequest { .. }
             | TunnelMessage::TunnelChannelHistory { .. }
+            | TunnelMessage::TunnelAttachmentRequest { .. }
+            | TunnelMessage::TunnelAttachmentChunk { .. }
             | TunnelMessage::TunnelGroupInvitation { .. }
             | TunnelMessage::TunnelGroupJoin { .. }
             | TunnelMessage::TunnelGroupJoinRequest { .. }

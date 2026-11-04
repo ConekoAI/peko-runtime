@@ -103,7 +103,7 @@ impl TunnelChannelPort {
         channel: &ChannelId,
         before: Option<&str>,
         after: Option<&str>,
-    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<HistoryPage>> {
+    ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<HistoryPage>, String)> {
         let ctx = self
             .ctx
             .read()
@@ -148,7 +148,7 @@ impl TunnelChannelPort {
         let sent = handle.send(TunnelMessage::TunnelChannelHistoryRequest {
             request_id: request_id.clone(),
             source_runtime_id: payload.source_runtime_id,
-            recipient_runtime_id: host,
+            recipient_runtime_id: host.clone(),
             source_principal_did: person,
             channel_id: payload.channel_id,
             before: payload.before,
@@ -163,7 +163,7 @@ impl TunnelChannelPort {
                 .remove(&request_id);
             anyhow::bail!("Not connected to PekoHub: {e}");
         }
-        Ok(answer)
+        Ok((answer, host))
     }
 
     /// Wait for an answer, forgetting the request when none comes.
@@ -203,7 +203,7 @@ impl TunnelChannelPort {
         channel: &ChannelId,
         before: &str,
     ) -> anyhow::Result<HistoryPage> {
-        let answer = self.ask_history(channel, Some(before), None).await?;
+        let (answer, _) = self.ask_history(channel, Some(before), None).await?;
         let page = self.await_history(answer).await?;
         Ok(HistoryPage {
             events: page
@@ -235,12 +235,34 @@ impl TunnelChannelPort {
             });
         let mut added = 0;
         for _ in 0..CATCH_UP_PAGES {
-            let answer = self.ask_history(channel, None, after.as_deref()).await?;
+            let (answer, host) = self.ask_history(channel, None, after.as_deref()).await?;
             let page = self.await_history(answer).await?;
             let last = page.events.iter().rev().find_map(|ev| match ev {
                 ChannelEvent::Posted { msg_id, .. } => msg_id.clone(),
                 _ => None,
             });
+            // ADR-094: the files these posts name come from the host too.
+            let files: Vec<_> = page
+                .events
+                .iter()
+                .filter_map(|ev| match ev {
+                    ChannelEvent::Posted { attachments, .. }
+                        if attachments.iter().any(|a| a.sha256.is_some()) =>
+                    {
+                        Some(attachments.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !files.is_empty() {
+                let port = self.clone();
+                let channel = channel.clone();
+                tokio::spawn(async move {
+                    for attachments in files {
+                        port.fetch_attachments(&channel, &attachments, &host).await;
+                    }
+                });
+            }
             added += self
                 .local
                 .append_synced_events(channel, page.events)

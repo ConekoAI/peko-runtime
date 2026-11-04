@@ -3863,10 +3863,17 @@ struct LogSelf {
     name: String,
     /// The principal's workspace; attachment paths are relative to it.
     workspace: std::path::PathBuf,
+    /// The channel's file store, where files that crossed runtimes are
+    /// kept by digest (ADR-094).
+    files_dir: Option<std::path::PathBuf>,
 }
 
 impl LogSelf {
-    async fn of(principal: &Principal, port: &Arc<dyn ChannelPort>) -> Self {
+    async fn of(
+        principal: &Principal,
+        port: &Arc<dyn ChannelPort>,
+        channel: &peko_channel::ChannelId,
+    ) -> Self {
         let address = port
             .actor_info(&ActorRef::from(&principal.id))
             .await
@@ -3877,6 +3884,7 @@ impl LogSelf {
             subject: ActorRef::Principal((principal.did().await).into()),
             name: principal.name().await,
             workspace: principal.workspace_path.clone(),
+            files_dir: port.files_dir(channel).await.ok(),
         }
     }
 }
@@ -3919,12 +3927,18 @@ fn map_posted_to_log_message(
         text,
         correlation_id: None,
         sender_name,
+        // ADR-094: a file from another runtime has no path until it
+        // arrives; its row then names the channel's stored copy.
         attachments: attachments
             .into_iter()
             .map(|a| peko_protocol::channel::Attachment {
-                path: crate::principal::attachments::absolute(&me.workspace, &a)
-                    .display()
-                    .to_string(),
+                path: crate::principal::attachments::locate(
+                    Some(&me.workspace),
+                    me.files_dir.as_deref(),
+                    &a,
+                )
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
                 ..a
             })
             .collect(),
@@ -3990,7 +4004,7 @@ async fn read_principal_log(
     // map to messages, and `--since` filters — so the fill loop
     // walks further back until the page is full or the log is
     // exhausted (bounded, so a hostile filter can't pin the daemon).
-    let me = LogSelf::of(&principal, &port).await;
+    let me = LogSelf::of(&principal, &port, &channel).await;
     // Optional search predicates: case-insensitive text substring +
     // exact raw-author match. Both apply while paging, so a filtered
     // read keeps walking older pages until the page fills or the log
@@ -4230,7 +4244,7 @@ async fn run_principal_log_watch(
             return Ok(());
         }
     };
-    let me = LogSelf::of(principal, &port).await;
+    let me = LogSelf::of(principal, &port, &channel).await;
     let mut replayed: Vec<(String, String, String)> = Vec::new();
     for (line, event) in events {
         let ChannelEvent::Posted {
@@ -4393,6 +4407,7 @@ mod tests {
             subject: ActorRef::Principal("did:peko:abc".into()),
             name: "my-peko".into(),
             workspace: "/w".into(),
+            files_dir: None,
         };
         let row = map_posted_to_log_message(
             "chan_1".into(),
@@ -4404,6 +4419,7 @@ mod tests {
                 path: "attachments/2026-10-30/ab12cd34-photo.png".into(),
                 mime: "image/png".into(),
                 size: 12,
+                sha256: None,
             }],
             vec!["Yes".into(), "Not yet".into()],
             &me,
@@ -4417,6 +4433,45 @@ mod tests {
         assert_eq!(row.attachments[0].name, "photo.png");
     }
 
+    /// ADR-094: a file from another runtime names the channel's stored
+    /// copy once it arrived, and no path before.
+    #[test]
+    fn rows_name_received_files_by_their_stored_copy() {
+        let files = tempfile::tempdir().unwrap();
+        let digest = "ab".repeat(32);
+        let me = LogSelf {
+            raw_author: "prin_abc".into(),
+            address: "principal:local:prin_abc".into(),
+            subject: ActorRef::Principal("did:peko:abc".into()),
+            name: "my-peko".into(),
+            workspace: "/w".into(),
+            files_dir: Some(files.path().to_path_buf()),
+        };
+        let row = || {
+            map_posted_to_log_message(
+                "chan_1".into(),
+                "user:hub:acct",
+                "2026-11-04T10:00:00Z",
+                "look".into(),
+                vec![peko_protocol::channel::Attachment {
+                    name: "photo.png".into(),
+                    path: String::new(),
+                    mime: "image/png".into(),
+                    size: 2,
+                    sha256: Some(digest.clone()),
+                }],
+                Vec::new(),
+                &me,
+            )
+        };
+        assert_eq!(row().attachments[0].path, "");
+        std::fs::write(files.path().join(&digest), "hi").unwrap();
+        assert_eq!(
+            std::path::Path::new(&row().attachments[0].path),
+            files.path().join(&digest)
+        );
+    }
+
     #[test]
     fn posted_rows_name_the_principal_and_address_everyone_else() {
         let me = LogSelf {
@@ -4425,6 +4480,7 @@ mod tests {
             subject: ActorRef::Principal("did:peko:abc".into()),
             name: "my-peko".into(),
             workspace: "/w".into(),
+            files_dir: None,
         };
         let row = |author: &str| {
             map_posted_to_log_message(
