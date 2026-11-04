@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the block list names people (2026-11-04, ADR-095)
+
+- Blocking someone from their message request remembers the name the request
+  carried, including on your other computers when the block reaches them
+  while they hold the same request. `channel_blocked_people` gains
+  `names: {address: name}`, and `peko channel blocked` shows them. Found in a
+  live run, where the desktop listed blocked people by account ID.
+
 ### Fix: a DM id a peko kept still works after the DM moved (2026-11-04, ADR-095)
 
 - When registering or unregistering moves the person's DMs to a new id, the

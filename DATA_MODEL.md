@@ -2444,7 +2444,8 @@ accepted `channel_dm_request_answer {channel, answer: accept|decline|block}` →
 `channel_person_dms_result {dms: [{channel, peer, name?, waiting}]}` (`waiting`: no
 runtime of theirs is known yet, so they have not accepted); `channel_dm_requests` →
 `channel_dm_requests_result {requests}`; `channel_block_person {account, blocked}`
-and `channel_blocked` → `channel_blocked_people {people}`. The asker opens each DM it lacks whose id is the person's pair with
+and `channel_blocked` → `channel_blocked_people {people, names?}` (`names`: what each
+is called here, from the request they were blocked from). The asker opens each DM it lacks whose id is the person's pair with
 that peko, then catches it up from the peko's host.
 
 IPC (local callers only):

@@ -8022,6 +8022,12 @@ mod tests {
             );
         }
 
+        e1.app
+            .tunnel_channel_port()
+            .local()
+            .set_person_display_name(Some("Eve"))
+            .await
+            .unwrap();
         // Eve asks; Bob blocks her; she cannot ask again.
         e1.ipc(RequestPacket::ChannelOpenPersonDm {
             request_id: 5,
@@ -8064,6 +8070,20 @@ mod tests {
                 .await
         );
         assert!(b2_port.local().dm_requests(&bob).await.unwrap().is_empty());
+        // Both of Bob's computers name her in the block list (from her
+        // request, which each of them held).
+        for rt in [&b1, &b2] {
+            let ResponsePacket::ChannelBlockedPeople { names, .. } = rt
+                .ipc(RequestPacket::ChannelBlocked { request_id: 11 })
+                .await
+            else {
+                panic!("blocked list");
+            };
+            assert_eq!(
+                names.get(&format!("user:hub:{eve}")).map(String::as_str),
+                Some("Eve")
+            );
+        }
         // Bob changes his mind on b1; b2 follows with his next DM list.
         b1.ipc(RequestPacket::ChannelBlockPerson {
             request_id: 9,

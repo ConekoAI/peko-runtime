@@ -967,7 +967,7 @@ async fn set_blocked(who: &str, blocked: bool, json: bool) -> Result<()> {
 }
 
 fn print_blocked(resp: ResponsePacket, json: bool) -> Result<()> {
-    let ResponsePacket::ChannelBlockedPeople { people, .. } = resp else {
+    let ResponsePacket::ChannelBlockedPeople { people, names, .. } = resp else {
         anyhow::bail!("unexpected reply: {resp:?}");
     };
     if json {
@@ -977,7 +977,10 @@ fn print_blocked(resp: ResponsePacket, json: bool) -> Result<()> {
     } else {
         println!("Blocked:");
         for person in &people {
-            println!("  {person}");
+            match names.get(person) {
+                Some(name) => println!("  {name}  ({person})"),
+                None => println!("  {person}"),
+            }
         }
     }
     Ok(())

@@ -492,9 +492,11 @@ impl ChannelHandler {
                         );
                         let _ = port.local().take_dm_request(&pair).await;
                     }
+                    let (people, names) = port.blocked_people_named(&account).await?;
                     Ok(ResponsePacket::ChannelBlockedPeople {
                         request_id,
-                        people: port.local().blocked_people(&account).await?,
+                        people,
+                        names,
                     })
                 }
                 RequestPacket::ChannelPersonDms { .. } => {
@@ -503,10 +505,14 @@ impl ChannelHandler {
                         dms: port.person_dm_summaries(&account?).await,
                     })
                 }
-                RequestPacket::ChannelBlocked { .. } => Ok(ResponsePacket::ChannelBlockedPeople {
-                    request_id,
-                    people: port.local().blocked_people(&account?).await?,
-                }),
+                RequestPacket::ChannelBlocked { .. } => {
+                    let (people, names) = port.blocked_people_named(&account?).await?;
+                    Ok(ResponsePacket::ChannelBlockedPeople {
+                        request_id,
+                        people,
+                        names,
+                    })
+                }
                 _ => anyhow::bail!("not a person DM request"),
             }
         }

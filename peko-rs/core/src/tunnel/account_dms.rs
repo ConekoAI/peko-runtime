@@ -284,6 +284,9 @@ impl TunnelChannelPort {
             // arrived here before the block.
             for request in self.local.dm_requests(&account).await.unwrap_or_default() {
                 if self.local.is_blocked(&account, &request.from).await {
+                    let _ = self
+                        .know_person(&request.from, request.name.as_deref())
+                        .await;
                     let _ = self.local.take_dm_request(&request.channel).await;
                 }
             }
