@@ -1539,6 +1539,9 @@ impl ChannelPort for TunnelChannelPort {
     ) -> Result<ChannelId> {
         self.local.ensure_dm(principal, peer, binding).await
     }
+    async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
+        self.local.rekey_local_user_dms().await
+    }
     async fn restore_dm_copy(
         &self,
         channel: &ChannelId,

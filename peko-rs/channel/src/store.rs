@@ -1327,6 +1327,163 @@ impl ChannelStore {
         Ok(out)
     }
 
+    /// ADR-095 D7: key this runtime's person's DMs by the address its DM
+    /// key names now — the Hub account while the runtime is registered,
+    /// the local key otherwise. Every DM between the local user and an
+    /// actor whose pair id differs moves to the right one (its log, read
+    /// marks, members, and bindings; into an existing DM by merging).
+    /// Remote DMs opened under an account (ADR-091) are already keyed by
+    /// it and stay. Returns `(old, new, bound principals)` for each move,
+    /// so their sessions can follow. Idempotent.
+    pub async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
+        let local = self.actor_info(&ActorRef::User("local".into())).await;
+        if !local.identity_key.starts_with("local@") {
+            return Ok(Vec::new());
+        }
+        let mine = local.dm_key();
+        let mut moved = Vec::new();
+        for channel in self.channels_of_kind(ConversationKind::Dm).await? {
+            if !channel.is_pair_id() {
+                continue;
+            }
+            let dir = self.cfg.channel_dir(&channel);
+            let Ok(meta) = MetaJson::load(&dir, &channel).await else {
+                continue;
+            };
+            if meta.account.is_some() {
+                continue;
+            }
+            let addresses: Vec<String> = meta
+                .participants
+                .iter()
+                .map(|p| self.canonical_address(p))
+                .collect();
+            if !addresses.contains(&local.address) || addresses.len() != 2 {
+                continue;
+            }
+            let Some(other) = addresses.iter().find(|a| **a != local.address) else {
+                continue;
+            };
+            let Ok(other) = other.parse::<ActorRef>() else {
+                continue;
+            };
+            let expected = dm_channel_id(&self.actor_info(&other).await.dm_key(), &mine);
+            if expected == channel {
+                continue;
+            }
+            self.move_dm(&channel, &expected).await?;
+            // Back to the local key: the person's other runtimes were
+            // routes only while this one shared their account.
+            if !mine.starts_with("user:hub:") {
+                let dir = self.cfg.channel_dir(&expected);
+                let _guard = self.lock_members(&dir).await?;
+                let mut members = MembersJson::load(&dir).await?;
+                let before = members.remote_members.len();
+                members
+                    .remote_members
+                    .retain(|m| !m.principal_id.starts_with("user:"));
+                if members.remote_members.len() != before {
+                    members.save(&dir).await?;
+                }
+            }
+            moved.push((channel, expected, meta.bindings.keys().cloned().collect()));
+        }
+        Ok(moved)
+    }
+
+    /// Move a DM to another pair id (ADR-095 D7). Into a free id the
+    /// directory moves whole and each event line takes the new id; into an
+    /// existing DM the posts merge by `msg_id`, remote members and
+    /// bindings join its own, and the old directory goes.
+    async fn move_dm(&self, old: &ChannelId, new: &ChannelId) -> Result<()> {
+        let old_dir = self.cfg.channel_dir(old);
+        let new_dir = self.cfg.channel_dir(new);
+        if new_dir.join(META_FILE).exists() {
+            let posts: Vec<ChannelEvent> = self
+                .read_events(Tier::Runtime, old, &Checkpoint::zero())
+                .await?
+                .into_iter()
+                .map(|(_, mut ev)| {
+                    if let ChannelEvent::Posted { channel, .. } = &mut ev {
+                        *channel = new.clone();
+                    }
+                    ev
+                })
+                .collect();
+            self.append_synced_events(new, posts).await?;
+            let old_meta = MetaJson::load(&old_dir, old).await?;
+            let old_members = MembersJson::load(&old_dir).await.unwrap_or_default();
+            {
+                let _guard = self.lock_members(&new_dir).await?;
+                let mut members = MembersJson::load(&new_dir).await?;
+                for member in old_members.members {
+                    if !members.members.contains(&member) {
+                        members.members.push(member);
+                    }
+                }
+                for row in old_members.remote_members {
+                    if !members.remote_members.contains(&row) {
+                        members.remote_members.push(row);
+                    }
+                }
+                members.save(&new_dir).await?;
+                let mut meta = MetaJson::load(&new_dir, new).await?;
+                for (principal, binding) in old_meta.bindings {
+                    meta.bindings.entry(principal).or_insert(binding);
+                }
+                // Both name the same pair; keep a complete record of it.
+                if meta.participants.len() < 2 {
+                    meta.participants = old_meta.participants;
+                }
+                meta.save(&new_dir).await?;
+            }
+            fs::remove_dir_all(&old_dir).await?;
+            return Ok(());
+        }
+        let _guard = self.dm_lock.lock().await;
+        let _provision = self.lock_dm(old).await?;
+        fs::rename(&old_dir, &new_dir).await.map_err(|e| {
+            ChannelError::Adapter(format!(
+                "move {} to {}: {e}",
+                old_dir.display(),
+                new_dir.display()
+            ))
+        })?;
+        let mut pages = self.rotated_pages(&new_dir).await?;
+        pages.push(new_dir.join(EVENTS_FILE));
+        for page in pages {
+            let Ok(text) = fs::read_to_string(&page).await else {
+                continue;
+            };
+            let mut out = String::with_capacity(text.len());
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let mut value: serde_json::Value = match serde_json::from_str(line) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        out.push_str(line);
+                        out.push('\n');
+                        continue;
+                    }
+                };
+                // New lines wrap the event (`EventLine`); old ones are bare.
+                let event = if value.get("event").is_some() {
+                    &mut value["event"]
+                } else {
+                    &mut value
+                };
+                if event.get("channel").is_some() {
+                    event["channel"] = serde_json::Value::String(new.as_str().to_string());
+                }
+                out.push_str(&serde_json::to_string(&value)?);
+                out.push('\n');
+            }
+            let temp = page.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            fs::write(&temp, out).await?;
+            fs::rename(&temp, &page).await?;
+        }
+        Ok(())
+    }
+
     /// Every channel of `kind` on this runtime.
     async fn channels_of_kind(&self, kind: ConversationKind) -> Result<Vec<ChannelId>> {
         let root = self.cfg.channels_dir();
@@ -3456,7 +3613,7 @@ impl ChannelPort for ChannelStore {
         }
         let me = self.actor_info(&ActorRef::from(principal)).await;
         let other = self.actor_info(peer).await;
-        let channel = dm_channel_id(&me.identity_key, &other.identity_key);
+        let channel = dm_channel_id(&me.dm_key(), &other.dm_key());
         let _guard = self.dm_lock.lock().await;
         let _provision_guard = self.lock_dm(&channel).await?;
         let dir = self.cfg.channel_dir(&channel);
@@ -3769,6 +3926,9 @@ impl ChannelPort for ChannelStore {
         channel: &ChannelId,
     ) -> Result<Vec<peko_protocol::channel::MemberProvenance>> {
         ChannelStore::members_with_attribution(self, channel).await
+    }
+    async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
+        ChannelStore::rekey_local_user_dms(self).await
     }
     async fn restore_dm_copy(
         &self,
@@ -5205,6 +5365,134 @@ mod tests {
         assert_eq!(
             store.newest_msg_id(&dm).await.unwrap().as_deref(),
             Some("m3")
+        );
+    }
+
+    /// ADR-095 D7: registering keys the person's DM by their account; a
+    /// DM already at that id takes the old one's posts and bindings.
+    #[tokio::test]
+    async fn the_local_users_dms_follow_its_registration() {
+        let store = ChannelStore::new(tmp_cfg("dm-rekey"));
+        store.ensure_local_user("did:key:zHere").await.unwrap();
+        let me = ActorRef::User("local".into());
+        let mut dms = Vec::new();
+        for name in ["ann", "ben"] {
+            let peko = pid(&format!("prin_{name}"));
+            store
+                .register_actor(
+                    &ActorRef::from(&peko),
+                    None,
+                    Some(&format!("did:key:z{name}")),
+                    Some(&format!("{name}-key")),
+                    Some(name),
+                    Registration::LocalOnly,
+                )
+                .await
+                .unwrap();
+            let dm = store.ensure_dm(&peko, &me, "/local-user").await.unwrap();
+            assert_eq!(
+                dm,
+                dm_channel_id(&format!("{name}-key"), "local@did:key:zHere")
+            );
+            store
+                .post(&dm, &me, PostMsg::root(format!("hi {name}")))
+                .await
+                .unwrap();
+            dms.push((peko, dm));
+        }
+        assert!(
+            store.rekey_local_user_dms().await.unwrap().is_empty(),
+            "unregistered"
+        );
+
+        // Ben's Hub-keyed DM already exists (a post reached it another way).
+        let ben_hub = dm_channel_id("ben-key", "user:hub:acct");
+        store
+            .create(
+                &dms[1].0,
+                CreateOpts::runtime("dm-local-user")
+                    .with_id(ben_hub.clone())
+                    .with_kind(ConversationKind::Dm),
+            )
+            .await
+            .unwrap();
+        store
+            .append_synced_events(
+                &ben_hub,
+                vec![synced_post(&ben_hub, "elsewhere", "2026-11-04T00:00:00Z")],
+            )
+            .await
+            .unwrap();
+
+        store
+            .link_local_user("did:key:zHere", "acct")
+            .await
+            .unwrap();
+        let moved = store.rekey_local_user_dms().await.unwrap();
+        let ann_hub = dm_channel_id("ann-key", "user:hub:acct");
+        let mut pairs: Vec<_> = moved
+            .iter()
+            .map(|(o, n, _)| (o.to_string(), n.to_string()))
+            .collect();
+        pairs.sort();
+        let mut expected = vec![
+            (dms[0].1.to_string(), ann_hub.to_string()),
+            (dms[1].1.to_string(), ben_hub.to_string()),
+        ];
+        expected.sort();
+        assert_eq!(pairs, expected);
+        assert!(moved.iter().all(|(_, _, bound)| bound.len() == 1));
+        assert!(
+            store.rekey_local_user_dms().await.unwrap().is_empty(),
+            "idempotent"
+        );
+        assert_eq!(
+            store
+                .ensure_dm(&dms[0].0, &me, "/local-user")
+                .await
+                .unwrap(),
+            ann_hub
+        );
+
+        // Moved whole: every line names the new id.
+        for event in store.peek(&ann_hub, &Checkpoint::zero()).await.unwrap() {
+            assert_eq!(event.channel(), &ann_hub);
+        }
+        assert!(matches!(
+            store.conversation_kind(&dms[0].1).await,
+            Err(ChannelError::NotFound(_))
+        ));
+        // Merged: ben's DM holds both posts and ben's binding.
+        let texts: Vec<String> = store
+            .peek(&ben_hub, &Checkpoint::zero())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"hi ben".to_string()), "{texts:?}");
+        assert!(
+            texts.contains(&"message elsewhere".to_string()),
+            "{texts:?}"
+        );
+        assert!(store
+            .binding_for(&ben_hub, &dms[1].0)
+            .await
+            .unwrap()
+            .is_some());
+
+        // Unregistered again, both go back to the local key.
+        store.unlink_local_user().await.unwrap();
+        assert_eq!(store.rekey_local_user_dms().await.unwrap().len(), 2);
+        assert_eq!(
+            store
+                .ensure_dm(&dms[0].0, &me, "/local-user")
+                .await
+                .unwrap(),
+            dms[0].1
         );
     }
 
