@@ -979,7 +979,7 @@ impl TunnelDispatcher {
                 recipient_runtime_id,
                 dms,
                 people,
-                blocked,
+                blocks,
                 signature,
             } => {
                 self.host
@@ -990,7 +990,7 @@ impl TunnelDispatcher {
                         recipient_runtime_id,
                         dms,
                         people,
-                        blocked,
+                        blocks,
                         signature,
                     )
                     .await;
@@ -8064,6 +8064,31 @@ mod tests {
                 .await
         );
         assert!(b2_port.local().dm_requests(&bob).await.unwrap().is_empty());
+        // Bob changes his mind on b1; b2 follows with his next DM list.
+        b1.ipc(RequestPacket::ChannelBlockPerson {
+            request_id: 9,
+            account: eve.clone(),
+            blocked: false,
+        })
+        .await;
+        b2_port.sync_account_dms().await;
+        for _ in 0..20 {
+            route!();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !b2_port
+                .local()
+                .is_blocked(&bob, &format!("user:hub:{eve}"))
+                .await,
+            "the unblock reached b2"
+        );
+        b1.ipc(RequestPacket::ChannelBlockPerson {
+            request_id: 10,
+            account: eve.clone(),
+            blocked: true,
+        })
+        .await;
         let ResponsePacket::ChannelBlockedPeople { people, .. } = b1
             .ipc(RequestPacket::ChannelBlocked { request_id: 7 })
             .await

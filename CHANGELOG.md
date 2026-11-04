@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: unblocking someone reaches your other computers (2026-11-04, ADR-095)
+
+- Blocks and unblocks are kept with when they were made
+  (`blocked_people.json` gains `{blocked, at}` per person; the first shape
+  still reads) and travel in your account's DM list, where the latest
+  decision per person wins. Before, a block reached your other computers but
+  an unblock never did.
+- Wire: `tunnel_account_dms.blocked` (names) becomes `blocks` (`{person,
+  blocked, at}`); the signed payload's `blockedB64u` becomes `blocksB64u`.
+  Needs the matching PekoHub type.
 ### Fix: a message request names who is asking (2026-11-04, ADR-095)
 
 - Registering a runtime keeps the account's PekoHub display name (its

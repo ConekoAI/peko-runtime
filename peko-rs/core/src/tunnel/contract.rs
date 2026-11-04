@@ -12,7 +12,7 @@
 //! `UPDATE_TUNNEL_FIXTURE=1 cargo test -p peko --lib tunnel::contract`.
 
 use super::protocol::{
-    AccountDm, AccountGroup, AccountPersonDm, DmRoute, ExposureUpdatePayload,
+    AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
     InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
 };
@@ -421,7 +421,11 @@ fn samples() -> Vec<TunnelMessage> {
                     person: format!("user:hub:{ACCOUNT}"),
                 }],
             }],
-            blocked: vec![format!("user:hub:{HUB_ID}")],
+            blocks: vec![DmBlock {
+                person: format!("user:hub:{HUB_ID}"),
+                blocked: true,
+                at: "2026-11-04T10:00:00+00:00".into(),
+            }],
             signature: "runtime-signature".into(),
         },
         TunnelMessage::TunnelPersonDmInvite {

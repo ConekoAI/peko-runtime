@@ -2409,9 +2409,10 @@ two runtimes of the same account:
 
 Signed payloads: `peko-account-dms-request/1` (`requestId`, `sourceRuntimeId`,
 `recipientAccount`) and `peko-account-dms/1` (… `recipientRuntimeId`,
-`dmsB64u`, `peopleB64u`, `blockedB64u`). The list also carries the person's DMs
+`dmsB64u`, `peopleB64u`, `blocksB64u`). The list also carries the person's DMs
 with people and whom they blocked (ADR-095 D6):
-`"people":[{"channelId":"dm_…","peer":"user:hub:<id>","peerName":"bob","routes":[{"runtimeId":"did:key:…","person":"user:hub:<id>"}]}],"blocked":["user:hub:<id>"]`.
+`"people":[{"channelId":"dm_…","peer":"user:hub:<id>","peerName":"bob","routes":[{"runtimeId":"did:key:…","person":"user:hub:<id>"}]}],"blocks":[{"person":"user:hub:<id>","blocked":true,"at":"<RFC 3339>"}]`
+(every block and unblock with its time; the receiver keeps the latest per person).
 
 People DM people (ADR-095 D6). A DM between two people is a `dm` at
 `dm_channel_id("user:hub:<a>", "user:hub:<b>")`, kept under each side's account
@@ -2429,7 +2430,9 @@ The invite's `name` is the asker's PekoHub display name (else namespace),
 read at registration into `<runtime>/person_display_name` and removed on
 unregister. A request waits in `<runtime>/dm_requests/<pair id>.json`
 (`{channel, from, name?, source_runtime, account, received_at}`) until answered;
-blocks are kept in `<runtime>/blocked_people.json` (`{<account>: ["user:hub:<id>", …]}`).
+block decisions are kept in `<runtime>/blocked_people.json`
+(`{<account>: {"user:hub:<id>": {"blocked": bool, "at": "<RFC 3339>"}}}`; the first
+shape, `{<account>: ["user:hub:<id>", …]}`, still reads, dated the epoch).
 Neither, nor a person DM's folder, is reachable by any run's file tools.
 
 IPC (local callers only): `channel_open_person_dm {account, name?}` and an

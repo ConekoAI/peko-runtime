@@ -1139,9 +1139,9 @@ pub struct AccountDmsPayload {
     pub source_runtime_id: String,
     pub recipient_runtime_id: String,
     pub dms_b64u: String,
-    /// The person-to-person DMs and the block list (ADR-095 D6).
+    /// The person-to-person DMs and the block decisions (ADR-095 D6).
     pub people_b64u: String,
-    pub blocked_b64u: String,
+    pub blocks_b64u: String,
     pub iat: i64,
     pub exp: i64,
 }

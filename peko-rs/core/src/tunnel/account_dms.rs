@@ -17,9 +17,10 @@ use super::TunnelChannelPort;
 use crate::tunnel::{
     did_key_to_verifying_key, human_dm_channel_id, sign_history, verify_account_dms,
     verify_account_dms_request, AccountDm, AccountDmsPayload, AccountDmsRequestPayload,
-    AccountPersonDm, TunnelHandle, TunnelMessage, ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION,
+    AccountPersonDm, DmBlock, TunnelHandle, TunnelMessage, ACCOUNT_DMS_REQUEST_VERSION,
+    ACCOUNT_DMS_VERSION,
 };
-use peko_channel::{ChannelId, ChannelPort, Registration};
+use peko_channel::{BlockDecision, ChannelId, ChannelPort, Registration};
 use peko_subject::{ActorRef, PrincipalId};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -120,11 +121,18 @@ impl TunnelChannelPort {
         }
         let dms = self.account_dm_list(&ctx, &account).await;
         let people = self.person_dm_list(&account).await;
-        let blocked = self
+        let blocks: Vec<DmBlock> = self
             .local
-            .blocked_people(&account)
+            .block_decisions(&account)
             .await
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| DmBlock {
+                person: d.person,
+                blocked: d.blocked,
+                at: d.at.to_rfc3339(),
+            })
+            .collect();
         let iat = chrono::Utc::now().timestamp();
         let payload = AccountDmsPayload {
             v: ACCOUNT_DMS_VERSION.into(),
@@ -135,8 +143,8 @@ impl TunnelChannelPort {
             people_b64u: AccountDmsPayload::dms_b64u_of(
                 &serde_json::to_vec(&people).unwrap_or_default(),
             ),
-            blocked_b64u: AccountDmsPayload::dms_b64u_of(
-                &serde_json::to_vec(&blocked).unwrap_or_default(),
+            blocks_b64u: AccountDmsPayload::dms_b64u_of(
+                &serde_json::to_vec(&blocks).unwrap_or_default(),
             ),
             iat,
             exp: iat + 300,
@@ -148,7 +156,7 @@ impl TunnelChannelPort {
             recipient_runtime_id: source_runtime_id,
             dms,
             people,
-            blocked,
+            blocks,
             signature,
         });
     }
@@ -214,7 +222,7 @@ impl TunnelChannelPort {
         recipient_runtime_id: String,
         dms: Vec<AccountDm>,
         people: Vec<AccountPersonDm>,
-        blocked: Vec<String>,
+        blocks: Vec<DmBlock>,
         signature: String,
     ) {
         let (Some((user, account)), Some(ctx)) = (
@@ -248,20 +256,34 @@ impl TunnelChannelPort {
                 && p.recipient_runtime_id == recipient_runtime_id
                 && p.dms_b64u == b64u(&dms)
                 && p.people_b64u == b64u(&people)
-                && p.blocked_b64u == b64u(&blocked)
+                && p.blocks_b64u == b64u(&blocks)
         });
         if !agrees {
             warn!(request_id, "account DM list failed verification; dropped");
             return;
         }
-        // D6: the person's block list and their DMs with other people.
-        if !blocked.is_empty() {
-            if let Err(e) = self.local.set_blocked(&account, &blocked, true).await {
-                warn!("block list from another device not kept: {e}");
+        // D6: the person's block decisions (latest per person wins) and
+        // their DMs with other people.
+        let decisions: Vec<BlockDecision> = blocks
+            .iter()
+            .filter_map(|b| {
+                Some(BlockDecision {
+                    person: b.person.clone(),
+                    blocked: b.blocked,
+                    at: chrono::DateTime::parse_from_rfc3339(&b.at)
+                        .ok()?
+                        .with_timezone(&chrono::Utc),
+                })
+            })
+            .collect();
+        if !decisions.is_empty() {
+            if let Err(e) = self.local.merge_block_decisions(&account, &decisions).await {
+                warn!("block decisions from another device not kept: {e}");
             }
-            // A request that arrived here before the block goes too.
+            // A request from someone now blocked goes, even one that
+            // arrived here before the block.
             for request in self.local.dm_requests(&account).await.unwrap_or_default() {
-                if blocked.contains(&request.from) {
+                if self.local.is_blocked(&account, &request.from).await {
                     let _ = self.local.take_dm_request(&request.channel).await;
                 }
             }
