@@ -74,6 +74,9 @@ mod group_hub;
 
 #[path = "attachment_transfer.rs"]
 mod attachment_transfer;
+
+#[path = "account_dms.rs"]
+mod account_dms;
 pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
@@ -136,6 +139,9 @@ pub struct TunnelChannelPort {
     /// Inbound posts of one channel apply one at a time, in arrival
     /// order, while a post's files are fetched (ADR-094).
     apply_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// DM-list requests this runtime sent to its account's other
+    /// runtimes, by id, with when (ADR-095 D5).
+    account_dm_requests: account_dms::AccountDmRequests,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -171,6 +177,7 @@ impl TunnelChannelPort {
             attachment_locks: Arc::default(),
             wanted_lock: Arc::default(),
             apply_locks: Arc::default(),
+            account_dm_requests: Arc::default(),
         }
     }
 

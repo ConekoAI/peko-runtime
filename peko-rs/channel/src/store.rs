@@ -1484,6 +1484,51 @@ impl ChannelStore {
         Ok(())
     }
 
+    /// The `msg_id` of `channel`'s oldest post by `at` (ADR-095 D1: where
+    /// a person's copy fills backwards from).
+    pub async fn oldest_msg_id(&self, channel: &ChannelId) -> Result<Option<String>> {
+        Ok(self
+            .posts_by_time(channel)
+            .await?
+            .first()
+            .and_then(posted_msg_id)
+            .map(str::to_string))
+    }
+
+    /// Every DM between this runtime's person and another actor that is
+    /// not a remote DM opened under an account (ADR-095 D5): the person's
+    /// DMs with pekos hosted here. Returns each with the other actor.
+    pub async fn local_user_dm_peers(&self) -> Result<Vec<(ChannelId, ActorInfo)>> {
+        let local = self.actor_info(&ActorRef::User("local".into())).await;
+        let mut out = Vec::new();
+        for channel in self.channels_of_kind(ConversationKind::Dm).await? {
+            let dir = self.cfg.channel_dir(&channel);
+            let Ok(meta) = MetaJson::load(&dir, &channel).await else {
+                continue;
+            };
+            if meta.account.is_some() {
+                continue;
+            }
+            let addresses: Vec<String> = meta
+                .participants
+                .iter()
+                .map(|p| self.canonical_address(p))
+                .collect();
+            if addresses.len() != 2 || !addresses.contains(&local.address) {
+                continue;
+            }
+            let Some(other) = addresses
+                .iter()
+                .find(|a| **a != local.address)
+                .and_then(|a| a.parse::<ActorRef>().ok())
+            else {
+                continue;
+            };
+            out.push((channel, self.actor_info(&other).await));
+        }
+        Ok(out)
+    }
+
     /// Every channel of `kind` on this runtime.
     async fn channels_of_kind(&self, kind: ConversationKind) -> Result<Vec<ChannelId>> {
         let root = self.cfg.channels_dir();

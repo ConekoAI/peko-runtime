@@ -12,9 +12,9 @@
 //! `UPDATE_TUNNEL_FIXTURE=1 cargo test -p peko --lib tunnel::contract`.
 
 use super::protocol::{
-    AccountGroup, ExposureUpdatePayload, InstanceAnnouncePayload, InstanceDeregisterPayload,
-    InstanceExposure, InstanceHeartbeatPayload, InstanceStatus, InstanceType, StatusUpdatePayload,
-    TunnelMessage,
+    AccountDm, AccountGroup, ExposureUpdatePayload, InstanceAnnouncePayload,
+    InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
+    InstanceType, StatusUpdatePayload, TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -62,6 +62,8 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelGroupInvitation { .. } => "tunnel_group_invitation",
         TunnelMessage::TunnelGroupJoin { .. } => "tunnel_group_join",
         TunnelMessage::TunnelGroupJoinRequest { .. } => "tunnel_group_join_request",
+        TunnelMessage::TunnelAccountDmsRequest { .. } => "tunnel_account_dms_request",
+        TunnelMessage::TunnelAccountDms { .. } => "tunnel_account_dms",
         TunnelMessage::GroupRegister { .. } => "group_register",
         TunnelMessage::GroupRegistered { .. } => "group_registered",
         TunnelMessage::GroupRegisterRejected { .. } => "group_register_rejected",
@@ -108,6 +110,8 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_group_invitation",
     "tunnel_group_join",
     "tunnel_group_join_request",
+    "tunnel_account_dms_request",
+    "tunnel_account_dms",
     "group_register",
     "group_registered",
     "group_register_rejected",
@@ -382,6 +386,28 @@ fn samples() -> Vec<TunnelMessage> {
             offset: 262_144,
             size: 300_000,
             data: "dGVzdA==".into(),
+        },
+        TunnelMessage::TunnelAccountDmsRequest {
+            request_id: "adms-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_account: format!("user:hub:{ACCOUNT}"),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelAccountDms {
+            request_id: "adms-1".into(),
+            source_runtime_id: RUNTIME_B.into(),
+            recipient_runtime_id: RUNTIME_A.into(),
+            dms: vec![AccountDm {
+                channel_id: "dm_0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                peer_hub_id: HUB_ID.into(),
+                peer_signing_did: "did:key:z6MkPrincipal".into(),
+                peer_identity_key: "peko-key".into(),
+                peer_name: Some("peko".into()),
+                peer_runtime_id: RUNTIME_B.into(),
+                peer_exposure: "private".into(),
+            }],
+            signature: "runtime-signature".into(),
         },
         TunnelMessage::TunnelGroupInvitation {
             request_id: "ginv-1".into(),

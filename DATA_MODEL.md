@@ -2385,6 +2385,33 @@ Hub:
 The host answers only the person whose pair DM it is (an empty page
 otherwise), with `via`, `parent`, and attachment `path` removed.
 
+ADR-095: every runtime in a DM keeps a full copy and answers the DM's
+other member, and the same member from another of its routes:
+
+- A peko asks by its signing DID (`sourcePrincipalDid: "did:key:…"`) from the
+  runtime recorded as its route.
+- Pages and catch-up cursors follow `at`, not line order.
+- A person's copy fills back to the first post and stores it; a peko's copy
+  catches up forward only.
+- While a runtime is registered, its person's DMs are keyed by
+  `user:hub:<account>` (`ActorInfo::dm_key`); registering moves existing
+  DMs to that id, and unregistering moves them back.
+
+A new runtime of an account learns the person's DMs from the account's other
+runtimes (ADR-095 D5). PekoHub delivers the request to every runtime of
+`recipientAccount`, only from one of them, and relays the answer only between
+two runtimes of the same account:
+
+```json
+{"type":"tunnel_account_dms_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","signature":"<JWS>"}
+{"type":"tunnel_account_dms","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","dms":[{"channelId":"dm_…","peerHubId":"<UUID>","peerSigningDid":"did:key:…","peerIdentityKey":"…","peerName":"peko","peerRuntimeId":"did:key:…","peerExposure":"private"}],"signature":"<JWS>"}
+```
+
+Signed payloads: `peko-account-dms-request/1` (`requestId`, `sourceRuntimeId`,
+`recipientAccount`) and `peko-account-dms/1` (… `recipientRuntimeId`,
+`dmsB64u`). The asker opens each DM it lacks whose id is the person's pair with
+that peko, then catches it up from the peko's host.
+
 IPC (local callers only):
 
 ```json
