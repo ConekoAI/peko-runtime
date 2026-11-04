@@ -497,6 +497,12 @@ impl ChannelHandler {
                         people: port.local().blocked_people(&account).await?,
                     })
                 }
+                RequestPacket::ChannelPersonDms { .. } => {
+                    Ok(ResponsePacket::ChannelPersonDmsResult {
+                        request_id,
+                        dms: port.person_dm_summaries(&account?).await,
+                    })
+                }
                 RequestPacket::ChannelBlocked { .. } => Ok(ResponsePacket::ChannelBlockedPeople {
                     request_id,
                     people: port.local().blocked_people(&account?).await?,
@@ -956,6 +962,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelOpenRemoteDm { .. }
                 | RequestPacket::ChannelOpenPersonDm { .. }
                 | RequestPacket::ChannelDmRequests { .. }
+                | RequestPacket::ChannelPersonDms { .. }
                 | RequestPacket::ChannelDmRequestAnswer { .. }
                 | RequestPacket::ChannelBlockPerson { .. }
                 | RequestPacket::ChannelBlocked { .. }
@@ -1647,6 +1654,7 @@ impl RequestHandler for ChannelHandler {
 
             request @ (RequestPacket::ChannelOpenPersonDm { .. }
             | RequestPacket::ChannelDmRequests { .. }
+            | RequestPacket::ChannelPersonDms { .. }
             | RequestPacket::ChannelDmRequestAnswer { .. }
             | RequestPacket::ChannelBlockPerson { .. }
             | RequestPacket::ChannelBlocked { .. }) => {

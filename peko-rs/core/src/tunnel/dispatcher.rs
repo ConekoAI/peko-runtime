@@ -7798,6 +7798,20 @@ mod tests {
         }
     }
 
+    /// Each of `rt`'s person DMs: the other person, and whether it still
+    /// waits for them to accept.
+    async fn person_dm_waiting(rt: &DmRuntime) -> Vec<(String, bool)> {
+        match rt
+            .ipc(RequestPacket::ChannelPersonDms { request_id: 8 })
+            .await
+        {
+            ResponsePacket::ChannelPersonDmsResult { dms, .. } => {
+                dms.iter().map(|d| (d.peer.clone(), d.waiting)).collect()
+            }
+            other => panic!("person DMs: {other:?}"),
+        }
+    }
+
     /// ADR-095 D6 end to end. Alice (laptop, desktop) asks Bob (two
     /// computers) to DM; Bob's runtimes keep a request and tell her
     /// nothing; Bob accepts on one; her first post reaches him as history;
@@ -7905,6 +7919,10 @@ mod tests {
                 .is_empty(),
             "alice learns nothing of Bob's computers before he accepts"
         );
+        assert_eq!(
+            person_dm_waiting(&laptop).await,
+            [(format!("user:hub:{bob}"), true)]
+        );
 
         // Bob accepts on b1: Alice's post reaches him as history.
         let accepted = b1
@@ -7929,6 +7947,15 @@ mod tests {
         assert_eq!(
             texts(Arc::clone(&b1_port), channel.clone()).await,
             ["hi bob"]
+        );
+
+        assert_eq!(
+            person_dm_waiting(&laptop).await,
+            [(format!("user:hub:{bob}"), false)]
+        );
+        assert_eq!(
+            person_dm_waiting(&b1).await,
+            [(format!("user:hub:{alice}"), false)]
         );
 
         // Bob answers; it reaches Alice's laptop.

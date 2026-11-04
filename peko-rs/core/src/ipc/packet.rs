@@ -940,6 +940,11 @@ pub enum RequestPacket {
         name: Option<String>,
     },
 
+    /// This runtime's person's DMs with other people (ADR-095 D6). Local
+    /// callers only; answered with `channel_person_dms_result`.
+    #[serde(rename = "channel_person_dms")]
+    ChannelPersonDms { request_id: u64 },
+
     /// The people asking this runtime's person to DM (ADR-095 D6), newest
     /// first. Local callers only; answered with `channel_dm_requests_result`.
     #[serde(rename = "channel_dm_requests")]
@@ -1127,6 +1132,7 @@ impl RequestPacket {
             | Self::ChannelOpenRemoteDm { request_id, .. }
             | Self::ChannelOpenPersonDm { request_id, .. }
             | Self::ChannelDmRequests { request_id }
+            | Self::ChannelPersonDms { request_id }
             | Self::ChannelDmRequestAnswer { request_id, .. }
             | Self::ChannelBlockPerson { request_id, .. }
             | Self::ChannelBlocked { request_id }
@@ -1335,6 +1341,21 @@ pub struct PersonGroup {
     /// The group's home runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
+}
+
+/// One of this runtime's person's DMs with another person (ADR-095 D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonDmSummary {
+    /// The DM (`dm_<sha256>`) on this runtime.
+    pub channel: peko_protocol::channel::ChannelId,
+    /// The other person, `user:hub:<account>`.
+    pub peer: String,
+    /// What they are called here, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// No runtime of theirs is known yet: they have not accepted, so
+    /// nothing written here has reached them.
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1611,6 +1632,13 @@ pub enum ResponsePacket {
         peer: String,
         /// Whether this request created the DM here.
         created: bool,
+    },
+
+    /// Response to `ChannelPersonDms` (ADR-095 D6).
+    #[serde(rename = "channel_person_dms_result")]
+    ChannelPersonDmsResult {
+        request_id: u64,
+        dms: Vec<PersonDmSummary>,
     },
 
     /// Response to `ChannelDmRequests` (ADR-095 D6).
@@ -2883,6 +2911,7 @@ impl ResponsePacket {
             | Self::ChannelRemoteDmOpened { request_id, .. }
             | Self::ChannelPersonDmOpened { request_id, .. }
             | Self::ChannelDmRequestsResult { request_id, .. }
+            | Self::ChannelPersonDmsResult { request_id, .. }
             | Self::ChannelBlockedPeople { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelInvitationsResult { request_id, .. }
@@ -2979,6 +3008,7 @@ impl ResponsePacket {
             Self::ChannelRemoteDmOpened { .. } => "ChannelRemoteDmOpened",
             Self::ChannelPersonDmOpened { .. } => "ChannelPersonDmOpened",
             Self::ChannelDmRequestsResult { .. } => "ChannelDmRequestsResult",
+            Self::ChannelPersonDmsResult { .. } => "ChannelPersonDmsResult",
             Self::ChannelBlockedPeople { .. } => "ChannelBlockedPeople",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",

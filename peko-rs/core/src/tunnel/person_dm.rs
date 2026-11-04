@@ -557,6 +557,30 @@ impl TunnelChannelPort {
         }
     }
 
+    /// The person's DMs with other people as the desktop lists them:
+    /// who, what they are called, and whether they have accepted yet.
+    pub async fn person_dm_summaries(
+        &self,
+        account: &str,
+    ) -> Vec<crate::ipc::packet::PersonDmSummary> {
+        let mut out = Vec::new();
+        for (channel, peer) in self.local.person_dms(account).await.unwrap_or_default() {
+            let name = self
+                .local
+                .actor_info(&peer.parse::<ActorRef>().unwrap_or(ActorRef::Public))
+                .await
+                .name;
+            let waiting = self.peer_routes(&channel, &peer).await.is_empty();
+            out.push(crate::ipc::packet::PersonDmSummary {
+                channel,
+                peer,
+                name,
+                waiting,
+            });
+        }
+        out
+    }
+
     /// The person's DMs with other people and their routes, for the
     /// account DM list (D5).
     pub(crate) async fn person_dm_list(
