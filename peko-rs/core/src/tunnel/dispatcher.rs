@@ -7871,6 +7871,14 @@ mod tests {
                 .unwrap_or_default()
         };
 
+        // Registration kept her PekoHub display name.
+        laptop
+            .app
+            .tunnel_channel_port()
+            .local()
+            .set_person_display_name(Some("Alice"))
+            .await
+            .unwrap();
         // Alice asks from her laptop and writes before Bob answers.
         let ResponsePacket::ChannelPersonDmOpened {
             channel, created, ..
@@ -7902,6 +7910,11 @@ mod tests {
             };
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].from, format!("user:hub:{alice}"));
+            assert_eq!(
+                requests[0].name.as_deref(),
+                Some("Alice"),
+                "named as on PekoHub"
+            );
             assert!(rt
                 .app
                 .tunnel_channel_port()

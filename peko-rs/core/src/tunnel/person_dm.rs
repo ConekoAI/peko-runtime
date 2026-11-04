@@ -204,12 +204,7 @@ impl TunnelChannelPort {
         let Some(handle) = ctx.tunnel.read().await.clone() else {
             return;
         };
-        let name = self
-            .local
-            .actor_info(&ActorRef::User("local".into()))
-            .await
-            .name
-            .filter(|n| n != "local");
+        let name = self.local.person_display_name().await;
         let iat = chrono::Utc::now().timestamp();
         let payload = PersonDmInvitePayload {
             v: PERSON_DM_INVITE_VERSION.into(),

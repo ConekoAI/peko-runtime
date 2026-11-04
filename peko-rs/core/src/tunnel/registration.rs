@@ -227,13 +227,21 @@ pub async fn register_runtime(
         "PekoHub rejected the API key: HTTP {}",
         me.status()
     );
+    let me: serde_json::Value = me.json().await?;
     let account = me
-        .json::<serde_json::Value>()
-        .await?
         .get("id")
         .and_then(|v| v.as_str())
         .map(str::to_owned)
         .context("PekoHub returned no account ID")?;
+    // ADR-095 D6: what people see when this person asks to DM them.
+    let display_name = ["displayName", "namespace"]
+        .iter()
+        .find_map(|k| {
+            me.get(*k)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+        })
+        .map(str::to_owned);
     uuid::Uuid::parse_str(&account).context("PekoHub account IDs are UUIDs")?;
 
     let challenge = client
@@ -284,6 +292,9 @@ pub async fn register_runtime(
 
     let store = actor_store(resolver);
     store.link_local_user(&runtime_did, &account).await?;
+    store
+        .set_person_display_name(display_name.as_deref())
+        .await?;
     // ADR-091 D5: another person's conversations do not survive a change
     // of hands, whatever path removed the old registration.
     forget_remote_dms(resolver, &store, Some(&account)).await?;
@@ -393,6 +404,7 @@ pub async fn unregister_runtime(
         "PekoHub refused to unregister the runtime: HTTP {status}"
     );
     store.unlink_local_user().await?;
+    store.set_person_display_name(None).await?;
     forget_remote_dms(resolver, &store, None).await?;
     std::fs::remove_file(&path)?;
     Ok(())

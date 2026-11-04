@@ -2425,7 +2425,9 @@ runtime to runtime, only from a runtime of the person it names:
 ```
 
 Signed payloads: `peko-person-dm-invite/1` and `peko-dm-route/1` (`routesB64u`).
-A request waits in `<runtime>/dm_requests/<pair id>.json`
+The invite's `name` is the asker's PekoHub display name (else namespace),
+read at registration into `<runtime>/person_display_name` and removed on
+unregister. A request waits in `<runtime>/dm_requests/<pair id>.json`
 (`{channel, from, name?, source_runtime, account, received_at}`) until answered;
 blocks are kept in `<runtime>/blocked_people.json` (`{<account>: ["user:hub:<id>", …]}`).
 Neither, nor a person DM's folder, is reachable by any run's file tools.
