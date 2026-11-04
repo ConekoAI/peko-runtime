@@ -131,6 +131,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-085](architecture/adr/ADR-085-memory-claims-reviewed-against-their-sources.md) | A reviewer model checks each sourced hot-memory or conventions line against excerpts of its sources before a scheduled run writes it (fail closed); `ToolLog` `turns` gives per-turn evidence from the ledger |
 | [ADR-093](architecture/adr/ADR-093-suggested-replies.md) | A peko may offer 2–4 suggested replies on a post (`ChannelSend.options`, `Suggest` for its reply); a tap is just the person's message; owner decisions stay runtime-created and separate |
 | [ADR-094](architecture/adr/ADR-094-attachments-cross-runtimes.md) | Attachments cross runtimes: posts name files by SHA-256, the receiver pulls 256 KiB chunks through PekoHub and checks the digest; 10 MB a file, 25 MB a message; the Hub relays within byte caps and stores nothing |
+| [ADR-095](architecture/adr/ADR-095-symmetric-dms-that-follow-devices-and-moves.md) | Proposed: a DM has no host; every runtime in it keeps the whole conversation and serves it to the other member; snapshots carry DM logs so a moved peko keeps its DMs; a new device lists its account's DMs from the person's other runtimes; people DM people with message requests and blocking |
 
 ---
 
