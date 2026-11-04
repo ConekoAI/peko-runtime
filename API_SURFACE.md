@@ -654,6 +654,8 @@ pub struct PrincipalLogMessage {
     pub sender_name: Option<String>,
     /// ADR-088: attached files; `path` absolute on the runtime's host.
     pub attachments: Vec<peko_protocol::channel::Attachment>,
+    /// ADR-093: suggested replies offered with the message.
+    pub options: Vec<String>,
 }
 ```
 
@@ -676,6 +678,13 @@ IPC `ModelUpdateArgs` gains `spec`. `peko_message::media` holds
 `DaemonClient::principal_send_stream` takes
 `attachments: Vec<String>` (absolute paths); `RequestPacket::PrincipalSend`
 and `PrincipalSendStream` carry it with serde default empty.
+
+ADR-093: `ChannelEvent::Posted` gains `options: Vec<String>` and
+`PostMsg::with_options`; `peko_channel::validate_options` checks them
+against `MIN_OPTIONS` / `MAX_OPTIONS` / `MAX_OPTION_CHARS` (the store calls
+it on every local post). `ResponsePacket::PrincipalSentDone` gains
+`options` (serde default empty). The `Suggest` built-in
+(`tools::builtin::SuggestTool`) stages replies for the conversation's reply.
 
 ### IPC: `RequestPacket::PrincipalLog` / `ResponsePacket::PrincipalLog`
 

@@ -964,6 +964,9 @@ impl PeerChildTurns {
         acting_for: peko_tools_core::ActingFor,
     ) -> Result<StreamingResumeOutcome> {
         let conversation_channel = self.conversation_channel(session_id).await;
+        let reviewed_channel = conversation_channel
+            .as_deref()
+            .and_then(peko_channel::ChannelId::parse);
         let binding_role = self.binding_role(conversation_channel.as_deref()).await;
         // ADR-078 D7: when the policy reviews replies, a reply to anyone
         // but the owner is held back from live streaming until reviewed.
@@ -1028,6 +1031,11 @@ impl PeerChildTurns {
                 );
                 outcome.final_text =
                     "I can't share that here. The owner's policy doesn't allow it.".to_string();
+                // The withheld reply's suggested replies go with it
+                // (ADR-093).
+                if let Some(channel) = reviewed_channel.as_ref() {
+                    crate::principal::reply_options::clear(channel, &self.principal_id);
+                }
             }
             sink(peko_engine::AgenticEvent::AssistantText {
                 run_id: outcome.run_id.clone(),

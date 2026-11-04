@@ -928,6 +928,9 @@ pub struct PostMsg {
     pub msg_id: Option<String>,
     /// Files sent with the post (ADR-088); empty for most posts.
     pub attachments: Vec<peko_protocol::channel::Attachment>,
+    /// Suggested replies (ADR-093); empty for most posts. The store
+    /// refuses a post whose options break [`validate_options`].
+    pub options: Vec<String>,
 }
 
 impl PostMsg {
@@ -939,6 +942,7 @@ impl PostMsg {
             via: None,
             msg_id: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         }
     }
 
@@ -950,6 +954,7 @@ impl PostMsg {
             via: None,
             msg_id: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         }
     }
 
@@ -970,6 +975,13 @@ impl PostMsg {
         self
     }
 
+    /// Offer suggested replies with the post (ADR-093).
+    #[must_use]
+    pub fn with_options(mut self, options: Vec<String>) -> Self {
+        self.options = options;
+        self
+    }
+
     /// Stamp the posting agent's session slug path as the `via`
     /// attribution (see the field docs).
     #[must_use]
@@ -977,6 +989,52 @@ impl PostMsg {
         self.via = Some(via.into());
         self
     }
+}
+
+/// Fewest suggested replies a post may offer (ADR-093 D2).
+pub const MIN_OPTIONS: usize = 2;
+/// Most suggested replies a post may offer (ADR-093 D2).
+pub const MAX_OPTIONS: usize = 4;
+/// Longest suggested reply, in characters (ADR-093 D2).
+pub const MAX_OPTION_CHARS: usize = 60;
+
+/// Check a post's suggested replies (ADR-093 D2): none, or 2–4
+/// distinct one-line options of 1–60 characters each (surrounding
+/// whitespace does not count). Returns the options trimmed.
+///
+/// # Errors
+/// A message naming the broken limit, written for the model that
+/// offered the options.
+pub fn validate_options(options: &[String]) -> std::result::Result<Vec<String>, String> {
+    if options.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len()) {
+        return Err(format!(
+            "offer {MIN_OPTIONS} to {MAX_OPTIONS} options, not {}",
+            options.len()
+        ));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(options.len());
+    for option in options {
+        let option = option.trim();
+        if option.is_empty() {
+            return Err("an option is empty".to_string());
+        }
+        if option.contains(['\n', '\r']) {
+            return Err(format!("option {option:?} spans more than one line"));
+        }
+        if option.chars().count() > MAX_OPTION_CHARS {
+            return Err(format!(
+                "option {option:?} is longer than {MAX_OPTION_CHARS} characters"
+            ));
+        }
+        if out.iter().any(|o| o == option) {
+            return Err(format!("option {option:?} is offered twice"));
+        }
+        out.push(option.to_string());
+    }
+    Ok(out)
 }
 
 /// Options for [`ChannelPort::create`].

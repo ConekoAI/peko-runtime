@@ -478,6 +478,7 @@ fn served(event: ChannelEvent, wire_author: String) -> ChannelEvent {
             msg_id,
             reply_to,
             attachments,
+            options,
             ..
         } => ChannelEvent::Posted {
             channel,
@@ -495,6 +496,7 @@ fn served(event: ChannelEvent, wire_author: String) -> ChannelEvent {
                     ..a
                 })
                 .collect(),
+            options,
         },
         other => other,
     }

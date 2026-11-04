@@ -206,6 +206,10 @@
           "mime": "text/markdown",
           "size": 42
         }
+      ],
+      "options": [
+        "Yes",
+        "Not yet"
       ]
     },
     "signature": "runtime-signature",
@@ -319,6 +323,10 @@
             "mime": "application/pdf",
             "size": 2048
           }
+        ],
+        "options": [
+          "Yes",
+          "Not yet"
         ]
       }
     ],

@@ -1947,6 +1947,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let line = port
             .append_remote_event(&channel, &remote_event)
@@ -2036,6 +2037,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let result = port.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -2086,6 +2088,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         port.append_remote_event(&channel, &remote_event)
             .await

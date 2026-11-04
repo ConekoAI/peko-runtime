@@ -42,6 +42,7 @@ pub(crate) mod peer_dm;
 pub(crate) mod plan_prompt;
 pub mod policy_gate;
 pub(crate) mod quiet_tick;
+pub(crate) mod reply_options;
 pub mod router;
 pub mod routers;
 pub mod run_failure;

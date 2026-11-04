@@ -254,9 +254,12 @@ pub(crate) async fn post_peer_dm_reply(
     principal: &PrincipalId,
     channel: &ChannelId,
     text: &str,
-) {
+) -> Vec<String> {
+    // Suggested replies the run staged with `Suggest` (ADR-093 D3) go on
+    // this post; a run without a reply drops them.
+    let options = super::reply_options::take(port.as_ref(), channel, principal).await;
     if text.trim().is_empty() {
-        return;
+        return Vec::new();
     }
     let via = port
         .binding_for(channel, principal)
@@ -266,13 +269,17 @@ pub(crate) async fn post_peer_dm_reply(
         .map(|b| b.session)
         .filter(|session| session.starts_with('/'))
         .map(|session| format!("{}{}", peko_session::path::SCHEME_PREFIX, session));
-    let mut msg = PostMsg::root(text);
+    let mut msg = PostMsg::root(text).with_options(options.clone());
     msg.via = via;
-    if let Err(e) = port.post(channel, &ActorRef::from(principal), msg).await {
-        warn!(
-            channel = %channel,
-            "peer DM reply projection failed (reply already delivered): {e}"
-        );
+    match port.post(channel, &ActorRef::from(principal), msg).await {
+        Ok(_) => options,
+        Err(e) => {
+            warn!(
+                channel = %channel,
+                "peer DM reply projection failed (reply already delivered): {e}"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -592,6 +599,55 @@ mod tests {
                 .iter()
                 .all(|ev| !matches!(ev, peko_channel::ChannelEvent::Posted { .. })),
             "whitespace reply must not land in the channel log"
+        );
+    }
+
+    /// ADR-093 D3: the reply carries what the run staged with `Suggest`
+    /// (after the person's message), and returns it; an empty reply
+    /// drops the staged options instead of saving them for later.
+    #[tokio::test]
+    async fn the_reply_carries_staged_options_once() {
+        use crate::principal::reply_options;
+        let (_dir, manager, store, port, lock) = fixture().await;
+        let peer = ActorRef::User("alice".into());
+        let child_id = ensure_peer_child("root", &peer, &manager).await.unwrap();
+        let channel =
+            ensure_peer_dm_channel(&port, &principal_id(), &peer, &child_id, &manager, &lock)
+                .await
+                .unwrap()
+                .channel;
+        post_peer_dm_inbound(&port, &principal_id(), &channel, &peer.to_string(), "ship?")
+            .await
+            .unwrap();
+
+        let two = vec!["Ship it".to_string(), "Hold off".into()];
+        reply_options::stage(port.as_ref(), &channel, &principal_id(), two.clone()).await;
+        let sent = post_peer_dm_reply(&port, &principal_id(), &channel, "Ship today?").await;
+        assert_eq!(sent, two);
+        reply_options::stage(port.as_ref(), &channel, &principal_id(), two.clone()).await;
+        assert!(post_peer_dm_reply(&port, &principal_id(), &channel, " ")
+            .await
+            .is_empty());
+        let later = post_peer_dm_reply(&port, &principal_id(), &channel, "Done.").await;
+        assert!(later.is_empty(), "dropped, not kept: {later:?}");
+
+        let options: Vec<(String, Vec<String>)> = store
+            .peek(&channel, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                peko_channel::ChannelEvent::Posted { text, options, .. } => Some((text, options)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            options,
+            vec![
+                ("ship?".to_string(), vec![]),
+                ("Ship today?".to_string(), two),
+                ("Done.".to_string(), vec![]),
+            ]
         );
     }
 }

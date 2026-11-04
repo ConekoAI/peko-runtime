@@ -756,6 +756,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         }
     }
 
