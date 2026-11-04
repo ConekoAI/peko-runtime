@@ -419,9 +419,9 @@ Send files to the person the run is talking to (ADR-088 D7) — the counterpart 
 | `paths` | string[] | yes | 1–8 items |
 | `text` | string | no | — |
 
-Each path (absolute, `~/…`, or relative to the workspace) passes the same floor as `Read` (ADR-078: untrusted runs stay inside the workspace), then the file is copied to `<workspace>/attachments/<YYYY-MM-DD>/<8 hex>-<name>` under the inbound limits (at most 8 files, 20 MB each, regular files only; nothing is copied unless every file passes). The copies are posted on the run's conversation channel — the stamp's compartment — as one message from the principal with `text` as its caption, so `principal_log` and the desktop show them beside the reply. Returns `{success, channel, id, attachments: [{name, path, mime, size}]}` with absolute paths.
+Each path (absolute, `~/…`, or relative to the workspace) passes the same floor as `Read` (ADR-078: untrusted runs stay inside the workspace), then the file is copied to `<workspace>/attachments/<YYYY-MM-DD>/<8 hex>-<name>` under the inbound limits (at most 8 files, 20 MB each, regular files only; nothing is copied unless every file passes). In a conversation with anyone on the Hub or another runtime (ADR-094) the limits are 10 MB a file and 25 MB a call, and each file also goes to the channel's file store under its SHA-256, which the post carries; the other runtimes pull the bytes through PekoHub. The copies are posted on the run's conversation channel — the stamp's compartment — as one message from the principal with `text` as its caption, so `principal_log` and the desktop show them beside the reply. Returns `{success, channel, id, attachments: [{name, path, mime, size}]}` with absolute paths.
 
-A non-owner run's call goes to the policy reviewer first, as `Read` does. Refused outside a conversation (cron, internal work) and in a conversation with any member on the Hub or another runtime: posts carry paths on this host, not the files. Calls run alone (not parallel).
+A non-owner run's call goes to the policy reviewer first, as `Read` does. Refused outside a conversation (cron, internal work). Calls run alone (not parallel).
 
 ### Suggest
 

@@ -145,10 +145,14 @@ pub trait TunnelHost: Send + Sync {
     /// appended to `channel`. When `channel` is a DM, the host starts the
     /// turn of the peko bound there, as any ingress path would. Must not
     /// block on the turn.
+    ///
+    /// ADR-094: `attachments` are the post's files; those that arrived are
+    /// in the channel's file store under their digest.
     async fn human_dm_post(
         &self,
         channel: peko_protocol::channel::ChannelId,
         author: peko_subject::ActorRef,
         text: String,
+        attachments: Vec<peko_protocol::channel::Attachment>,
     );
 }

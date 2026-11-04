@@ -809,6 +809,13 @@ pub enum RequestPacket {
         sender_name: Option<String>,
         text: String,
         parent: Option<String>,
+        /// ADR-094: files to send with the post, as absolute paths on
+        /// this host; only the local user may attach. Each is copied into
+        /// the channel's file store; in a conversation with anyone on
+        /// another runtime or the Hub the bytes cross PekoHub, at most
+        /// 10 MB a file and 25 MB a message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
     },
 
     /// List events for `channel` since `since` (None = from start).

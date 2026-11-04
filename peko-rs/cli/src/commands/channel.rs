@@ -166,6 +166,10 @@ pub enum ChannelCommands {
         peko: String,
         /// Post this message right away.
         message: Option<String>,
+        /// Attach a file to the message (repeatable; ADR-094): at most
+        /// 10 MB a file and 25 MB in all, since it crosses PekoHub.
+        #[arg(long = "attach", value_name = "PATH")]
+        attach: Vec<String>,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -380,6 +384,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 sender_name,
                 text: text.clone(),
                 parent: parent.clone(),
+                attachments: Vec::new(),
             };
             let task_id =
                 run_daemon_or(paths, packet, "channel_post_failed", move |port, paths| {
@@ -613,7 +618,13 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
 
-        ChannelCommands::Dm { peko, message, .. } => {
+        ChannelCommands::Dm {
+            peko,
+            message,
+            attach,
+            ..
+        } => {
+            let attachments = crate::commands::send::absolute_attachments(&attach)?;
             let hub_id = remote_peko_hub_id(paths, &peko).await?;
             let resp = dm_request(RequestPacket::ChannelOpenRemoteDm {
                 request_id: 0,
@@ -632,6 +643,10 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 anyhow::bail!("unexpected reply: {resp:?}");
             };
             let channel = channel.to_string();
+            let message = match message {
+                None if !attachments.is_empty() => Some(String::new()),
+                other => other,
+            };
             let posted = match message {
                 Some(text) => {
                     dm_request(RequestPacket::ChannelPost {
@@ -640,6 +655,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         sender_name: None,
                         text,
                         parent: None,
+                        attachments,
                     })
                     .await?;
                     true

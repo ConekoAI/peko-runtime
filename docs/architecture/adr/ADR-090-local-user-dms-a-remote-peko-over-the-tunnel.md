@@ -80,7 +80,7 @@ Delivery is ADR-072 D6's outbox, unchanged: every envelope (the invite first, th
 
 ### D7 — Not covered here
 
-Attachments on this path (ADR-088 files stay on the sending runtime), visitors (no runtime), and switching the desktop over (`src-tauri/src/clients/hub_remote_client.rs`, a later desktop PR). The Hub proxy stays for clients without a runtime.
+Attachments on this path (ADR-088 files stay on the sending runtime — *since [ADR-094](ADR-094-attachments-cross-runtimes.md) they cross, pulled through the Hub in chunks*), visitors (no runtime), and switching the desktop over (`src-tauri/src/clients/hub_remote_client.rs`, a later desktop PR). The Hub proxy stays for clients without a runtime.
 
 ## 3. Alternatives considered
 

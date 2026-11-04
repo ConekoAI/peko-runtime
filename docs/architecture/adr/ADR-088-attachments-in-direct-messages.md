@@ -66,7 +66,7 @@ The session keeps the tool's text; the block rides the in-flight conversation fo
 
 Attachments were inbound only: a peko could make a chart or a report but could hand it over only as a path in its text. The `Attach` built-in takes `paths` (1–8) and an optional caption `text`. Each path passes the same floor as `Read` (ADR-078); the files are copied into `attachments/` under the D1 limits and D2 naming, and posted on the run's conversation channel — the stamp's compartment — as one message from the principal with the D3 attachment records. Clients read it like any post: `principal_log` rows carry absolute paths, and the desktop shows images (SVG included) inline, plays audio and video, and opens the rest.
 
-A post is its own message beside the reply, not part of it: the reply projection stays text, and a file sent mid-run shows before the answer that refers to it. `Attach` is refused outside a conversation (cron and internal runs have no one to send to) and in a conversation with any member on the Hub or another runtime, since a post carries paths on this host, not the bytes.
+A post is its own message beside the reply, not part of it: the reply projection stays text, and a file sent mid-run shows before the answer that refers to it. `Attach` is refused outside a conversation (cron and internal runs have no one to send to). ~~and in a conversation with any member on the Hub or another runtime, since a post carries paths on this host, not the bytes.~~ *Amended by [ADR-094](ADR-094-attachments-cross-runtimes.md):* in such a conversation the files also go into the channel's file store under their digest (10 MB a file, 25 MB a message), and the other runtimes pull them.
 
 ### D5 — A busy peko gets the notes only
 
@@ -85,8 +85,8 @@ A message sent while the peko is working is queued as steering, which is text: i
 - You can hand a peko a screenshot, a voice memo, a clip, a PDF, or a spreadsheet; a model that takes images, audio, or video sees them directly, and the peko opens anything else with its tools.
 - A model takes media only as its catalog spec says: `peko model add --spec '{"image_input":true,"audio_input":true,"video_input":true,…}'`.
 - Attachments count toward the workspace's size and are exported with it.
-- Remote clients and groups cannot attach yet.
-- A peko sends files with `Attach` in local conversations (DMs and groups); files do not cross runtimes yet.
+- Remote clients and groups cannot attach yet. *(Runtimes can since [ADR-094](ADR-094-attachments-cross-runtimes.md); clients without a runtime still cannot.)*
+- A peko sends files with `Attach` in local conversations (DMs and groups); files do not cross runtimes yet. *(They do since [ADR-094](ADR-094-attachments-cross-runtimes.md).)*
 
 ## 5. Implementation
 

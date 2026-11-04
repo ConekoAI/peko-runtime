@@ -48,15 +48,17 @@ pub use local_directory::LocalFirstAgentDirectory;
 pub use protocol::{AccountGroup, TunnelMessage};
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::{
-    human_dm_channel_id, HistoryPage, HubDm, TunnelChannelPort, HISTORY_PAGE_LIMIT,
+    human_dm_channel_id, HistoryPage, HubDm, TunnelChannelPort, ATTACHMENT_CHUNK_BYTES,
+    HISTORY_PAGE_LIMIT,
 };
 pub use tunnel_channel_signature::{
     jws_sign, jws_verify, sign_channel_event, sign_channel_invite, sign_history,
-    verify_author_signature, verify_channel_event, verify_channel_invite, verify_history,
-    verify_history_request, ChannelEventPayload, ChannelHistoryPayload,
-    ChannelHistoryRequestPayload, ChannelInvitePayload, ChannelInviteSignedFields,
-    ChannelSignedFields, CHANNEL_EVENT_PAYLOAD_VERSION, CHANNEL_HISTORY_REQUEST_VERSION,
-    CHANNEL_HISTORY_VERSION, CHANNEL_INVITE_PAYLOAD_VERSION,
+    verify_attachment_request, verify_author_signature, verify_channel_event,
+    verify_channel_invite, verify_history, verify_history_request, AttachmentRequestPayload,
+    ChannelEventPayload, ChannelHistoryPayload, ChannelHistoryRequestPayload, ChannelInvitePayload,
+    ChannelInviteSignedFields, ChannelSignedFields, ATTACHMENT_REQUEST_VERSION,
+    CHANNEL_EVENT_PAYLOAD_VERSION, CHANNEL_HISTORY_REQUEST_VERSION, CHANNEL_HISTORY_VERSION,
+    CHANNEL_INVITE_PAYLOAD_VERSION,
 };
 pub use tunnel_channel_signature::{
     verify_group_invitation, verify_group_join, verify_group_join_request, GroupInvitationPayload,

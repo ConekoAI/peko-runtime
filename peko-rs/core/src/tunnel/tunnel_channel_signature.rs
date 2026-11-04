@@ -510,6 +510,48 @@ pub fn verify_history(runtime_key: &VerifyingKey, compact: &str) -> Result<Chann
     Ok(payload)
 }
 
+/// Version tag of a `TunnelAttachmentRequest`'s signed payload (ADR-094).
+pub const ATTACHMENT_REQUEST_VERSION: &str = "peko-attachment-request/1";
+
+/// The signed payload of a `TunnelAttachmentRequest` (ADR-094): one
+/// runtime asks another for the piece of a channel file at `offset`.
+/// The chunk that answers is not signed: the post that named the file
+/// carries its digest, and the receiver checks the whole file against it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub channel_id: String,
+    pub sha256: String,
+    pub offset: u64,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify an attachment request's runtime signature, its version tag,
+/// and its freshness. Sign one with [`sign_history`].
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_attachment_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<AttachmentRequestPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: AttachmentRequestPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("attachment request payload is not valid JSON: {e}"))?;
+    if payload.v != ATTACHMENT_REQUEST_VERSION {
+        return Err(anyhow!(
+            "attachment request version must be {ATTACHMENT_REQUEST_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
 /// Payload version tag for a group invitation (ADR-092 D2).
 pub const GROUP_INVITATION_VERSION: &str = "peko-group-invitation/1";
 

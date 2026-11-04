@@ -777,6 +777,7 @@ mod tests {
             path: "/w/attachments/2026-10-30/ab12cd34-photo.png".into(),
             mime: "image/png".into(),
             size: 1_258_291,
+            sha256: None,
         }];
         let line = format_chat_message(&with_file);
         assert!(

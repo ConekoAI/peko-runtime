@@ -556,6 +556,43 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-094: ask the runtime that sent a post for the piece of one of
+    /// its files at `offset`. `sha256` names the file as the post did;
+    /// the answer is a `tunnel_attachment_chunk` with the same
+    /// `request_id`. `signature` is the source runtime's compact JWS over
+    /// every other field (`AttachmentRequestPayload`). PekoHub relays it
+    /// like history requests and never keeps it.
+    #[serde(rename = "tunnel_attachment_request", rename_all = "camelCase")]
+    TunnelAttachmentRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        channel_id: String,
+        sha256: String,
+        offset: u64,
+        signature: String,
+    },
+
+    /// ADR-094: one piece of a channel file, answering the request with
+    /// the same `request_id`. `data` is standard base64 of at most
+    /// `attachment_transfer::CHUNK_BYTES` bytes starting at `offset`;
+    /// `size` is the whole file's. An empty `data` with `size` 0 means
+    /// the file is not here (yet). Unsigned: the receiver checks the
+    /// assembled file against the digest the signed post carries.
+    /// PekoHub refuses a larger chunk and caps the bytes a runtime may
+    /// relay per minute.
+    #[serde(rename = "tunnel_attachment_chunk", rename_all = "camelCase")]
+    TunnelAttachmentChunk {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        channel_id: String,
+        sha256: String,
+        offset: u64,
+        size: u64,
+        data: String,
+    },
+
     /// ADR-092 D2: a group's home invites a person by Hub account.
     /// PekoHub delivers it to every runtime registered to
     /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending

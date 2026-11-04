@@ -267,16 +267,26 @@ impl std::fmt::Display for ChannelId {
 /// A file sent with a post (ADR-088). `path` is relative to the
 /// receiving peko's workspace on the post itself; clients reading it
 /// through `principal_log` get it absolute.
+///
+/// ADR-094: a post that crosses runtimes carries each file's `sha256`
+/// and no `path` (a host-local field). The channel keeps the bytes in
+/// its file store under that digest; the receiving runtime pulls them
+/// from the runtime that sent the post.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     /// The file's original name.
     pub name: String,
-    /// Where the copy is.
+    /// Where the copy is. Empty when the copy is only in the channel's
+    /// file store (ADR-094).
     pub path: String,
     /// The MIME type guessed from the name.
     pub mime: String,
     /// Size in bytes.
     pub size: u64,
+    /// Lowercase hex SHA-256 of the bytes, for files kept in the
+    /// channel's file store (ADR-094).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// Causal-ordered event log for one channel.

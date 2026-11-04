@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: attachments cross runtimes through PekoHub (2026-11-04, ADR-094)
+
+- Files you send in a DM with a peko on another computer, or in a group with
+  members elsewhere, reach the other side, and a peko's `Attach` works in
+  those conversations too (it was refused). The receiving runtime pulls the
+  bytes from the sender through PekoHub in 256 KiB chunks, checks them
+  against the post's SHA-256, and applies the post once its files are there;
+  the peko's turn gets its own copies and the usual notes and media.
+- Limits when a conversation reaches another computer: 8 files, 10 MB each,
+  25 MB per message (local stays 20 MB a file). PekoHub refuses larger chunks
+  and relays at most 50 MB of chunk data a minute per runtime; it stores
+  nothing.
+- A file that cannot be fetched is kept on a wanted list and asked for again
+  when the sender is back, for up to 30 days.
+- Wire: `Attachment.sha256`; `channel_post` takes `attachments` (absolute
+  paths, local user only); new tunnel messages `tunnel_attachment_request` /
+  `tunnel_attachment_chunk` (PekoHub needs the matching relay). Channel reads
+  and `principal_log` rows name a received file's stored copy.
+- CLI: `peko send group:<slug> --attach <path>` and
+  `peko channel dm <peko> --attach <path>`.
+
 ### Feature: a peko can suggest replies you send with one tap (2026-11-04, ADR-093)
 
 - A post can carry `options`: 2–4 short suggested replies (one line, at most

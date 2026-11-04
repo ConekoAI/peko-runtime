@@ -1713,6 +1713,7 @@ impl PrincipalManager {
         author: &ActorRef,
         channel: &peko_channel::ChannelId,
         message: &str,
+        files: &[peko_protocol::channel::Attachment],
     ) -> anyhow::Result<()> {
         let principal = self
             .get(principal_id.clone())
@@ -1726,6 +1727,17 @@ impl PrincipalManager {
             port.binding_for(channel, &principal.id).await?.is_some(),
             "{principal_id} has no session on {channel}"
         );
+        // ADR-094: the files the person sent arrived in the channel's file
+        // store; the peko gets its own copies (ADR-088 D2), and a note for
+        // any that did not arrive.
+        let (message, attachments) = crate::principal::attachments::received_for_turn(
+            &principal.workspace_path,
+            port.files_dir(channel).await.ok().as_deref(),
+            message,
+            files,
+        )
+        .await;
+        let message = message.as_str();
         let peer = port.actor_info(author).await.subject();
         let (owner, agent_name) = {
             let config = principal.config.read().await;
@@ -1751,8 +1763,12 @@ impl PrincipalManager {
         )
         .await?;
         let Some(_permit) = self.inbox_registry.try_acquire_run(&child_id).await else {
-            let text =
-                crate::principal::attachments::turn_text(message, &principal.workspace_path, &[]);
+            // ADR-088 D5: a busy peko gets the notes only.
+            let text = crate::principal::attachments::turn_text(
+                message,
+                &principal.workspace_path,
+                &attachments,
+            );
             self.inbox_registry
                 .get_or_create(&child_id)
                 .await
@@ -1765,7 +1781,14 @@ impl PrincipalManager {
         };
         let turns = self.peer_child_turns_for(&principal).await?;
         if self
-            .wait_for_disruption(&principal, &turns, &child_id, Some(channel), message, &[])
+            .wait_for_disruption(
+                &principal,
+                &turns,
+                &child_id,
+                Some(channel),
+                message,
+                &attachments,
+            )
             .await
             .is_some()
         {
@@ -1779,8 +1802,22 @@ impl PrincipalManager {
                 peko_tools_core::Origin::Ingress { channel: None },
             )
             .await;
+        let text = crate::principal::attachments::turn_text(
+            message,
+            &principal.workspace_path,
+            &attachments,
+        );
+        let media = crate::principal::attachments::media(&principal.workspace_path, &attachments);
         let outcome = turns
-            .drive_turn_streaming(&child_id, message, Arc::new(|_| {}), None, None, acting_for)
+            .drive_turn_streaming_with_media(
+                &child_id,
+                &text,
+                media,
+                Arc::new(|_| {}),
+                None,
+                None,
+                acting_for,
+            )
             .await?;
         post_peer_dm_reply(&port, &principal.id, channel, &outcome.final_text).await;
         self.record_peer_recall(&principal, author, &child_id, &outcome.final_text)

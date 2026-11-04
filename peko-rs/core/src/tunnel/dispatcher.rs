@@ -233,6 +233,84 @@ pub struct TunnelDispatcher {
     registration_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// A verified inbound channel event, ready to apply.
+struct InboundEvent {
+    request_id: String,
+    source_runtime_id: String,
+    channel: peko_protocol::channel::ChannelId,
+    event: peko_protocol::channel::ChannelEvent,
+}
+
+/// Step 5 of `handle_inbound_tunnel_channel_event`: fetch the files the
+/// post names (ADR-094), append it to the local mirror, confirm it, and
+/// start the peko's turn for a person's DM post. Runs under the
+/// channel's apply lock.
+async fn apply_inbound_event(host: Arc<dyn TunnelHost>, inbound: InboundEvent) {
+    let InboundEvent {
+        request_id,
+        source_runtime_id,
+        channel,
+        event,
+    } = inbound;
+    let event_kind = event.kind();
+    let port = host.tunnel_channel_port();
+    // A resend of an envelope already applied: confirm it again (the
+    // first receipt may have been lost), apply nothing.
+    if port.already_applied(&request_id).await {
+        port.send_receipt(&source_runtime_id, &channel, vec![request_id])
+            .await;
+        return;
+    }
+    // ADR-081 D7: only the linked copy receives. Unanswered, the sender
+    // re-resolves the link and redelivers to the online copy.
+    if !port.has_online_local_member(&channel).await {
+        warn!(
+            request_id,
+            %channel, "inbound TunnelChannelEvent: no local member of this channel is online here; leaving it unacknowledged"
+        );
+        return;
+    }
+    // ADR-094: the files first. One that cannot be had now is asked for
+    // again later; the post applies either way.
+    if let peko_protocol::channel::ChannelEvent::Posted { attachments, .. } = &event {
+        port.fetch_attachments(&channel, attachments, &source_runtime_id)
+            .await;
+    }
+    // The dispatcher is the single source of truth for envelope validity
+    // (steps 1-4); `append_remote_event` deliberately does not re-verify.
+    if let Err(e) = port.append_remote_event(&channel, &event).await {
+        warn!(
+            "inbound TunnelChannelEvent: local-mirror append failed (request_id={request_id}, channel_id={channel}, kind={event_kind}): {e}"
+        );
+        // Drop the event without a receipt — the source resends it
+        // (e.g. once the invite that creates the mirror lands). The audit
+        // row preserves the trail.
+        return;
+    }
+    port.mark_applied(&request_id).await;
+    port.send_receipt(&source_runtime_id, &channel, vec![request_id.clone()])
+        .await;
+    // ADR-090 D5: a person's root post in a DM is ingress — the host
+    // starts the peko's turn (only for DMs; groups wake by binding).
+    if let peko_protocol::channel::ChannelEvent::Posted {
+        author,
+        text,
+        parent: None,
+        attachments,
+        ..
+    } = &event
+    {
+        if let Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) = author.parse::<ActorRef>() {
+            host.human_dm_post(channel.clone(), human, text.clone(), attachments.clone())
+                .await;
+        }
+    }
+    debug!(
+        "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
+         (request_id={request_id}, channel_id={channel}, kind={event_kind})"
+    );
+}
+
 /// A principal's Hub ID, from the actor registry (ADR-081 §3).
 async fn manager_hub_id(
     host: &Arc<dyn TunnelHost>,
@@ -614,6 +692,8 @@ impl TunnelDispatcher {
                     port.on_peer_runtime_online(&runtime_id).await;
                     // ADR-091 D4: catch up DMs whose peko it hosts.
                     port.sync_remote_dms(Some(&runtime_id)).await;
+                    // ADR-094: files it holds that did not arrive yet.
+                    port.retry_wanted(Some(&runtime_id)).await;
                 });
             }
             TunnelMessage::PrincipalOwnerChanged {
@@ -737,6 +817,8 @@ impl TunnelDispatcher {
                     port.sync_remote_dms(None).await;
                     // ADR-092 D4: the account's groups follow it here.
                     port.sync_account_groups().await;
+                    // ADR-094: files that did not arrive yet.
+                    port.retry_wanted(None).await;
                 });
                 // Announce all instances after auth
                 if let Err(e) = self.announce_instances(&handle).await {
@@ -948,6 +1030,53 @@ impl TunnelDispatcher {
                 {
                     debug!(request_id, "a PekoHub answer nothing waits for; dropped");
                 }
+            }
+            TunnelMessage::TunnelAttachmentRequest {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                channel_id,
+                sha256,
+                offset,
+                signature,
+            } => {
+                let request = crate::tunnel::AttachmentRequestPayload {
+                    v: crate::tunnel::ATTACHMENT_REQUEST_VERSION.into(),
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    channel_id,
+                    sha256,
+                    offset,
+                    iat: 0,
+                    exp: 0,
+                };
+                self.handle_attachment_request(request, &signature, &handle)
+                    .await;
+            }
+            TunnelMessage::TunnelAttachmentChunk {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                channel_id,
+                sha256,
+                offset,
+                size,
+                data,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_attachment_chunk(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        channel_id,
+                        sha256,
+                        offset,
+                        size,
+                        data,
+                    )
+                    .await;
             }
             TunnelMessage::TunnelChannelHistory {
                 request_id,
@@ -2120,56 +2249,34 @@ impl TunnelDispatcher {
             .await;
             return Ok(());
         }
-        // ADR-081 D7: only the linked copy receives. Unanswered, the sender
-        // re-resolves the link and redelivers to the online copy.
-        if !port.has_online_local_member(&channel_id_typed).await {
-            warn!(
-                request_id,
-                channel_id, "inbound TunnelChannelEvent: no local member of this channel is online here; leaving it unacknowledged"
-            );
-            return Ok(());
-        }
-        if let Err(e) = port.append_remote_event(&channel_id_typed, &event).await {
-            warn!(
-                "inbound TunnelChannelEvent: local-mirror append failed (request_id={request_id}, channel_id={channel_id}, kind={event_kind}): {e}"
-            );
-            // Drop the event without a receipt — the source resends it
-            // (e.g. once the invite that creates the mirror lands) —
-            // and do not error: a single bad append must not
-            // backpressure the dispatcher. The audit row above
-            // preserves the trail.
-            return Ok(());
-        }
-        port.mark_applied(&request_id).await;
-        port.send_receipt(
-            &source_runtime_id,
-            &channel_id_typed,
-            vec![request_id.clone()],
-        )
-        .await;
-        // ADR-090 D5: a person's root post in a DM is ingress — the host
-        // starts the peko's turn (only for DMs; groups wake by binding).
-        if let peko_protocol::channel::ChannelEvent::Posted {
-            author,
-            text,
-            parent: None,
-            ..
-        } = &event
-        {
-            if let Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) =
-                author.parse::<ActorRef>()
-            {
-                self.host
-                    .human_dm_post(channel_id_typed.clone(), human, text.clone())
-                    .await;
+        // ADR-094: a post applies once the files it names are here, so it
+        // never shows (or wakes a peko) without them. Posts of one channel
+        // apply in arrival order; a fetch runs outside the dispatch permit,
+        // since the chunks it waits for are dispatched too.
+        let inbound = InboundEvent {
+            request_id,
+            source_runtime_id,
+            channel: channel_id_typed,
+            event,
+        };
+        let needs_files = !port.has_all_files(&inbound.channel, &inbound.event).await;
+        let lock = port.apply_lock(&inbound.channel);
+        let host = Arc::clone(&self.host);
+        match Arc::clone(&lock).try_lock_owned() {
+            Ok(_guard) if !needs_files => apply_inbound_event(host, inbound).await,
+            Ok(guard) => {
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    apply_inbound_event(host, inbound).await;
+                });
+            }
+            Err(_) => {
+                tokio::spawn(async move {
+                    let _guard = lock.lock_owned().await;
+                    apply_inbound_event(host, inbound).await;
+                });
             }
         }
-
-        debug!(
-            "inbound TunnelChannelEvent: verified + audited + appended to local mirror \
-             (request_id={request_id}, channel_id={channel_id}, kind={event_kind})"
-        );
-
         Ok(())
     }
 
@@ -2666,6 +2773,43 @@ impl TunnelDispatcher {
             }
         };
         port.answer_history(handle, &verified, page).await;
+    }
+
+    /// ADR-094: serve a chunk of a channel file to a runtime that asked
+    /// for it, once its signature holds. The port's gate decides whether
+    /// the file is the asker's to have.
+    async fn handle_attachment_request(
+        &self,
+        envelope: crate::tunnel::AttachmentRequestPayload,
+        signature: &str,
+        handle: &TunnelHandle,
+    ) {
+        if envelope.recipient_runtime_id != self.host.runtime_did() {
+            return;
+        }
+        let verified = match did_key_to_verifying_key(&envelope.source_runtime_id)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .and_then(|key| crate::tunnel::verify_attachment_request(&key, signature))
+        {
+            Ok(payload) => payload,
+            Err(e) => {
+                warn!(request_id = %envelope.request_id, "attachment request failed verification: {e}");
+                return;
+            }
+        };
+        let same = crate::tunnel::AttachmentRequestPayload {
+            iat: verified.iat,
+            exp: verified.exp,
+            ..envelope
+        };
+        if same != verified {
+            warn!(request_id = %verified.request_id, "attachment request disagrees with its signature");
+            return;
+        }
+        self.host
+            .tunnel_channel_port()
+            .answer_attachment_request(handle, &verified)
+            .await;
     }
 
     /// ADR-091 D6: the caller's own DM with `principal_name`, one page,
@@ -5628,6 +5772,8 @@ mod tests {
                     .unwrap(),
                 history @ (TunnelMessage::TunnelChannelHistoryRequest { .. }
                 | TunnelMessage::TunnelChannelHistory { .. }
+                | TunnelMessage::TunnelAttachmentRequest { .. }
+                | TunnelMessage::TunnelAttachmentChunk { .. }
                 | TunnelMessage::TunnelGroupInvitation { .. }
                 | TunnelMessage::TunnelGroupJoin { .. }
                 | TunnelMessage::TunnelGroupJoinRequest { .. }) => {
@@ -5866,6 +6012,7 @@ mod tests {
                 sender_name: None,
                 text: "hello from my desktop".into(),
                 parent: None,
+                attachments: Vec::new(),
             })
             .await;
         assert!(
@@ -5899,6 +6046,159 @@ mod tests {
             matches!(steering.as_slice(), [s] if s.content.contains("hello from my desktop")),
             "the post reaches the running session"
         );
+
+        // ADR-094: a photo from the desktop crosses too. B pulls the bytes
+        // from A in chunks, checks them against the post's digest, and the
+        // peko gets its own copy with a note.
+        let files = tempfile::tempdir().unwrap();
+        let photo = files.path().join("photo.png");
+        let bytes: Vec<u8> = b"\x89PNG\r\n\x1a\n"
+            .iter()
+            .copied()
+            .chain((0..(crate::tunnel::ATTACHMENT_CHUNK_BYTES * 2 + 17)).map(|i| (i % 251) as u8))
+            .collect();
+        std::fs::write(&photo, &bytes).unwrap();
+        let posted = a
+            .ipc(RequestPacket::ChannelPost {
+                request_id: 4,
+                channel: channel.as_str().into(),
+                sender_name: None,
+                text: "what is this?".into(),
+                parent: None,
+                attachments: vec![photo.display().to_string()],
+            })
+            .await;
+        assert!(
+            matches!(posted, ResponsePacket::ChannelPosted { .. }),
+            "{posted:?}"
+        );
+        let steering = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let registry = Arc::clone(&b.app.inbox_registry);
+        relay_until(&mut a, &mut b, || {
+            let (registry, child, steering) =
+                (Arc::clone(&registry), child.clone(), Arc::clone(&steering));
+            async move {
+                let mut steering = steering.lock().await;
+                if let Some(inbox) = registry.peek_inbox(&child).await {
+                    steering.extend(inbox.drain_steering().await);
+                }
+                !steering.is_empty()
+            }
+        })
+        .await;
+        let steering = steering.lock().await.clone();
+        let note = &steering[0].content;
+        assert!(note.contains("what is this?"), "{note}");
+        assert!(note.contains("[attached: photo.png (image/png"), "{note}");
+        let copy = note
+            .split(" at ")
+            .nth(1)
+            .and_then(|rest| rest.strip_suffix(']'))
+            .expect("the note names the peko's copy");
+        assert!(
+            copy.starts_with(peko.workspace_path.to_str().unwrap()),
+            "{copy}"
+        );
+        assert_eq!(std::fs::read(copy).unwrap(), bytes);
+        let on_b = b_port.peek(&channel, &Checkpoint::default()).await.unwrap();
+        let Some(peko_channel::ChannelEvent::Posted { attachments, .. }) = on_b.last() else {
+            panic!("the photo post is on B");
+        };
+        assert_eq!(attachments[0].path, "", "no path from A's disk");
+        let digest = attachments[0].sha256.clone().unwrap();
+        assert_eq!(
+            std::fs::read(
+                b_port
+                    .local()
+                    .files_dir(&channel)
+                    .await
+                    .unwrap()
+                    .join(&digest)
+            )
+            .unwrap(),
+            bytes
+        );
+
+        // Only a runtime that hosts a member of the conversation gets a
+        // file, and only from the conversation's own store.
+        let handle = b.app.tunnel_handle_slot().read().await.clone().unwrap();
+        let b_did = b.app.runtime_did();
+        let ask = |source: String, sha256: String| crate::tunnel::AttachmentRequestPayload {
+            v: crate::tunnel::ATTACHMENT_REQUEST_VERSION.into(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            source_runtime_id: source,
+            recipient_runtime_id: b_did.clone(),
+            channel_id: channel.as_str().into(),
+            sha256,
+            offset: 0,
+            iat: 0,
+            exp: 0,
+        };
+        let stranger = crate::tunnel::verifying_key_to_did_key(
+            &peko_identity::keys::KeyPair::generate().verifying_key,
+        );
+        for (source, sha256, served) in [
+            (stranger, digest.clone(), false),
+            (a.app.runtime_did(), "../../keys".to_string(), false),
+            (a.app.runtime_did(), "cd".repeat(32), false),
+            (a.app.runtime_did(), digest.clone(), true),
+        ] {
+            b_port
+                .answer_attachment_request(&handle, &ask(source, sha256))
+                .await;
+            let sent = b.sent();
+            let [TunnelMessage::TunnelAttachmentChunk { size, data, .. }] = sent.as_slice() else {
+                panic!("one chunk answers, got {sent:?}");
+            };
+            assert_eq!(
+                (*size == bytes.len() as u64 && !data.is_empty()),
+                served,
+                "served={served}"
+            );
+        }
+
+        // Bytes that do not match the post's digest are refused, and the
+        // file stays wanted.
+        let forged = "ef".repeat(32);
+        let a_files = a
+            .app
+            .tunnel_channel_port()
+            .local()
+            .files_dir(&channel)
+            .await
+            .unwrap();
+        std::fs::write(a_files.join(&forged), b"not what the digest says").unwrap();
+        let fetch = {
+            let (b_port, channel, from) =
+                (Arc::clone(&b_port), channel.clone(), a.app.runtime_did());
+            let wanted = peko_protocol::channel::Attachment {
+                name: "forged.bin".into(),
+                path: String::new(),
+                mime: "application/octet-stream".into(),
+                size: 24,
+                sha256: Some(forged.clone()),
+            };
+            tokio::spawn(async move { b_port.fetch_attachments(&channel, &[wanted], &from).await })
+        };
+        relay_until(&mut a, &mut b, || {
+            let finished = fetch.is_finished();
+            async move { finished }
+        })
+        .await;
+        assert!(fetch.await.unwrap().is_empty(), "nothing was received");
+        let b_files = b_port.local().files_dir(&channel).await.unwrap();
+        assert!(!b_files.join(&forged).exists());
+        assert!(!b_files.join(format!("{forged}.part")).exists());
+        let wanted = std::fs::read_to_string(
+            b.app
+                .tunnel_channel_port()
+                .local()
+                .config()
+                .runtime_dir
+                .join("channel_delivery/wanted_files.json"),
+        )
+        .unwrap();
+        assert!(wanted.contains(&forged), "{wanted}");
         drop(permit);
 
         // The peko's answer reaches the person's record on A.
@@ -5926,12 +6226,74 @@ mod tests {
             panic!("expected events, got {read:?}");
         };
         let texts: Vec<_> = posts(&events).into_iter().map(|(_, t)| t).collect();
-        assert_eq!(texts, ["hello from my desktop", "hi! what can I do?"]);
         assert_eq!(
-            posts(&events)[1].0,
+            texts,
+            [
+                "hello from my desktop",
+                "what is this?",
+                "hi! what can I do?"
+            ]
+        );
+        assert_eq!(
+            posts(&events)[2].0,
             format!("principal:hub:{hub_id}"),
             "the answer is the peko's"
         );
+
+        // ADR-094: the peko's file reaches A's record, and A's client reads
+        // it at A's stored copy.
+        let report = files.path().join("report.md");
+        std::fs::write(&report, "# findings").unwrap();
+        let shared = crate::principal::attachments::ingest_into_channel(
+            &b_port.local().files_dir(&channel).await.unwrap(),
+            &[report.display().to_string()],
+            crate::principal::attachments::Limits::REMOTE,
+        )
+        .await
+        .unwrap();
+        b_port
+            .post(
+                &channel,
+                &ActorRef::from(&peko.id),
+                peko_channel::PostMsg::root("here it is").with_attachments(shared),
+            )
+            .await
+            .unwrap();
+        let a_port = a.app.tunnel_channel_port();
+        relay_until(&mut a, &mut b, || {
+            let a_port = Arc::clone(&a_port);
+            let channel = channel.clone();
+            async move {
+                posts(&a_port.peek(&channel, &Checkpoint::default()).await.unwrap())
+                    .iter()
+                    .any(|(_, t)| t == "here it is")
+            }
+        })
+        .await;
+        let read = a
+            .ipc(RequestPacket::ChannelPeek {
+                request_id: 5,
+                channel: channel.as_str().into(),
+                since: None,
+                tail: None,
+                before: None,
+                query: None,
+                author: None,
+            })
+            .await;
+        let ResponsePacket::ChannelPeekResult { events, .. } = read else {
+            panic!("expected events, got {read:?}");
+        };
+        let Some(peko_channel::ChannelEvent::Posted { attachments, .. }) = events.last() else {
+            panic!("the peko's file post is on A");
+        };
+        assert_eq!(attachments[0].name, "report.md");
+        assert_eq!(
+            std::fs::read_to_string(&attachments[0].path).unwrap(),
+            "# findings"
+        );
+        assert!(std::path::Path::new(&attachments[0].path)
+            .starts_with(a_port.local().files_dir(&channel).await.unwrap()));
 
         // Reopening finds the same DM without a new invite — also with
         // the directory unreachable.
@@ -6072,6 +6434,7 @@ mod tests {
             sender_name: None,
             text: "hello from my desktop".into(),
             parent: None,
+            attachments: Vec::new(),
         })
         .await;
         relay(&mut a, &mut b).await;
@@ -6582,6 +6945,7 @@ mod tests {
             sender_name: None,
             text: "from my laptop".into(),
             parent: None,
+            attachments: Vec::new(),
         })
         .await;
         route(&mut [&mut h, &mut p, &mut p2]).await;
@@ -6809,6 +7173,7 @@ mod tests {
                 sender_name: None,
                 text: "chapter 3 was wild".into(),
                 parent: None,
+                attachments: Vec::new(),
             })
             .await;
         assert!(

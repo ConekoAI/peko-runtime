@@ -1665,6 +1665,18 @@ impl ChannelStore {
         self.cfg.channel_dir(channel)
     }
 
+    /// The channel's file store (ADR-094): attachments that cross
+    /// runtimes, one file per SHA-256 digest, beside the channel's
+    /// events. Removed with the channel.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelError::NotFound`] when the channel does not exist here.
+    pub async fn files_dir(&self, channel: &ChannelId) -> Result<PathBuf> {
+        let tier = self.resolve_tier(channel).await?;
+        Ok(self.channel_dir_for_tier(tier, channel).join("files"))
+    }
+
     // -----------------------------------------------------------------
     // Tier resolution
     // -----------------------------------------------------------------
@@ -3770,6 +3782,10 @@ impl ChannelPort for ChannelStore {
 
     async fn list_for_principal(&self, principal: &PrincipalId) -> Result<Vec<ChannelId>> {
         self.list_channels_for_principal(principal).await
+    }
+
+    async fn files_dir(&self, channel: &ChannelId) -> Result<PathBuf> {
+        ChannelStore::files_dir(self, channel).await
     }
 
     async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {

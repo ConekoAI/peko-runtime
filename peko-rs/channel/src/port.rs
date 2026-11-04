@@ -557,6 +557,16 @@ pub trait ChannelPort: Send + Sync + 'static {
     /// clear message.
     async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf>;
 
+    /// The channel's file store (ADR-094): attachments that cross
+    /// runtimes, one file per SHA-256 digest. Adapters without one
+    /// refuse.
+    async fn files_dir(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
+        let _ = channel;
+        Err(ChannelError::Adapter(
+            "this channel port keeps no files".into(),
+        ))
+    }
+
     /// Per-session digest read position: the highest line-number
     /// [`TaskId`] `session_key` has observed on `channel`. Keyed by
     /// session-id string in the channel's `read_marks.json` — a

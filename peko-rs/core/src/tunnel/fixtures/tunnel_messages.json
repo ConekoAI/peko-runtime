@@ -321,7 +321,8 @@
             "name": "notes.pdf",
             "path": "",
             "mime": "application/pdf",
-            "size": 2048
+            "size": 2048,
+            "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
           }
         ],
         "options": [
@@ -332,6 +333,27 @@
     ],
     "hasMore": true,
     "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_attachment_request",
+    "requestId": "att-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "channelId": "dm_0123",
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "offset": 262144,
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_attachment_chunk",
+    "requestId": "att-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "channelId": "dm_0123",
+    "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "offset": 262144,
+    "size": 300000,
+    "data": "dGVzdA=="
   },
   {
     "type": "tunnel_group_invitation",

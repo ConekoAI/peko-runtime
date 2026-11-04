@@ -71,6 +71,10 @@ mod group_people;
 
 #[path = "group_hub.rs"]
 mod group_hub;
+
+#[path = "attachment_transfer.rs"]
+mod attachment_transfer;
+pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
 
@@ -123,6 +127,15 @@ pub struct TunnelChannelPort {
     history_pending: Arc<std::sync::Mutex<HashMap<String, dm_history::PendingHistory>>>,
     /// Requests to PekoHub waiting for its answer (ADR-092 D4/D5).
     hub_pending: group_hub::HubPending,
+    /// Attachment chunk requests waiting for their answer (ADR-094).
+    attachment_pending: Arc<std::sync::Mutex<HashMap<String, attachment_transfer::PendingChunk>>>,
+    /// One transfer per file at a time (ADR-094).
+    attachment_locks: Arc<attachment_transfer::AttachmentLocks>,
+    /// Guards the wanted-files list (ADR-094).
+    wanted_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Inbound posts of one channel apply one at a time, in arrival
+    /// order, while a post's files are fetched (ADR-094).
+    apply_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -154,6 +167,10 @@ impl TunnelChannelPort {
             resender_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             history_pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
             hub_pending: Arc::default(),
+            attachment_pending: Arc::default(),
+            attachment_locks: Arc::default(),
+            wanted_lock: Arc::default(),
+            apply_locks: Arc::default(),
         }
     }
 
@@ -768,6 +785,13 @@ impl TunnelChannelPort {
         // emits struct fields in declaration order, so the round-trip
         // is stable).
         let mut wire_event = ev.clone();
+        // ADR-094: a file's path is this host's; the receiver finds the
+        // bytes by digest and keeps its own copy.
+        if let ChannelEvent::Posted { attachments, .. } = &mut wire_event {
+            for attachment in attachments {
+                attachment.path.clear();
+            }
+        }
         let actor_field = match &mut wire_event {
             ChannelEvent::Posted { author, .. } => Some(author),
             ChannelEvent::MemberLeft { member, .. } => Some(member),
@@ -1852,6 +1876,10 @@ impl ChannelPort for TunnelChannelPort {
         items: Vec<peko_channel::AttentionItem>,
     ) -> Result<()> {
         self.local.set_attention(channel, session_key, items).await
+    }
+
+    async fn files_dir(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
+        self.local.files_dir(channel).await
     }
 
     async fn pin_to_shared(&self, channel: &ChannelId) -> Result<std::path::PathBuf> {
