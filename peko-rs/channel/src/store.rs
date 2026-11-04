@@ -1699,6 +1699,7 @@ impl ChannelStore {
                 continue;
             }
             self.move_dm(&channel, &expected).await?;
+            self.record_forward(&channel, &expected).await?;
             // Back to the local key: the person's other runtimes were
             // routes only while this one shared their account.
             if !mine.starts_with("user:hub:") {
@@ -1716,6 +1717,57 @@ impl ChannelStore {
             moved.push((channel, expected, meta.bindings.keys().cloned().collect()));
         }
         Ok(moved)
+    }
+
+    fn forwards_path(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("channel_forwards.json")
+    }
+
+    async fn load_forwards(&self) -> HashMap<String, String> {
+        fs::read(self.forwards_path())
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Remember that `old` now lives at `new` (ADR-095 D7), so an id a
+    /// peko kept in its notes, plans, or schedules still reaches the DM. A
+    /// forward the other way (a move back) is dropped, so there are no
+    /// cycles.
+    async fn record_forward(&self, old: &ChannelId, new: &ChannelId) -> Result<()> {
+        let path = self.forwards_path();
+        fs::create_dir_all(&self.cfg.runtime_dir).await?;
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut forwards = self.load_forwards().await;
+        forwards.remove(new.as_str());
+        forwards.insert(old.as_str().to_string(), new.as_str().to_string());
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(&forwards)?).await?;
+        fs::rename(temp, &path).await?;
+        Ok(())
+    }
+
+    /// Where `channel` lives now: itself while it exists, else where a DM
+    /// rekey moved it (ADR-095 D7), following a few hops.
+    pub async fn forwarded(&self, channel: &ChannelId) -> ChannelId {
+        let mut current = channel.clone();
+        let forwards = self.load_forwards().await;
+        for _ in 0..4 {
+            if self.cfg.channel_dir(&current).join(META_FILE).exists() {
+                return current;
+            }
+            match forwards
+                .get(current.as_str())
+                .and_then(|n| ChannelId::parse(n))
+            {
+                Some(next) => current = next,
+                None => return current,
+            }
+        }
+        current
     }
 
     /// Move a DM to another pair id (ADR-095 D7). Into a free id the
@@ -4354,6 +4406,9 @@ impl ChannelPort for ChannelStore {
     async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
         ChannelStore::rekey_local_user_dms(self).await
     }
+    async fn forwarded(&self, channel: &ChannelId) -> ChannelId {
+        ChannelStore::forwarded(self, channel).await
+    }
     async fn restore_dm_copy(
         &self,
         channel: &ChannelId,
@@ -5877,6 +5932,9 @@ mod tests {
                 .unwrap(),
             ann_hub
         );
+        // An id kept from before the move still reaches the DM.
+        assert_eq!(store.forwarded(&dms[0].1).await, ann_hub);
+        assert_eq!(store.forwarded(&ann_hub).await, ann_hub);
 
         // Moved whole: every line names the new id.
         for event in store.peek(&ann_hub, &Checkpoint::zero()).await.unwrap() {
@@ -5911,6 +5969,9 @@ mod tests {
         // Unregistered again, both go back to the local key.
         store.unlink_local_user().await.unwrap();
         assert_eq!(store.rekey_local_user_dms().await.unwrap().len(), 2);
+        // Moved back: the Hub-keyed id forwards to the local one, no cycle.
+        assert_eq!(store.forwarded(&ann_hub).await, dms[0].1);
+        assert_eq!(store.forwarded(&dms[0].1).await, dms[0].1);
         assert_eq!(
             store
                 .ensure_dm(&dms[0].0, &me, "/local-user")
