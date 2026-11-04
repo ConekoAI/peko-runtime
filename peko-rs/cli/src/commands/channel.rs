@@ -904,8 +904,10 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 println!("No message requests.");
             } else {
                 for r in &requests {
-                    let who = r.name.clone().unwrap_or_else(|| r.from.clone());
-                    println!("{}  from {who}  ({})", r.channel, r.from);
+                    match &r.name {
+                        Some(name) => println!("{}  from {name}  ({})", r.channel, r.from),
+                        None => println!("{}  from {}", r.channel, r.from),
+                    }
                 }
                 println!(
                     "\nAccept with `peko channel accept <channel>`, or `peko channel decline <channel>` \
