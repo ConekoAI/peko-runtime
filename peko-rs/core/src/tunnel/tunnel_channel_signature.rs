@@ -1114,3 +1114,78 @@ mod tests {
         assert!(result.is_err(), "wrong verifying key must fail");
     }
 }
+
+/// Version tag of [`AccountDmsRequestPayload`] (ADR-095 D5).
+pub const ACCOUNT_DMS_REQUEST_VERSION: &str = "peko-account-dms-request/1";
+/// Version tag of [`AccountDmsPayload`] (ADR-095 D5).
+pub const ACCOUNT_DMS_VERSION: &str = "peko-account-dms/1";
+
+/// The signed payload of a `TunnelAccountDmsRequest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountDmsRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_account: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelAccountDms`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountDmsPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub dms_b64u: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+impl AccountDmsPayload {
+    /// The serialized DM list this payload signs.
+    #[must_use]
+    pub fn dms_b64u_of(dms_bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(dms_bytes)
+    }
+}
+
+/// Verify an account DM request's runtime signature, version, and freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_account_dms_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<AccountDmsRequestPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: AccountDmsRequestPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("account DM request payload is not valid JSON: {e}"))?;
+    if payload.v != ACCOUNT_DMS_REQUEST_VERSION {
+        return Err(anyhow!(
+            "account DM request version must be {ACCOUNT_DMS_REQUEST_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Verify an account DM list's runtime signature, version, and freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_account_dms(runtime_key: &VerifyingKey, compact: &str) -> Result<AccountDmsPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: AccountDmsPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("account DM list payload is not valid JSON: {e}"))?;
+    if payload.v != ACCOUNT_DMS_VERSION {
+        return Err(anyhow!(
+            "account DM list version must be {ACCOUNT_DMS_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}

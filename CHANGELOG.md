@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: your DMs follow you to a new computer, with all their history (2026-11-04, ADR-095 phase 3b)
+
+- A runtime newly registered to your account asks your other computers
+  which DMs you have, opens each one it lacks (the same conversation, not
+  a new one), and catches it up from the peko's host. PekoHub relays the
+  question to your account's other runtimes and their answers back, and
+  keeps no list of who you talk to.
+- Your copy of a DM is now a full copy: catching up also fills it back to
+  the first post and keeps it, instead of only the newest page.
+- Wire: `tunnel_account_dms_request` / `tunnel_account_dms` (signed
+  `peko-account-dms-request/1`, `peko-account-dms/1`); needs the PekoHub
+  relay (pekohub#73).
+
 ### Feature: your own peko is one conversation on every computer (2026-11-04, ADR-095 phase 3a)
 
 - While a runtime is registered, its person's DMs are keyed by their Hub

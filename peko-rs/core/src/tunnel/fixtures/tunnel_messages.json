@@ -356,6 +356,31 @@
     "data": "dGVzdA=="
   },
   {
+    "type": "tunnel_account_dms_request",
+    "requestId": "adms-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientAccount": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_account_dms",
+    "requestId": "adms-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "dms": [
+      {
+        "channelId": "dm_0000000000000000000000000000000000000000000000000000000000000000",
+        "peerHubId": "156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "peerSigningDid": "did:key:z6MkPrincipal",
+        "peerIdentityKey": "peko-key",
+        "peerName": "peko",
+        "peerRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        "peerExposure": "private"
+      }
+    ],
+    "signature": "runtime-signature"
+  },
+  {
     "type": "tunnel_group_invitation",
     "requestId": "ginv-1",
     "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",

@@ -593,6 +593,33 @@ pub enum TunnelMessage {
         data: String,
     },
 
+    /// ADR-095 D5: a runtime newly registered to an account asks the
+    /// account's other runtimes which DMs the person has. PekoHub delivers
+    /// it to every runtime registered to `recipient_account`
+    /// (`user:hub:<id>`), and only from a runtime registered to it.
+    /// `signature` is the source runtime's compact JWS over every other
+    /// field (`AccountDmsRequestPayload`). PekoHub keeps no list of DMs.
+    #[serde(rename = "tunnel_account_dms_request", rename_all = "camelCase")]
+    TunnelAccountDmsRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_account: String,
+        signature: String,
+    },
+
+    /// ADR-095 D5: one of the account's runtimes answers with the DMs it
+    /// holds for the person, to the runtime that asked. PekoHub relays it
+    /// only between two runtimes registered to the same account.
+    /// `signature` covers every other field (`AccountDmsPayload`).
+    #[serde(rename = "tunnel_account_dms", rename_all = "camelCase")]
+    TunnelAccountDms {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        dms: Vec<AccountDm>,
+        signature: String,
+    },
+
     /// ADR-092 D2: a group's home invites a person by Hub account.
     /// PekoHub delivers it to every runtime registered to
     /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending
@@ -710,6 +737,25 @@ pub struct AccountGroup {
     pub name: String,
     pub home_runtime: String,
     pub channel_id: String,
+}
+
+/// One of a person's DMs as another of their runtimes reports it
+/// (ADR-095 D5): the pair id and the peko on the other side, with what a
+/// runtime needs to open the DM without asking the directory (a private
+/// peko resolves only with the person's token).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDm {
+    pub channel_id: String,
+    pub peer_hub_id: String,
+    pub peer_signing_did: String,
+    pub peer_identity_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_name: Option<String>,
+    /// The runtime that hosts the peko.
+    pub peer_runtime_id: String,
+    /// `public` or `private`.
+    pub peer_exposure: String,
 }
 
 /// One row of the `initialMembers` list on

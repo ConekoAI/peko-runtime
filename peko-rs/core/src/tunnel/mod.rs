@@ -45,7 +45,7 @@ pub use invite_token::{
     MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
-pub use protocol::{AccountGroup, TunnelMessage};
+pub use protocol::{AccountDm, AccountGroup, TunnelMessage};
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::{
     human_dm_channel_id, HistoryPage, HubDm, TunnelChannelPort, ATTACHMENT_CHUNK_BYTES,
@@ -59,6 +59,10 @@ pub use tunnel_channel_signature::{
     ChannelInviteSignedFields, ChannelSignedFields, ATTACHMENT_REQUEST_VERSION,
     CHANNEL_EVENT_PAYLOAD_VERSION, CHANNEL_HISTORY_REQUEST_VERSION, CHANNEL_HISTORY_VERSION,
     CHANNEL_INVITE_PAYLOAD_VERSION,
+};
+pub use tunnel_channel_signature::{
+    verify_account_dms, verify_account_dms_request, AccountDmsPayload, AccountDmsRequestPayload,
+    ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION,
 };
 pub use tunnel_channel_signature::{
     verify_group_invitation, verify_group_join, verify_group_join_request, GroupInvitationPayload,

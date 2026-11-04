@@ -274,40 +274,72 @@ impl TunnelChannelPort {
                 ChannelEvent::Posted { msg_id, .. } => msg_id.clone(),
                 _ => None,
             });
-            // ADR-094: the files these posts name come from the host too.
-            let files: Vec<_> = page
-                .events
-                .iter()
-                .filter_map(|ev| match ev {
-                    ChannelEvent::Posted { attachments, .. }
-                        if attachments.iter().any(|a| a.sha256.is_some()) =>
-                    {
-                        Some(attachments.clone())
-                    }
-                    _ => None,
-                })
-                .collect();
-            if !files.is_empty() {
-                let port = self.clone();
-                let channel = channel.clone();
-                tokio::spawn(async move {
-                    for attachments in files {
-                        port.fetch_attachments(&channel, &attachments, &host).await;
-                    }
-                });
-            }
-            added += self
-                .local
-                .append_synced_events(channel, page.events)
-                .await?;
-            // The newest page answers a fresh copy; older pages are
-            // scroll-back. After a cursor, keep reading forward.
-            if after.is_none() || !page.has_more || last.is_none() {
+            let has_more = page.has_more;
+            added += self.apply_page(channel, page, host).await?;
+            // The newest page answers a fresh copy; after a cursor, keep
+            // reading forward.
+            if after.is_none() || !has_more || last.is_none() {
                 break;
             }
             after = last;
         }
+        // ADR-095 D1: a person's copy of a DM is a full copy — fill it
+        // back to the first post and keep it. A copy a peko reads only
+        // catches up forward (D3), and groups scroll back unstored.
+        let person_dm = self.local.remote_dm_account(channel).await?.is_some()
+            && self.local.conversation_kind(channel).await? == peko_channel::ConversationKind::Dm;
+        if person_dm {
+            for _ in 0..CATCH_UP_PAGES {
+                let Some(before) = self.local.oldest_msg_id(channel).await? else {
+                    break;
+                };
+                let (answer, host) = self.ask_history(channel, Some(&before), None).await?;
+                let page = self.await_history(answer).await?;
+                let has_more = page.has_more;
+                let new = self.apply_page(channel, page, host).await?;
+                added += new;
+                if !has_more || new == 0 {
+                    break;
+                }
+            }
+        }
         Ok(added)
+    }
+
+    /// Store a page's posts this copy lacks, and fetch the files they
+    /// name from `host` in the background (ADR-094). Returns how many
+    /// posts were added.
+    async fn apply_page(
+        &self,
+        channel: &ChannelId,
+        page: HistoryPage,
+        host: String,
+    ) -> anyhow::Result<usize> {
+        let files: Vec<_> = page
+            .events
+            .iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { attachments, .. }
+                    if attachments.iter().any(|a| a.sha256.is_some()) =>
+                {
+                    Some(attachments.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if !files.is_empty() {
+            let port = self.clone();
+            let channel = channel.clone();
+            tokio::spawn(async move {
+                for attachments in files {
+                    port.fetch_attachments(&channel, &attachments, &host).await;
+                }
+            });
+        }
+        Ok(self
+            .local
+            .append_synced_events(channel, page.events)
+            .await?)
     }
 
     /// Catch up every remote DM of this account in the background, or

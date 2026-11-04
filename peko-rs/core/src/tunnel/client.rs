@@ -690,6 +690,8 @@ impl TunnelClient {
             | TunnelMessage::TunnelGroupInvitation { .. }
             | TunnelMessage::TunnelGroupJoin { .. }
             | TunnelMessage::TunnelGroupJoinRequest { .. }
+            | TunnelMessage::TunnelAccountDmsRequest { .. }
+            | TunnelMessage::TunnelAccountDms { .. }
             | TunnelMessage::GroupRegistered { .. }
             | TunnelMessage::GroupRegisterRejected { .. }
             | TunnelMessage::AccountGroups { .. }

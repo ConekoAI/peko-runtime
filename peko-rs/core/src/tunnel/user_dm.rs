@@ -26,6 +26,17 @@ pub struct HubDm {
     pub created: bool,
 }
 
+/// A peko on another runtime, as far as opening a DM with it needs.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedPeko {
+    pub hub_id: String,
+    pub signing_did: String,
+    pub identity_key: String,
+    pub name: Option<String>,
+    pub runtime_id: String,
+    pub public: bool,
+}
+
 /// The pair id of a DM between Hub user `user_address`
 /// (`user:hub:<account>`) and a principal with immutable key
 /// `principal_key` (ADR-090 D1). Both runtimes derive it from the wire.
@@ -105,14 +116,43 @@ impl TunnelChannelPort {
             resolved.exposure != ResolvedExposure::LocalOnly,
             "This peko is local-only"
         );
+        self.open_resolved_hub_dm(
+            &ctx,
+            &user,
+            &ResolvedPeko {
+                hub_id: hub_id.to_string(),
+                signing_did: resolved.agent_did,
+                identity_key: resolved.identity_key,
+                name: resolved.name,
+                runtime_id: resolved.runtime_id,
+                public: resolved.exposure == ResolvedExposure::Public,
+            },
+        )
+        .await
+    }
+
+    /// Open, or find, the local user's DM with a peko already resolved —
+    /// by the directory (D2), or by another of the person's runtimes
+    /// (ADR-095 D5) — and queue the invite where none reached its runtime.
+    pub(crate) async fn open_resolved_hub_dm(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        user: &ActorInfo,
+        resolved: &ResolvedPeko,
+    ) -> anyhow::Result<HubDm> {
+        let hub_id = resolved.hub_id.as_str();
+        let peer_subject = ActorRef::Principal(Route::hub(hub_id.to_string()));
+        let user_address = user.hub_address().ok_or_else(|| {
+            anyhow::anyhow!("Register this runtime with PekoHub first (peko runtime register)")
+        })?;
         self.local
             .register_actor(
                 &peer_subject,
                 Some(hub_id),
-                Some(&resolved.agent_did),
+                Some(&resolved.signing_did),
                 Some(&resolved.identity_key),
                 resolved.name.as_deref(),
-                if resolved.exposure == ResolvedExposure::Public {
+                if resolved.public {
                     Registration::Public
                 } else {
                     Registration::Private
@@ -143,12 +183,12 @@ impl TunnelChannelPort {
             .list_remote_members(&channel)
             .await?
             .iter()
-            .any(|m| m.principal_id == resolved.agent_did && m.runtime_id == resolved.runtime_id);
+            .any(|m| m.principal_id == resolved.signing_did && m.runtime_id == resolved.runtime_id);
         if !routed {
             self.fanout_user_dm_invite(
-                &ctx,
+                ctx,
                 &channel,
-                &PrincipalId(resolved.agent_did.clone()),
+                &PrincipalId(resolved.signing_did.clone()),
                 &resolved.runtime_id,
             )
             .await

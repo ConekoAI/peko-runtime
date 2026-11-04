@@ -825,6 +825,8 @@ impl TunnelDispatcher {
                     port.sync_remote_dms(None).await;
                     // ADR-092 D4: the account's groups follow it here.
                     port.sync_account_groups().await;
+                    // ADR-095 D5: and so do its DMs.
+                    port.sync_account_dms().await;
                     // ADR-094: files that did not arrive yet.
                     port.retry_wanted(None).await;
                 });
@@ -948,6 +950,41 @@ impl TunnelDispatcher {
                     exp: 0,
                 };
                 self.handle_history_request(request, &signature, &handle)
+                    .await;
+            }
+            TunnelMessage::TunnelAccountDmsRequest {
+                request_id,
+                source_runtime_id,
+                recipient_account,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_account_dms_request(
+                        &handle,
+                        request_id,
+                        source_runtime_id,
+                        recipient_account,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelAccountDms {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                dms,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_account_dms(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        dms,
+                        signature,
+                    )
                     .await;
             }
             TunnelMessage::TunnelGroupInvitation {
@@ -5853,7 +5890,9 @@ mod tests {
                 | TunnelMessage::TunnelAttachmentChunk { .. }
                 | TunnelMessage::TunnelGroupInvitation { .. }
                 | TunnelMessage::TunnelGroupJoin { .. }
-                | TunnelMessage::TunnelGroupJoinRequest { .. }) => {
+                | TunnelMessage::TunnelGroupJoinRequest { .. }
+                | TunnelMessage::TunnelAccountDmsRequest { .. }
+                | TunnelMessage::TunnelAccountDms { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -7590,6 +7629,235 @@ mod tests {
                 .map(|h| h.runtime),
             Some(h.app.runtime_did())
         );
+    }
+
+    /// Deliver what each runtime sent to the one it names, as PekoHub
+    /// would: a runtime-addressed envelope to that runtime, an account DM
+    /// request to every other runtime in `runtimes` (all of one account
+    /// here, but the host's).
+    async fn route_account(runtimes: &mut [&mut DmRuntime], account: &[String]) -> bool {
+        let mut moved = false;
+        loop {
+            let mut batch = Vec::new();
+            for (i, runtime) in runtimes.iter_mut().enumerate() {
+                for message in runtime.sent() {
+                    batch.push((i, message));
+                }
+            }
+            if batch.is_empty() {
+                return moved;
+            }
+            moved = true;
+            for (from, message) in batch {
+                let to: Vec<usize> = match &message {
+                    TunnelMessage::TunnelChannelInvite {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelChannelEvent {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelChannelHistoryRequest {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelChannelHistory {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelAttachmentRequest {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelAttachmentChunk {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelAccountDms {
+                        recipient_runtime_id,
+                        ..
+                    } => runtimes
+                        .iter()
+                        .position(|r| &r.app.runtime_did() == recipient_runtime_id)
+                        .into_iter()
+                        .collect(),
+                    TunnelMessage::TunnelAccountDmsRequest { .. } => (0..runtimes.len())
+                        .filter(|i| *i != from && account.contains(&runtimes[*i].app.runtime_did()))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                for i in to {
+                    runtimes[i].receive(message.clone()).await;
+                }
+            }
+        }
+    }
+
+    /// ADR-095 D5 + D1: alice's new computer learns of her DM with a peko
+    /// elsewhere from her laptop, opens the same conversation, and keeps
+    /// its whole history, older pages included.
+    #[tokio::test]
+    async fn a_new_computer_finds_the_persons_dms_and_keeps_their_history() {
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let alice = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut host = DmRuntime::new(Arc::clone(&directory)).await;
+        let peko = create_test_principal(
+            &host.app,
+            "peko",
+            alice.clone(),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let host_port = host.app.tunnel_channel_port();
+        host_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("peko"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        directory.register_hub_id(
+            &hub_id,
+            AgentResolution {
+                runtime_id: host.app.runtime_did(),
+                instance_id: "instance".into(),
+                name: Some("peko".into()),
+                hub_id: hub_id.clone(),
+                local_id: peko.id.0.clone(),
+                identity_key: peko_key.clone(),
+                agent_did: peko_did.clone(),
+                owner_principal: alice.clone(),
+                exposure: ResolvedExposure::Private,
+            },
+        );
+
+        // Her laptop opens the DM; the conversation grows past a page.
+        let mut laptop = DmRuntime::new(Arc::clone(&directory)).await;
+        laptop
+            .app
+            .tunnel_channel_port()
+            .local()
+            .link_local_user(&laptop.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = laptop
+            .ipc(RequestPacket::ChannelOpenRemoteDm {
+                request_id: 1,
+                hub_id: hub_id.clone(),
+                token: None,
+            })
+            .await
+        else {
+            panic!("the laptop opens the DM");
+        };
+        relay(&mut laptop, &mut host).await;
+        let total = crate::tunnel::HISTORY_PAGE_LIMIT as usize + 20;
+        for i in 0..total {
+            host_port
+                .local()
+                .post(
+                    &channel,
+                    &ActorRef::from(&peko.id),
+                    peko_channel::PostMsg::root(format!("note {i}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Her new desktop asks her other computers which DMs she has.
+        let mut desktop = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let desktop_port = desktop.app.tunnel_channel_port();
+        desktop_port
+            .local()
+            .link_local_user(&desktop.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        desktop_port.sync_account_dms().await;
+        let account_runtimes = [laptop.app.runtime_did(), desktop.app.runtime_did()];
+        let mut texts = Vec::new();
+        for _ in 0..200 {
+            route_account(
+                &mut [&mut host, &mut laptop, &mut desktop],
+                &account_runtimes,
+            )
+            .await;
+            texts = desktop_port
+                .peek(&channel, &Checkpoint::zero())
+                .await
+                .map(|events| posts(&events))
+                .unwrap_or_default();
+            if texts.len() == total {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            texts.len(),
+            total,
+            "the whole conversation, older pages stored"
+        );
+        assert_eq!(
+            desktop_port
+                .local()
+                .remote_dm_account(&channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(account.as_str()),
+            "the same conversation, the desktop's person's"
+        );
+        // The host now knows the desktop as a route for alice.
+        assert!(host_port
+            .local()
+            .list_remote_members(&channel)
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.runtime_id == desktop.app.runtime_did()));
+
+        // A list nobody asked for is dropped.
+        let forged = crate::tunnel::AccountDm {
+            channel_id: peko_channel::dm_channel_id("other-key", &format!("user:hub:{account}"))
+                .as_str()
+                .into(),
+            peer_hub_id: uuid::Uuid::new_v4().to_string(),
+            peer_signing_did: peko_did.clone(),
+            peer_identity_key: "other-key".into(),
+            peer_name: None,
+            peer_runtime_id: host.app.runtime_did(),
+            peer_exposure: "public".into(),
+        };
+        desktop_port
+            .on_account_dms(
+                "never-asked".into(),
+                laptop.app.runtime_did(),
+                desktop.app.runtime_did(),
+                vec![forged.clone()],
+                "x".into(),
+            )
+            .await;
+        assert!(desktop_port
+            .conversation_kind(&peko_channel::ChannelId(forged.channel_id))
+            .await
+            .is_err());
     }
 
     /// ADR-095 D7 (F7): alice talks to her peko on its host, L1, then from
