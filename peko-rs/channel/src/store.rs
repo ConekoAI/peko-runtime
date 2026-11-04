@@ -1124,6 +1124,39 @@ impl ChannelStore {
         Ok(())
     }
 
+    fn person_display_name_path(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("person_display_name")
+    }
+
+    /// The PekoHub display name of this runtime's person, as registration
+    /// read it (ADR-095 D6): what a person they ask to DM sees.
+    pub async fn person_display_name(&self) -> Option<String> {
+        fs::read_to_string(self.person_display_name_path())
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Keep (or, with `None`, forget) this runtime's person's display name.
+    pub async fn set_person_display_name(&self, name: Option<&str>) -> Result<()> {
+        let path = self.person_display_name_path();
+        match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => {
+                fs::create_dir_all(&self.cfg.runtime_dir).await?;
+                fs::write(&path, name).await?;
+            }
+            None => {
+                if let Err(e) = fs::remove_file(&path).await {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn dm_requests_dir(&self) -> PathBuf {
         self.cfg.runtime_dir.join("dm_requests")
     }

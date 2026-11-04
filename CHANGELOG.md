@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a message request names who is asking (2026-11-04, ADR-095)
+
+- Registering a runtime keeps the account's PekoHub display name (its
+  namespace when it has none) in `<runtime>/person_display_name`, and a
+  person's DM invite carries it, so the people they ask see their name, not
+  their account ID. Runtimes registered before keep showing the account ID
+  until they register again.
+
 ### Feature: people DM people, with message requests and blocking (2026-11-04, ADR-095 phase 4)
 
 - Open a DM with another person by their PekoHub account:
