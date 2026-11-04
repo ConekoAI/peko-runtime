@@ -317,6 +317,9 @@ async fn forget_remote_dms(
     keep: Option<&str>,
 ) -> Result<()> {
     store.purge_invitations(keep).await?;
+    // ADR-095 D6: requests to DM the previous person, too; their DMs with
+    // people go with their remote DMs (both are kept under their account).
+    store.purge_dm_requests(keep).await?;
     let purged = store.purge_remote_dms(keep).await?;
     if !purged.is_empty() {
         tracing::info!(

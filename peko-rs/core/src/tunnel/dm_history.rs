@@ -71,14 +71,19 @@ impl TunnelChannelPort {
                 .ok_or_else(|| anyhow::anyhow!("{channel} is not your conversation"))?;
             let host = match home {
                 Some(home) => home,
-                None => self
-                    .local
-                    .list_remote_members(channel)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .map(|m| m.runtime_id)
-                    .ok_or_else(|| anyhow::anyhow!("No runtime is known to host this peko"))?,
+                None => {
+                    // ADR-095 D3: the other member's copy first, then the
+                    // person's own other runtimes.
+                    let me = format!("user:hub:{account}");
+                    let rows = self.local.list_remote_members(channel).await?;
+                    rows.iter()
+                        .find(|m| m.principal_id != me)
+                        .or_else(|| rows.first())
+                        .map(|m| m.runtime_id.clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("No other computer in this conversation is known yet")
+                        })?
+                }
             };
             return Ok((format!("user:hub:{account}"), host));
         }

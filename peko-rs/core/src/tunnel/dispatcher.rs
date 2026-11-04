@@ -694,6 +694,8 @@ impl TunnelDispatcher {
                     port.sync_remote_dms(Some(&runtime_id)).await;
                     // ADR-094: files it holds that did not arrive yet.
                     port.retry_wanted(Some(&runtime_id)).await;
+                    // ADR-095 D6: a person asked while it was away.
+                    port.resend_person_dm_invites().await;
                 });
             }
             TunnelMessage::PrincipalOwnerChanged {
@@ -827,6 +829,8 @@ impl TunnelDispatcher {
                     port.sync_account_groups().await;
                     // ADR-095 D5: and so do its DMs.
                     port.sync_account_dms().await;
+                    // ADR-095 D6: ask again where nobody answered yet.
+                    port.resend_person_dm_invites().await;
                     // ADR-094: files that did not arrive yet.
                     port.retry_wanted(None).await;
                 });
@@ -974,6 +978,8 @@ impl TunnelDispatcher {
                 source_runtime_id,
                 recipient_runtime_id,
                 dms,
+                people,
+                blocked,
                 signature,
             } => {
                 self.host
@@ -983,6 +989,52 @@ impl TunnelDispatcher {
                         source_runtime_id,
                         recipient_runtime_id,
                         dms,
+                        people,
+                        blocked,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelPersonDmInvite {
+                request_id,
+                source_runtime_id,
+                recipient_account,
+                source_principal_did,
+                channel_id,
+                name,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_person_dm_invite(
+                        request_id,
+                        source_runtime_id,
+                        recipient_account,
+                        source_principal_did,
+                        channel_id,
+                        name,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelDmRoute {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                channel_id,
+                routes,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_dm_route(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        source_principal_did,
+                        channel_id,
+                        routes,
                         signature,
                     )
                     .await;
@@ -2208,6 +2260,15 @@ impl TunnelDispatcher {
                 );
                 return Ok(());
             }
+            // ADR-095 D6: nothing from a person this one blocked.
+            if self
+                .host
+                .tunnel_channel_port()
+                .blocks(&payload.source_principal_did)
+                .await
+            {
+                return Ok(());
+            }
             if !self
                 .host
                 .tunnel_channel_port()
@@ -2966,9 +3027,31 @@ impl TunnelDispatcher {
             }
             _ => anyhow::bail!("only a person on PekoHub may ask for history"),
         };
-        // 2. Exactly their DM with a peko hosted here.
         let port = self.host.tunnel_channel_port();
         let channel = peko_channel::ChannelId(request.channel_id.clone());
+        // ADR-095 D2/D6: this runtime's person's DM with another person,
+        // for either of the two (the other person, or the same person on
+        // another runtime) — never for someone it blocked.
+        let local = port.actor_info(&ActorRef::User("local".into())).await;
+        if let Some(account) = local.hub_id.as_deref() {
+            if let Some(peer) = port.person_dm_peer(account, &channel).await {
+                let mine = format!("user:hub:{account}");
+                anyhow::ensure!(
+                    request.source_principal_did == peer || request.source_principal_did == mine,
+                    "not one of the DM's two people"
+                );
+                anyhow::ensure!(!port.blocks(&peer).await, "blocked");
+                return Ok(port
+                    .history_page(
+                        &channel,
+                        request.before.as_deref(),
+                        request.after.as_deref(),
+                        request.limit,
+                    )
+                    .await);
+            }
+        }
+        // 2. Exactly their DM with a peko hosted here.
         let mut hosted = None;
         for principal in self.host.principal_manager().list_all().await {
             let me = port.actor_info(&ActorRef::from(&principal.id)).await;
@@ -5892,7 +5975,9 @@ mod tests {
                 | TunnelMessage::TunnelGroupJoin { .. }
                 | TunnelMessage::TunnelGroupJoinRequest { .. }
                 | TunnelMessage::TunnelAccountDmsRequest { .. }
-                | TunnelMessage::TunnelAccountDms { .. }) => {
+                | TunnelMessage::TunnelAccountDms { .. }
+                | TunnelMessage::TunnelPersonDmInvite { .. }
+                | TunnelMessage::TunnelDmRoute { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -7632,10 +7717,16 @@ mod tests {
     }
 
     /// Deliver what each runtime sent to the one it names, as PekoHub
-    /// would: a runtime-addressed envelope to that runtime, an account DM
-    /// request to every other runtime in `runtimes` (all of one account
-    /// here, but the host's).
-    async fn route_account(runtimes: &mut [&mut DmRuntime], account: &[String]) -> bool {
+    /// would: a runtime-addressed envelope to that runtime, an
+    /// account-addressed one to every other runtime of that account.
+    /// `accounts` pairs each runtime with the account it is registered to.
+    async fn route_account(runtimes: &mut [&mut DmRuntime], accounts: &[(String, String)]) -> bool {
+        let account_of = |runtime: &str| {
+            accounts
+                .iter()
+                .find(|(r, _)| r == runtime)
+                .map(|(_, a)| format!("user:hub:{a}"))
+        };
         let mut moved = false;
         loop {
             let mut batch = Vec::new();
@@ -7677,13 +7768,26 @@ mod tests {
                     | TunnelMessage::TunnelAccountDms {
                         recipient_runtime_id,
                         ..
+                    }
+                    | TunnelMessage::TunnelDmRoute {
+                        recipient_runtime_id,
+                        ..
                     } => runtimes
                         .iter()
                         .position(|r| &r.app.runtime_did() == recipient_runtime_id)
                         .into_iter()
                         .collect(),
-                    TunnelMessage::TunnelAccountDmsRequest { .. } => (0..runtimes.len())
-                        .filter(|i| *i != from && account.contains(&runtimes[*i].app.runtime_did()))
+                    TunnelMessage::TunnelAccountDmsRequest {
+                        recipient_account, ..
+                    }
+                    | TunnelMessage::TunnelPersonDmInvite {
+                        recipient_account, ..
+                    } => (0..runtimes.len())
+                        .filter(|i| {
+                            *i != from
+                                && account_of(&runtimes[*i].app.runtime_did()).as_deref()
+                                    == Some(recipient_account.as_str())
+                        })
                         .collect(),
                     _ => Vec::new(),
                 };
@@ -7692,6 +7796,268 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Each of `rt`'s person DMs: the other person, and whether it still
+    /// waits for them to accept.
+    async fn person_dm_waiting(rt: &DmRuntime) -> Vec<(String, bool)> {
+        match rt
+            .ipc(RequestPacket::ChannelPersonDms { request_id: 8 })
+            .await
+        {
+            ResponsePacket::ChannelPersonDmsResult { dms, .. } => {
+                dms.iter().map(|d| (d.peer.clone(), d.waiting)).collect()
+            }
+            other => panic!("person DMs: {other:?}"),
+        }
+    }
+
+    /// ADR-095 D6 end to end. Alice (laptop, desktop) asks Bob (two
+    /// computers) to DM; Bob's runtimes keep a request and tell her
+    /// nothing; Bob accepts on one; her first post reaches him as history;
+    /// posts then flow between every computer of both, the desktop and
+    /// Bob's other computer joining through the account DM list. Eve,
+    /// once blocked, gets nowhere.
+    #[tokio::test]
+    async fn people_dm_people_after_accepting() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let alice = uuid::Uuid::new_v4().to_string();
+        let bob = uuid::Uuid::new_v4().to_string();
+        let eve = uuid::Uuid::new_v4().to_string();
+        let mut rts = Vec::new();
+        let mut accounts = Vec::new();
+        for account in [&alice, &alice, &bob, &bob, &eve] {
+            let rt = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+            rt.app
+                .tunnel_channel_port()
+                .local()
+                .link_local_user(&rt.app.runtime_did(), account)
+                .await
+                .unwrap();
+            accounts.push((rt.app.runtime_did(), account.clone()));
+            rts.push(rt);
+        }
+        let [mut laptop, mut desktop, mut b1, mut b2, mut e1]: [DmRuntime; 5] =
+            rts.try_into().ok().unwrap();
+        macro_rules! route {
+            () => {
+                route_account(
+                    &mut [&mut laptop, &mut desktop, &mut b1, &mut b2, &mut e1],
+                    &accounts,
+                )
+                .await
+            };
+        }
+        let post = |channel: &peko_channel::ChannelId, text: &str| RequestPacket::ChannelPost {
+            request_id: 2,
+            channel: channel.as_str().into(),
+            sender_name: None,
+            text: text.into(),
+            parent: None,
+            attachments: Vec::new(),
+        };
+        let texts = |port: Arc<crate::tunnel::TunnelChannelPort>,
+                     channel: peko_channel::ChannelId| async move {
+            port.peek(&channel, &Checkpoint::zero())
+                .await
+                .map(|events| {
+                    posts(&events)
+                        .into_iter()
+                        .map(|(_, t)| t)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        // Alice asks from her laptop and writes before Bob answers.
+        let ResponsePacket::ChannelPersonDmOpened {
+            channel, created, ..
+        } = laptop
+            .ipc(RequestPacket::ChannelOpenPersonDm {
+                request_id: 1,
+                account: bob.clone(),
+                name: Some("bob".into()),
+            })
+            .await
+        else {
+            panic!("alice opens the DM");
+        };
+        assert!(created);
+        assert_eq!(
+            channel,
+            peko_channel::dm_channel_id(&format!("user:hub:{alice}"), &format!("user:hub:{bob}"))
+        );
+        laptop.ipc(post(&channel, "hi bob")).await;
+        route!();
+
+        // Both of Bob's computers hold a request; none of them said a word.
+        for rt in [&b1, &b2] {
+            let ResponsePacket::ChannelDmRequestsResult { requests, .. } = rt
+                .ipc(RequestPacket::ChannelDmRequests { request_id: 3 })
+                .await
+            else {
+                panic!("requests");
+            };
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].from, format!("user:hub:{alice}"));
+            assert!(rt
+                .app
+                .tunnel_channel_port()
+                .conversation_kind(&channel)
+                .await
+                .is_err());
+        }
+        let laptop_port = laptop.app.tunnel_channel_port();
+        assert!(
+            laptop_port
+                .local()
+                .list_remote_members(&channel)
+                .await
+                .unwrap()
+                .is_empty(),
+            "alice learns nothing of Bob's computers before he accepts"
+        );
+        assert_eq!(
+            person_dm_waiting(&laptop).await,
+            [(format!("user:hub:{bob}"), true)]
+        );
+
+        // Bob accepts on b1: Alice's post reaches him as history.
+        let accepted = b1
+            .ipc(RequestPacket::ChannelDmRequestAnswer {
+                request_id: 4,
+                channel: channel.as_str().into(),
+                answer: "accept".into(),
+            })
+            .await;
+        assert!(
+            matches!(accepted, ResponsePacket::ChannelPersonDmOpened { .. }),
+            "{accepted:?}"
+        );
+        let b1_port = b1.app.tunnel_channel_port();
+        for _ in 0..100 {
+            route!();
+            if texts(Arc::clone(&b1_port), channel.clone()).await == ["hi bob"] {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            texts(Arc::clone(&b1_port), channel.clone()).await,
+            ["hi bob"]
+        );
+
+        assert_eq!(
+            person_dm_waiting(&laptop).await,
+            [(format!("user:hub:{bob}"), false)]
+        );
+        assert_eq!(
+            person_dm_waiting(&b1).await,
+            [(format!("user:hub:{alice}"), false)]
+        );
+
+        // Bob answers; it reaches Alice's laptop.
+        b1.ipc(post(&channel, "hi alice")).await;
+        route!();
+        assert_eq!(
+            texts(Arc::clone(&laptop_port), channel.clone()).await,
+            ["hi bob", "hi alice"]
+        );
+
+        // Alice's desktop and Bob's other computer join through their
+        // accounts' DM lists; Bob's request there goes away.
+        let desktop_port = desktop.app.tunnel_channel_port();
+        let b2_port = b2.app.tunnel_channel_port();
+        desktop_port.sync_account_dms().await;
+        b2_port.sync_account_dms().await;
+        for _ in 0..150 {
+            route!();
+            if texts(Arc::clone(&desktop_port), channel.clone())
+                .await
+                .len()
+                == 2
+                && texts(Arc::clone(&b2_port), channel.clone()).await.len() == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            texts(Arc::clone(&desktop_port), channel.clone())
+                .await
+                .len(),
+            2
+        );
+        assert_eq!(texts(Arc::clone(&b2_port), channel.clone()).await.len(), 2);
+        assert!(b2_port.local().dm_requests(&bob).await.unwrap().is_empty());
+
+        // A post from the desktop reaches every other computer.
+        desktop.ipc(post(&channel, "from my desktop")).await;
+        for _ in 0..50 {
+            route!();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        for port in [&laptop_port, &b1_port, &b2_port] {
+            assert_eq!(
+                texts(Arc::clone(port), channel.clone())
+                    .await
+                    .last()
+                    .map(String::as_str),
+                Some("from my desktop")
+            );
+        }
+
+        // Eve asks; Bob blocks her; she cannot ask again.
+        e1.ipc(RequestPacket::ChannelOpenPersonDm {
+            request_id: 5,
+            account: bob.clone(),
+            name: None,
+        })
+        .await;
+        route!();
+        let eve_dm =
+            peko_channel::dm_channel_id(&format!("user:hub:{eve}"), &format!("user:hub:{bob}"));
+        let blocked = b1
+            .ipc(RequestPacket::ChannelDmRequestAnswer {
+                request_id: 6,
+                channel: eve_dm.as_str().into(),
+                answer: "block".into(),
+            })
+            .await;
+        assert!(
+            matches!(blocked, ResponsePacket::Done { success: true, .. }),
+            "{blocked:?}"
+        );
+        e1.app
+            .tunnel_channel_port()
+            .resend_person_dm_invites()
+            .await;
+        route!();
+        assert!(b1_port.local().dm_requests(&bob).await.unwrap().is_empty());
+        // Bob's other computer still held her request; the block reaches it
+        // with his DM list and the request goes (found live).
+        assert_eq!(b2_port.local().dm_requests(&bob).await.unwrap().len(), 1);
+        b2_port.sync_account_dms().await;
+        for _ in 0..20 {
+            route!();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            b2_port
+                .local()
+                .is_blocked(&bob, &format!("user:hub:{eve}"))
+                .await
+        );
+        assert!(b2_port.local().dm_requests(&bob).await.unwrap().is_empty());
+        let ResponsePacket::ChannelBlockedPeople { people, .. } = b1
+            .ipc(RequestPacket::ChannelBlocked { request_id: 7 })
+            .await
+        else {
+            panic!("blocked list");
+        };
+        assert_eq!(people, [format!("user:hub:{eve}")]);
     }
 
     /// ADR-095 D5 + D1: alice's new computer learns of her DM with a peko
@@ -7791,7 +8157,10 @@ mod tests {
             .await
             .unwrap();
         desktop_port.sync_account_dms().await;
-        let account_runtimes = [laptop.app.runtime_did(), desktop.app.runtime_did()];
+        let account_runtimes = [
+            (laptop.app.runtime_did(), account.clone()),
+            (desktop.app.runtime_did(), account.clone()),
+        ];
         let mut texts = Vec::new();
         for _ in 0..200 {
             route_account(
@@ -7851,6 +8220,8 @@ mod tests {
                 laptop.app.runtime_did(),
                 desktop.app.runtime_did(),
                 vec![forged.clone()],
+                Vec::new(),
+                Vec::new(),
                 "x".into(),
             )
             .await;

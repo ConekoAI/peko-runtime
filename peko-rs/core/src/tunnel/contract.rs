@@ -12,9 +12,9 @@
 //! `UPDATE_TUNNEL_FIXTURE=1 cargo test -p peko --lib tunnel::contract`.
 
 use super::protocol::{
-    AccountDm, AccountGroup, ExposureUpdatePayload, InstanceAnnouncePayload,
-    InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload, InstanceStatus,
-    InstanceType, StatusUpdatePayload, TunnelMessage,
+    AccountDm, AccountGroup, AccountPersonDm, DmRoute, ExposureUpdatePayload,
+    InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
+    InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -64,6 +64,8 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelGroupJoinRequest { .. } => "tunnel_group_join_request",
         TunnelMessage::TunnelAccountDmsRequest { .. } => "tunnel_account_dms_request",
         TunnelMessage::TunnelAccountDms { .. } => "tunnel_account_dms",
+        TunnelMessage::TunnelPersonDmInvite { .. } => "tunnel_person_dm_invite",
+        TunnelMessage::TunnelDmRoute { .. } => "tunnel_dm_route",
         TunnelMessage::GroupRegister { .. } => "group_register",
         TunnelMessage::GroupRegistered { .. } => "group_registered",
         TunnelMessage::GroupRegisterRejected { .. } => "group_register_rejected",
@@ -112,6 +114,8 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_group_join_request",
     "tunnel_account_dms_request",
     "tunnel_account_dms",
+    "tunnel_person_dm_invite",
+    "tunnel_dm_route",
     "group_register",
     "group_registered",
     "group_register_rejected",
@@ -406,6 +410,40 @@ fn samples() -> Vec<TunnelMessage> {
                 peer_name: Some("peko".into()),
                 peer_runtime_id: RUNTIME_B.into(),
                 peer_exposure: "private".into(),
+            }],
+            people: vec![AccountPersonDm {
+                channel_id: "dm_1111111111111111111111111111111111111111111111111111111111111111"
+                    .into(),
+                peer: format!("user:hub:{HUB_ID}"),
+                peer_name: Some("bob".into()),
+                routes: vec![DmRoute {
+                    runtime_id: RUNTIME_B.into(),
+                    person: format!("user:hub:{ACCOUNT}"),
+                }],
+            }],
+            blocked: vec![format!("user:hub:{HUB_ID}")],
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelPersonDmInvite {
+            request_id: "pdm-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_account: format!("user:hub:{HUB_ID}"),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            channel_id: "dm_1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            name: Some("alice".into()),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelDmRoute {
+            request_id: "route-1".into(),
+            source_runtime_id: RUNTIME_B.into(),
+            recipient_runtime_id: RUNTIME_A.into(),
+            source_principal_did: format!("user:hub:{HUB_ID}"),
+            channel_id: "dm_1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            routes: vec![DmRoute {
+                runtime_id: RUNTIME_B.into(),
+                person: format!("user:hub:{HUB_ID}"),
             }],
             signature: "runtime-signature".into(),
         },

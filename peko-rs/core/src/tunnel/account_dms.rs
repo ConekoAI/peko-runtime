@@ -17,7 +17,7 @@ use super::TunnelChannelPort;
 use crate::tunnel::{
     did_key_to_verifying_key, human_dm_channel_id, sign_history, verify_account_dms,
     verify_account_dms_request, AccountDm, AccountDmsPayload, AccountDmsRequestPayload,
-    TunnelHandle, TunnelMessage, ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION,
+    AccountPersonDm, TunnelHandle, TunnelMessage, ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION,
 };
 use peko_channel::{ChannelId, ChannelPort, Registration};
 use peko_subject::{ActorRef, PrincipalId};
@@ -119,14 +119,25 @@ impl TunnelChannelPort {
             return;
         }
         let dms = self.account_dm_list(&ctx, &account).await;
-        let dms_bytes = serde_json::to_vec(&dms).unwrap_or_default();
+        let people = self.person_dm_list(&account).await;
+        let blocked = self
+            .local
+            .blocked_people(&account)
+            .await
+            .unwrap_or_default();
         let iat = chrono::Utc::now().timestamp();
         let payload = AccountDmsPayload {
             v: ACCOUNT_DMS_VERSION.into(),
             request_id: request_id.clone(),
             source_runtime_id: ctx.caller_runtime_id.clone(),
             recipient_runtime_id: source_runtime_id.clone(),
-            dms_b64u: AccountDmsPayload::dms_b64u_of(&dms_bytes),
+            dms_b64u: AccountDmsPayload::dms_b64u_of(&serde_json::to_vec(&dms).unwrap_or_default()),
+            people_b64u: AccountDmsPayload::dms_b64u_of(
+                &serde_json::to_vec(&people).unwrap_or_default(),
+            ),
+            blocked_b64u: AccountDmsPayload::dms_b64u_of(
+                &serde_json::to_vec(&blocked).unwrap_or_default(),
+            ),
             iat,
             exp: iat + 300,
         };
@@ -136,6 +147,8 @@ impl TunnelChannelPort {
             source_runtime_id: payload.source_runtime_id,
             recipient_runtime_id: source_runtime_id,
             dms,
+            people,
+            blocked,
             signature,
         });
     }
@@ -200,6 +213,8 @@ impl TunnelChannelPort {
         source_runtime_id: String,
         recipient_runtime_id: String,
         dms: Vec<AccountDm>,
+        people: Vec<AccountPersonDm>,
+        blocked: Vec<String>,
         signature: String,
     ) {
         let (Some((user, account)), Some(ctx)) = (
@@ -221,7 +236,9 @@ impl TunnelChannelPort {
             debug!(request_id, "unrequested account DM list dropped");
             return;
         }
-        let dms_bytes = serde_json::to_vec(&dms).unwrap_or_default();
+        fn b64u<T: serde::Serialize>(value: &T) -> String {
+            AccountDmsPayload::dms_b64u_of(&serde_json::to_vec(value).unwrap_or_default())
+        }
         let verified = did_key_to_verifying_key(&source_runtime_id)
             .map_err(|e| anyhow::anyhow!("{e}"))
             .and_then(|key| verify_account_dms(&key, &signature));
@@ -229,11 +246,40 @@ impl TunnelChannelPort {
             p.request_id == request_id
                 && p.source_runtime_id == source_runtime_id
                 && p.recipient_runtime_id == recipient_runtime_id
-                && p.dms_b64u == AccountDmsPayload::dms_b64u_of(&dms_bytes)
+                && p.dms_b64u == b64u(&dms)
+                && p.people_b64u == b64u(&people)
+                && p.blocked_b64u == b64u(&blocked)
         });
         if !agrees {
             warn!(request_id, "account DM list failed verification; dropped");
             return;
+        }
+        // D6: the person's block list and their DMs with other people.
+        if !blocked.is_empty() {
+            if let Err(e) = self.local.set_blocked(&account, &blocked, true).await {
+                warn!("block list from another device not kept: {e}");
+            }
+            // A request that arrived here before the block goes too.
+            for request in self.local.dm_requests(&account).await.unwrap_or_default() {
+                if blocked.contains(&request.from) {
+                    let _ = self.local.take_dm_request(&request.channel).await;
+                }
+            }
+        }
+        for dm in people {
+            let channel = dm.channel_id.clone();
+            let Some(id) = ChannelId::parse(&channel) else {
+                continue;
+            };
+            if self.local.conversation_kind(&id).await.is_ok() {
+                continue;
+            }
+            if let Err(e) = self.adopt_person_dm(&account, dm).await {
+                debug!(
+                    channel,
+                    "DM with a person from another device not opened: {e}"
+                );
+            }
         }
         let person = format!("user:hub:{account}");
         for dm in dms {

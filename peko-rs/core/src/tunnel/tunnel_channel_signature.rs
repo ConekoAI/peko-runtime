@@ -1139,6 +1139,9 @@ pub struct AccountDmsPayload {
     pub source_runtime_id: String,
     pub recipient_runtime_id: String,
     pub dms_b64u: String,
+    /// The person-to-person DMs and the block list (ADR-095 D6).
+    pub people_b64u: String,
+    pub blocked_b64u: String,
     pub iat: i64,
     pub exp: i64,
 }
@@ -1185,6 +1188,76 @@ pub fn verify_account_dms(runtime_key: &VerifyingKey, compact: &str) -> Result<A
         return Err(anyhow!(
             "account DM list version must be {ACCOUNT_DMS_VERSION:?}"
         ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Version tag of [`PersonDmInvitePayload`] (ADR-095 D6).
+pub const PERSON_DM_INVITE_VERSION: &str = "peko-person-dm-invite/1";
+/// Version tag of [`DmRoutePayload`] (ADR-095 D6).
+pub const DM_ROUTE_VERSION: &str = "peko-dm-route/1";
+
+/// The signed payload of a `TunnelPersonDmInvite`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonDmInvitePayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_account: String,
+    pub source_principal_did: String,
+    pub channel_id: String,
+    pub name: Option<String>,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelDmRoute`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DmRoutePayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub source_principal_did: String,
+    pub channel_id: String,
+    pub routes_b64u: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify a person's DM invite: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_person_dm_invite(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PersonDmInvitePayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: PersonDmInvitePayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("person DM invite payload is not valid JSON: {e}"))?;
+    if payload.v != PERSON_DM_INVITE_VERSION {
+        return Err(anyhow!(
+            "person DM invite version must be {PERSON_DM_INVITE_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Verify a DM route announcement: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_dm_route(runtime_key: &VerifyingKey, compact: &str) -> Result<DmRoutePayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: DmRoutePayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("DM route payload is not valid JSON: {e}"))?;
+    if payload.v != DM_ROUTE_VERSION {
+        return Err(anyhow!("DM route version must be {DM_ROUTE_VERSION:?}"));
     }
     check_freshness(payload.iat, payload.exp)?;
     Ok(payload)

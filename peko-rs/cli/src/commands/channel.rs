@@ -158,11 +158,13 @@ pub enum ChannelCommands {
     },
 
     /// Open your DM with a peko on another computer (ADR-090 D2), by its
-    /// ID or its PekoHub ID; with a message, post it too. Read replies
-    /// with `peko channel peek <dm>`, post with `peko channel post <dm> me`.
+    /// ID or its PekoHub ID, or with another person by `user:hub:<account>`
+    /// (ADR-095 D6: they get a message request); with a message, post it
+    /// too. Read replies with `peko channel peek <dm>`, post with
+    /// `peko channel post <dm> me`.
     Dm {
-        /// `@owner/name` (a public peko), `principal:hub:<UUID>`, or the
-        /// bare PekoHub ID.
+        /// `@owner/name` (a public peko), `principal:hub:<UUID>`, the bare
+        /// PekoHub ID, or a person as `user:hub:<account>`.
         peko: String,
         /// Post this message right away.
         message: Option<String>,
@@ -193,10 +195,53 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Decline a group's invitation.
+    /// Decline a group's invitation, or a person's message request.
     Decline {
-        /// Channel id from `peko channel invitations`.
+        /// Channel id from `peko channel invitations` or `peko channel requests`.
         channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// People asking to DM you (ADR-095 D6).
+    Requests {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Accept a person's message request: the DM opens here and they are
+    /// told; what they wrote arrives.
+    Accept {
+        /// Channel id from `peko channel requests`.
+        channel: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Block a person: their requests, messages, and history requests are
+    /// refused on every computer of your account.
+    Block {
+        /// A request's channel id, `user:hub:<account>`, or the account ID.
+        who: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Unblock a person.
+    Unblock {
+        /// `user:hub:<account>` or the account ID.
+        who: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// The people you blocked.
+    Blocked {
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -247,6 +292,11 @@ impl ChannelCommands {
             | ChannelCommands::Invitations { json }
             | ChannelCommands::Join { json, .. }
             | ChannelCommands::Decline { json, .. }
+            | ChannelCommands::Requests { json }
+            | ChannelCommands::Accept { json, .. }
+            | ChannelCommands::Block { json, .. }
+            | ChannelCommands::Unblock { json, .. }
+            | ChannelCommands::Blocked { json }
             | ChannelCommands::Register { json, .. }
             | ChannelCommands::Link { json, .. } => *json,
         }
@@ -625,23 +675,45 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             ..
         } => {
             let attachments = crate::commands::send::absolute_attachments(&attach)?;
-            let hub_id = remote_peko_hub_id(paths, &peko).await?;
-            let resp = dm_request(RequestPacket::ChannelOpenRemoteDm {
-                request_id: 0,
-                hub_id,
-                token: None,
-            })
-            .await?;
-            let ResponsePacket::ChannelRemoteDmOpened {
-                channel,
-                peer,
-                name,
-                created,
-                ..
-            } = resp
-            else {
-                anyhow::bail!("unexpected reply: {resp:?}");
-            };
+            let (channel, peer, name, created) =
+                if let Some(account) = peko.strip_prefix("user:hub:") {
+                    // ADR-095 D6: a person; they get a message request.
+                    let resp = dm_request(RequestPacket::ChannelOpenPersonDm {
+                        request_id: 0,
+                        account: account.to_string(),
+                        name: None,
+                    })
+                    .await?;
+                    let ResponsePacket::ChannelPersonDmOpened {
+                        channel,
+                        peer,
+                        created,
+                        ..
+                    } = resp
+                    else {
+                        anyhow::bail!("unexpected reply: {resp:?}");
+                    };
+                    (channel, peer, None, created)
+                } else {
+                    let hub_id = remote_peko_hub_id(paths, &peko).await?;
+                    let resp = dm_request(RequestPacket::ChannelOpenRemoteDm {
+                        request_id: 0,
+                        hub_id,
+                        token: None,
+                    })
+                    .await?;
+                    let ResponsePacket::ChannelRemoteDmOpened {
+                        channel,
+                        peer,
+                        name,
+                        created,
+                        ..
+                    } = resp
+                    else {
+                        anyhow::bail!("unexpected reply: {resp:?}");
+                    };
+                    (channel, peer, name, created)
+                };
             let channel = channel.to_string();
             let message = match message {
                 None if !attachments.is_empty() => Some(String::new()),
@@ -814,8 +886,101 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+        ChannelCommands::Decline { channel, .. } if channel.starts_with("dm_") => {
+            answer_dm_request(&channel, "decline", json).await
+        }
         ChannelCommands::Decline { channel, .. } => answer_invitation(&channel, false, json).await,
+        ChannelCommands::Accept { channel, .. } => {
+            answer_dm_request(&channel, "accept", json).await
+        }
+        ChannelCommands::Requests { .. } => {
+            let resp = dm_request(RequestPacket::ChannelDmRequests { request_id: 0 }).await?;
+            let ResponsePacket::ChannelDmRequestsResult { requests, .. } = resp else {
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&requests)?);
+            } else if requests.is_empty() {
+                println!("No message requests.");
+            } else {
+                for r in &requests {
+                    match &r.name {
+                        Some(name) => println!("{}  from {name}  ({})", r.channel, r.from),
+                        None => println!("{}  from {}", r.channel, r.from),
+                    }
+                }
+                println!(
+                    "\nAccept with `peko channel accept <channel>`, or `peko channel decline <channel>` \
+                     / `peko channel block <channel>`."
+                );
+            }
+            Ok(())
+        }
+        ChannelCommands::Block { who, .. } if who.starts_with("dm_") => {
+            answer_dm_request(&who, "block", json).await
+        }
+        ChannelCommands::Block { who, .. } => set_blocked(&who, true, json).await,
+        ChannelCommands::Unblock { who, .. } => set_blocked(&who, false, json).await,
+        ChannelCommands::Blocked { .. } => {
+            let resp = dm_request(RequestPacket::ChannelBlocked { request_id: 0 }).await?;
+            print_blocked(resp, json)
+        }
     }
+}
+
+/// Answer a person's message request (ADR-095 D6).
+async fn answer_dm_request(channel: &str, answer: &str, json: bool) -> Result<()> {
+    let resp = dm_request(RequestPacket::ChannelDmRequestAnswer {
+        request_id: 0,
+        channel: channel.to_string(),
+        answer: answer.to_string(),
+    })
+    .await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "channel": channel, "answer": answer })
+        );
+        return Ok(());
+    }
+    match (answer, resp) {
+        ("accept", ResponsePacket::ChannelPersonDmOpened { channel, peer, .. }) => println!(
+            "Accepted. Your DM with {peer}: {channel}. What they wrote arrives shortly; \
+             post with `peko channel post {channel} me \"…\"`."
+        ),
+        ("block", _) => println!("Blocked. Nothing from them reaches you now."),
+        _ => println!("Declined {channel}."),
+    }
+    Ok(())
+}
+
+/// Block or unblock a person by account (ADR-095 D6).
+async fn set_blocked(who: &str, blocked: bool, json: bool) -> Result<()> {
+    let account = who.strip_prefix("user:hub:").unwrap_or(who);
+    let resp = dm_request(RequestPacket::ChannelBlockPerson {
+        request_id: 0,
+        account: account.to_string(),
+        blocked,
+    })
+    .await?;
+    print_blocked(resp, json)
+}
+
+fn print_blocked(resp: ResponsePacket, json: bool) -> Result<()> {
+    let ResponsePacket::ChannelBlockedPeople { people, .. } = resp else {
+        anyhow::bail!("unexpected reply: {resp:?}");
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&people)?);
+    } else if people.is_empty() {
+        println!("You have blocked no one.");
+    } else {
+        println!("Blocked:");
+        for person in &people {
+            println!("  {person}");
+        }
+    }
+    Ok(())
 }
 
 /// Send a group request to the daemon (ADR-092 D5), failing on its error.
