@@ -27,7 +27,7 @@ Inline bytes in the event (F6) would ride the JWS payload and the event both, an
 
 ### D1 — A post names each file by its digest; the channel keeps the bytes
 
-A file that may cross runtimes is kept in the channel's **file store**, `<channel dir>/files/<sha256>` (lowercase hex; nothing else is ever named there), beside its events and removed with the channel. `Attachment` gains `sha256` (omitted when absent). On the wire a post's attachments carry no `path` — it names a place on the sender's disk — and keep `name`, `mime`, `size`, and `sha256`, all inside the signed event.
+A file that may cross runtimes is kept in the channel's **file store**, `<channel dir>/files/<sha256>/<name>` (the digest in lowercase hex — nothing else names a folder there — and the file's name made safe, extension kept), beside its events and removed with the channel. *Amended 2026-11-04:* files were first stored as a bare `<sha256>`; without an extension the desktop neither previewed nor played them, and opened images in a text editor. Every name under one digest holds the same bytes. `Attachment` gains `sha256` (omitted when absent). On the wire a post's attachments carry no `path` — it names a place on the sender's disk — and keep `name`, `mime`, `size`, and `sha256`, all inside the signed event.
 
 - **The local user** posts with `channel_post { attachments: [absolute path] }`. Only the local user may attach (the daemon reads the files). Each file goes to the file store; the post records it with no `path`.
 - **A peko** posts with `Attach`. It keeps its workspace copy (ADR-088 D7); in a conversation with anyone on another runtime or the Hub, the copy also goes to the file store and the post gains the digest.
@@ -46,8 +46,8 @@ When a post with digests arrives over the tunnel, the receiving runtime asks the
 ```
 
 - A chunk is at most **256 KiB**. One request is in flight per file; the next waits for the answer (30 s), so a transfer never puts more than a chunk on the Hub at once.
-- The request is signed by the asking runtime (`peko-attachment-request/1`, like history requests). The chunk is not: the receiver writes the chunks to `<sha256>.part`, checks the whole file against the digest the signed post carried, and only then names it by its digest. Bytes that do not match are discarded.
-- The sender serves only a runtime that hosts a member of the channel, and only from that channel's store. Every refusal reads as "not here" (`size` 0, empty `data`), so a probe learns nothing.
+- The request is signed by the asking runtime (`peko-attachment-request/1`, like history requests). The chunk is not: the receiver writes the chunks to `<sha256>.part`, checks the whole file against the digest the signed post carried, and only then stores it under its digest and name. A file already held under another name is copied, not fetched again. Bytes that do not match are discarded.
+- The sender serves only a runtime that hosts a member of the channel, and only from that channel's store (any name under the digest). Every refusal reads as "not here" (`size` 0, empty `data`), so a probe learns nothing.
 - A chunk that does not come, or a file the sender does not have, is asked for again after 1, 3 and 10 seconds. A file still missing goes on the runtime's wanted list (`channel_delivery/wanted_files.json`) and is asked for again when the Hub says the sender is back (`peer_runtime_online`) and on every reconnect, for up to 30 days.
 
 ### D4 — A post applies once its files are here

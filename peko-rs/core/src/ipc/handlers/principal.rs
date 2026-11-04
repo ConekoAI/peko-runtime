@@ -4465,10 +4465,11 @@ mod tests {
             )
         };
         assert_eq!(row().attachments[0].path, "");
-        std::fs::write(files.path().join(&digest), "hi").unwrap();
+        std::fs::create_dir_all(files.path().join(&digest)).unwrap();
+        std::fs::write(files.path().join(&digest).join("photo.png"), "hi").unwrap();
         assert_eq!(
             std::path::Path::new(&row().attachments[0].path),
-            files.path().join(&digest)
+            files.path().join(&digest).join("photo.png")
         );
     }
 

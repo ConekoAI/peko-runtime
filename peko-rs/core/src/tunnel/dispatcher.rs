@@ -6114,6 +6114,7 @@ mod tests {
                     .await
                     .unwrap()
                     .join(&digest)
+                    .join("photo.png")
             )
             .unwrap(),
             bytes
@@ -6167,7 +6168,12 @@ mod tests {
             .files_dir(&channel)
             .await
             .unwrap();
-        std::fs::write(a_files.join(&forged), b"not what the digest says").unwrap();
+        std::fs::create_dir_all(a_files.join(&forged)).unwrap();
+        std::fs::write(
+            a_files.join(&forged).join("forged.bin"),
+            b"not what the digest says",
+        )
+        .unwrap();
         let fetch = {
             let (b_port, channel, from) =
                 (Arc::clone(&b_port), channel.clone(), a.app.runtime_did());
@@ -6294,6 +6300,15 @@ mod tests {
         );
         assert!(std::path::Path::new(&attachments[0].path)
             .starts_with(a_port.local().files_dir(&channel).await.unwrap()));
+        // It keeps its name, so a client previews and opens it as what it is.
+        // (Compare the file name, not a "/name" suffix: Windows separates
+        // path segments with a backslash.)
+        assert_eq!(
+            std::path::Path::new(&attachments[0].path).file_name(),
+            Some(std::ffi::OsStr::new("report.md")),
+            "{}",
+            attachments[0].path
+        );
 
         // Reopening finds the same DM without a new invite — also with
         // the directory unreachable.
