@@ -484,6 +484,25 @@ pub struct DmRequest {
     pub received_at: chrono::DateTime<Utc>,
 }
 
+/// One person's block decision (ADR-095 D6): blocked or unblocked, and
+/// when. Runtimes of one account merge them, the latest per person winning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockDecision {
+    /// `user:hub:<account>`.
+    pub person: String,
+    pub blocked: bool,
+    pub at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct BlockState {
+    blocked: bool,
+    at: chrono::DateTime<Utc>,
+}
+
+/// Per account, each person's last block decision.
+type BlockBook = std::collections::BTreeMap<String, std::collections::BTreeMap<String, BlockState>>;
+
 /// A group's home, owner and admins (ADR-092 D1), as `Channel info` shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfo {
@@ -1229,22 +1248,87 @@ impl ChannelStore {
         self.cfg.runtime_dir.join("blocked_people.json")
     }
 
-    async fn load_blocked(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
-        match fs::read(self.blocked_path()).await {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-            Err(e) => Err(e.into()),
+    /// Every person's last block decision, per account. Reads the first
+    /// shape too (a list of blocked people per account, dated the epoch so
+    /// any later decision wins).
+    async fn load_blocks(&self) -> Result<BlockBook> {
+        let bytes = match fs::read(self.blocked_path()).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BlockBook::new()),
+            Err(e) => return Err(e.into()),
+        };
+        if let Ok(book) = serde_json::from_slice::<BlockBook>(&bytes) {
+            return Ok(book);
         }
+        let old: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_slice(&bytes).unwrap_or_default();
+        Ok(old
+            .into_iter()
+            .map(|(account, people)| {
+                let entries = people
+                    .into_iter()
+                    .map(|person| {
+                        (
+                            person,
+                            BlockState {
+                                blocked: true,
+                                at: chrono::DateTime::<Utc>::UNIX_EPOCH,
+                            },
+                        )
+                    })
+                    .collect();
+                (account, entries)
+            })
+            .collect())
+    }
+
+    /// Change the block book under its lock; `edit` returns whether it
+    /// changed anything worth writing.
+    async fn edit_blocks<T>(&self, edit: impl FnOnce(&mut BlockBook) -> (bool, T)) -> Result<T> {
+        let path = self.blocked_path();
+        fs::create_dir_all(&self.cfg.runtime_dir).await?;
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut book = self.load_blocks().await?;
+        let (changed, out) = edit(&mut book);
+        if changed {
+            let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            fs::write(&temp, serde_json::to_vec_pretty(&book)?).await?;
+            fs::rename(temp, &path).await?;
+        }
+        Ok(out)
     }
 
     /// The people `account` blocked (`user:hub:<id>` addresses), sorted
     /// (ADR-095 D6).
     pub async fn blocked_people(&self, account: &str) -> Result<Vec<String>> {
         Ok(self
-            .load_blocked()
+            .load_blocks()
             .await?
             .remove(account)
-            .unwrap_or_default())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, state)| state.blocked)
+            .map(|(person, _)| person)
+            .collect())
+    }
+
+    /// Every block decision `account` made, blocks and unblocks, with when
+    /// (ADR-095 D6): what travels to the person's other runtimes.
+    pub async fn block_decisions(&self, account: &str) -> Result<Vec<BlockDecision>> {
+        Ok(self
+            .load_blocks()
+            .await?
+            .remove(account)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(person, state)| BlockDecision {
+                person,
+                blocked: state.blocked,
+                at: state.at,
+            })
+            .collect())
     }
 
     /// Whether `account` blocked `person` (`user:hub:<id>`).
@@ -1254,42 +1338,66 @@ impl ChannelStore {
             .is_ok_and(|blocked| blocked.iter().any(|b| b == person))
     }
 
-    /// Block (`blocked: true`) or unblock `people` for `account`. Returns
-    /// whether the list changed.
+    /// Block (`blocked: true`) or unblock `people` for `account`, now.
+    /// Returns whether any of them changed.
     pub async fn set_blocked(
         &self,
         account: &str,
         people: &[String],
         blocked: bool,
     ) -> Result<bool> {
-        let path = self.blocked_path();
-        fs::create_dir_all(&self.cfg.runtime_dir).await?;
-        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
-            .await
-            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
-        let mut all = self.load_blocked().await?;
-        let list = all.entry(account.to_string()).or_default();
-        let before = list.clone();
-        for person in people {
-            if !person.starts_with("user:hub:") {
-                continue;
-            }
-            if blocked {
-                if !list.contains(person) {
-                    list.push(person.clone());
+        let at = Utc::now();
+        self.edit_blocks(|book| {
+            let entries = book.entry(account.to_string()).or_default();
+            let mut changed = false;
+            for person in people.iter().filter(|p| p.starts_with("user:hub:")) {
+                let was = entries.get(person).map(|s| s.blocked);
+                // An unblock of someone never blocked is nothing to record.
+                if was != Some(blocked) && (blocked || was.is_some()) {
+                    entries.insert(person.clone(), BlockState { blocked, at });
+                    changed = true;
                 }
-            } else {
-                list.retain(|p| p != person);
             }
-        }
-        list.sort();
-        if *list == before {
-            return Ok(false);
-        }
-        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        fs::write(&temp, serde_json::to_vec_pretty(&all)?).await?;
-        fs::rename(temp, &path).await?;
-        Ok(true)
+            (changed, changed)
+        })
+        .await
+    }
+
+    /// Take block decisions made on another runtime of `account`: for each
+    /// person, the latest decision wins. Returns the people this made
+    /// blocked here.
+    pub async fn merge_block_decisions(
+        &self,
+        account: &str,
+        decisions: &[BlockDecision],
+    ) -> Result<Vec<String>> {
+        self.edit_blocks(|book| {
+            let entries = book.entry(account.to_string()).or_default();
+            let mut newly = Vec::new();
+            let mut changed = false;
+            for d in decisions
+                .iter()
+                .filter(|d| d.person.starts_with("user:hub:"))
+            {
+                let newer = entries.get(&d.person).is_none_or(|s| d.at > s.at);
+                if newer {
+                    let was = entries.get(&d.person).is_some_and(|s| s.blocked);
+                    entries.insert(
+                        d.person.clone(),
+                        BlockState {
+                            blocked: d.blocked,
+                            at: d.at,
+                        },
+                    );
+                    changed = true;
+                    if d.blocked && !was {
+                        newly.push(d.person.clone());
+                    }
+                }
+            }
+            (changed, newly)
+        })
+        .await
     }
 
     /// Every DM this runtime's person (`account`) has with another person
@@ -5810,6 +5918,68 @@ mod tests {
                 .unwrap(),
             dms[0].1
         );
+    }
+
+    /// ADR-095 D6: block decisions merge across a person's runtimes, the
+    /// latest per person winning; the first file shape still reads.
+    #[tokio::test]
+    async fn block_decisions_merge_latest_first() {
+        let store = ChannelStore::new(tmp_cfg("blocks"));
+        let eve = "user:hub:eve".to_string();
+        let mal = "user:hub:mal".to_string();
+        // A list from before decisions had times: blocked since the epoch.
+        std::fs::write(
+            store.cfg.runtime_dir.join("blocked_people.json"),
+            serde_json::json!({"acct": [mal.clone()]}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.blocked_people("acct").await.unwrap(),
+            vec![mal.clone()]
+        );
+        assert!(
+            !store
+                .set_blocked("acct", std::slice::from_ref(&eve), false)
+                .await
+                .unwrap(),
+            "unblocking someone never blocked records nothing"
+        );
+        assert!(store
+            .set_blocked("acct", std::slice::from_ref(&eve), true)
+            .await
+            .unwrap());
+        let then = Utc::now() - chrono::Duration::hours(1);
+        let later = Utc::now() + chrono::Duration::hours(1);
+        let newly = store
+            .merge_block_decisions(
+                "acct",
+                &[
+                    // Older than the block here: ignored.
+                    BlockDecision {
+                        person: eve.clone(),
+                        blocked: false,
+                        at: then,
+                    },
+                    // Newer than the epoch block: wins.
+                    BlockDecision {
+                        person: mal.clone(),
+                        blocked: false,
+                        at: then,
+                    },
+                    BlockDecision {
+                        person: "user:hub:zed".into(),
+                        blocked: true,
+                        at: later,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(newly, ["user:hub:zed"]);
+        let mut blocked = store.blocked_people("acct").await.unwrap();
+        blocked.sort();
+        assert_eq!(blocked, [eve.clone(), "user:hub:zed".to_string()]);
+        assert_eq!(store.block_decisions("acct").await.unwrap().len(), 3);
     }
 
     /// The copy that stands in for a refused rename (Windows) carries every

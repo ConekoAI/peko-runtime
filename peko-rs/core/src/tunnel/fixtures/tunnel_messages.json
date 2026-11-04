@@ -391,8 +391,12 @@
         ]
       }
     ],
-    "blocked": [
-      "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb"
+    "blocks": [
+      {
+        "person": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "blocked": true,
+        "at": "2026-11-04T10:00:00+00:00"
+      }
     ],
     "signature": "runtime-signature"
   },

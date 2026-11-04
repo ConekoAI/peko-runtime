@@ -45,7 +45,7 @@ pub use invite_token::{
     MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
-pub use protocol::{AccountDm, AccountGroup, AccountPersonDm, DmRoute, TunnelMessage};
+pub use protocol::{AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, TunnelMessage};
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::{
     human_dm_channel_id, person_dm_channel_id, DmRequestAnswer, HistoryPage, HubDm, PersonDm,

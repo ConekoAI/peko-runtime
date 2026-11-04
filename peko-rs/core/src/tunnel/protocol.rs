@@ -620,9 +620,10 @@ pub enum TunnelMessage {
         /// The person's DMs with other people (D6).
         #[serde(default)]
         people: Vec<AccountPersonDm>,
-        /// The people the person blocked, `user:hub:<id>` (D6).
+        /// The person's block decisions, blocks and unblocks with when
+        /// (D6); the receiver keeps the latest per person.
         #[serde(default)]
-        blocked: Vec<String>,
+        blocks: Vec<DmBlock>,
         signature: String,
     },
 
@@ -807,6 +808,18 @@ pub struct DmRoute {
     pub runtime_id: String,
     /// `user:hub:<account>`.
     pub person: String,
+}
+
+/// One person's block decision, as a person's runtimes share them
+/// (ADR-095 D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmBlock {
+    /// `user:hub:<account>`.
+    pub person: String,
+    pub blocked: bool,
+    /// RFC 3339.
+    pub at: String,
 }
 
 /// One of a person's DMs with another person, as another of their
