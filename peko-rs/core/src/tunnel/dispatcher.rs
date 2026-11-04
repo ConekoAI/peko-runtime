@@ -6301,8 +6301,11 @@ mod tests {
         assert!(std::path::Path::new(&attachments[0].path)
             .starts_with(a_port.local().files_dir(&channel).await.unwrap()));
         // It keeps its name, so a client previews and opens it as what it is.
-        assert!(
-            attachments[0].path.ends_with("/report.md"),
+        // (Compare the file name, not a "/name" suffix: Windows separates
+        // path segments with a backslash.)
+        assert_eq!(
+            std::path::Path::new(&attachments[0].path).file_name(),
+            Some(std::ffi::OsStr::new("report.md")),
             "{}",
             attachments[0].path
         );
