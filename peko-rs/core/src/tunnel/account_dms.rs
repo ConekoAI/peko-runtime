@@ -259,6 +259,12 @@ impl TunnelChannelPort {
             if let Err(e) = self.local.set_blocked(&account, &blocked, true).await {
                 warn!("block list from another device not kept: {e}");
             }
+            // A request that arrived here before the block goes too.
+            for request in self.local.dm_requests(&account).await.unwrap_or_default() {
+                if blocked.contains(&request.from) {
+                    let _ = self.local.take_dm_request(&request.channel).await;
+                }
+            }
         }
         for dm in people {
             let channel = dm.channel_id.clone();

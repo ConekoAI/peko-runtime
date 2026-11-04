@@ -8036,6 +8036,21 @@ mod tests {
             .await;
         route!();
         assert!(b1_port.local().dm_requests(&bob).await.unwrap().is_empty());
+        // Bob's other computer still held her request; the block reaches it
+        // with his DM list and the request goes (found live).
+        assert_eq!(b2_port.local().dm_requests(&bob).await.unwrap().len(), 1);
+        b2_port.sync_account_dms().await;
+        for _ in 0..20 {
+            route!();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            b2_port
+                .local()
+                .is_blocked(&bob, &format!("user:hub:{eve}"))
+                .await
+        );
+        assert!(b2_port.local().dm_requests(&bob).await.unwrap().is_empty());
         let ResponsePacket::ChannelBlockedPeople { people, .. } = b1
             .ipc(RequestPacket::ChannelBlocked { request_id: 7 })
             .await
