@@ -2,6 +2,7 @@
 //! Identity, configuration, roles, sessions, authored state, and workspace
 //! tooling travel together. Seeds are grounded through `peko create -s`.
 
+pub mod dm_restore;
 pub mod inventory;
 pub mod path_safety;
 pub mod portable;

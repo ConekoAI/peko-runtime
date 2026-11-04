@@ -3534,6 +3534,7 @@ async fn portable_export(
         }
     }
     let mut channels = Vec::new();
+    let mut dm_logs = Vec::new();
     for channel in port.list_for_principal(&principal.id).await? {
         let participants: Vec<_> = port
             .participants(&channel)
@@ -3548,11 +3549,31 @@ async fn portable_export(
                 })
             })
             .collect();
+        // ADR-095 D4: where the other members live, so a DM reattaches
+        // on the destination before either side speaks.
+        let remote: Vec<_> = port
+            .members_with_attribution(&channel)
+            .await?
+            .into_iter()
+            .filter_map(|m| {
+                m.runtime_id.map(|runtime| {
+                    serde_json::json!({ "runtime_id": runtime, "principal_id": m.principal })
+                })
+            })
+            .collect();
+        let kind = port.conversation_kind(&channel).await?;
+        if kind == peko_channel::ConversationKind::Dm {
+            dm_logs.push((
+                channel.as_str().to_string(),
+                dm_log(&*port, &channel).await?,
+            ));
+        }
         channels.push(serde_json::json!({
             "channel": channel,
             "participants": participants,
-            "kind": port.conversation_kind(&channel).await?,
+            "kind": kind,
             "binding": port.binding_for(&channel, &principal.id).await?.map(|b| b.session),
+            "remote": remote,
         }));
     }
     Ok(
@@ -3560,8 +3581,43 @@ async fn portable_export(
             source_runtime,
             hub_routes,
             channels: Some(serde_json::to_vec_pretty(&channels)?),
+            dm_logs,
         },
     )
+}
+
+/// A DM's posts as a snapshot carries them (ADR-095 D4): one JSON post a
+/// line, oldest first, each as it would leave in a history page — authors
+/// by their Hub address where they have one, no local paths.
+async fn dm_log(
+    port: &dyn peko_channel::ChannelPort,
+    channel: &peko_channel::ChannelId,
+) -> anyhow::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for event in port
+        .peek(channel, &peko_channel::Checkpoint::zero())
+        .await?
+    {
+        let peko_channel::ChannelEvent::Posted {
+            author,
+            msg_id: Some(_),
+            ..
+        } = &event
+        else {
+            continue;
+        };
+        let subject = author
+            .parse::<ActorRef>()
+            .unwrap_or_else(|_| ActorRef::Principal(author.clone().into()));
+        let wire = port
+            .actor_info(&subject)
+            .await
+            .hub_address()
+            .unwrap_or_else(|| author.clone());
+        serde_json::to_writer(&mut out, &peko_channel::portable_post(event, wire))?;
+        out.push(b'\n');
+    }
+    Ok(out)
 }
 
 /// Export a Principal to a `.peko` package on disk — a
@@ -3721,9 +3777,46 @@ async fn import_principal_package(
             "Imported principal '{}' but failed to load it: {}",
             result.name, e
         );
+    } else {
+        restore_carried_dms(host, &result.name).await;
     }
 
     Ok(result)
+}
+
+/// ADR-095 D4: once the imported principal is loaded (its actor key is
+/// registered, so pair ids come out right), replay the DMs its snapshot
+/// carried. A failure leaves the DMs to reattach as before (ADR-081 D6).
+async fn restore_carried_dms(host: &dyn PrincipalHost, name: &str) {
+    let manager = host.principal_manager();
+    let (Some(port), Some(principal)) = (manager.channel_port(), manager.get_by_name(name).await)
+    else {
+        return;
+    };
+    let Some(key) = principal.config.read().await.actor_key.clone() else {
+        return;
+    };
+    let local_root = host.path_resolver().principal_layout(name).local.root;
+    match crate::registry::packaging::dm_restore::restore_dms(
+        &*port,
+        &principal.id,
+        &key,
+        &local_root,
+        manager.runtime_did(),
+    )
+    .await
+    {
+        Ok(done) if !done.restored.is_empty() || !done.skipped.is_empty() => {
+            tracing::info!(
+                principal = name,
+                restored = done.restored.len(),
+                skipped = done.skipped.len(),
+                "carried DMs restored"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => warn!(principal = name, "carried DMs not restored: {e}"),
+    }
 }
 
 // ─── peko log read path ───────────────────────────────────────────────

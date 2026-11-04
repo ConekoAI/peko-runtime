@@ -405,6 +405,25 @@ impl PrincipalUnpackager {
                 tokio::fs::write(local_root.join(file), bytes).await?;
             }
         }
+        // ADR-095 D4: the DMs' posts wait in `local/dms/` until the loaded
+        // principal replays them (`dm_restore`). A rotated import is a new
+        // actor and carries no DMs.
+        if !options.rotate_keys {
+            for (path, bytes) in &files {
+                let Some(channel) = path
+                    .strip_prefix("local/dms/")
+                    .and_then(|name| name.strip_suffix(".jsonl"))
+                else {
+                    continue;
+                };
+                if !peko_channel::ChannelId(channel.to_string()).is_pair_id() {
+                    continue;
+                }
+                let dir = local_root.join(super::dm_restore::DM_LOGS_DIR);
+                tokio::fs::create_dir_all(&dir).await?;
+                tokio::fs::write(dir.join(format!("{channel}.jsonl")), bytes).await?;
+            }
+        }
         // ADR-081 D6 step 5: the owner's conversation follows the owner —
         // to this runtime's local user, or to the owner's Hub account.
         if portable && options.import_sessions {
@@ -1571,6 +1590,11 @@ mod tests {
                 source_runtime: SRC.into(),
                 hub_routes: Default::default(),
                 channels: Some(channels),
+                dm_logs: vec![
+                    (old_dm.as_str().to_string(), b"{\"post\":1}\n".to_vec()),
+                    // Not a pair id: never written.
+                    ("../escape".to_string(), b"x".to_vec()),
+                ],
             })
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),
@@ -1623,6 +1647,13 @@ mod tests {
         );
         let cron = std::fs::read_to_string(dst_local.join("cron/schedule.toml")).unwrap();
         assert!(cron.contains("\"actor\": \"user:local:local\""), "{cron}");
+        // ADR-095 D4: the DM's posts wait for the loaded principal.
+        let pending = dst_local.join(crate::registry::packaging::dm_restore::DM_LOGS_DIR);
+        assert_eq!(
+            std::fs::read(pending.join(format!("{}.jsonl", old_dm.as_str()))).unwrap(),
+            b"{\"post\":1}\n"
+        );
+        assert_eq!(std::fs::read_dir(&pending).unwrap().count(), 1);
         let new_dm = peko_channel::dm_channel_id("mover-key", &format!("local@{DST}"));
         let rebound = peko_session::SessionManager::new()
             .with_sessions_dir_internal(dst_local.join("sessions"))
@@ -1792,6 +1823,7 @@ mod tests {
                 source_runtime: SRC.into(),
                 hub_routes,
                 channels: Some(channels),
+                ..Default::default()
             })
             .export(PrincipalExportOptions {
                 output_path: Some(out.display().to_string()),

@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a moved peko keeps its DMs (2026-11-04, ADR-095 phase 2)
+
+- A snapshot now carries each DM's posts (`local/dms/<pair id>.jsonl`) and,
+  in `local/channels.json`, where the DM's other members live. After
+  import, once the peko is loaded, each DM comes back at its pair id with
+  its session binding, the other member's runtime, and every post; the
+  copy then catches up with what it missed from the other side (phase 1).
+  Before, a moved peko's DMs started empty and reattached only when it
+  spoke first.
+- A peer known only on the runtime the peko left stays behind (ADR-081 D1).
+  A rotated import (`--rotate-keys`) carries no DMs.
+
 ### Feature: a DM between pekos on two computers catches up from the other side (2026-11-04, ADR-095 phase 1)
 
 - A DM between a peko here and a peko on another runtime has no host: each
