@@ -112,8 +112,30 @@ impl TunnelChannelPort {
         }
     }
 
+    /// The people this runtime's person blocked, with the name each is
+    /// known by here (from their request, or a DM), for the block list.
+    pub async fn blocked_people_named(
+        &self,
+        account: &str,
+    ) -> peko_channel::Result<(Vec<String>, std::collections::BTreeMap<String, String>)> {
+        let people = self.local.blocked_people(account).await?;
+        let mut names = std::collections::BTreeMap::new();
+        for person in &people {
+            if let Ok(subject) = person.parse::<ActorRef>() {
+                if let Some(name) = self.local.actor_info(&subject).await.name {
+                    names.insert(person.clone(), name);
+                }
+            }
+        }
+        Ok((people, names))
+    }
+
     /// Record `actor` (a person on the Hub) the way first contact would.
-    async fn know_person(&self, address: &str, name: Option<&str>) -> anyhow::Result<ActorRef> {
+    pub(crate) async fn know_person(
+        &self,
+        address: &str,
+        name: Option<&str>,
+    ) -> anyhow::Result<ActorRef> {
         let account = person_account(address)
             .ok_or_else(|| anyhow::anyhow!("{address} is not a person on PekoHub"))?;
         let subject = ActorRef::User(Route::hub(account.clone()));
@@ -340,6 +362,10 @@ impl TunnelChannelPort {
         match answer {
             DmRequestAnswer::Decline => Ok(None),
             DmRequestAnswer::Block => {
+                // Remember who they were, so the block list can name them.
+                let _ = self
+                    .know_person(&request.from, request.name.as_deref())
+                    .await;
                 self.local
                     .set_blocked(&account, std::slice::from_ref(&request.from), true)
                     .await?;

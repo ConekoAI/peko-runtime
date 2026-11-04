@@ -1654,6 +1654,10 @@ pub enum ResponsePacket {
     ChannelBlockedPeople {
         request_id: u64,
         people: Vec<String>,
+        /// What each is called here, when known (their request named
+        /// them).
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        names: std::collections::BTreeMap<String, String>,
     },
 
     /// Response to `ChannelSetWake`: the policy now stored.
