@@ -322,6 +322,12 @@ pub enum TunnelMessage {
     },
     #[serde(rename = "principal_transfer_rejected", rename_all = "camelCase")]
     PrincipalTransferRejected { request_id: String, message: String },
+    /// ADR-081 D4 (amended): Hub made the transfer an offer. Nothing
+    /// changes until the new owner accepts on PekoHub; then Hub sends
+    /// `principal_owner_changed` without a request ID. `message` says so
+    /// in the words to show.
+    #[serde(rename = "principal_transfer_offered", rename_all = "camelCase")]
+    PrincipalTransferOffered { request_id: String, message: String },
     /// ADR-081 D4: the owner Hub records for an online principal — after a
     /// transfer, or when this runtime announced a different one. The
     /// runtime's config follows it.

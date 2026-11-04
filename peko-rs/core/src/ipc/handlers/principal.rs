@@ -785,10 +785,15 @@ impl RequestHandler for PrincipalHandler {
                 owner,
             } => {
                 let response = match transfer_principal(host, caller, &name, owner).await {
-                    Ok(owner) => ResponsePacket::PrincipalOwnerTransferred {
+                    Ok(Transfer::Done(owner)) => ResponsePacket::PrincipalOwnerTransferred {
                         request_id,
                         name,
                         owner,
+                    },
+                    Ok(Transfer::Offered(message)) => ResponsePacket::PrincipalTransferOffered {
+                        request_id,
+                        name,
+                        message,
                     },
                     Err(e) => ResponsePacket::Error {
                         request_id,
@@ -3379,12 +3384,20 @@ async fn build_principal_packager(
 /// transferred on Hub — to a Hub user — and the local config takes the new
 /// owner only from Hub's confirmation. An offline principal is transferred
 /// here.
+/// What a transfer did: moved the principal, or (online, through PekoHub)
+/// offered it to the new owner, who accepts on PekoHub.
+#[derive(Debug, PartialEq)]
+enum Transfer {
+    Done(ActorRef),
+    Offered(String),
+}
+
 async fn transfer_principal(
     host: &dyn PrincipalHost,
     caller: &CallerContext,
     name: &str,
     owner: ActorRef,
-) -> anyhow::Result<ActorRef> {
+) -> anyhow::Result<Transfer> {
     use crate::common::identifiers::validate_agent_name;
     validate_agent_name(name)
         .map_err(|e| anyhow::anyhow!("[unsafe_name] invalid principal name: {e}"))?;
@@ -3432,8 +3445,27 @@ async fn transfer_principal(
                     "An online principal is transferred through PekoHub; connect the tunnel first"
                 )
             })?;
-            dispatcher.transfer_online(name, &account).await?;
-            principal.config.read().await.owner.clone()
+            match dispatcher.transfer_online(name, &account).await? {
+                crate::tunnel::dispatcher::TransferOutcome::Transferred => {
+                    principal.config.read().await.owner.clone()
+                }
+                crate::tunnel::dispatcher::TransferOutcome::Offered(message) => {
+                    if let Some(audit) = host.observability() {
+                        audit
+                            .audit_security_with_caller(
+                                Some(&caller.subject()),
+                                "principal.owner_transfer_offered",
+                                Some(&principal.id.0),
+                                serde_json::json!({
+                                    "from": previous.canonical_address(),
+                                    "to": owner.canonical_address(),
+                                }),
+                            )
+                            .await?;
+                    }
+                    return Ok(Transfer::Offered(message));
+                }
+            }
         }
         None => {
             manager
@@ -3455,7 +3487,7 @@ async fn transfer_principal(
             )
             .await?;
     }
-    Ok(owner)
+    Ok(Transfer::Done(owner))
 }
 
 /// What leaves with the snapshot (ADR-081 D6): the Hub routes of the
@@ -4518,7 +4550,7 @@ mod tests {
             let moved = transfer_principal(&host, &CallerContext::local(), "mine", alice.clone())
                 .await
                 .unwrap();
-            assert_eq!(moved, alice);
+            assert_eq!(moved, Transfer::Done(alice.clone()));
             // The terminal no longer owns it, so it cannot take it back.
             let err = transfer_principal(
                 &host,

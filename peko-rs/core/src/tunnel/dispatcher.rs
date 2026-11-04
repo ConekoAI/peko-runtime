@@ -178,13 +178,23 @@ impl Default for InstanceState {
     }
 }
 
+/// Hub's answer to a transfer of an online principal (ADR-081 D4, amended).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferOutcome {
+    /// The principal has its new owner.
+    Transferred,
+    /// The new owner was offered it; it moves when they accept on PekoHub.
+    /// Hub's words for it.
+    Offered(String),
+}
+
 /// Shared dispatcher state for instance lifecycle management
 #[derive(Debug, Default)]
 pub struct TunnelDispatcherState {
     /// Whether the tunnel is authenticated and ready
     pub registration_receipts: std::collections::HashMap<String, Result<String, String>>,
     /// ADR-081 D4: Hub's answers to transfer requests, by request ID.
-    pub transfer_receipts: std::collections::HashMap<String, Result<(), String>>,
+    pub transfer_receipts: std::collections::HashMap<String, Result<TransferOutcome, String>>,
     pub pending_registrations: std::collections::HashMap<String, String>,
     pub ready: bool,
     /// Heartbeat interval from server (seconds)
@@ -617,11 +627,13 @@ impl TunnelDispatcher {
                     .await;
                 match request_id {
                     Some(id) => {
-                        self.state
-                            .write()
-                            .await
-                            .transfer_receipts
-                            .insert(id, synced.as_ref().map(|_| ()).map_err(ToString::to_string));
+                        self.state.write().await.transfer_receipts.insert(
+                            id,
+                            synced
+                                .as_ref()
+                                .map(|_| TransferOutcome::Transferred)
+                                .map_err(ToString::to_string),
+                        );
                     }
                     // Hub refused an announce naming another owner, or the
                     // owner transferred it on Hub: come back online under
@@ -645,6 +657,16 @@ impl TunnelDispatcher {
                     .await
                     .transfer_receipts
                     .insert(request_id, Err(message));
+            }
+            TunnelMessage::PrincipalTransferOffered {
+                request_id,
+                message,
+            } => {
+                self.state
+                    .write()
+                    .await
+                    .transfer_receipts
+                    .insert(request_id, Ok(TransferOutcome::Offered(message)));
             }
             TunnelMessage::PrincipalRegistered {
                 registration_id,
@@ -1445,9 +1467,16 @@ impl TunnelDispatcher {
     }
 
     /// Transfer an online principal through Hub (ADR-081 D4): Hub allows it
-    /// when this runtime's account is the recorded owner, then confirms
-    /// with the new owner, which [`Self::sync_owner_from_hub`] writes.
-    pub async fn transfer_online(&self, name: &str, owner_account: &str) -> anyhow::Result<()> {
+    /// when this runtime's account is the recorded owner. Hub makes it an
+    /// offer the new owner accepts on PekoHub ([`TransferOutcome::Offered`]);
+    /// the new owner arrives later as `principal_owner_changed`, which
+    /// [`Self::sync_owner_from_hub`] writes. A Hub that confirms at once
+    /// answers [`TransferOutcome::Transferred`].
+    pub async fn transfer_online(
+        &self,
+        name: &str,
+        owner_account: &str,
+    ) -> anyhow::Result<TransferOutcome> {
         let manager = self.host.principal_manager();
         let principal = manager
             .get_by_name(name)
@@ -3924,7 +3953,7 @@ mod tests {
             .unwrap();
         let alice = uuid::Uuid::new_v4().to_string();
 
-        for accept in [false, true] {
+        for answer in ["refuse", "offer", "confirm"] {
             let asking = {
                 let dispatcher = dispatcher.clone();
                 let alice = alice.clone();
@@ -3941,35 +3970,52 @@ mod tests {
             };
             assert_eq!(owner_id, alice);
             assert_eq!(local_id, principal.id.0);
-            let answer = if accept {
-                TunnelMessage::PrincipalOwnerChanged {
+            let message = match answer {
+                "confirm" => TunnelMessage::PrincipalOwnerChanged {
                     request_id: Some(request_id),
                     local_id,
                     hub_id,
                     owner_id: alice.clone(),
-                }
-            } else {
-                TunnelMessage::PrincipalTransferRejected {
+                },
+                "offer" => TunnelMessage::PrincipalTransferOffered {
+                    request_id,
+                    message: "Offered to @alice".into(),
+                },
+                _ => TunnelMessage::PrincipalTransferRejected {
                     request_id,
                     message: "not the owner".into(),
-                }
+                },
             };
-            dispatcher.dispatch(answer, handle.clone()).await.unwrap();
+            dispatcher.dispatch(message, handle.clone()).await.unwrap();
             let result = asking.await.unwrap();
             let owner = principal.config.read().await.owner.clone();
-            if accept {
-                result.unwrap();
-                assert_eq!(
-                    owner,
-                    ActorRef::User(peko_subject::Route::hub(alice.clone()))
-                );
-            } else {
-                assert!(result.unwrap_err().to_string().contains("not the owner"));
-                assert_eq!(
-                    owner,
-                    ActorRef::User("local".into()),
-                    "a refusal changes nothing"
-                );
+            match answer {
+                "confirm" => {
+                    assert_eq!(result.unwrap(), TransferOutcome::Transferred);
+                    assert_eq!(
+                        owner,
+                        ActorRef::User(peko_subject::Route::hub(alice.clone()))
+                    );
+                }
+                "offer" => {
+                    assert_eq!(
+                        result.unwrap(),
+                        TransferOutcome::Offered("Offered to @alice".into())
+                    );
+                    assert_eq!(
+                        owner,
+                        ActorRef::User("local".into()),
+                        "an offer changes nothing until it is accepted"
+                    );
+                }
+                _ => {
+                    assert!(result.unwrap_err().to_string().contains("not the owner"));
+                    assert_eq!(
+                        owner,
+                        ActorRef::User("local".into()),
+                        "a refusal changes nothing"
+                    );
+                }
             }
         }
     }

@@ -1431,6 +1431,10 @@ async fn transfer_principal(name: &str, owner: &str) -> Result<()> {
             println!("Transferred '{name}' to {}", owner.canonical_address());
             Ok(())
         }
+        ResponsePacket::PrincipalTransferOffered { message, .. } => {
+            println!("{message}");
+            Ok(())
+        }
         ResponsePacket::Error { message, .. } => anyhow::bail!("Transfer failed: {message}"),
         other => anyhow::bail!("Unexpected response from daemon: {other:?}"),
     }

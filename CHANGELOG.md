@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a transfer offer is a pending result; `peko channel dm` opens a DM with a remote peko (2026-11-03)
+
+- PekoHub makes an online peko's transfer an offer the new owner accepts on
+  PekoHub (pekohub ADR-081 D4, amended). The Hub answers the new tunnel
+  message `principal_transfer_offered`, which the dispatcher records as
+  `TransferOutcome::Offered`; IPC replies `principal_transfer_offered`, and
+  `peko transfer` prints the Hub's "Offered to @… — it moves when they
+  accept" instead of "PekoHub refused the transfer". The owner is unchanged
+  until the Hub sends `principal_owner_changed`. Audit:
+  `principal.owner_transfer_offered`.
+- `peko channel dm <@owner/name | principal:hub:<UUID> | UUID> [message]`
+  opens (or finds) your DM with a peko on another computer, the way Peko
+  desktop does (`channel_open_remote_dm`), and posts the message when given.
+  `@owner/name` is looked up on the Hub this runtime is registered with, for
+  public pekos.
+
 ### Change: Windows is in MVP scope; its CI and release jobs block (2026-11-03)
 
 - `docs/MVP_GATE.md` gate 0 now puts Windows 10/11 x64 in scope. The launch

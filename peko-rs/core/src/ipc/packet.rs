@@ -2128,6 +2128,16 @@ pub enum ResponsePacket {
         owner: peko_auth::ActorRef,
     },
 
+    /// An online principal's transfer became an offer (ADR-081 D4,
+    /// amended): it moves when the new owner accepts on PekoHub, and until
+    /// then the owner is unchanged. `message` is PekoHub's, ready to show.
+    #[serde(rename = "principal_transfer_offered")]
+    PrincipalTransferOffered {
+        request_id: u64,
+        name: String,
+        message: String,
+    },
+
     #[serde(rename = "principal_permission_revoked")]
     PrincipalPermissionRevoked {
         request_id: u64,
@@ -2752,6 +2762,7 @@ impl ResponsePacket {
             | Self::PrincipalPermissionGranted { request_id, .. }
             | Self::PrincipalPermissionRevoked { request_id, .. }
             | Self::PrincipalOwnerTransferred { request_id, .. }
+            | Self::PrincipalTransferOffered { request_id, .. }
             | Self::PrincipalPermissions { request_id, .. }
             | Self::PrincipalStatusUpdated { request_id, .. }
             | Self::PrincipalRegistrationUpdated { request_id, .. }
@@ -2844,6 +2855,7 @@ impl ResponsePacket {
             Self::PrincipalPermissionGranted { .. } => "PrincipalPermissionGranted",
             Self::PrincipalPermissionRevoked { .. } => "PrincipalPermissionRevoked",
             Self::PrincipalOwnerTransferred { .. } => "PrincipalOwnerTransferred",
+            Self::PrincipalTransferOffered { .. } => "PrincipalTransferOffered",
             Self::PrincipalStatusUpdated { .. } => "PrincipalStatusUpdated",
             Self::PrincipalRegistrationUpdated { .. } => "PrincipalRegistrationUpdated",
             Self::PrincipalPermissions { .. } => "PrincipalPermissions",

@@ -46,6 +46,7 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::PeerRuntimeOnline { .. } => "peer_runtime_online",
         TunnelMessage::PrincipalTransfer { .. } => "principal_transfer",
         TunnelMessage::PrincipalTransferRejected { .. } => "principal_transfer_rejected",
+        TunnelMessage::PrincipalTransferOffered { .. } => "principal_transfer_offered",
         TunnelMessage::PrincipalOwnerChanged { .. } => "principal_owner_changed",
         TunnelMessage::InstanceDeregister { .. } => "instance_deregister",
         TunnelMessage::InstanceAnnounce { .. } => "instance_announce",
@@ -89,6 +90,7 @@ const ALL_VARIANTS: &[&str] = &[
     "peer_runtime_online",
     "principal_transfer",
     "principal_transfer_rejected",
+    "principal_transfer_offered",
     "principal_owner_changed",
     "instance_deregister",
     "instance_announce",
@@ -202,6 +204,10 @@ fn samples() -> Vec<TunnelMessage> {
         TunnelMessage::PrincipalTransferRejected {
             request_id: "xfer-1".into(),
             message: "not the owner".into(),
+        },
+        TunnelMessage::PrincipalTransferOffered {
+            request_id: "xfer-1".into(),
+            message: "Offered to @bob. It moves when they accept on PekoHub.".into(),
         },
         TunnelMessage::PrincipalOwnerChanged {
             request_id: Some("xfer-1".into()),
