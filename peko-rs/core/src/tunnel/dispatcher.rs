@@ -811,7 +811,15 @@ impl TunnelDispatcher {
                 self.mark_ready(heartbeat_interval_secs).await;
                 // Resend channel envelopes the recipient has not confirmed.
                 let port = self.host.tunnel_channel_port();
+                let manager = self.host.principal_manager();
                 tokio::spawn(async move {
+                    // ADR-095 D7: registering connects the tunnel; key the
+                    // person's DMs by their account before anything syncs.
+                    if let Err(e) =
+                        crate::principal::dm_rekey::reconcile_local_user_dms(&manager).await
+                    {
+                        warn!("Could not rekey the local user's DMs: {e}");
+                    }
                     port.on_tunnel_ready().await;
                     // ADR-091 D4: catch up remote DMs.
                     port.sync_remote_dms(None).await;
@@ -7581,6 +7589,213 @@ mod tests {
                 .unwrap()
                 .map(|h| h.runtime),
             Some(h.app.runtime_did())
+        );
+    }
+
+    /// ADR-095 D7 (F7): alice talks to her peko on its host, L1, then from
+    /// her second computer, L2, under the same account. It is one
+    /// conversation: L2 opens the DM L1 already has, and catches up on it.
+    #[tokio::test]
+    async fn your_own_peko_is_one_conversation_on_every_device() {
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let alice = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut l1 = DmRuntime::new(Arc::clone(&directory)).await;
+        let peko = create_test_principal(
+            &l1.app,
+            "peko",
+            alice.clone(),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let l1_port = l1.app.tunnel_channel_port();
+        l1_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("peko"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        directory.register_hub_id(
+            &hub_id,
+            AgentResolution {
+                runtime_id: l1.app.runtime_did(),
+                instance_id: "instance".into(),
+                name: Some("peko".into()),
+                hub_id: hub_id.clone(),
+                local_id: peko.id.0.clone(),
+                identity_key: peko_key.clone(),
+                agent_did: peko_did.clone(),
+                owner_principal: alice.clone(),
+                exposure: ResolvedExposure::Private,
+            },
+        );
+
+        // On L1, before it was registered, alice talked to her peko.
+        let local_user = ActorRef::User("local".into());
+        l1_port
+            .local()
+            .ensure_local_user(&l1.app.runtime_did())
+            .await
+            .unwrap();
+        let before = l1_port
+            .ensure_dm(&peko.id, &local_user, "/local-user")
+            .await
+            .unwrap();
+        l1_port
+            .post(
+                &before,
+                &local_user,
+                peko_channel::PostMsg::root("from my laptop"),
+            )
+            .await
+            .unwrap();
+        // L1 registers under alice's account.
+        l1_port
+            .local()
+            .link_local_user(&l1.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        crate::principal::dm_rekey::reconcile_local_user_dms(l1.app.principal_manager())
+            .await
+            .unwrap();
+        let peko_id = peko.id.clone();
+        let dms_on_l1 = |port: Arc<crate::tunnel::TunnelChannelPort>| {
+            let peko_id = peko_id.clone();
+            async move {
+                let mut out = Vec::new();
+                for channel in port.list_for_principal(&peko_id).await.unwrap() {
+                    if port.conversation_kind(&channel).await.unwrap()
+                        == peko_channel::ConversationKind::Dm
+                    {
+                        out.push(channel);
+                    }
+                }
+                out
+            }
+        };
+        let rekeyed = dms_on_l1(Arc::clone(&l1_port)).await;
+        assert_eq!(
+            rekeyed,
+            [peko_channel::dm_channel_id(
+                &peko_key,
+                &format!("user:hub:{account}")
+            )],
+            "the DM moved to the Hub-keyed pair id"
+        );
+        let texts = |events: Vec<peko_channel::ChannelEvent>| -> Vec<String> {
+            posts(&events).into_iter().map(|(_, t)| t).collect()
+        };
+        assert_eq!(
+            texts(
+                l1_port
+                    .peek(&rekeyed[0], &Checkpoint::zero())
+                    .await
+                    .unwrap()
+            ),
+            ["from my laptop"]
+        );
+        // The peko's session follows the DM.
+        let bound = peko_session::manager::SessionManager::new()
+            .with_sessions_dir_internal(peko.memory.sessions_dir())
+            .list_all_sessions(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.channel_id.as_deref() == Some(before.as_str()))
+            .count();
+        assert_eq!(bound, 0, "no session left on the old id");
+
+        // Alice opens her peko from L2.
+        let mut l2 = DmRuntime::new(Arc::clone(&directory)).await;
+        let l2_port = l2.app.tunnel_channel_port();
+        l2_port
+            .local()
+            .link_local_user(&l2.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = l2
+            .ipc(RequestPacket::ChannelOpenRemoteDm {
+                request_id: 1,
+                hub_id: hub_id.clone(),
+                token: None,
+            })
+            .await
+        else {
+            panic!("L2 opens the DM");
+        };
+        assert_eq!(channel, rekeyed[0], "one conversation");
+        let caught_up = || async {
+            texts(l2_port.peek(&channel, &Checkpoint::zero()).await.unwrap()).len() == 1
+        };
+        relay_until(&mut l2, &mut l1, caught_up).await;
+        assert_eq!(
+            dms_on_l1(Arc::clone(&l1_port)).await,
+            rekeyed,
+            "still one DM on L1"
+        );
+
+        // A post from L2 lands in the same conversation on L1.
+        l2.ipc(RequestPacket::ChannelPost {
+            request_id: 2,
+            channel: channel.as_str().into(),
+            sender_name: None,
+            text: "from my desktop".into(),
+            parent: None,
+            attachments: Vec::new(),
+        })
+        .await;
+        relay(&mut l2, &mut l1).await;
+        assert_eq!(
+            texts(l1_port.peek(&channel, &Checkpoint::zero()).await.unwrap()),
+            ["from my laptop", "from my desktop"]
+        );
+
+        assert!(
+            l1_port
+                .local()
+                .list_remote_members(&channel)
+                .await
+                .unwrap()
+                .iter()
+                .any(|m| m.runtime_id == l2.app.runtime_did()),
+            "L2 is a route for alice on L1"
+        );
+        // Unregistered, L1 keys the DM by its local user again.
+        l1_port.local().unlink_local_user().await.unwrap();
+        crate::principal::dm_rekey::reconcile_local_user_dms(l1.app.principal_manager())
+            .await
+            .unwrap();
+        assert_eq!(dms_on_l1(Arc::clone(&l1_port)).await, vec![before.clone()]);
+        assert!(
+            l1_port
+                .local()
+                .list_remote_members(&before)
+                .await
+                .unwrap()
+                .iter()
+                .all(|m| !m.principal_id.starts_with("user:")),
+            "alice's other computers are no longer routes"
+        );
+        assert_eq!(
+            texts(l1_port.peek(&before, &Checkpoint::zero()).await.unwrap()),
+            ["from my laptop", "from my desktop"]
         );
     }
 

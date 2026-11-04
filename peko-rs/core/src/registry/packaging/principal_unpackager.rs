@@ -882,7 +882,8 @@ impl PrincipalUnpackager {
                 )
                 .await?;
         }
-        let new = peko_channel::dm_channel_id(principal_key, &store.key_of(owner).0);
+        let new =
+            peko_channel::dm_channel_id(principal_key, &store.actor_info(owner).await.dm_key());
         if new.as_str() == old {
             return Ok(());
         }
@@ -1858,11 +1859,10 @@ mod tests {
                 toml::from_str(&std::fs::read_to_string(&moved.config_path).unwrap()).unwrap();
             let owner = ActorRef::User(peko_subject::Route::hub(alice.clone()));
             assert_eq!(restored.owner, owner, "Hub owner unchanged");
-            let expected = if dir == "own" {
-                format!("local@{runtime}")
-            } else {
-                store.key_of(&owner).0
-            };
+            // ADR-095 D7: a Hub owner's DM is keyed by their account on
+            // every runtime — their own registered one included.
+            let expected = format!("user:hub:{alice}");
+            assert_eq!(store.actor_info(&owner).await.dm_key(), expected, "{dir}");
             let rebound = peko_session::SessionManager::new()
                 .with_sessions_dir_internal(dst_data.join("principals/mover/local/sessions"))
                 .list_all_sessions(false)

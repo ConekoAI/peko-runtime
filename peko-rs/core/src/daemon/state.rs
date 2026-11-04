@@ -792,6 +792,13 @@ impl AppState {
                 }
             }
         };
+        // ADR-095 D7: the person's DMs keyed by their current address —
+        // registered or not — whichever process changed the registration.
+        if let Err(e) =
+            crate::principal::dm_rekey::reconcile_local_user_dms(&principal_manager).await
+        {
+            tracing::warn!("Could not rekey the local user's DMs: {e}");
+        }
 
         // Local addressing exists before any Hub credential or tunnel startup.
         tooling
@@ -2602,6 +2609,12 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
         )
         .await?;
         AppState::stop_tunnel(self).await;
+        // ADR-095 D7: back to the local key.
+        if let Err(e) =
+            crate::principal::dm_rekey::reconcile_local_user_dms(&self.principal_manager).await
+        {
+            tracing::warn!("Could not rekey the local user's DMs: {e}");
+        }
         Ok(())
     }
 }

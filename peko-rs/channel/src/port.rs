@@ -240,7 +240,7 @@ pub trait ChannelPort: Send + Sync + 'static {
     ) -> Result<ChannelId> {
         let me = self.actor_info(&ActorRef::from(principal)).await;
         let other = self.actor_info(peer).await;
-        let id = dm_channel_id(&me.identity_key, &other.identity_key);
+        let id = dm_channel_id(&me.dm_key(), &other.dm_key());
         if !self.list_for_principal(principal).await?.contains(&id) {
             self.create(
                 principal,
@@ -526,6 +526,16 @@ pub trait ChannelPort: Send + Sync + 'static {
         })
     }
 
+    /// ADR-095 D7: key this runtime's person's DMs by their current DM
+    /// key (see [`ChannelStore::rekey_local_user_dms`]). Returns `(old,
+    /// new, bound principal ids)` per moved DM. Adapters without DMs on
+    /// disk move nothing.
+    ///
+    /// [`ChannelStore::rekey_local_user_dms`]: crate::ChannelStore::rekey_local_user_dms
+    async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
+        Ok(Vec::new())
+    }
+
     /// ADR-095 D4: fill a DM's copy from a snapshot — record where its
     /// other members live (`remote`) and merge `posts` by `msg_id`, as
     /// verified history (nothing wakes, nothing fans out). Returns how
@@ -790,6 +800,18 @@ impl ActorInfo {
         self.hub_id
             .as_ref()
             .map(|id| format!("{}:hub:{id}", self.kind))
+    }
+    /// What a DM's pair id hashes for this actor (ADR-095 D7): its
+    /// immutable key, except that a registered runtime's own person is
+    /// their Hub account, as every other runtime names them. The person's
+    /// registry key stays `local@<runtime DID>` (ADR-081 D3).
+    pub fn dm_key(&self) -> String {
+        match &self.hub_id {
+            Some(hub) if self.kind == "user" && self.identity_key.starts_with("local@") => {
+                format!("user:hub:{hub}")
+            }
+            _ => self.identity_key.clone(),
+        }
     }
     pub fn subject(&self) -> ActorRef {
         let route = match (&self.local_id, &self.hub_id) {

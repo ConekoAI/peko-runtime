@@ -88,7 +88,7 @@ pub async fn find_dm_child(
 ) -> Option<String> {
     let me = port.actor_info(&ActorRef::from(principal)).await;
     let other = port.actor_info(peer).await;
-    let channel = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
+    let channel = peko_channel::dm_channel_id(&me.dm_key(), &other.dm_key());
     metas
         .iter()
         .find(|m| m.channel_id.as_deref() == Some(channel.as_str()))

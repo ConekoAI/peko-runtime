@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: your own peko is one conversation on every computer (2026-11-04, ADR-095 phase 3a)
+
+- While a runtime is registered, its person's DMs are keyed by their Hub
+  account (`user:hub:<account>`) instead of the runtime's local key
+  (`local@<runtime DID>`), the way every other runtime names them. Talking
+  to your peko on its own computer and from another computer signed in to
+  the same account is now one conversation: the other computer opens the
+  DM its host already has and catches up on it. Before, it was two.
+- The runtime moves existing DMs to the new id at boot, when the tunnel is
+  ready (registering connects it), and after unregistering (back to the
+  local key, and the person's other computers stop being routes). The log,
+  read marks, members, and bindings move; a DM already at the new id takes
+  the old one's posts; the pekos' sessions follow, compartments included.
+- The local user's registry key is unchanged (ADR-081 D3); only the address
+  a DM's pair id hashes changes (`ActorInfo::dm_key`).
+- Not kept: a forward from the old id. A peko holding the old id in memory
+  reads it as missing and finds the DM by listing.
+
 ### Feature: a moved peko keeps its DMs (2026-11-04, ADR-095 phase 2)
 
 - A snapshot now carries each DM's posts (`local/dms/<pair id>.jsonl`) and,

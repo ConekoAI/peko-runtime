@@ -650,7 +650,7 @@ impl PeerChildTurns {
         let initial_guard = initial_lock.lock().await;
         let me = port.actor_info(&ActorRef::from(&self.principal_id)).await;
         let other = port.actor_info(&peer).await;
-        let expected = peko_channel::dm_channel_id(&me.identity_key, &other.identity_key);
+        let expected = peko_channel::dm_channel_id(&me.dm_key(), &other.dm_key());
         let created = !port
             .list_for_principal(&self.principal_id)
             .await?
