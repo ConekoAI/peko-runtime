@@ -1,6 +1,7 @@
-//! A person's history with a remote peko comes from its host (ADR-091).
-//! A child module of `tunnel_channel_port` so it shares the port's store
-//! and tunnel context.
+//! A person's history with a remote peko comes from its host (ADR-091);
+//! a peko's DM with a peko elsewhere catches up from the other's copy
+//! (ADR-095 D2–D3). A child module of `tunnel_channel_port` so it shares
+//! the port's store and tunnel context.
 //!
 //! - The person's side asks ([`TunnelChannelPort::sync_history`] on
 //!   opening and catching up, [`TunnelChannelPort::history_older`] for
@@ -14,7 +15,7 @@ use crate::tunnel::{
     ChannelHistoryRequestPayload, TunnelHandle, TunnelMessage, CHANNEL_HISTORY_REQUEST_VERSION,
     CHANNEL_HISTORY_VERSION,
 };
-use peko_channel::{ChannelId, ChannelPort, Checkpoint};
+use peko_channel::{ChannelId, ChannelPort};
 use peko_protocol::channel::ChannelEvent;
 use peko_subject::ActorRef;
 use std::time::Duration;
@@ -81,6 +82,13 @@ impl TunnelChannelPort {
             };
             return Ok((format!("user:hub:{account}"), host));
         }
+        // ADR-095 D2: a DM between a peko here and a peko elsewhere; the
+        // peko here asks the other's copy, by its signing DID.
+        if home.is_none()
+            && self.local.conversation_kind(channel).await? == peko_channel::ConversationKind::Dm
+        {
+            return self.peko_dm_requester(ctx, channel).await;
+        }
         let home = home
             .filter(|h| h != &ctx.caller_runtime_id)
             .ok_or_else(|| {
@@ -95,6 +103,36 @@ impl TunnelChannelPort {
             }
         }
         anyhow::bail!("no member here can ask for {channel}'s history")
+    }
+
+    /// The peko here in a peko-to-peko DM (by signing DID) and the runtime
+    /// of the peko on the other side.
+    async fn peko_dm_requester(
+        &self,
+        ctx: &crate::tunnel::cross_runtime_channel::CrossRuntimeChannelCtx,
+        channel: &ChannelId,
+    ) -> anyhow::Result<(String, String)> {
+        let mut mine = None;
+        for member in self.local.list_members(channel).await? {
+            if let ActorRef::Principal(id) = &member {
+                let pid = peko_subject::PrincipalId::from_did(id);
+                if let Some(did) = ctx.principal_keys.did_for_principal(&pid).await {
+                    mine = Some(did);
+                    break;
+                }
+            }
+        }
+        let mine = mine.ok_or_else(|| anyhow::anyhow!("no peko here is in {channel}"))?;
+        let peer = self
+            .local
+            .list_remote_members(channel)
+            .await?
+            .into_iter()
+            .find(|m| m.principal_id.starts_with("did:key:") && m.principal_id != mine)
+            .map(|m| m.runtime_id)
+            .filter(|runtime| runtime != &ctx.caller_runtime_id)
+            .ok_or_else(|| anyhow::anyhow!("{channel} has no peko on another runtime"))?;
+        Ok((mine, peer))
     }
 
     /// Ask `channel`'s host for one page; the receiver yields the answer.
@@ -178,7 +216,9 @@ impl TunnelChannelPort {
                     .lock()
                     .expect("history pending")
                     .retain(|_, p| !p.reply.is_closed());
-                anyhow::bail!("The computer hosting this peko did not answer; it may be offline")
+                anyhow::bail!(
+                    "The other computer in this conversation did not answer; it may be offline"
+                )
             }
         }
     }
@@ -223,16 +263,9 @@ impl TunnelChannelPort {
     ///
     /// The DM is not this account's, or the host does not answer.
     pub async fn sync_history(&self, channel: &ChannelId) -> anyhow::Result<usize> {
-        let mut after = self
-            .local
-            .peek(channel, &Checkpoint::zero())
-            .await?
-            .iter()
-            .rev()
-            .find_map(|ev| match ev {
-                ChannelEvent::Posted { msg_id, .. } => msg_id.clone(),
-                _ => None,
-            });
+        // ADR-095 D3: resume after the newest post by time; lines in a
+        // copy are in arrival order, not the order the posts were made.
+        let mut after = self.local.newest_msg_id(channel).await?;
         let mut added = 0;
         for _ in 0..CATCH_UP_PAGES {
             let (answer, host) = self.ask_history(channel, None, after.as_deref()).await?;
@@ -280,15 +313,20 @@ impl TunnelChannelPort {
     /// Catch up every remote DM of this account in the background, or
     /// only those whose peko `host` serves (ADR-091 D4).
     pub(crate) async fn sync_remote_dms(self: &std::sync::Arc<Self>, host: Option<&str>) {
-        let Some(account) = self.current_account().await else {
-            return;
-        };
-        let Ok(mut channels) = self.local.remote_dms(&account).await else {
-            return;
-        };
-        // ADR-092 D3: the groups this person joined catch up from their homes.
-        if let Ok(groups) = self.local.person_groups(&account).await {
-            channels.extend(groups.into_iter().map(|(channel, _, _)| channel));
+        let mut channels = Vec::new();
+        if let Some(account) = self.current_account().await {
+            if let Ok(dms) = self.local.remote_dms(&account).await {
+                channels.extend(dms);
+            }
+            // ADR-092 D3: the groups this person joined catch up from their homes.
+            if let Ok(groups) = self.local.person_groups(&account).await {
+                channels.extend(groups.into_iter().map(|(channel, _, _)| channel));
+            }
+        }
+        // ADR-095 D3: the DMs of pekos here with pekos elsewhere catch up
+        // from the other peko's copy.
+        if let Ok(dms) = self.local.peko_dms().await {
+            channels.extend(dms);
         }
         for channel in channels {
             if let Some(host) = host {

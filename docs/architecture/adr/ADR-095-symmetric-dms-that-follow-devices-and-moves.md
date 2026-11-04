@@ -1,6 +1,6 @@
 # ADR-095: Every DM is one conversation, kept whole by every runtime in it; it follows people to new devices and pekos to new runtimes; people DM people
 
-**Status:** Proposed (2026-11-04)
+**Status:** Accepted (2026-11-04); phase 1 built
 **Date:** 2026-11-04
 **Builds on:** [ADR-073](ADR-073-actor-addresses-and-conversation-bindings.md) (pair DM ids), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (immutable keys, snapshots, the online link), [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (DM kind, bindings), [ADR-090](ADR-090-local-user-dms-a-remote-peko-over-the-tunnel.md) (a person's runtime-vouched invite), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (history messages, merge by `msg_id`, changing hands), [ADR-092](ADR-092-groups-with-a-home-people-and-hub-ids.md) (pending invitations, per-account delivery).
 **Amends:** ADR-091 D1 and D3 (no host/cache split for DMs; members other than the person may ask), ADR-081 D3 (registering rekeys the local user's DMs, D7) and D6 step 5 (DMs reattach with their history).
@@ -55,6 +55,8 @@ Triggers: opening the DM; `tunnel_ready`; `peer_runtime_online` for a runtime th
 2. the same member's other routes.
 
 It asks for pages after the newest `msg_id` it holds, then fills backwards to the first post, at most 20 pages a pass, resuming on the next trigger. A DM with any copy online catches up; nothing is queued at the Hub.
+
+A copy a peko reads catches up **forward only**. A peko's unread digest tracks the DM's lines, so older posts appended to its copy would read as new messages for it. Such a copy only ever lacks older posts after a move, and D4 brings those in the snapshot.
 
 ### D4 — A moved peko takes its DMs with it
 
