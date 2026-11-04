@@ -927,6 +927,50 @@ pub enum RequestPacket {
         token: Option<String>,
     },
 
+    /// Open, or find, a DM with another person, whose PekoHub account is
+    /// `account` (ADR-095 D6). The first time, the person gets a message
+    /// request; posts wait in this copy until they accept. Local callers
+    /// only; answered with `channel_person_dm_opened`.
+    #[serde(rename = "channel_open_person_dm")]
+    ChannelOpenPersonDm {
+        request_id: u64,
+        account: String,
+        /// What to call them here until their runtime says.
+        #[serde(default)]
+        name: Option<String>,
+    },
+
+    /// The people asking this runtime's person to DM (ADR-095 D6), newest
+    /// first. Local callers only; answered with `channel_dm_requests_result`.
+    #[serde(rename = "channel_dm_requests")]
+    ChannelDmRequests { request_id: u64 },
+
+    /// Answer a DM request (ADR-095 D6): `accept`, `decline`, or `block`.
+    /// Accepting opens the DM and tells the asker's runtime; declining and
+    /// blocking tell nobody. Local callers only; answered with
+    /// `channel_person_dm_opened` on accept, else `Done`.
+    #[serde(rename = "channel_dm_request_answer")]
+    ChannelDmRequestAnswer {
+        request_id: u64,
+        channel: String,
+        answer: String,
+    },
+
+    /// Block (`blocked: true`) or unblock a person by PekoHub account
+    /// (ADR-095 D6). Local callers only; answered with
+    /// `channel_blocked_people`.
+    #[serde(rename = "channel_block_person")]
+    ChannelBlockPerson {
+        request_id: u64,
+        account: String,
+        blocked: bool,
+    },
+
+    /// The people this runtime's person blocked. Local callers only;
+    /// answered with `channel_blocked_people`.
+    #[serde(rename = "channel_blocked")]
+    ChannelBlocked { request_id: u64 },
+
     /// Scroll-back in a DM with a remote peko (ADR-091 D4): the page of
     /// posts before `before` (a `msg_id`), from the peko's host. Not
     /// stored on this runtime. Local callers only; answered with
@@ -1081,6 +1125,11 @@ impl RequestPacket {
             | Self::ChannelPinToShared { request_id, .. }
             | Self::ChannelInfo { request_id, .. }
             | Self::ChannelOpenRemoteDm { request_id, .. }
+            | Self::ChannelOpenPersonDm { request_id, .. }
+            | Self::ChannelDmRequests { request_id }
+            | Self::ChannelDmRequestAnswer { request_id, .. }
+            | Self::ChannelBlockPerson { request_id, .. }
+            | Self::ChannelBlocked { request_id }
             | Self::ChannelHistoryOlder { request_id, .. }
             | Self::ChannelInvitations { request_id }
             | Self::ChannelPersonGroups { request_id }
@@ -1549,6 +1598,34 @@ pub enum ResponsePacket {
         name: Option<String>,
         /// Whether this request created the DM.
         created: bool,
+    },
+
+    /// Response to `ChannelOpenPersonDm`, and to accepting a DM request
+    /// (ADR-095 D6).
+    #[serde(rename = "channel_person_dm_opened")]
+    ChannelPersonDmOpened {
+        request_id: u64,
+        /// The DM (`dm_<sha256>`) on this runtime.
+        channel: peko_protocol::channel::ChannelId,
+        /// The other person, `user:hub:<account>`.
+        peer: String,
+        /// Whether this request created the DM here.
+        created: bool,
+    },
+
+    /// Response to `ChannelDmRequests` (ADR-095 D6).
+    #[serde(rename = "channel_dm_requests_result")]
+    ChannelDmRequestsResult {
+        request_id: u64,
+        requests: Vec<peko_channel::DmRequest>,
+    },
+
+    /// Response to `ChannelBlockPerson` / `ChannelBlocked`: everyone
+    /// blocked now, `user:hub:<account>`.
+    #[serde(rename = "channel_blocked_people")]
+    ChannelBlockedPeople {
+        request_id: u64,
+        people: Vec<String>,
     },
 
     /// Response to `ChannelSetWake`: the policy now stored.
@@ -2804,6 +2881,9 @@ impl ResponsePacket {
             | Self::ChannelPinnedToShared { request_id, .. }
             | Self::ChannelInfoResult { request_id, .. }
             | Self::ChannelRemoteDmOpened { request_id, .. }
+            | Self::ChannelPersonDmOpened { request_id, .. }
+            | Self::ChannelDmRequestsResult { request_id, .. }
+            | Self::ChannelBlockedPeople { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelInvitationsResult { request_id, .. }
             | Self::ChannelPersonGroupsResult { request_id, .. }
@@ -2897,6 +2977,9 @@ impl ResponsePacket {
             Self::ChannelPinnedToShared { .. } => "ChannelPinnedToShared",
             Self::ChannelInfoResult { .. } => "ChannelInfoResult",
             Self::ChannelRemoteDmOpened { .. } => "ChannelRemoteDmOpened",
+            Self::ChannelPersonDmOpened { .. } => "ChannelPersonDmOpened",
+            Self::ChannelDmRequestsResult { .. } => "ChannelDmRequestsResult",
+            Self::ChannelBlockedPeople { .. } => "ChannelBlockedPeople",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",
             Self::ChannelPersonGroupsResult { .. } => "ChannelPersonGroupsResult",

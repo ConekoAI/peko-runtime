@@ -45,11 +45,11 @@ pub use invite_token::{
     MAX_REVOKED_JTIS,
 };
 pub use local_directory::LocalFirstAgentDirectory;
-pub use protocol::{AccountDm, AccountGroup, TunnelMessage};
+pub use protocol::{AccountDm, AccountGroup, AccountPersonDm, DmRoute, TunnelMessage};
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::{
-    human_dm_channel_id, HistoryPage, HubDm, TunnelChannelPort, ATTACHMENT_CHUNK_BYTES,
-    HISTORY_PAGE_LIMIT,
+    human_dm_channel_id, person_dm_channel_id, DmRequestAnswer, HistoryPage, HubDm, PersonDm,
+    TunnelChannelPort, ATTACHMENT_CHUNK_BYTES, HISTORY_PAGE_LIMIT,
 };
 pub use tunnel_channel_signature::{
     jws_sign, jws_verify, sign_channel_event, sign_channel_invite, sign_history,
@@ -61,8 +61,9 @@ pub use tunnel_channel_signature::{
     CHANNEL_INVITE_PAYLOAD_VERSION,
 };
 pub use tunnel_channel_signature::{
-    verify_account_dms, verify_account_dms_request, AccountDmsPayload, AccountDmsRequestPayload,
-    ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION,
+    verify_account_dms, verify_account_dms_request, verify_dm_route, verify_person_dm_invite,
+    AccountDmsPayload, AccountDmsRequestPayload, DmRoutePayload, PersonDmInvitePayload,
+    ACCOUNT_DMS_REQUEST_VERSION, ACCOUNT_DMS_VERSION, DM_ROUTE_VERSION, PERSON_DM_INVITE_VERSION,
 };
 pub use tunnel_channel_signature::{
     verify_group_invitation, verify_group_join, verify_group_join_request, GroupInvitationPayload,

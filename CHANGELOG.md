@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: people DM people, with message requests and blocking (2026-11-04, ADR-095 phase 4)
+
+- Open a DM with another person by their PekoHub account:
+  `peko channel dm user:hub:<account> "hi"` (IPC `channel_open_person_dm`).
+  They get a message request on every computer of their account; until
+  they accept, their computers tell yours nothing, not even that they
+  exist. What you wrote reaches them as history when they accept.
+- `peko channel requests`, `accept <dm>`, `decline <dm>`, `block <dm or
+  account>`, `unblock <account>`, `blocked` (IPC `channel_dm_requests`,
+  `channel_dm_request_answer`, `channel_block_person`, `channel_blocked`).
+  Blocking refuses that person's requests, messages, and history requests,
+  and reaches your other computers with your DM list.
+- Every computer of both people carries the conversation: route
+  announcements (`tunnel_dm_route`) spread until each knows every other,
+  and your other computers pick the DM up from your account's DM list.
+- No peko is in a conversation between people: the file tools refuse its
+  folder, its requests, and the block list to every run, the owner's
+  included, and so does a search from a folder that contains one. `Bash`
+  still runs as you and can read them.
+- Wire: `tunnel_person_dm_invite`, `tunnel_dm_route`; `tunnel_account_dms`
+  gains `people` and `blocked`. Needs the PekoHub relay (pekohub#73).
+- Not yet: the desktop's message-request view.
+
 ### Feature: your DMs follow you to a new computer, with all their history (2026-11-04, ADR-095 phase 3b)
 
 - A runtime newly registered to your account asks your other computers

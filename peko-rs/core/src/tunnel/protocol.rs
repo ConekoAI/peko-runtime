@@ -617,6 +617,47 @@ pub enum TunnelMessage {
         source_runtime_id: String,
         recipient_runtime_id: String,
         dms: Vec<AccountDm>,
+        /// The person's DMs with other people (D6).
+        #[serde(default)]
+        people: Vec<AccountPersonDm>,
+        /// The people the person blocked, `user:hub:<id>` (D6).
+        #[serde(default)]
+        blocked: Vec<String>,
+        signature: String,
+    },
+
+    /// ADR-095 D6: a person asks another person to DM. PekoHub delivers
+    /// it to every runtime registered to `recipient_account`
+    /// (`user:hub:<id>`), and only from a runtime registered to
+    /// `source_principal_did`'s account. The recipient's runtimes keep it
+    /// as a message request and answer nothing until it is accepted.
+    /// `signature` covers every other field (`PersonDmInvitePayload`).
+    #[serde(rename = "tunnel_person_dm_invite", rename_all = "camelCase")]
+    TunnelPersonDmInvite {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_account: String,
+        source_principal_did: String,
+        channel_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        signature: String,
+    },
+
+    /// ADR-095 D6: a runtime tells another that it is a route for
+    /// `source_principal_did` (`user:hub:<id>`) in a DM between two people,
+    /// with every route it knows (`routes`). A receiver records the routes
+    /// it lacks and announces itself to each runtime it just learned of.
+    /// PekoHub relays it only from a runtime registered to that person.
+    /// `signature` covers every other field (`DmRoutePayload`).
+    #[serde(rename = "tunnel_dm_route", rename_all = "camelCase")]
+    TunnelDmRoute {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        channel_id: String,
+        routes: Vec<DmRoute>,
         signature: String,
     },
 
@@ -756,6 +797,30 @@ pub struct AccountDm {
     pub peer_runtime_id: String,
     /// `public` or `private`.
     pub peer_exposure: String,
+}
+
+/// A runtime that carries one person's side of a DM between two people
+/// (ADR-095 D6).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmRoute {
+    pub runtime_id: String,
+    /// `user:hub:<account>`.
+    pub person: String,
+}
+
+/// One of a person's DMs with another person, as another of their
+/// runtimes reports it (ADR-095 D5/D6): the pair id, the other person, and
+/// every route known for the DM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountPersonDm {
+    pub channel_id: String,
+    /// `user:hub:<account>`.
+    pub peer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_name: Option<String>,
+    pub routes: Vec<DmRoute>,
 }
 
 /// One row of the `initialMembers` list on

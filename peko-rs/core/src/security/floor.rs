@@ -126,6 +126,65 @@ pub fn is_runtime_state(workspace: Option<&Path>, path: &Path) -> bool {
     peko_home(workspace).is_some_and(|home| path.starts_with(home) && !path.starts_with(workspace))
 }
 
+/// Whether `path` is in a DM between two people, the requests to start
+/// one, or a person's block list (ADR-095 D6). No run reaches these, the
+/// owner's included: they are people's own conversations, and no peko is
+/// in them. `Bash` runs as the OS user and can still read the files.
+/// `path` must already be [`resolve`]d.
+#[must_use]
+pub fn in_people_only(path: &Path) -> bool {
+    if path.components().any(|c| c.as_os_str() == "dm_requests")
+        || path
+            .file_name()
+            .is_some_and(|name| name == "blocked_people.json")
+    {
+        return true;
+    }
+    path.ancestors()
+        .find(|dir| {
+            dir.parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "channels")
+        })
+        .is_some_and(is_person_dm_dir)
+}
+
+/// Whether `dir` holds a DM between two people: kind `dm`, both
+/// participants persons.
+fn is_person_dm_dir(dir: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(dir.join("meta.json")) else {
+        return false;
+    };
+    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    let people = meta["participants"].as_array().map_or(0, |all| {
+        all.iter()
+            .filter(|p| p.as_str().is_some_and(|p| p.starts_with("user:")))
+            .count()
+    });
+    meta["kind"] == "dm" && people == 2
+}
+
+/// Whether a search from `root` would read a DM between two people
+/// (ADR-095 D6): `root` is in one, or holds a channels directory that has
+/// one. `candidates` are where channel directories live.
+fn search_reaches_people(root: &Path, candidates: &[PathBuf]) -> bool {
+    if in_people_only(root) {
+        return true;
+    }
+    candidates
+        .iter()
+        .filter(|channels| channels.starts_with(root))
+        .any(|channels| {
+            std::fs::read_dir(channels).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| is_person_dm_dir(&entry.path()))
+            })
+        })
+}
+
 /// Why a non-owner run may not search from `root`, if it may not: a
 /// recursive `Glob` / `Grep` from an ancestor of the runtime's state would
 /// read it. `data_dir` is the runtime's data directory (sessions live
@@ -137,15 +196,33 @@ pub fn search_root_refusal(
     data_dir: Option<&Path>,
     root: &Path,
 ) -> Option<String> {
-    if stamp.is_owner() {
-        return None;
-    }
     let root = resolve(root);
     let workspace = workspace.map(resolve);
     let home = workspace
         .as_deref()
         .and_then(peko_home)
         .map(Path::to_path_buf);
+    // ADR-095 D6: people's own conversations, for every run.
+    let candidates: Vec<PathBuf> = home
+        .iter()
+        .map(|h| h.join("runtime/channels"))
+        .chain(
+            data_dir
+                .map(resolve)
+                .into_iter()
+                .flat_map(|d| [d.join("runtime/channels"), d.join("channels")]),
+        )
+        .collect();
+    if search_reaches_people(&root, &candidates) {
+        return Some(format!(
+            "a search from {} would read conversations between people, which no peko \
+             reads; search a narrower folder",
+            root.display()
+        ));
+    }
+    if stamp.is_owner() {
+        return None;
+    }
     let reaches = |state: &Path| state.starts_with(&root);
     let covers_state = home.as_deref().is_some_and(reaches)
         || data_dir.map(resolve).as_deref().is_some_and(reaches);
@@ -294,6 +371,13 @@ pub fn check_path(
     write: bool,
 ) -> PathDecision {
     let target = resolve(path);
+    if in_people_only(&target) {
+        return PathDecision::Deny(format!(
+            "{} is a conversation between people (or their requests or blocks); no peko \
+             reads or writes it",
+            target.display()
+        ));
+    }
     if write && in_tool_ledger(&target) {
         return PathDecision::Deny(format!(
             "{} is a tool ledger; only the runtime writes it",
@@ -434,6 +518,64 @@ mod tests {
         }
         assert!(tool_refusal(&stamp(Trust::Owner), "Bash", None).is_none());
         assert!(tool_refusal(&ActingFor::runtime(), "Bash", None).is_none());
+    }
+
+    /// ADR-095 D6: a DM between two people, the requests to start one,
+    /// and the block list are out of every run's reach, the owner's too;
+    /// a DM with a peko stays the owner's.
+    #[test]
+    fn no_run_reaches_conversations_between_people() {
+        let t = tree();
+        let home = t.mine.parent().unwrap().parent().unwrap().to_path_buf();
+        let channels = home.join("runtime/channels");
+        for (dir, participants) in [
+            ("dm_people", vec!["user:local:local", "user:hub:bob"]),
+            ("dm_peko", vec!["user:local:local", "principal:hub:p"]),
+        ] {
+            std::fs::create_dir_all(channels.join(dir)).unwrap();
+            std::fs::write(
+                channels.join(dir).join("meta.json"),
+                serde_json::json!({"kind": "dm", "participants": participants}).to_string(),
+            )
+            .unwrap();
+        }
+        let owner = stamp(Trust::Owner);
+        for path in [
+            channels.join("dm_people/events.jsonl"),
+            channels.join("dm_people"),
+            home.join("runtime/dm_requests/dm_x.json"),
+            home.join("runtime/blocked_people.json"),
+        ] {
+            for write in [false, true] {
+                assert!(
+                    matches!(
+                        check_path(&owner, Some(&t.mine), &path, write),
+                        PathDecision::Deny(_)
+                    ),
+                    "{} write={write}",
+                    path.display()
+                );
+            }
+        }
+        assert!(matches!(
+            check_path(
+                &owner,
+                Some(&t.mine),
+                &channels.join("dm_peko/events.jsonl"),
+                false
+            ),
+            PathDecision::Allow
+        ));
+        for root in [&home, &channels, &channels.join("dm_people")] {
+            assert!(
+                search_root_refusal(&owner, Some(&t.mine), None, root).is_some(),
+                "{}",
+                root.display()
+            );
+        }
+        assert!(
+            search_root_refusal(&owner, Some(&t.mine), None, &channels.join("dm_peko")).is_none()
+        );
     }
 
     /// The runtime's conversations, keys and settings are the owner's:

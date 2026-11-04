@@ -465,6 +465,25 @@ pub struct GroupInvitation {
     pub requested: bool,
 }
 
+/// A person's request to DM this runtime's person, waiting for their
+/// answer (ADR-095 D6). It names only who asks; nothing goes back to the
+/// asker until it is accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DmRequest {
+    /// The pair id the DM will have.
+    pub channel: ChannelId,
+    /// Who asks, `user:hub:<account>`.
+    pub from: String,
+    /// The display name the asker's runtime gave, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The runtime it came from: the asker's first route on accepting.
+    pub source_runtime: String,
+    /// The Hub account it is for.
+    pub account: String,
+    pub received_at: chrono::DateTime<Utc>,
+}
+
 /// A group's home, owner and admins (ADR-092 D1), as `Channel info` shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupInfo {
@@ -1103,6 +1122,173 @@ impl ChannelStore {
             }
         }
         Ok(())
+    }
+
+    fn dm_requests_dir(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("dm_requests")
+    }
+
+    /// Keep a person's DM request until it is answered (ADR-095 D6). A
+    /// newer one for the same pair replaces it.
+    pub async fn save_dm_request(&self, request: &DmRequest) -> Result<()> {
+        let dir = self.dm_requests_dir();
+        fs::create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.json", channel_dir_name(&request.channel)));
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(request)?).await?;
+        fs::rename(temp, path).await?;
+        Ok(())
+    }
+
+    /// The DM requests waiting for `account`'s answer, newest first.
+    pub async fn dm_requests(&self, account: &str) -> Result<Vec<DmRequest>> {
+        let mut out = Vec::new();
+        let Ok(mut rd) = fs::read_dir(self.dm_requests_dir()).await else {
+            return Ok(out);
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(bytes) = fs::read(entry.path()).await {
+                if let Ok(request) = serde_json::from_slice::<DmRequest>(&bytes) {
+                    if request.account == account {
+                        out.push(request);
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|r| std::cmp::Reverse(r.received_at));
+        Ok(out)
+    }
+
+    /// Remove and return the DM request for `channel`, if any.
+    pub async fn take_dm_request(&self, channel: &ChannelId) -> Result<Option<DmRequest>> {
+        let path = self
+            .dm_requests_dir()
+            .join(format!("{}.json", channel_dir_name(channel)));
+        let Ok(bytes) = fs::read(&path).await else {
+            return Ok(None);
+        };
+        let _ = fs::remove_file(&path).await;
+        Ok(serde_json::from_slice(&bytes).ok())
+    }
+
+    /// Delete every DM request not for `keep` (the runtime changed hands).
+    pub async fn purge_dm_requests(&self, keep: Option<&str>) -> Result<()> {
+        let Ok(mut rd) = fs::read_dir(self.dm_requests_dir()).await else {
+            return Ok(());
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let theirs = match fs::read(entry.path()).await {
+                Ok(bytes) => serde_json::from_slice::<DmRequest>(&bytes)
+                    .map_or(true, |r| Some(r.account.as_str()) != keep),
+                Err(_) => true,
+            };
+            if theirs {
+                let _ = fs::remove_file(entry.path()).await;
+            }
+        }
+        Ok(())
+    }
+
+    fn blocked_path(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("blocked_people.json")
+    }
+
+    async fn load_blocked(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+        match fs::read(self.blocked_path()).await {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The people `account` blocked (`user:hub:<id>` addresses), sorted
+    /// (ADR-095 D6).
+    pub async fn blocked_people(&self, account: &str) -> Result<Vec<String>> {
+        Ok(self
+            .load_blocked()
+            .await?
+            .remove(account)
+            .unwrap_or_default())
+    }
+
+    /// Whether `account` blocked `person` (`user:hub:<id>`).
+    pub async fn is_blocked(&self, account: &str, person: &str) -> bool {
+        self.blocked_people(account)
+            .await
+            .is_ok_and(|blocked| blocked.iter().any(|b| b == person))
+    }
+
+    /// Block (`blocked: true`) or unblock `people` for `account`. Returns
+    /// whether the list changed.
+    pub async fn set_blocked(
+        &self,
+        account: &str,
+        people: &[String],
+        blocked: bool,
+    ) -> Result<bool> {
+        let path = self.blocked_path();
+        fs::create_dir_all(&self.cfg.runtime_dir).await?;
+        let _lock = FileLock::acquire(&path, CHANNEL_LOCK_TIMEOUT_MS)
+            .await
+            .map_err(|e| ChannelError::Adapter(e.to_string()))?;
+        let mut all = self.load_blocked().await?;
+        let list = all.entry(account.to_string()).or_default();
+        let before = list.clone();
+        for person in people {
+            if !person.starts_with("user:hub:") {
+                continue;
+            }
+            if blocked {
+                if !list.contains(person) {
+                    list.push(person.clone());
+                }
+            } else {
+                list.retain(|p| p != person);
+            }
+        }
+        list.sort();
+        if *list == before {
+            return Ok(false);
+        }
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(&all)?).await?;
+        fs::rename(temp, &path).await?;
+        Ok(true)
+    }
+
+    /// Every DM this runtime's person (`account`) has with another person
+    /// (ADR-095 D6), with the other person's address.
+    pub async fn person_dms(&self, account: &str) -> Result<Vec<(ChannelId, String)>> {
+        let mine = format!("user:hub:{account}");
+        let mut out = Vec::new();
+        for channel in self.account_channels(account, ConversationKind::Dm).await? {
+            let dir = self.cfg.channel_dir(&channel);
+            let Ok(meta) = MetaJson::load(&dir, &channel).await else {
+                continue;
+            };
+            let people: Vec<String> = meta
+                .participants
+                .iter()
+                .filter_map(|p| p.parse::<ActorRef>().ok())
+                .filter(|a| matches!(a, ActorRef::User(_)))
+                .map(|a| a.canonical_address())
+                .collect();
+            if people.len() != 2 {
+                continue;
+            }
+            let local = self.actor_info(&ActorRef::User("local".into())).await;
+            let Some(other) = people
+                .into_iter()
+                .find(|p| *p != mine && self.canonical_address(p) != local.address)
+            else {
+                continue;
+            };
+            out.push((channel, other));
+        }
+        Ok(out)
     }
 
     /// The runtime's local user joins a group from another runtime (ADR-092

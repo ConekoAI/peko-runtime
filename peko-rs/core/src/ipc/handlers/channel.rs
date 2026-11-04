@@ -405,6 +405,112 @@ impl ChannelHandler {
     /// `ChannelOpenRemoteDm` (ADR-090 D2): the local user opens, or
     /// finds, its DM with a peko on another runtime. Local callers only —
     /// it speaks as the runtime's local user and may carry its Hub token.
+    /// ADR-095 D6: DMs between people — open one, list and answer
+    /// requests, block and unblock. The local user's only.
+    async fn channel_person_dm(
+        &self,
+        request: RequestPacket,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        let request_id = request.request_id();
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user manages its conversations".to_string(),
+            )
+            .await;
+        }
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".to_string(),
+            )
+            .await;
+        };
+        let local = port.actor_info(&ActorRef::User("local".into())).await;
+        let opened = |dm: crate::tunnel::PersonDm| ResponsePacket::ChannelPersonDmOpened {
+            request_id,
+            channel: dm.channel,
+            peer: dm.peer,
+            created: dm.created,
+        };
+        let result: anyhow::Result<ResponsePacket> = async {
+            let account = local.hub_id.clone().ok_or_else(|| {
+                anyhow::anyhow!("Register this runtime with PekoHub first (peko runtime register)")
+            });
+            match request {
+                RequestPacket::ChannelOpenPersonDm { account, name, .. } => Ok(opened(
+                    port.open_person_dm(&account, name.as_deref()).await?,
+                )),
+                RequestPacket::ChannelDmRequests { .. } => {
+                    Ok(ResponsePacket::ChannelDmRequestsResult {
+                        request_id,
+                        requests: port.local().dm_requests(&account?).await?,
+                    })
+                }
+                RequestPacket::ChannelDmRequestAnswer {
+                    channel, answer, ..
+                } => {
+                    let channel = peko_channel::ChannelId::parse(&channel)
+                        .ok_or_else(|| anyhow::anyhow!("Not a channel id: {channel}"))?;
+                    let answer = match answer.as_str() {
+                        "accept" => crate::tunnel::DmRequestAnswer::Accept,
+                        "decline" => crate::tunnel::DmRequestAnswer::Decline,
+                        "block" => crate::tunnel::DmRequestAnswer::Block,
+                        other => anyhow::bail!("Answer accept, decline, or block, not {other:?}"),
+                    };
+                    Ok(match port.answer_dm_request(&channel, answer).await? {
+                        Some(dm) => opened(dm),
+                        None => ResponsePacket::Done {
+                            request_id,
+                            success: true,
+                            error: None,
+                        },
+                    })
+                }
+                RequestPacket::ChannelBlockPerson {
+                    account: who,
+                    blocked,
+                    ..
+                } => {
+                    let account = account?;
+                    anyhow::ensure!(
+                        uuid::Uuid::parse_str(&who).is_ok(),
+                        "Expected a person's PekoHub account ID (a UUID), got {who:?}"
+                    );
+                    port.local()
+                        .set_blocked(&account, &[format!("user:hub:{who}")], blocked)
+                        .await?;
+                    if blocked {
+                        // A waiting request from them goes too.
+                        let pair = crate::tunnel::person_dm_channel_id(
+                            &format!("user:hub:{account}"),
+                            &format!("user:hub:{who}"),
+                        );
+                        let _ = port.local().take_dm_request(&pair).await;
+                    }
+                    Ok(ResponsePacket::ChannelBlockedPeople {
+                        request_id,
+                        people: port.local().blocked_people(&account).await?,
+                    })
+                }
+                RequestPacket::ChannelBlocked { .. } => Ok(ResponsePacket::ChannelBlockedPeople {
+                    request_id,
+                    people: port.local().blocked_people(&account?).await?,
+                }),
+                _ => anyhow::bail!("not a person DM request"),
+            }
+        }
+        .await;
+        match result {
+            Ok(response) => send_response(sink, response).await,
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     async fn channel_open_remote_dm(
         &self,
         request_id: u64,
@@ -848,6 +954,11 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelInfo { .. }
                 | RequestPacket::ChannelSetWake { .. }
                 | RequestPacket::ChannelOpenRemoteDm { .. }
+                | RequestPacket::ChannelOpenPersonDm { .. }
+                | RequestPacket::ChannelDmRequests { .. }
+                | RequestPacket::ChannelDmRequestAnswer { .. }
+                | RequestPacket::ChannelBlockPerson { .. }
+                | RequestPacket::ChannelBlocked { .. }
                 | RequestPacket::ChannelHistoryOlder { .. }
                 | RequestPacket::ChannelInvitations { .. }
                 | RequestPacket::ChannelPersonGroups { .. }
@@ -1532,6 +1643,14 @@ impl RequestHandler for ChannelHandler {
             } => {
                 self.channel_open_remote_dm(request_id, &hub_id, token.as_deref(), caller, sink)
                     .await?
+            }
+
+            request @ (RequestPacket::ChannelOpenPersonDm { .. }
+            | RequestPacket::ChannelDmRequests { .. }
+            | RequestPacket::ChannelDmRequestAnswer { .. }
+            | RequestPacket::ChannelBlockPerson { .. }
+            | RequestPacket::ChannelBlocked { .. }) => {
+                self.channel_person_dm(request, caller, sink).await?
             }
 
             RequestPacket::ChannelHistoryOlder {

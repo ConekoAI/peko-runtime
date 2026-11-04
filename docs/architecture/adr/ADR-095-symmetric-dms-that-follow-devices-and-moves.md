@@ -1,6 +1,6 @@
 # ADR-095: Every DM is one conversation, kept whole by every runtime in it; it follows people to new devices and pekos to new runtimes; people DM people
 
-**Status:** Accepted (2026-11-04); phases 1–3 built
+**Status:** Accepted (2026-11-04); phases 1–4 built (desktop UI for phase 4 pending)
 **Date:** 2026-11-04
 **Builds on:** [ADR-073](ADR-073-actor-addresses-and-conversation-bindings.md) (pair DM ids), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (immutable keys, snapshots, the online link), [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (DM kind, bindings), [ADR-090](ADR-090-local-user-dms-a-remote-peko-over-the-tunnel.md) (a person's runtime-vouched invite), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (history messages, merge by `msg_id`, changing hands), [ADR-092](ADR-092-groups-with-a-home-people-and-hub-ids.md) (pending invitations, per-account delivery).
 **Amends:** ADR-091 D1 and D3 (no host/cache split for DMs; members other than the person may ask), ADR-081 D3 (registering rekeys the local user's DMs, D7) and D6 step 5 (DMs reattach with their history).
@@ -78,10 +78,10 @@ A DM between two people is an ordinary `dm` channel with the two members `user:h
 
 - **Opening.** IPC `channel_open_person_dm { hub_id }` → `channel_person_dm_opened { channel, peer, created }`. The pair id is `dm_channel_id("user:hub:<a>", "user:hub:<b>")` on every device of either person. An unregistered runtime cannot open one.
 - **Invite.** A runtime-signed invite with `creator = user:hub:<a>`, `kind: dm`, no author signature, addressed to account `<b>`; PekoHub delivers it to every runtime registered to `<b>`, and relays it only from a runtime registered to `<a>`. This widens ADR-090 D3's exception from "a person invites a peko" to "a person invites a person", nothing more.
-- **Consent.** On `<b>`'s runtimes the DM arrives as a **message request**, shown with its first posts and not delivered as new messages, until `<b>` accepts on any device (`peko channel accept|decline`, desktop). Accepting makes that runtime a route and tells the others. Declining hides the request; **blocking** the account refuses its invites, posts, and history requests on all of `<b>`'s runtimes (the block list syncs with D5's request).
+- **Consent.** On `<b>`'s runtimes the DM arrives as a **message request** that names only who asks, until `<b>` accepts on any device (`peko channel accept|decline|block`, desktop). Until then `<b>`'s runtimes say nothing to `<a>`'s: no route, no receipt, so `<a>` learns neither which runtimes `<b>` has nor that the request was seen. `<a>`'s posts stay in `<a>`'s own copy. Accepting makes that runtime a route and tells `<a>`'s runtime, then catches up `<a>`'s posts from it as history (D2–D3). Declining removes the request; **blocking** the account also refuses its invites, posts, and history requests on all of `<b>`'s runtimes (the block list travels with D5's answer).
 - **Routes.** A runtime that opens or accepts the DM announces itself to every known route of both members (`tunnel_dm_route { channel, account }`, Hub-checked like a post). Posts fan out to every route; ADR-092 phase 4 already keeps a person's other runtimes as routes.
 - **No peko in it.** No binding on either side; nothing wakes. A person-to-person DM belongs to no principal's compartment: `Channel`, `ChannelRead`, `Session`, `ToolLog`, and the file tools refuse it, owner runs included. `Bash` runs as the OS user and can read the files; the runtime says so rather than claiming otherwise (as ADR-079 does for the ledger).
-- **Delivery** is the outbox's: a post waits on the sender's runtime until a route of the recipient confirms it, for up to 30 days. A message needs one runtime of each person online at the same moment; the Hub holds nothing.
+- **Delivery** is the outbox's once both have a route: a post waits on the sender's runtime until a route of the recipient confirms it, for up to 30 days. Before `<b>` accepts there is no route, and `<a>`'s runtime resends the invite on `tunnel_ready` and when PekoHub reports one of `<b>`'s runtimes online. A message needs one runtime of each person online at the same moment; the Hub holds nothing.
 
 ### D7 — A registered runtime's person is keyed by their Hub account, so your own peko is one conversation on every device
 
@@ -116,6 +116,7 @@ Alice talks to peko P on its host L1 in `dm(P, local@L1)` (F7). From L2 she reac
 
 1. **Person-to-person conversations are DMs**, not two-person groups (D6).
 2. **Your own peko from another computer**: rekey on register (D7), not a mapping at the host. The split it fixes (F7) was read from the code, not reproduced live; phase 3 starts with a live check.
+3. **A message request reveals nothing before it is accepted** (D6): the recipient's runtimes send no route and no receipt until the person accepts, and the sender's posts reach them afterwards as history.
 
 ## 6. Open
 
@@ -134,3 +135,13 @@ Alice talks to peko P on its host L1 in `dm(P, local@L1)` (F7). From L2 she reac
 
    *Phase 3b notes (as built).* On `tunnel_ready` a registered runtime sends `tunnel_account_dms_request` to its account. PekoHub delivers it to the account's other runtimes, only from one of them, and wakes the asker when an offline one connects. Each answers `tunnel_account_dms` with the person's DMs it holds: their DMs with pekos elsewhere, and with pekos hosted there (Hub-keyed by D7), each with the peko's Hub ID, signing DID, key, name, runtime, and exposure. The asker opens each DM it lacks whose id is the person's pair with that peko (so a private peko needs no directory token), queues the invite that makes it a route, and catches up from the host. Answers count only for a request of this runtime, for ten minutes. A person's copy fills backwards after catching up forward, at most 20 pages a pass, and stores what it gets (D1). The asker re-asks only on its next `tunnel_ready`, not on `peer_runtime_online`.
 4. **People DM people.** `channel_open_person_dm`, the person-to-person invite, message requests, block list, route announcements, compartment refusals (D6); desktop. PekoHub: the relay check for `user:hub` → `user:hub` envelopes and account delivery for the new messages.
+
+   *Phase 4 notes (as built).*
+   - **Opening and requests.** `channel_open_person_dm { account }` (and `peko channel dm user:hub:<account>`) creates the DM at `dm(user:hub:a, user:hub:b)` under the opener's account, and sends `tunnel_person_dm_invite` to `<b>`'s account. PekoHub delivers it to every runtime of that account, and only from a runtime of `<a>`'s. Each of `<b>`'s runtimes keeps a `DmRequest` (`<runtime>/dm_requests/`) and sends nothing back. `<a>`'s runtime resends the invite on `tunnel_ready` and `peer_runtime_online` while no route of `<b>` is known.
+   - **Accepting.** `channel_dm_request_answer` (and `peko channel accept|decline|block`) creates the DM, records the asker's runtime as a route, sends it `tunnel_dm_route`, and catches up `<a>`'s posts from it as history. A runtime that already holds the DM treats a later invite as a route.
+   - **Routes.** `tunnel_dm_route` carries every route its sender knows. A receiver records the ones it lacks for the DM's two people only, and announces itself to each runtime it just learned of, and to the sender if the sender did not list it. Every route of both people comes to know every other.
+   - **Other devices.** The account DM list (D5) gains `people` (each with its routes) and `blocked`. A person's other runtime adopts each DM it lacks, announces itself, catches up, and drops a request it was still holding.
+   - **History.** A person DM's copy serves either of its two people (the other person, or the same person's other runtime). A requester asks the other person's runtime first.
+   - **Blocking** is kept per account (`<runtime>/blocked_people.json`). It refuses invites, posts, routes, and history requests from that person. It travels to the person's other runtimes in the DM list; unblocking does not.
+   - **No peko in it.** The trust floor refuses a person DM's directory, `dm_requests/`, and `blocked_people.json` to every run, the owner's included. A `Glob`/`Grep` from a folder containing a person DM is refused too. Channel tools need membership, and no peko is a member. `Bash` remains the exception.
+   - **Not built:** the desktop's message-request view and person DM opening (IPC and CLI are ready); unblocking on one device reaching the others.

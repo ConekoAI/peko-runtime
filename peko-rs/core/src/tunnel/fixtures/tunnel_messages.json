@@ -378,6 +378,47 @@
         "peerExposure": "private"
       }
     ],
+    "people": [
+      {
+        "channelId": "dm_1111111111111111111111111111111111111111111111111111111111111111",
+        "peer": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "peerName": "bob",
+        "routes": [
+          {
+            "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "person": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d"
+          }
+        ]
+      }
+    ],
+    "blocked": [
+      "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb"
+    ],
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_person_dm_invite",
+    "requestId": "pdm-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientAccount": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "channelId": "dm_1111111111111111111111111111111111111111111111111111111111111111",
+    "name": "alice",
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_dm_route",
+    "requestId": "route-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "sourcePrincipalDid": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+    "channelId": "dm_1111111111111111111111111111111111111111111111111111111111111111",
+    "routes": [
+      {
+        "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        "person": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb"
+      }
+    ],
     "signature": "runtime-signature"
   },
   {

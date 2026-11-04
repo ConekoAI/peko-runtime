@@ -2409,7 +2409,32 @@ two runtimes of the same account:
 
 Signed payloads: `peko-account-dms-request/1` (`requestId`, `sourceRuntimeId`,
 `recipientAccount`) and `peko-account-dms/1` (… `recipientRuntimeId`,
-`dmsB64u`). The asker opens each DM it lacks whose id is the person's pair with
+`dmsB64u`, `peopleB64u`, `blockedB64u`). The list also carries the person's DMs
+with people and whom they blocked (ADR-095 D6):
+`"people":[{"channelId":"dm_…","peer":"user:hub:<id>","peerName":"bob","routes":[{"runtimeId":"did:key:…","person":"user:hub:<id>"}]}],"blocked":["user:hub:<id>"]`.
+
+People DM people (ADR-095 D6). A DM between two people is a `dm` at
+`dm_channel_id("user:hub:<a>", "user:hub:<b>")`, kept under each side's account
+(`meta.account`), with no binding. PekoHub delivers an invite to every runtime of
+the asked account, and only from one of the asker's. A route announcement goes
+runtime to runtime, only from a runtime of the person it names:
+
+```json
+{"type":"tunnel_person_dm_invite","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<b>","sourcePrincipalDid":"user:hub:<a>","channelId":"dm_…","name":"alice","signature":"<JWS>"}
+{"type":"tunnel_dm_route","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","sourcePrincipalDid":"user:hub:<b>","channelId":"dm_…","routes":[{"runtimeId":"did:key:…","person":"user:hub:<a>"}],"signature":"<JWS>"}
+```
+
+Signed payloads: `peko-person-dm-invite/1` and `peko-dm-route/1` (`routesB64u`).
+A request waits in `<runtime>/dm_requests/<pair id>.json`
+(`{channel, from, name?, source_runtime, account, received_at}`) until answered;
+blocks are kept in `<runtime>/blocked_people.json` (`{<account>: ["user:hub:<id>", …]}`).
+Neither, nor a person DM's folder, is reachable by any run's file tools.
+
+IPC (local callers only): `channel_open_person_dm {account, name?}` and an
+accepted `channel_dm_request_answer {channel, answer: accept|decline|block}` →
+`channel_person_dm_opened {channel, peer, created}`; `channel_dm_requests` →
+`channel_dm_requests_result {requests}`; `channel_block_person {account, blocked}`
+and `channel_blocked` → `channel_blocked_people {people}`. The asker opens each DM it lacks whose id is the person's pair with
 that peko, then catches it up from the peko's host.
 
 IPC (local callers only):

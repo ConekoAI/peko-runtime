@@ -77,9 +77,13 @@ mod attachment_transfer;
 
 #[path = "account_dms.rs"]
 mod account_dms;
+
+#[path = "person_dm.rs"]
+mod person_dm;
 pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
+pub use person_dm::{person_dm_channel_id, DmRequestAnswer, PersonDm};
 
 /// Unanswered sends to one runtime before the sender asks the directory
 /// whether the members it reaches there moved (ADR-081 D7).
