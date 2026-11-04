@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a DM between pekos on two computers catches up from the other side (2026-11-04, ADR-095 phase 1)
+
+- A DM between a peko here and a peko on another runtime has no host: each
+  runtime keeps a full copy. A copy that missed posts now asks the other
+  copy for them, as its own peko (by signing DID), on `tunnel_ready` and
+  when the other runtime comes online. The other runtime answers only the
+  DM's other member, from the runtime recorded as its route, and only while
+  its own peko is registered and not local-only; anything else reads an
+  empty page.
+- History pages, and where a catch-up resumes, follow the time posts were
+  made, not the order a copy received them.
+- A copy a peko reads catches up forward only, so older posts never show up
+  as new in its unread digest.
+- Wire: unchanged (the ADR-091 history messages, with a `did:key`
+  requester).
+
 ### Fix: files from another computer keep their names, so they preview and open (2026-11-04, ADR-094)
 
 - A channel's file store keeps each file as `files/<sha256>/<name>` instead of

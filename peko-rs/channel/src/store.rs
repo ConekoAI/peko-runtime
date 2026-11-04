@@ -1236,11 +1236,12 @@ impl ChannelStore {
         Ok(fresh.len())
     }
 
-    /// One page of a DM's posts for its host to serve (ADR-091 D2):
-    /// `Posted` events with a `msg_id`, oldest first. `before` / `after`
-    /// are `msg_id` cursors; with neither, the newest page. An unknown
-    /// cursor reads as the newest page. Returns the page and whether
-    /// more lie beyond it in the direction read.
+    /// One page of a DM's posts for a copy to serve (ADR-091 D2, ADR-095
+    /// D2): `Posted` events with a `msg_id`, oldest first by `at` (copies
+    /// order their lines differently; time is what they agree on).
+    /// `before` / `after` are `msg_id` cursors; with neither, the newest
+    /// page. An unknown cursor reads as the newest page. Returns the page
+    /// and whether more lie beyond it in the direction read.
     pub async fn history_page(
         &self,
         channel: &ChannelId,
@@ -1248,14 +1249,7 @@ impl ChannelStore {
         after: Option<&str>,
         limit: usize,
     ) -> Result<(Vec<ChannelEvent>, bool)> {
-        let tier = self.resolve_tier(channel).await?;
-        let posts: Vec<ChannelEvent> = self
-            .read_events(tier, channel, &Checkpoint::zero())
-            .await?
-            .into_iter()
-            .map(|(_, ev)| ev)
-            .filter(|ev| posted_msg_id(ev).is_some())
-            .collect();
+        let posts = self.posts_by_time(channel).await?;
         let position = |cursor: &str| {
             posts
                 .iter()
@@ -1277,6 +1271,97 @@ impl ChannelStore {
             }
         };
         Ok((posts[start..end].to_vec(), more))
+    }
+
+    /// `channel`'s posts that carry a `msg_id`, oldest first by `at`, ties
+    /// in line order.
+    async fn posts_by_time(&self, channel: &ChannelId) -> Result<Vec<ChannelEvent>> {
+        let tier = self.resolve_tier(channel).await?;
+        let mut posts: Vec<ChannelEvent> = self
+            .read_events(tier, channel, &Checkpoint::zero())
+            .await?
+            .into_iter()
+            .map(|(_, ev)| ev)
+            .filter(|ev| posted_msg_id(ev).is_some())
+            .collect();
+        posts.sort_by(|a, b| a.at().cmp(b.at()));
+        Ok(posts)
+    }
+
+    /// The `msg_id` of `channel`'s newest post by `at` (ADR-095 D3: where
+    /// a copy's catch-up resumes).
+    pub async fn newest_msg_id(&self, channel: &ChannelId) -> Result<Option<String>> {
+        Ok(self
+            .posts_by_time(channel)
+            .await?
+            .last()
+            .and_then(posted_msg_id)
+            .map(str::to_string))
+    }
+
+    /// Every DM between a peko hosted here and a peko on another runtime
+    /// (ADR-095 D1): a bound local principal, a remote member, no person's
+    /// account.
+    pub async fn peko_dms(&self) -> Result<Vec<ChannelId>> {
+        let mut out = Vec::new();
+        for channel in self.channels_of_kind(ConversationKind::Dm).await? {
+            let tier = self.resolve_tier(&channel).await?;
+            let dir = self.channel_dir_for_tier(tier, &channel);
+            let Ok(meta) = MetaJson::load(&dir, &channel).await else {
+                continue;
+            };
+            if meta.account.is_some() || meta.bindings.is_empty() {
+                continue;
+            }
+            let remote = MembersJson::load(&dir)
+                .await
+                .map(|m| m.remote_members)
+                .unwrap_or_default();
+            if remote
+                .iter()
+                .any(|m| m.principal_id.starts_with("did:key:"))
+            {
+                out.push(channel);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every channel of `kind` on this runtime.
+    async fn channels_of_kind(&self, kind: ConversationKind) -> Result<Vec<ChannelId>> {
+        let root = self.cfg.channels_dir();
+        let mut out = Vec::new();
+        let mut rd = match fs::read_dir(&root).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => {
+                return Err(ChannelError::Adapter(format!(
+                    "read {}: {e}",
+                    root.display()
+                )))
+            }
+        };
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ChannelError::Adapter(format!("walk {}: {e}", root.display())))?
+        {
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let Some(channel) =
+                ChannelId::parse(&name).or_else(|| crate::fs::channel_dir_name_inverse(&name))
+            else {
+                continue;
+            };
+            if MetaJson::load(&entry.path(), &channel)
+                .await
+                .is_ok_and(|meta| meta.kind == kind)
+            {
+                out.push(channel);
+            }
+        }
+        Ok(out)
     }
 
     /// Every DM with a remote peko that belongs to `account` (ADR-091 D4).
@@ -5063,6 +5148,73 @@ mod tests {
         assert_eq!((ids(&newer), more), (vec!["m3".into(), "m4".into()], true));
         let (unknown, _) = store.history_page(&dm, None, Some("zz"), 2).await.unwrap();
         assert_eq!(ids(&unknown), ["m4", "m5"]);
+    }
+
+    /// ADR-095 D2–D3: copies hold lines in arrival order; pages and the
+    /// catch-up cursor follow the time the posts were made.
+    #[tokio::test]
+    async fn history_pages_follow_time_not_arrival() {
+        let store = ChannelStore::new(tmp_cfg("dm-time"));
+        let dm = remote_dm(&store, "acct-1").await;
+        for (id, at) in [
+            ("m3", "2026-11-02T10:03:00Z"),
+            ("m1", "2026-11-02T10:01:00Z"),
+            ("m2", "2026-11-02T10:02:00Z"),
+        ] {
+            // One merge each: lines land in arrival order, m3 first.
+            store
+                .append_synced_events(&dm, vec![synced_post(&dm, id, at)])
+                .await
+                .unwrap();
+        }
+        let ids = |page: &[ChannelEvent]| -> Vec<String> {
+            page.iter()
+                .filter_map(|ev| posted_msg_id(ev).map(str::to_string))
+                .collect()
+        };
+        let (all, _) = store.history_page(&dm, None, None, 10).await.unwrap();
+        assert_eq!(ids(&all), ["m1", "m2", "m3"]);
+        let (after, more) = store.history_page(&dm, None, Some("m1"), 10).await.unwrap();
+        assert_eq!((ids(&after), more), (vec!["m2".into(), "m3".into()], false));
+        assert_eq!(
+            store.newest_msg_id(&dm).await.unwrap().as_deref(),
+            Some("m3")
+        );
+    }
+
+    /// ADR-095 D1: a peko-to-peko DM is one that has a bound peko here, a
+    /// peko on another runtime, and no person's account.
+    #[tokio::test]
+    async fn peko_dms_lists_dms_with_a_remote_peko() {
+        let store = ChannelStore::new(tmp_cfg("peko-dms"));
+        let person_dm = remote_dm(&store, "acct-1").await;
+        let alice = pid("prin_alice");
+        let peer = ActorRef::Principal(peko_subject::Route::hub("peer-hub".to_string()));
+        store
+            .register_actor(
+                &peer,
+                Some("peer-hub"),
+                Some("did:key:zPeer"),
+                Some("peer-key"),
+                Some("peer"),
+                Registration::Public,
+            )
+            .await
+            .unwrap();
+        let dm = store
+            .ensure_dm(&alice, &peer, "/principal-peer")
+            .await
+            .unwrap();
+        assert!(
+            store.peko_dms().await.unwrap().is_empty(),
+            "no remote member yet"
+        );
+        store
+            .add_remote_member(&dm, "did:key:zPeerRuntime", "did:key:zPeer")
+            .await
+            .unwrap();
+        assert_eq!(store.peko_dms().await.unwrap(), [dm]);
+        assert!(!store.peko_dms().await.unwrap().contains(&person_dm));
     }
 
     /// ADR-091 D5: a runtime that changes hands deletes the previous

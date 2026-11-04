@@ -2733,9 +2733,10 @@ impl TunnelDispatcher {
         }
     }
 
-    /// ADR-091 D3: serve a person their DM with a peko hosted here — and
-    /// nothing else. Every refusal answers an empty page, so a probe
-    /// learns nothing about what exists.
+    /// ADR-091 D3: serve a person their DM with a peko hosted here; a
+    /// group member its group (ADR-092 D3); a peko its DM with a peko
+    /// hosted here (ADR-095 D2) — and nothing else. Every refusal answers
+    /// an empty page, so a probe learns nothing about what exists.
     async fn handle_history_request(
         &self,
         envelope: ChannelHistoryRequestPayload,
@@ -2906,6 +2907,10 @@ impl TunnelDispatcher {
         {
             return self.history_for_group_member(request, &group).await;
         }
+        // ADR-095 D2: a peko asking for its DM with a peko hosted here.
+        if request.source_principal_did.starts_with("did:key:") {
+            return self.history_for_peko_peer(request, &group).await;
+        }
         // 1. A person on the Hub, whose runtime the Hub bound to them.
         let person = match request.source_principal_did.parse::<ActorRef>() {
             Ok(human @ ActorRef::User(_))
@@ -2961,6 +2966,70 @@ impl TunnelDispatcher {
         Ok(port
             .history_page(
                 &channel,
+                request.before.as_deref(),
+                request.after.as_deref(),
+                request.limit,
+            )
+            .await)
+    }
+
+    /// ADR-095 D2: a page of a DM between a peko hosted here and the
+    /// asking peko, which must be the DM's other member, asking from the
+    /// runtime recorded as its route (PekoHub relays a peko's request only
+    /// from the runtime its online link points at).
+    async fn history_for_peko_peer(
+        &self,
+        request: &ChannelHistoryRequestPayload,
+        channel: &peko_channel::ChannelId,
+    ) -> anyhow::Result<crate::tunnel::HistoryPage> {
+        let port = self.host.tunnel_channel_port();
+        anyhow::ensure!(
+            port.conversation_kind(channel).await? == peko_channel::ConversationKind::Dm,
+            "not a DM"
+        );
+        // 1. The asker is the DM's remote member, from its route.
+        anyhow::ensure!(
+            port.local()
+                .is_remote_member(
+                    channel,
+                    &request.source_runtime_id,
+                    &request.source_principal_did
+                )
+                .await?,
+            "not the DM's other member"
+        );
+        // 2. The DM is exactly the pair of the asker and a peko here.
+        let peer = port
+            .actor_info(&ActorRef::Principal(
+                request.source_principal_did.clone().into(),
+            ))
+            .await;
+        let mut hosted = None;
+        for principal in self.host.principal_manager().list_all().await {
+            let me = port.actor_info(&ActorRef::from(&principal.id)).await;
+            if peko_channel::dm_channel_id(&me.identity_key, &peer.identity_key) == *channel {
+                hosted = Some(principal);
+                break;
+            }
+        }
+        let principal =
+            hosted.ok_or_else(|| anyhow::anyhow!("not a DM with a peko hosted here"))?;
+        // 3. The peko here still talks over the tunnel: registered, not
+        //    local-only (the invite's own check).
+        anyhow::ensure!(
+            port.actor_info(&ActorRef::from(&principal.id))
+                .await
+                .hub_id
+                .is_some(),
+            "the peko is not registered"
+        );
+        anyhow::ensure!(
+            principal.config.read().await.exposure != peko_auth::Exposure::LocalOnly,
+            "the peko is local-only"
+        );
+        Ok(port
+            .history_page(
+                channel,
                 request.before.as_deref(),
                 request.after.as_deref(),
                 request.limit,
@@ -7513,6 +7582,210 @@ mod tests {
                 .map(|h| h.runtime),
             Some(h.app.runtime_did())
         );
+    }
+
+    /// ADR-095 D2–D3: a DM between pekos on two runtimes has no host. A
+    /// copy that missed a post catches up from the other copy, as the
+    /// DM's other member; a peko outside the DM reads an empty page.
+    #[tokio::test]
+    async fn a_peko_dm_copy_catches_up_from_the_other_copy() {
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut h = DmRuntime::new(Arc::clone(&directory)).await;
+        let mut r = DmRuntime::new(Arc::clone(&directory)).await;
+        let mut pekos = Vec::new();
+        for (runtime, name) in [(&h, "ann"), (&r, "ben")] {
+            let peko = create_test_principal(
+                &runtime.app,
+                name,
+                ActorRef::User("local".into()),
+                vec![],
+                peko_auth::Exposure::Public,
+            )
+            .await;
+            let hub_id = uuid::Uuid::new_v4().to_string();
+            let (did, key) = {
+                let config = peko.config.read().await;
+                (
+                    config.did.as_ref().unwrap().0.clone(),
+                    config.actor_key.clone().unwrap(),
+                )
+            };
+            runtime
+                .app
+                .tunnel_channel_port()
+                .register_actor(
+                    &ActorRef::from(&peko.id),
+                    Some(&hub_id),
+                    Some(&did),
+                    Some(&key),
+                    Some(name),
+                    peko_channel::Registration::Public,
+                )
+                .await
+                .unwrap();
+            directory.register_hub_id(
+                &hub_id,
+                AgentResolution {
+                    runtime_id: runtime.app.runtime_did(),
+                    instance_id: format!("{name}-instance"),
+                    name: Some(name.into()),
+                    hub_id: hub_id.clone(),
+                    local_id: peko.id.0.clone(),
+                    identity_key: key.clone(),
+                    agent_did: did.clone(),
+                    owner_principal: ActorRef::Public,
+                    exposure: ResolvedExposure::Public,
+                },
+            );
+            runtime
+                .app
+                .tool_runtime
+                .tooling()
+                .services()
+                .set_cross_runtime_a2a_ctx(Arc::new(crate::tunnel::CrossRuntimeA2aCtx {
+                    directory: directory.clone(),
+                    caller_runtime_id: runtime.app.runtime_did(),
+                    principal_manager: runtime.app.principal_manager().clone(),
+                    channel_port: runtime.app.tunnel_channel_port(),
+                }));
+            pekos.push((peko, hub_id, did, key));
+        }
+        let (ann, _, _, _) = &pekos[0];
+        let (ben, ben_hub, ben_did, ben_key) = &pekos[1];
+        let h_port = h.app.tunnel_channel_port();
+        let r_port = r.app.tunnel_channel_port();
+        let ben_ref = ActorRef::Principal(peko_subject::Route::hub(ben_hub.clone()));
+        // Ann's runtime knows ben as `ChannelSend` would record him.
+        h_port
+            .register_actor(
+                &ben_ref,
+                Some(ben_hub),
+                Some(ben_did),
+                Some(ben_key),
+                Some("ben"),
+                peko_channel::Registration::Public,
+            )
+            .await
+            .unwrap();
+        let channel = h_port
+            .ensure_dm(&ann.id, &ben_ref, "/principal-ben")
+            .await
+            .unwrap();
+        h_port.invite(&channel, &ann.id, &ben_ref).await.unwrap();
+        relay(&mut h, &mut r).await;
+        h_port
+            .post(
+                &channel,
+                &ActorRef::from(&ann.id),
+                peko_channel::PostMsg::root("one"),
+            )
+            .await
+            .unwrap();
+        relay(&mut h, &mut r).await;
+        let texts = |events: Vec<peko_channel::ChannelEvent>| -> Vec<String> {
+            posts(&events).into_iter().map(|(_, t)| t).collect()
+        };
+        assert_eq!(
+            texts(r_port.peek(&channel, &Checkpoint::zero()).await.unwrap()),
+            ["one"]
+        );
+
+        // A post reaches ann's copy but never ben's (written to the store
+        // only, so no envelope or outbox entry carries it).
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        h_port
+            .local()
+            .post(
+                &channel,
+                &ActorRef::from(&ann.id),
+                peko_channel::PostMsg::root("two"),
+            )
+            .await
+            .unwrap();
+        assert!(h.sent().is_empty());
+
+        // Ben's runtime catches up from ann's copy, as ben.
+        r_port.sync_remote_dms(Some(&h.app.runtime_did())).await;
+        let caught_up = || async {
+            texts(r_port.peek(&channel, &Checkpoint::zero()).await.unwrap()).len() == 2
+        };
+        relay_until(&mut r, &mut h, caught_up).await;
+        assert_eq!(
+            texts(r_port.peek(&channel, &Checkpoint::zero()).await.unwrap()),
+            ["one", "two"]
+        );
+        // Catching up again adds nothing.
+        r_port.sync_remote_dms(None).await;
+        for _ in 0..10 {
+            relay(&mut r, &mut h).await;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            texts(r_port.peek(&channel, &Checkpoint::zero()).await.unwrap()).len(),
+            2
+        );
+
+        // The same request from a runtime that is not ben's route, or for
+        // a peko that is not in the DM, reads an empty page.
+        let stranger = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let stranger_did = {
+            let peko = create_test_principal(
+                &stranger.app,
+                "eve",
+                ActorRef::User("local".into()),
+                vec![],
+                peko_auth::Exposure::Public,
+            )
+            .await;
+            let config = peko.config.read().await;
+            config.did.as_ref().unwrap().0.clone()
+        };
+        for (source, asker) in [
+            (stranger.app.runtime_did(), ben_did.clone()),
+            (r.app.runtime_did(), stranger_did),
+        ] {
+            let key = if source == r.app.runtime_did() {
+                &r.app.runtime_signing_key
+            } else {
+                &stranger.app.runtime_signing_key
+            };
+            let iat = chrono::Utc::now().timestamp();
+            let probe = crate::tunnel::ChannelHistoryRequestPayload {
+                v: crate::tunnel::CHANNEL_HISTORY_REQUEST_VERSION.into(),
+                request_id: "probe".into(),
+                source_runtime_id: source,
+                recipient_runtime_id: h.app.runtime_did(),
+                source_principal_did: asker,
+                channel_id: channel.as_str().into(),
+                before: None,
+                after: None,
+                limit: 100,
+                iat,
+                exp: iat + 300,
+            };
+            let signature = crate::tunnel::sign_history(key, &probe);
+            h.receive(TunnelMessage::TunnelChannelHistoryRequest {
+                request_id: probe.request_id.clone(),
+                source_runtime_id: probe.source_runtime_id.clone(),
+                recipient_runtime_id: probe.recipient_runtime_id.clone(),
+                source_principal_did: probe.source_principal_did.clone(),
+                channel_id: probe.channel_id.clone(),
+                before: None,
+                after: None,
+                limit: 100,
+                signature,
+            })
+            .await;
+            let answers = h.sent();
+            assert!(
+                matches!(answers.as_slice(), [TunnelMessage::TunnelChannelHistory { events, has_more: false, .. }] if events.is_empty()),
+                "{answers:?}"
+            );
+        }
+        let _ = ben;
     }
 
     /// ADR-090 D3: an unsigned invite is a person's only in the exact
