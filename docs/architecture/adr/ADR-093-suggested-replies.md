@@ -1,6 +1,6 @@
 # ADR-093: Suggested replies — a peko may offer a few short answers; a tap is just the person's message
 
-**Status:** Accepted (runtime: `feat/suggested-replies`; desktop counterpart pending)
+**Status:** Accepted (runtime, PekoHub, and peko-desktop: `feat/suggested-replies`; group channels open, see §5)
 **Date:** 2026-11-04
 **Counterpart:** peko-desktop — reply chips under the peko's latest message. PekoHub webchat may render them later; until then it ignores them.
 
@@ -102,7 +102,7 @@ The `Suggest` and `ChannelSend` descriptions, plus one line in the seeded `conve
 
 ## 5. Implementation
 
-Steps 1–6 and 8 are built on `feat/suggested-replies`; step 7 belongs to peko-desktop. PekoHub's tunnel types need `options?: string[]` on channel events for its contract check.
+Steps 1–8 are built on `feat/suggested-replies` (runtime, PekoHub's tunnel types, peko-desktop). The desktop shows chips in direct messages, local and remote pekos alike. Group channels do not show them yet: in a group a peko wakes on mentions by default, so a tapped reply from a person would not reach it. Whether a tap should mention the peko or thread onto its post is still open.
 
 1. **Wire.** `options` on `Posted`, `PostMsg`, `PrincipalLogMessage`, and watch rows. Validate in the channel store's `post`. Update DATA_MODEL. Add a round-trip test showing lines without options stay byte-identical.
 2. **`ChannelSend`.** Add the `options` parameter, the description line, and validation errors.
