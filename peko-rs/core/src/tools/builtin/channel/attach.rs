@@ -361,7 +361,13 @@ mod tests {
             })
             .unwrap();
         let digest = posted[0].sha256.clone().expect("a digest");
-        let stored = h.channels.files_dir(&channel).await.unwrap().join(&digest);
+        let stored = h
+            .channels
+            .files_dir(&channel)
+            .await
+            .unwrap()
+            .join(&digest)
+            .join("ok.txt");
         assert_eq!(std::fs::read_to_string(stored).unwrap(), "ok");
         // The peko keeps its own copy as before.
         assert!(posted[0].path.starts_with("attachments/"));

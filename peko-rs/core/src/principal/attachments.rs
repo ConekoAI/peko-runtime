@@ -186,10 +186,45 @@ pub(crate) fn is_digest(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Where the file store keeps the file with `digest`. `None` for
-/// anything but a digest.
-pub(crate) fn stored(files_dir: &Path, digest: &str) -> Option<PathBuf> {
-    is_digest(digest).then(|| files_dir.join(digest))
+/// Where the file store keeps `name` with `digest`:
+/// `<digest>/<safe name>`. The name keeps its extension, so clients
+/// preview, play, and open the file as what it is. `None` for anything
+/// but a digest.
+pub(crate) fn stored(files_dir: &Path, digest: &str, name: &str) -> Option<PathBuf> {
+    is_digest(digest).then(|| files_dir.join(digest).join(safe_file_name(name)))
+}
+
+/// Any copy of `digest` in the store — every name under it holds the same
+/// bytes — for serving a runtime that asks by digest alone.
+pub(crate) fn any_stored(files_dir: &Path, digest: &str) -> Option<PathBuf> {
+    if !is_digest(digest) {
+        return None;
+    }
+    std::fs::read_dir(files_dir.join(digest))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.is_file())
+}
+
+/// Put a received file, checked against `digest`, in the store under
+/// `name`.
+pub(crate) async fn place(
+    files_dir: &Path,
+    from: &Path,
+    digest: &str,
+    name: &str,
+) -> Result<PathBuf, String> {
+    let dest = stored(files_dir, digest, name).ok_or("not a digest")?;
+    if let Some(dir) = dest.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("cannot create the file store: {e}"))?;
+    }
+    tokio::fs::rename(from, &dest)
+        .await
+        .map_err(|e| format!("cannot store the file: {e}"))?;
+    Ok(dest)
 }
 
 /// SHA-256 of a file, lowercase hex.
@@ -225,7 +260,7 @@ pub(crate) async fn ingest_into_channel(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
-        let (digest, size) = store_file(files_dir, &source).await?;
+        let (digest, size) = store_file(files_dir, &source, &name).await?;
         let mime = crate::common::media::mime_of(&source).await;
         attachments.push(Attachment {
             name,
@@ -238,16 +273,20 @@ pub(crate) async fn ingest_into_channel(
     Ok(attachments)
 }
 
-/// Copy `source` into the file store; its digest and size. A file
-/// already there is kept.
-pub(crate) async fn store_file(files_dir: &Path, source: &Path) -> Result<(String, u64), String> {
+/// Copy `source` into the file store under `name`; its digest and size.
+/// A copy already there is kept.
+pub(crate) async fn store_file(
+    files_dir: &Path,
+    source: &Path,
+    name: &str,
+) -> Result<(String, u64), String> {
     tokio::fs::create_dir_all(files_dir)
         .await
         .map_err(|e| format!("cannot create the channel's file store: {e}"))?;
     let digest = sha256_of(source)
         .await
         .map_err(|e| format!("cannot read attachment {}: {e}", source.display()))?;
-    let dest = files_dir.join(&digest);
+    let dest = stored(files_dir, &digest, name).ok_or("not a digest")?;
     if let Ok(meta) = tokio::fs::metadata(&dest).await {
         return Ok((digest, meta.len()));
     }
@@ -258,9 +297,7 @@ pub(crate) async fn store_file(files_dir: &Path, source: &Path) -> Result<(Strin
     let size = tokio::fs::copy(source, &staging)
         .await
         .map_err(|e| format!("cannot copy attachment {}: {e}", source.display()))?;
-    tokio::fs::rename(&staging, &dest)
-        .await
-        .map_err(|e| format!("cannot store attachment {}: {e}", source.display()))?;
+    place(files_dir, &staging, &digest, name).await?;
     Ok((digest, size))
 }
 
@@ -273,7 +310,7 @@ pub(crate) async fn share_with_channel(
 ) -> Result<Vec<Attachment>, String> {
     let mut shared = Vec::with_capacity(attachments.len());
     for a in attachments {
-        let (digest, _) = store_file(files_dir, &absolute(workspace, &a)).await?;
+        let (digest, _) = store_file(files_dir, &absolute(workspace, &a), &a.name).await?;
         shared.push(Attachment {
             sha256: Some(digest),
             ..a
@@ -309,7 +346,7 @@ pub(crate) fn locate(
             return Some(absolute(workspace, attachment));
         }
     }
-    let stored = stored(files_dir?, attachment.sha256.as_deref()?)?;
+    let stored = stored(files_dir?, attachment.sha256.as_deref()?, &attachment.name)?;
     stored.is_file().then_some(stored)
 }
 
@@ -629,10 +666,12 @@ mod tests {
         assert!(check(&[posted(11 << 20)], Limits::REMOTE).is_err());
     }
 
-    /// ADR-094: the channel's store keeps one copy per digest; the post
-    /// records it by digest with no path, and only digests name files.
+    /// ADR-094: the channel's store keeps files under their digest, each
+    /// by its (safe) name, so clients see what kind of file it is; the
+    /// post records it by digest with no path, and only digests name
+    /// folders.
     #[tokio::test]
-    async fn the_channel_store_keeps_files_by_digest() {
+    async fn the_channel_store_keeps_files_by_digest_and_name() {
         let src = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
         let a = src.path().join("a.png");
@@ -654,14 +693,31 @@ mod tests {
         let digest = got[0].sha256.clone().unwrap();
         assert!(is_digest(&digest));
         let entries: Vec<_> = std::fs::read_dir(store.path()).unwrap().collect();
-        assert_eq!(entries.len(), 1, "one copy, no staging leftovers");
         assert_eq!(
-            locate(None, Some(store.path()), &got[0]),
-            Some(store.path().join(&digest))
+            entries.len(),
+            1,
+            "one folder per digest, no staging leftovers"
         );
+        let mut names: Vec<_> = std::fs::read_dir(store.path().join(&digest))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a.png", "copy_of_a.png"]);
+        assert_eq!(
+            locate(None, Some(store.path()), &got[1]),
+            Some(store.path().join(&digest).join("copy_of_a.png"))
+        );
+        assert!(any_stored(store.path(), &digest).is_some());
 
-        assert!(stored(store.path(), "../secret").is_none());
-        assert!(stored(store.path(), &"A".repeat(64)).is_none());
+        assert!(stored(store.path(), "../secret", "a.png").is_none());
+        assert!(stored(store.path(), &"A".repeat(64), "a.png").is_none());
+        assert!(any_stored(store.path(), "..").is_none());
+        // A name cannot climb out of its digest's folder.
+        assert_eq!(
+            stored(store.path(), &digest, "../../etc/passwd"),
+            Some(store.path().join(&digest).join("_.._etc_passwd"))
+        );
         let missing = Attachment {
             sha256: Some("0".repeat(64)),
             ..got[0].clone()

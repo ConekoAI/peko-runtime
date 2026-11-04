@@ -3,13 +3,13 @@
 //!
 //! A post that crosses runtimes names each file by its SHA-256 digest;
 //! the bytes stay in the sending runtime's channel file store
-//! (`<channel>/files/<digest>`). The receiving runtime pulls them, one
+//! (`<channel>/files/<digest>/<name>`, the name keeping its extension). The receiving runtime pulls them, one
 //! chunk at a time, from the runtime the post came from:
 //!
 //! - [`TunnelChannelPort::fetch_attachments`] asks for each missing file
 //!   (`tunnel_attachment_request`), writes the chunks to a `.part` file,
 //!   checks the whole against the digest the signed post carried, and
-//!   only then names it by its digest. A file it cannot get is kept on a
+//!   only then stores it under its digest and name. A file it cannot get is kept on a
 //!   wanted list and asked for again when the sender is back.
 //! - [`TunnelChannelPort::answer_attachment_request`] serves a chunk to a
 //!   runtime that hosts a member of the channel, from the channel's own
@@ -71,6 +71,8 @@ struct Chunk {
 struct Wanted {
     channel: String,
     sha256: String,
+    #[serde(default)]
+    name: String,
     size: u64,
     from: String,
     since: chrono::DateTime<chrono::Utc>,
@@ -168,7 +170,8 @@ impl TunnelChannelPort {
             .files_dir(channel)
             .await
             .map_err(|e| e.to_string())?;
-        let dest = files_dir.join(&digest);
+        let dest = attachments::stored(&files_dir, &digest, &attachment.name)
+            .ok_or("the post names no valid digest")?;
         if dest.is_file() {
             return Ok(dest);
         }
@@ -184,10 +187,22 @@ impl TunnelChannelPort {
             let _held = lock.lock().await;
             if dest.is_file() {
                 Ok(dest.clone())
-            } else {
-                self.download(channel, &files_dir, &digest, attachment.size, from_runtime)
+            } else if let Some(copy) = attachments::any_stored(&files_dir, &digest) {
+                // The same bytes under another name: copy, don't fetch.
+                tokio::fs::copy(&copy, &dest)
                     .await
-                    .map(|()| dest.clone())
+                    .map(|_| dest.clone())
+                    .map_err(|e| format!("cannot copy the stored file: {e}"))
+            } else {
+                self.download(
+                    channel,
+                    &files_dir,
+                    &digest,
+                    &attachment.name,
+                    attachment.size,
+                    from_runtime,
+                )
+                .await
             }
         };
         self.attachment_locks
@@ -197,6 +212,7 @@ impl TunnelChannelPort {
         let entry = Wanted {
             channel: channel.as_str().to_string(),
             sha256: digest,
+            name: attachment.name.clone(),
             size: attachment.size,
             from: from_runtime.to_string(),
             since: chrono::Utc::now(),
@@ -205,15 +221,16 @@ impl TunnelChannelPort {
         result
     }
 
-    /// Pull `digest` chunk by chunk, check it, and name it by its digest.
+    /// Pull `digest` chunk by chunk, check it, and store it under `name`.
     async fn download(
         &self,
         channel: &ChannelId,
         files_dir: &Path,
         digest: &str,
+        name: &str,
         size: u64,
         from_runtime: &str,
-    ) -> Result<(), String> {
+    ) -> Result<PathBuf, String> {
         use sha2::{Digest, Sha256};
         if size > attachments::REMOTE_MAX_FILE_BYTES {
             return Err(format!("the file is {size} bytes, over the limit"));
@@ -262,9 +279,7 @@ impl TunnelChannelPort {
         .await;
         drop(file);
         match outcome {
-            Ok(()) => tokio::fs::rename(&part, files_dir.join(digest))
-                .await
-                .map_err(|e| format!("cannot store the file: {e}")),
+            Ok(()) => attachments::place(files_dir, &part, digest, name).await,
             Err(e) => {
                 let _ = tokio::fs::remove_file(&part).await;
                 Err(e)
@@ -466,7 +481,7 @@ impl TunnelChannelPort {
             return None;
         }
         let files_dir = self.local.files_dir(&channel).await.ok()?;
-        let path = attachments::stored(&files_dir, &request.sha256)?;
+        let path = attachments::any_stored(&files_dir, &request.sha256)?;
         let mut file = tokio::fs::File::open(&path).await.ok()?;
         let size = file.metadata().await.ok()?.len();
         if size > attachments::REMOTE_MAX_FILE_BYTES || request.offset > size {
@@ -508,7 +523,7 @@ impl TunnelChannelPort {
             let port = Arc::clone(self);
             tokio::spawn(async move {
                 let attachment = Attachment {
-                    name: String::new(),
+                    name: entry.name.clone(),
                     path: String::new(),
                     mime: String::new(),
                     size: entry.size,
@@ -559,7 +574,7 @@ impl TunnelChannelPort {
         attachments.iter().all(|a| {
             a.sha256
                 .as_deref()
-                .and_then(|d| attachments::stored(&files_dir, d))
+                .and_then(|d| attachments::stored(&files_dir, d, &a.name))
                 .is_none_or(|p| p.is_file())
         })
     }

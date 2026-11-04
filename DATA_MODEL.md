@@ -2244,7 +2244,8 @@ carry the same objects with `path` made absolute.
 
 **Files that cross runtimes (2026-11-04, ADR-094).** An attachment may
 also carry `sha256` (lowercase hex, omitted when absent): the file is in
-the channel's file store, `<channel dir>/files/<sha256>`. `channel_post`
+the channel's file store, `<channel dir>/files/<sha256>/<safe name>` (the
+name keeps its extension, so clients preview, play, and open it). `channel_post`
 (local user, new `attachments: [absolute path]`) records files there with
 an empty `path`; `Attach` in a conversation with anyone remote keeps its
 workspace `path` and adds the digest. On the wire (`tunnel_channel_event`,
@@ -2255,7 +2256,7 @@ stays empty in every read. `channel_peek` / `channel_events_watch` /
 `channel_history_older` and `principal_log` rows fill an empty `path` with
 the stored copy's absolute path once it is there. Files still wanted are
 listed in `<runtime dir>/channel_delivery/wanted_files.json`
-(`[{channel, sha256, size, from, since}]`, dropped after 30 days). Limits
+(`[{channel, sha256, name, size, from, since}]`, dropped after 30 days). Limits
 in such a conversation: 8 files, 10 MB each, 25 MB a message.
 
 ### 5¾.2⅞⁻⁻ `posted` event `options` (2026-11-04, ADR-093)
@@ -3352,7 +3353,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.1.0 | 2026-11-04 | ADR-094: attachments gain optional `sha256`; channels keep crossing files in `<channel dir>/files/<sha256>`; `channel_post` gains `attachments`; tunnel gains `tunnel_attachment_request` / `tunnel_attachment_chunk`; `channel_delivery/wanted_files.json` (§5¾.2⅞⁻). |
+| 0.1.0 | 2026-11-04 | ADR-094: attachments gain optional `sha256`; channels keep crossing files in `<channel dir>/files/<sha256>/<safe name>`; `channel_post` gains `attachments`; tunnel gains `tunnel_attachment_request` / `tunnel_attachment_chunk`; `channel_delivery/wanted_files.json` (§5¾.2⅞⁻). |
 | 0.1.0 | 2026-11-04 | ADR-093: `posted` events gain optional `options` (§5¾.2⅞⁻⁻); `PrincipalLogMessage` and `principal_sent_done` gain `options`. |
 | 0.1.0 | 2026-10-30 | ADR-088: DM `posted` events gain optional `attachments` (§5¾.2⅞⁻); files are copied to `<workspace>/attachments/<YYYY-MM-DD>/`; `PrincipalLogMessage` gains `attachments` (absolute paths); `models.toml` `spec` gains `video_input` (default false). |
 | 0.1.0 | 2026-09-11 | ADR-052 D6: the workspace hook manifest (`<workspace>/hooks/<id>/hook.toml`, layout in `docs/architecture/PRINCIPAL_WORKSPACE.md`) gains a `PromptSection` bind point — `binds = [{ point = "PromptSection", section = "<name>", priority = <int?> }]` (new optional `section` / `priority` bind fields; `priority` defaults to 100). The hook command's stdout renders as a `## <name>` section of the per-iteration `<runtime-context>` tail message with the standard change-detection semantics (first injection plain, update notice on edit, one-shot retraction when output stops). Binding a built-in name (`identity` / `agents` / `skills`) augments the built-in catalog via registry aggregation instead of double-dispatching. |

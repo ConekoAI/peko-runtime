@@ -4,6 +4,14 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: files from another computer keep their names, so they preview and open (2026-11-04, ADR-094)
+
+- A channel's file store keeps each file as `files/<sha256>/<name>` instead of
+  a bare `files/<sha256>`. Without an extension the desktop showed no image
+  thumbnails and opened a received image in TextEdit (found in a live
+  desktop run). A file already held under another name is copied, not
+  fetched again; the wanted list keeps each file's name.
+
 ### Feature: attachments cross runtimes through PekoHub (2026-11-04, ADR-094)
 
 - Files you send in a DM with a peko on another computer, or in a group with
