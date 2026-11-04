@@ -25,7 +25,9 @@ All notable changes to Peko.
   still runs as you and can read them.
 - Wire: `tunnel_person_dm_invite`, `tunnel_dm_route`; `tunnel_account_dms`
   gains `people` and `blocked`. Needs the PekoHub relay (pekohub#73).
-- Not yet: the desktop's message-request view.
+- `channel_person_dms` lists your DMs with people and which still wait to be
+  accepted. The desktop's People list, requests, and Blocked people are in
+  peko-desktop#132.
 
 ### Feature: your DMs follow you to a new computer, with all their history (2026-11-04, ADR-095 phase 3b)
 

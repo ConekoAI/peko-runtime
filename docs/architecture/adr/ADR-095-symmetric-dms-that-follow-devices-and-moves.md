@@ -1,6 +1,6 @@
 # ADR-095: Every DM is one conversation, kept whole by every runtime in it; it follows people to new devices and pekos to new runtimes; people DM people
 
-**Status:** Accepted (2026-11-04); phases 1–4 built (desktop UI for phase 4 pending)
+**Status:** Accepted (2026-11-04); phases 1–4 built
 **Date:** 2026-11-04
 **Builds on:** [ADR-073](ADR-073-actor-addresses-and-conversation-bindings.md) (pair DM ids), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (immutable keys, snapshots, the online link), [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (DM kind, bindings), [ADR-090](ADR-090-local-user-dms-a-remote-peko-over-the-tunnel.md) (a person's runtime-vouched invite), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (history messages, merge by `msg_id`, changing hands), [ADR-092](ADR-092-groups-with-a-home-people-and-hub-ids.md) (pending invitations, per-account delivery).
 **Amends:** ADR-091 D1 and D3 (no host/cache split for DMs; members other than the person may ask), ADR-081 D3 (registering rekeys the local user's DMs, D7) and D6 step 5 (DMs reattach with their history).
@@ -144,4 +144,5 @@ Alice talks to peko P on its host L1 in `dm(P, local@L1)` (F7). From L2 she reac
    - **History.** A person DM's copy serves either of its two people (the other person, or the same person's other runtime). A requester asks the other person's runtime first.
    - **Blocking** is kept per account (`<runtime>/blocked_people.json`). It refuses invites, posts, routes, and history requests from that person. It travels to the person's other runtimes in the DM list; unblocking does not.
    - **No peko in it.** The trust floor refuses a person DM's directory, `dm_requests/`, and `blocked_people.json` to every run, the owner's included. A `Glob`/`Grep` from a folder containing a person DM is refused too. Channel tools need membership, and no peko is a member. `Bash` remains the exception.
-   - **Not built:** the desktop's message-request view and person DM opening (IPC and CLI are ready); unblocking on one device reaching the others.
+   - **Desktop** (peko-desktop#132): a People list in the Groups sidebar ("invited" until accepted, from `channel_person_dms`), message requests with Accept / Decline / Block, "Message a person" by account ID, a "waiting for <name> to accept" note in the DM, and Blocked people in Settings.
+   - **Not built:** unblocking on one device reaching the others.
