@@ -3467,10 +3467,22 @@ replacement. A contact is reachable when this runtime's registry routes one of i
 routes to the same key; otherwise Contacts lists it with `reachable: false`.
 
 `local/channels.json` (written into snapshots, restored on import) —
-`[{channel, participants: [{address, hub_id?, kind, identity_key}], binding}]`.
+`[{channel, participants: [{address, hub_id?, kind, identity_key}], kind, binding,
+remote: [{runtime_id, principal_id}]}]`. `remote` (ADR-095 D4) lists the members
+on other runtimes and where they live.
+
+`local/dms/<pair id>.jsonl` (snapshots only, ADR-095 D4) — each DM's posts, one
+`ChannelEvent::Posted` a line, as a history page serves them: author by Hub address
+where it has one, no `via`, no line `parent`, attachment paths blank. Import leaves
+them in `<data>/principals/<name>/local/dms.pending/` until the loaded principal
+replays them: each DM is recreated at its pair id (a peer with a Hub ID is reached
+by it; the source's local user becomes this runtime's; a peer known only on the
+source runtime stays behind), its remote rows are recorded, its posts merge by
+`msg_id`, and the folder is removed. A rotated import carries none.
 
 Snapshots (`peko-snapshot-v1`) add `manifest.source_runtime`, `POLICY.md`,
-`workflows/`, `plugins/`, `local/contacts.json`, and `local/channels.json`. The
+`workflows/`, `plugins/`, `local/contacts.json`, `local/channels.json`, and
+`local/dms/`. The
 owner, grant subjects and granters, `POLICY.md` `## <actor>` headings, and cron
 `created_by.actor` are written by Hub route when the actor has one, else as a
 source-qualified local route. Import localizes routes of the destination runtime,

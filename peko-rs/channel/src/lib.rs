@@ -89,12 +89,13 @@ pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
 pub use port::{
-    dm_channel_id, short_name_unambiguous, ActorInfo, Binding, PortKeys, Registration, WakePolicy,
+    dm_channel_id, portable_post, short_name_unambiguous, ActorInfo, Binding, PortKeys,
+    Registration, WakePolicy,
 };
 pub use port::{
     global_channel_port, set_global_channel_port, validate_options, ChannelError, ChannelPort,
-    ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage,
-    Tier, MAX_OPTIONS, MAX_OPTION_CHARS, MIN_OPTIONS,
+    ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, RemoteMember, Result,
+    SearchPage, TailPage, Tier, MAX_OPTIONS, MAX_OPTION_CHARS, MIN_OPTIONS,
 };
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};

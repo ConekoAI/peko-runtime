@@ -3770,6 +3770,32 @@ impl ChannelPort for ChannelStore {
     ) -> Result<Vec<peko_protocol::channel::MemberProvenance>> {
         ChannelStore::members_with_attribution(self, channel).await
     }
+    async fn restore_dm_copy(
+        &self,
+        channel: &ChannelId,
+        remote: &[RemoteMember],
+        posts: Vec<ChannelEvent>,
+    ) -> Result<usize> {
+        if self.conversation_kind(channel).await? != ConversationKind::Dm {
+            return Err(ChannelError::Adapter(format!("{channel} is not a DM")));
+        }
+        for member in remote {
+            self.add_remote_member(channel, &member.runtime_id, &member.principal_id)
+                .await?;
+        }
+        // A snapshot names the DM as it was; an owner DM can have moved
+        // to another pair id (ADR-081 D6 step 5).
+        let posts = posts
+            .into_iter()
+            .map(|mut ev| {
+                if let ChannelEvent::Posted { channel: c, .. } = &mut ev {
+                    *c = channel.clone();
+                }
+                ev
+            })
+            .collect();
+        self.append_synced_events(channel, posts).await
+    }
 
     /// Per-session digest read position — delegates to the inherent
     /// method (see `read_mark` above the trait impl). Overridden so

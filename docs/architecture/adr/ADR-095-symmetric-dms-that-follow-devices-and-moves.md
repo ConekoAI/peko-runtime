@@ -1,6 +1,6 @@
 # ADR-095: Every DM is one conversation, kept whole by every runtime in it; it follows people to new devices and pekos to new runtimes; people DM people
 
-**Status:** Accepted (2026-11-04); phase 1 built
+**Status:** Accepted (2026-11-04); phases 1–2 built
 **Date:** 2026-11-04
 **Builds on:** [ADR-073](ADR-073-actor-addresses-and-conversation-bindings.md) (pair DM ids), [ADR-081](ADR-081-actor-identity-ownership-and-single-online-copy.md) (immutable keys, snapshots, the online link), [ADR-082](ADR-082-explicit-channel-bindings-and-principal-group-management.md) (DM kind, bindings), [ADR-090](ADR-090-local-user-dms-a-remote-peko-over-the-tunnel.md) (a person's runtime-vouched invite), [ADR-091](ADR-091-remote-dm-history-from-the-host.md) (history messages, merge by `msg_id`, changing hands), [ADR-092](ADR-092-groups-with-a-home-people-and-hub-ids.md) (pending invitations, per-account delivery).
 **Amends:** ADR-091 D1 and D3 (no host/cache split for DMs; members other than the person may ask), ADR-081 D3 (registering rekeys the local user's DMs, D7) and D6 step 5 (DMs reattach with their history).
@@ -126,5 +126,7 @@ Alice talks to peko P on its host L1 in `dm(P, local@L1)` (F7). From L2 she reac
 
 1. **Symmetric history for peko DMs.** Generalize `answer_history` (D2) and catch-up (D3) to principal members; merge stays `append_synced_events`. Desktop and `peko log` order by `at`.
 2. **Moves.** Pack DM logs in snapshots; import recreates DMs, merges, and rebinds (D4); catch up after the link moves.
+
+   *Phase 2 notes (as built).* Export writes `local/dms/<pair id>.jsonl` (posts in history-page form) and a `remote` list per channel in `channels.json`. Import parks the logs in `local/dms.pending/`; once the principal is loaded (its actor key registered, so pair ids come out right) the import handler replays them through `ChannelPort::restore_dm_copy` and removes the folder. The other member is reached by its Hub ID; the source runtime's local user becomes this runtime's local user, so the owner's DM lands at the id `rebind_owner_dm` already moved its sessions to; a peko known only on the source runtime stays behind. The moved copy is then a peko-to-peko DM like any other and catches up forward on `tunnel_ready` (phase 1). Attachment files stay on the source runtime: posts keep their metadata, not their paths.
 3. **Devices and rekeying.** First reproduce F7's split live (two runtimes on one account, one hosting the peko). Then D7: a channel-store move of a DM to a new pair id (log, cursors, bindings, `moved_to` forward — no such operation exists yet), rekey on register and back on unregister, the host treating its own account as the local user, and `resolve` following `moved_to`. Then D5's `account_dms_request` / `account_dms` and stored backfill (D1).
 4. **People DM people.** `channel_open_person_dm`, the person-to-person invite, message requests, block list, route announcements, compartment refusals (D6); desktop. PekoHub: the relay check for `user:hub` → `user:hub` envelopes and account delivery for the new messages.

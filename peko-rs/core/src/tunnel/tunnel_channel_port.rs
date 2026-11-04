@@ -1539,6 +1539,14 @@ impl ChannelPort for TunnelChannelPort {
     ) -> Result<ChannelId> {
         self.local.ensure_dm(principal, peer, binding).await
     }
+    async fn restore_dm_copy(
+        &self,
+        channel: &ChannelId,
+        remote: &[peko_channel::RemoteMember],
+        posts: Vec<peko_channel::ChannelEvent>,
+    ) -> Result<usize> {
+        self.local.restore_dm_copy(channel, remote, posts).await
+    }
     async fn create(&self, creator: &PrincipalId, opts: CreateOpts) -> Result<ChannelId> {
         let channel = self.local.create(creator, opts).await?;
         // ADR-092 D1: a group's home is where it is created.

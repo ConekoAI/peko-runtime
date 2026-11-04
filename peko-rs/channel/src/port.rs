@@ -526,6 +526,23 @@ pub trait ChannelPort: Send + Sync + 'static {
         })
     }
 
+    /// ADR-095 D4: fill a DM's copy from a snapshot — record where its
+    /// other members live (`remote`) and merge `posts` by `msg_id`, as
+    /// verified history (nothing wakes, nothing fans out). Returns how
+    /// many posts were added. Adapters without a cross-runtime roster
+    /// refuse.
+    async fn restore_dm_copy(
+        &self,
+        channel: &ChannelId,
+        remote: &[RemoteMember],
+        posts: Vec<ChannelEvent>,
+    ) -> Result<usize> {
+        let _ = (channel, remote, posts);
+        Err(ChannelError::Adapter(
+            "this channel adapter cannot restore a DM copy".into(),
+        ))
+    }
+
     /// P1.2 attribution: return each member of `channel` paired with
     /// their runtime provenance (local vs remote). The default impl
     /// walks the event log and returns an empty `runtime_id` for
@@ -898,6 +915,44 @@ impl Binding {
     pub fn with_role(mut self, role: Option<String>) -> Self {
         self.role = role;
         self
+    }
+}
+
+/// A post as it leaves this runtime in a history page or a snapshot
+/// (ADR-091 D3, ADR-095 D4): its author by the address other runtimes
+/// know (`author`), no session path (`via`), no line-number `parent` (it
+/// is this copy's own; `reply_to` carries the reply), and attachments
+/// without their path on this disk. Other events pass unchanged.
+pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
+    match event {
+        ChannelEvent::Posted {
+            channel,
+            text,
+            at,
+            msg_id,
+            reply_to,
+            attachments,
+            options,
+            ..
+        } => ChannelEvent::Posted {
+            channel,
+            author,
+            parent: None,
+            text,
+            at,
+            via: None,
+            msg_id,
+            reply_to,
+            attachments: attachments
+                .into_iter()
+                .map(|a| peko_protocol::channel::Attachment {
+                    path: String::new(),
+                    ..a
+                })
+                .collect(),
+            options,
+        },
+        other => other,
     }
 }
 

@@ -525,39 +525,6 @@ impl TunnelChannelPort {
             .await
             .hub_address()
             .unwrap_or_else(|| author.clone());
-        served(event, wire_author)
-    }
-}
-
-fn served(event: ChannelEvent, wire_author: String) -> ChannelEvent {
-    match event {
-        ChannelEvent::Posted {
-            channel,
-            text,
-            at,
-            msg_id,
-            reply_to,
-            attachments,
-            options,
-            ..
-        } => ChannelEvent::Posted {
-            channel,
-            author: wire_author,
-            parent: None,
-            text,
-            at,
-            via: None,
-            msg_id,
-            reply_to,
-            attachments: attachments
-                .into_iter()
-                .map(|a| peko_protocol::channel::Attachment {
-                    path: String::new(),
-                    ..a
-                })
-                .collect(),
-            options,
-        },
-        other => other,
+        peko_channel::portable_post(event, wire_author)
     }
 }

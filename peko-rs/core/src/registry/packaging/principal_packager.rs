@@ -76,6 +76,9 @@ pub struct PortableExport {
     pub hub_routes: HashMap<String, peko_subject::ActorRef>,
     /// `local/channels.json`: memberships, rosters, and own bindings.
     pub channels: Option<Vec<u8>>,
+    /// ADR-095 D4: each DM's posts, `(channel id, JSON lines)`, carried
+    /// as `local/dms/<channel>.jsonl`.
+    pub dm_logs: Vec<(String, Vec<u8>)>,
 }
 
 impl PrincipalPackager {
@@ -313,6 +316,15 @@ impl PrincipalPackager {
         if let Some(channels) = self.portable.as_ref().and_then(|p| p.channels.clone()) {
             manifest.add_file("local/channels.json", &channels);
             files.insert("local/channels.json".into(), channels);
+        }
+        for (channel, log) in self.portable.iter().flat_map(|p| p.dm_logs.iter()) {
+            // Pair ids are `dm_<hex>`: safe as a file name.
+            if !peko_channel::ChannelId(channel.clone()).is_pair_id() {
+                continue;
+            }
+            let path = format!("local/dms/{channel}.jsonl");
+            manifest.add_file(path.clone(), log);
+            files.insert(path, log.clone());
         }
         Ok(())
     }
