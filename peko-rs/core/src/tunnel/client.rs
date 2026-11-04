@@ -658,6 +658,7 @@ impl TunnelClient {
             | TunnelMessage::GroupLookupRequest { .. }
             | TunnelMessage::PrincipalTransfer { .. }
             | TunnelMessage::PrincipalTransferRejected { .. }
+            | TunnelMessage::PrincipalTransferOffered { .. }
             | TunnelMessage::PrincipalOwnerChanged { .. }
             | TunnelMessage::InstanceDeregister { .. }
             | TunnelMessage::InstanceAnnounce { .. }

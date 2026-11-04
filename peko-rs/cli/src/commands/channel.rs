@@ -157,6 +157,20 @@ pub enum ChannelCommands {
         json: bool,
     },
 
+    /// Open your DM with a peko on another computer (ADR-090 D2), by its
+    /// ID or its PekoHub ID; with a message, post it too. Read replies
+    /// with `peko channel peek <dm>`, post with `peko channel post <dm> me`.
+    Dm {
+        /// `@owner/name` (a public peko), `principal:hub:<UUID>`, or the
+        /// bare PekoHub ID.
+        peko: String,
+        /// Post this message right away.
+        message: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Groups on other computers that invited you (ADR-092 D2).
     Invitations {
         /// Output as JSON.
@@ -225,6 +239,7 @@ impl ChannelCommands {
             | ChannelCommands::Show { json, .. }
             | ChannelCommands::Leave { json, .. }
             | ChannelCommands::PinToShared { json, .. }
+            | ChannelCommands::Dm { json, .. }
             | ChannelCommands::Invitations { json }
             | ChannelCommands::Join { json, .. }
             | ChannelCommands::Decline { json, .. }
@@ -598,6 +613,66 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
 
+        ChannelCommands::Dm { peko, message, .. } => {
+            let hub_id = remote_peko_hub_id(paths, &peko).await?;
+            let resp = dm_request(RequestPacket::ChannelOpenRemoteDm {
+                request_id: 0,
+                hub_id,
+                token: None,
+            })
+            .await?;
+            let ResponsePacket::ChannelRemoteDmOpened {
+                channel,
+                peer,
+                name,
+                created,
+                ..
+            } = resp
+            else {
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            let channel = channel.to_string();
+            let posted = match message {
+                Some(text) => {
+                    dm_request(RequestPacket::ChannelPost {
+                        request_id: 0,
+                        channel: channel.clone(),
+                        sender_name: None,
+                        text,
+                        parent: None,
+                    })
+                    .await?;
+                    true
+                }
+                None => false,
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "channel": channel,
+                        "peer": peer,
+                        "name": name,
+                        "created": created,
+                        "posted": posted,
+                    })
+                );
+            } else {
+                let who = name.unwrap_or_else(|| peer.clone());
+                if created {
+                    println!("Opened your DM with {who}: {channel}");
+                } else {
+                    println!("Your DM with {who}: {channel}");
+                }
+                if posted {
+                    println!("Posted. Replies: peko channel peek {channel}");
+                } else {
+                    println!("Post with: peko channel post {channel} me \"…\"");
+                }
+            }
+            Ok(())
+        }
+
         ChannelCommands::Invitations { .. } => {
             let client = DaemonClient::connect()
                 .await
@@ -728,6 +803,68 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
 }
 
 /// Send a group request to the daemon (ADR-092 D5), failing on its error.
+/// One request to the daemon for a DM with a remote peko.
+async fn dm_request(packet: RequestPacket) -> Result<ResponsePacket> {
+    let client = DaemonClient::connect().await.context(
+        "DMs with pekos on other computers need the daemon: start it with `peko daemon start`",
+    )?;
+    let resp = client.request_response(packet).await?;
+    if let ResponsePacket::Error { message, .. } = resp {
+        anyhow::bail!("{message}");
+    }
+    Ok(resp)
+}
+
+/// The PekoHub ID of the peko `target` names: `principal:hub:<UUID>`, a
+/// bare UUID, or `@owner/name` — a public peko, looked up on the Hub this
+/// runtime is registered with (`GET /v1/public/pekos/:owner/:name`).
+async fn remote_peko_hub_id(paths: &GlobalPaths, target: &str) -> Result<String> {
+    let target = target.trim();
+    let bare = target.strip_prefix("principal:hub:").unwrap_or(target);
+    if uuid::Uuid::parse_str(bare).is_ok() {
+        return Ok(bare.to_string());
+    }
+    let Some((owner, name)) = target
+        .strip_prefix('@')
+        .and_then(|rest| rest.split_once('/'))
+        .filter(|(owner, name)| !owner.is_empty() && !name.is_empty())
+    else {
+        anyhow::bail!("Name the peko as @owner/name or by its PekoHub ID, not {target:?}");
+    };
+    let credential =
+        peko_core::tunnel::PekoHubCredential::from_file(&paths.resolver().pekohub_config())
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "This runtime isn't registered with PekoHub: `peko runtime register` first"
+                )
+            })?;
+    let origin = peko_core::tunnel::hub_origin(&credential.url)
+        .ok_or_else(|| anyhow::anyhow!("the registration names no Hub origin"))?;
+    let url = format!(
+        "{}/v1/public/pekos/{}/{}",
+        origin.trim_end_matches('/'),
+        urlencoding::encode(&owner.to_lowercase()),
+        urlencoding::encode(name)
+    );
+    let resp = reqwest::get(&url)
+        .await
+        .with_context(|| format!("Couldn't reach PekoHub at {origin}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        anyhow::bail!(
+            "No public peko @{owner}/{name} on PekoHub. A private one is named by its PekoHub ID."
+        );
+    }
+    let body: serde_json::Value = resp
+        .error_for_status()
+        .context("PekoHub didn't answer the lookup")?
+        .json()
+        .await?;
+    body.pointer("/liveInstance/hubId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("@{owner}/{name} isn't online on PekoHub"))
+}
+
 async fn group_request(packet: RequestPacket) -> Result<ResponsePacket> {
     let client = DaemonClient::connect()
         .await
@@ -845,6 +982,38 @@ fn _unused(_: ChannelEvent, _: PostMsg, _: CreateOpts, _: ChannelMembership, _: 
 #[cfg(test)]
 mod response_tests {
     use super::*;
+
+    fn test_paths(tmp: &tempfile::TempDir) -> GlobalPaths {
+        GlobalPaths::new(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+            "default".to_string(),
+        )
+    }
+
+    /// `peko channel dm` names a peko by its PekoHub ID in either form;
+    /// `@owner/name` needs a registered runtime to look it up.
+    #[tokio::test]
+    async fn a_dm_target_is_a_hub_id_or_an_owner_and_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = test_paths(&tmp);
+        let id = "704f080d-1453-408d-8349-f8657364c6f5";
+        assert_eq!(remote_peko_hub_id(&paths, id).await.unwrap(), id);
+        assert_eq!(
+            remote_peko_hub_id(&paths, &format!("principal:hub:{id}"))
+                .await
+                .unwrap(),
+            id
+        );
+        let unregistered = remote_peko_hub_id(&paths, "@alice/ada").await.unwrap_err();
+        assert!(unregistered
+            .to_string()
+            .contains("isn't registered with PekoHub"));
+        for bad in ["ada", "@alice", "@/ada", "alice/ada"] {
+            assert!(remote_peko_hub_id(&paths, bad).await.is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn channel_mutation_replies_extract_scalar_and_tuple_payloads() {

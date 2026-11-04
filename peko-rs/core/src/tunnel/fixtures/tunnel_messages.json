@@ -99,6 +99,11 @@
     "message": "not the owner"
   },
   {
+    "type": "principal_transfer_offered",
+    "requestId": "xfer-1",
+    "message": "Offered to @bob. It moves when they accept on PekoHub."
+  },
+  {
     "type": "principal_owner_changed",
     "requestId": "xfer-1",
     "localId": "prin_ada",
