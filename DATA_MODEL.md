@@ -2395,7 +2395,10 @@ other member, and the same member from another of its routes:
   catches up forward only.
 - While a runtime is registered, its person's DMs are keyed by
   `user:hub:<account>` (`ActorInfo::dm_key`); registering moves existing
-  DMs to that id, and unregistering moves them back.
+  DMs to that id, and unregistering moves them back. Each move records
+  `old id → new id` in `<runtime>/channel_forwards.json`; a moved-back DM
+  replaces the reverse entry. The channel tools resolve an id through it when
+  the id itself no longer exists.
 
 A new runtime of an account learns the person's DMs from the account's other
 runtimes (ADR-095 D5). PekoHub delivers the request to every runtime of

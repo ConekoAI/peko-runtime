@@ -741,6 +741,12 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
                  'user:local:<id>', 'user:hub:<id>', 'visitor:local:<id>', 'visitor:hub:<id>', or 'group:<slug>')"
             )
         })?;
+        // ADR-095 D7: an id kept from before a DM moved still reaches it.
+        let channel_id = if channel_id.kind() == ProtoChannelKind::Bare {
+            self.port.forwarded(&channel_id).await
+        } else {
+            channel_id
+        };
         let text = params
             .get("text")
             .and_then(|v| v.as_str())

@@ -323,6 +323,8 @@ impl Tool for ChannelReadTool {
                  (expected 'chan_<8 base36 chars>' or 'group:<slug>')"
             )
         })?;
+        // ADR-095 D7: an id kept from before a DM moved still reaches it.
+        let channel_id = self.port.forwarded(&channel_id).await;
 
         // ADR-078 D4: a run acting for anyone but the owner reads only its
         // own conversation; every other channel reads as missing.

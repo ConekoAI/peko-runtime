@@ -162,10 +162,12 @@ impl ChannelTool {
     /// The `channel` argument, which a non-owner run may only name when
     /// it is its own conversation (ADR-078 D4: everything else reads as
     /// missing).
-    fn channel_arg(params: &Value, stamp: &ActingFor) -> anyhow::Result<ChannelId> {
+    async fn channel_arg(&self, params: &Value, stamp: &ActingFor) -> anyhow::Result<ChannelId> {
         let raw = params["channel"].as_str().unwrap_or_default();
         let channel = ChannelId::parse(raw)
             .ok_or_else(|| anyhow::anyhow!("Channel: invalid channel {raw}"))?;
+        // ADR-095 D7: an id kept from before a DM moved still reaches it.
+        let channel = self.port.forwarded(&channel).await;
         anyhow::ensure!(
             stamp.is_owner() || stamp.compartment.channel() == Some(channel.as_str()),
             "Channel: channel {raw} not found"
@@ -354,7 +356,7 @@ impl Tool for ChannelTool {
         let stamp = ctx.acting_for();
         match params["action"].as_str() {
             Some("info") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.info(&id, &channel, &stamp).await
             }
             Some("create") => {
@@ -380,7 +382,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "invited": invited}))
             }
             Some("invite") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 let principal = self.principal(&id).await?;
                 let reference = params["actor"].as_str().unwrap_or_default();
@@ -388,7 +390,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "invited": [invited]}))
             }
             Some("admin") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 let reference = params["actor"].as_str().unwrap_or_default();
@@ -410,7 +412,7 @@ impl Tool for ChannelTool {
                 }))
             }
             Some("history") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 let visibility = match params["visibility"].as_str() {
@@ -424,7 +426,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "history": visibility}))
             }
             Some("register") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 let visibility = match params["visibility"].as_str() {
@@ -444,7 +446,7 @@ impl Tool for ChannelTool {
                 }))
             }
             Some("link") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 if params["revoke"].as_bool() == Some(true) {
@@ -470,7 +472,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "link": link, "expires": expires}))
             }
             Some("leave") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 self.port
@@ -480,7 +482,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "left": true}))
             }
             Some("wake") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_group(&channel).await?;
                 self.require_member(&channel, &id).await?;
                 let policy = params["policy"]
@@ -497,7 +499,7 @@ impl Tool for ChannelTool {
                 Ok(json!({"channel": channel.as_str(), "wake": binding.wake}))
             }
             Some("role") => {
-                let channel = Self::channel_arg(&params, &stamp)?;
+                let channel = self.channel_arg(&params, &stamp).await?;
                 self.require_member(&channel, &id).await?;
                 let principal = self.principal(&id).await?;
                 let role = params["role"].as_str().map(str::to_string);

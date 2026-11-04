@@ -1553,6 +1553,9 @@ impl ChannelPort for TunnelChannelPort {
     async fn rekey_local_user_dms(&self) -> Result<Vec<(ChannelId, ChannelId, Vec<String>)>> {
         self.local.rekey_local_user_dms().await
     }
+    async fn forwarded(&self, channel: &ChannelId) -> ChannelId {
+        self.local.forwarded(channel).await
+    }
     async fn restore_dm_copy(
         &self,
         channel: &ChannelId,

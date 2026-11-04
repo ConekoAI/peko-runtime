@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a DM id a peko kept still works after the DM moved (2026-11-04, ADR-095)
+
+- When registering or unregistering moves the person's DMs to a new id, the
+  old id now forwards to the new one (`<runtime>/channel_forwards.json`).
+  The `Channel`, `ChannelRead`, and `ChannelSend` tools follow it, so an id
+  a peko kept in its notes, plans, or schedules still reaches the
+  conversation. Before, it read as missing.
 ### Fix: unblocking someone reaches your other computers (2026-11-04, ADR-095)
 
 - Blocks and unblocks are kept with when they were made

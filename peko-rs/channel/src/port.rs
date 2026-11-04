@@ -536,6 +536,12 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
+    /// Where `channel` lives now (ADR-095 D7): itself, or where a DM rekey
+    /// moved it. Adapters that never move channels answer the id given.
+    async fn forwarded(&self, channel: &ChannelId) -> ChannelId {
+        channel.clone()
+    }
+
     /// ADR-095 D4: fill a DM's copy from a snapshot — record where its
     /// other members live (`remote`) and merge `posts` by `msg_id`, as
     /// verified history (nothing wakes, nothing fans out). Returns how
