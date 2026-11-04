@@ -2242,6 +2242,29 @@ logs and older readers are unaffected. Only `principal_send` /
 `principal_log` / `principal_log_watch` rows (`PrincipalLogMessage`)
 carry the same objects with `path` made absolute.
 
+### 5¾.2⅞⁻⁻ `posted` event `options` (2026-11-04, ADR-093)
+
+A post may offer suggested replies:
+
+```json
+"options": ["Ship it", "Hold off"]
+```
+
+2–4 distinct strings, each one line of 1–60 characters (trimmed). The
+writing store refuses a local post with broken options and drops broken
+options from a peer runtime's post (keeping its text). They are text only:
+a client shows them while the post is the conversation's latest, and a tap
+posts the option's text as an ordinary message from whoever taps.
+
+Absent when empty (serde `default` + `skip_serializing_if`); older lines and
+older readers are unaffected. The field rides the signed event bytes of
+cross-runtime envelopes and served DM history. `PrincipalLogMessage` rows
+and the `principal_sent_done` stream packet carry the same list.
+
+Suggested replies for a conversation's reply are staged in memory by the
+`Suggest` tool (per channel and principal, never persisted) and consumed by
+the reply post.
+
 ### 5¾.2¾ A conversation's last failed run (2026-10-31, ADR-089 D5)
 
 A failed run writes nothing into the DM channel (the retired
@@ -3313,6 +3336,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-11-04 | ADR-093: `posted` events gain optional `options` (§5¾.2⅞⁻⁻); `PrincipalLogMessage` and `principal_sent_done` gain `options`. |
 | 0.1.0 | 2026-10-30 | ADR-088: DM `posted` events gain optional `attachments` (§5¾.2⅞⁻); files are copied to `<workspace>/attachments/<YYYY-MM-DD>/`; `PrincipalLogMessage` gains `attachments` (absolute paths); `models.toml` `spec` gains `video_input` (default false). |
 | 0.1.0 | 2026-09-11 | ADR-052 D6: the workspace hook manifest (`<workspace>/hooks/<id>/hook.toml`, layout in `docs/architecture/PRINCIPAL_WORKSPACE.md`) gains a `PromptSection` bind point — `binds = [{ point = "PromptSection", section = "<name>", priority = <int?> }]` (new optional `section` / `priority` bind fields; `priority` defaults to 100). The hook command's stdout renders as a `## <name>` section of the per-iteration `<runtime-context>` tail message with the standard change-detection semantics (first injection plain, update notice on edit, one-shot retraction when output stops). Binding a built-in name (`identity` / `agents` / `skills`) augments the built-in catalog via registry aggregation instead of double-dispatching. |
 | 0.1.0 | 2026-08-20 | Sprint 6: opaque UUID session ids + peer via parent walk (§5, §5.9, §5.10). `peko_session::SessionId` newtype around `Uuid`; engine-internal `SessionMetadata.session_id` and `parent_session_id` are `SessionId`; the legacy `root:self` magic-string trunk is retired (anchor = `find_trunk_session(metas)`, the session with `parent_session_id = None`); peer routing walks the parent chain via `resolve_peer_via_parent_walk`, reading stamped `peer_type`/`peer_id`; `peer_from_session_key`, `parse_session_key_v2`, `parse_session_key` v1, `base_key_from_overlay`, `trunk_session_id`, `looks_like_session_id`, and `resolve_id_or_path` deleted. Path resolver grammar collapsed from three forms (sprint 5) to two: slug path or caller self-reference. |

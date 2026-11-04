@@ -21,6 +21,9 @@ pub const EXEMPT_TOOLS: &[&str] = &[
     "Session",
     "ChannelRead",
     "ToolLog",
+    // Stages suggested replies for the run's own reply (ADR-093): text
+    // the person may choose to send, no reach beyond the conversation.
+    "Suggest",
 ];
 
 /// Most argument text the reviewer sees per call.

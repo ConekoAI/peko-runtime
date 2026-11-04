@@ -1242,6 +1242,11 @@ pub struct PrincipalLogMessage {
     /// on the runtime's host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<peko_protocol::channel::Attachment>,
+    /// ADR-093: suggested replies the sender offered with the message.
+    /// A client shows them only while this is the conversation's last
+    /// message; a tap sends the option's text as an ordinary message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 impl PrincipalLogMessage {
@@ -1260,6 +1265,7 @@ impl PrincipalLogMessage {
             correlation_id,
             sender_name: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         }
     }
 }
@@ -1944,9 +1950,16 @@ pub enum ResponsePacket {
     /// Final packet of a `PrincipalSendStream` response. Carries the
     /// full final answer (same content the non-streaming `PrincipalSent`
     /// would have returned) so the frontend can confirm the response
-    /// and persist it. Always followed by a `Done` packet.
+    /// and persist it. Always followed by a `Done` packet. `options`
+    /// are the suggested replies posted with the answer (ADR-093),
+    /// omitted when none.
     #[serde(rename = "principal_sent_done")]
-    PrincipalSentDone { request_id: u64, content: String },
+    PrincipalSentDone {
+        request_id: u64,
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<String>,
+    },
 
     /// Run-summary packet emitted by the daemon at the end of a
     /// principal-send run. Aggregates the run's tool-call errors and
@@ -4793,6 +4806,7 @@ mod tests {
         let resp = ResponsePacket::PrincipalSentDone {
             request_id: 5100,
             content: "Hello, world!".to_string(),
+            options: Vec::new(),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -4800,14 +4814,29 @@ mod tests {
             ResponsePacket::PrincipalSentDone {
                 request_id,
                 content,
+                options,
             } => {
                 assert_eq!(request_id, 5100);
                 assert_eq!(content, "Hello, world!");
+                assert!(options.is_empty());
             }
             _ => panic!("Wrong variant"),
         }
         let raw = String::from_utf8(bytes).unwrap();
         assert!(raw.contains("\"type\":\"principal_sent_done\""));
+        assert!(!raw.contains("options"), "no options, no field: {raw}");
+
+        // ADR-093: suggested replies ride along when there are some.
+        let with_options = ResponsePacket::PrincipalSentDone {
+            request_id: 5101,
+            content: "Ship today?".to_string(),
+            options: vec!["Ship it".into(), "Hold off".into()],
+        };
+        let decoded = ResponsePacket::from_bytes(&with_options.to_bytes().unwrap()).unwrap();
+        let ResponsePacket::PrincipalSentDone { options, .. } = decoded else {
+            panic!("Wrong variant");
+        };
+        assert_eq!(options, ["Ship it", "Hold off"]);
     }
 
     #[test]
@@ -5322,6 +5351,7 @@ mod tests {
         let streaming = ResponsePacket::PrincipalSentDone {
             request_id: 1,
             content: "x".to_string(),
+            options: Vec::new(),
         };
 
         let one_shot_json = String::from_utf8(one_shot.to_bytes().unwrap()).unwrap();

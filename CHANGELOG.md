@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a peko can suggest replies you send with one tap (2026-11-04, ADR-093)
+
+- A post can carry `options`: 2–4 short suggested replies (one line, at most
+  60 characters each). Clients show them while the post is the
+  conversation's latest; a tap sends the text as your own message, so it
+  means nothing more than typing it. They carry no authority — only
+  `peko approve` / desktop Approve decides an approval.
+- `Suggest` (new built-in, 25 in all) stages replies for the run's reply in
+  its conversation; `ChannelSend` takes `options` for explicit posts. Broken
+  options refuse the send; a peer runtime's post keeps its text and loses
+  broken options. Staged replies are dropped when the reply is empty or
+  withheld, or when someone else posts first.
+- Wire: `options` on `ChannelEvent::Posted`, `PrincipalLogMessage`
+  (`principal_log` / `principal_log_watch`), and `principal_sent_done`,
+  omitted when empty; the tunnel contract fixture sets it (PekoHub types
+  need `options?: string[]` on channel events).
+- `peko log` prints `↳ Ship it · Hold off` under a message that offers
+  replies; `peko send` prints the same hint on stderr after the answer.
+- The seeded `conversation` role mentions `Suggest` (new principals; existing
+  roles are kept as they are).
+
 ### Fix: a transfer offer is a pending result; `peko channel dm` opens a DM with a remote peko (2026-11-03)
 
 - PekoHub makes an online peko's transfer an offer the new owner accepts on

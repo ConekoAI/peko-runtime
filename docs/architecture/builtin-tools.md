@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **24 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **25 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -34,11 +34,11 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 24-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 25-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
 | Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
@@ -340,6 +340,10 @@ Send with `to` (the old `channel` input is a compatibility alias; do not supply 
   `parent` threads a reply using an event's line `id` or its stable `msg_id`
   (resolved to the line). Actor targets do not accept
   `parent`; use the returned conversation ID. `label` applies only to human notes.
+- `options` (2–4 strings, one line and at most 60 characters each, no
+  duplicates) adds suggested replies to the post (ADR-093): readers can send one
+  with a tap, as their own message. Refused on notes to users; broken options
+  refuse the whole send.
 
 Principal sends return canonical `to`, real `channel` (also `dm_channel` for old
 clients), `id`, and `delivery` (`delivered` or durably `queued`). Same-runtime pair
@@ -418,6 +422,20 @@ Send files to the person the run is talking to (ADR-088 D7) — the counterpart 
 Each path (absolute, `~/…`, or relative to the workspace) passes the same floor as `Read` (ADR-078: untrusted runs stay inside the workspace), then the file is copied to `<workspace>/attachments/<YYYY-MM-DD>/<8 hex>-<name>` under the inbound limits (at most 8 files, 20 MB each, regular files only; nothing is copied unless every file passes). The copies are posted on the run's conversation channel — the stamp's compartment — as one message from the principal with `text` as its caption, so `principal_log` and the desktop show them beside the reply. Returns `{success, channel, id, attachments: [{name, path, mime, size}]}` with absolute paths.
 
 A non-owner run's call goes to the policy reviewer first, as `Read` does. Refused outside a conversation (cron, internal work) and in a conversation with any member on the Hub or another runtime: posts carry paths on this host, not the files. Calls run alone (not parallel).
+
+### Suggest
+
+Offer suggested replies with the run's reply (ADR-093 D3) — a few short answers the person can send with one tap.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/channel/suggest.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `replies` | string[] | yes | at most 4; `[]` clears |
+
+A conversation's reply is the run's final text, posted after the run, so `Suggest` posts nothing: it stages 2–4 replies (one line, at most 60 characters each, no duplicates, trimmed) for the run's conversation ([reply_options.rs](../../peko-rs/core/src/principal/reply_options.rs)), and the reply post carries them as `options`. A later call replaces the earlier one. The staged replies are dropped when the reply is empty or withheld by the policy reviewer, and when anyone else posted in the conversation after the call, so a run that never replied cannot hand them to a later reply. Returns `{success, channel, replies}`.
+
+Refused outside a conversation (cron, internal work) and for a run that is not the conversation's bound session (an `Agent` worker shares the compartment but reports back). Exempt from the policy reviewer: the replies are text the person may choose to send, and a tap carries no authority — no message decides an approval (ADR-078).
 
 ## Inference and workflows
 

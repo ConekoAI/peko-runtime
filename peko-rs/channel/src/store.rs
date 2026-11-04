@@ -2468,6 +2468,23 @@ impl ChannelStore {
             members.members = retained;
             members.save(&chan_dir).await?;
         }
+        // A peer's post keeps its message but loses suggested replies
+        // that break the limits (ADR-093 D2): another runtime cannot
+        // hand our clients an arbitrary number of buttons.
+        let sanitized;
+        let ev = match ev {
+            ChannelEvent::Posted { options, .. }
+                if crate::port::validate_options(options).is_err() =>
+            {
+                let mut copy = ev.clone();
+                if let ChannelEvent::Posted { options, .. } = &mut copy {
+                    options.clear();
+                }
+                sanitized = copy;
+                &sanitized
+            }
+            _ => ev,
+        };
         let line = self
             .append_event(tier, channel, ev, EventOrigin::VerifiedRemote)
             .await?;
@@ -2883,6 +2900,11 @@ impl ChannelStore {
             return Err(ChannelError::NotMember);
         }
 
+        // Suggested replies (ADR-093 D2): a post with broken options is
+        // refused whole, so the model that offered them sees why.
+        let options = crate::port::validate_options(&msg.options)
+            .map_err(|e| ChannelError::Adapter(format!("invalid options: {e}")))?;
+
         // Validate parent (if any) references an existing line in the
         // log. Line numbers are global across rotated pages and never
         // reset, so the check is a (cache-backed) line count, not a
@@ -2925,6 +2947,7 @@ impl ChannelStore {
             msg_id: Some(msg.msg_id.unwrap_or_else(new_msg_id)),
             reply_to,
             attachments: msg.attachments,
+            options,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
@@ -4242,6 +4265,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -4911,6 +4935,7 @@ mod tests {
             msg_id: Some(id.into()),
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         }
     }
 
@@ -5479,6 +5504,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -5497,6 +5523,88 @@ mod tests {
             line, "1",
             "Created is line 0, so the first remote event lands at line 1"
         );
+    }
+
+    /// ADR-093 D2: local posts with broken options are refused; a
+    /// peer's post keeps its text but loses broken options; valid ones
+    /// survive both paths, and a post without options writes no field.
+    #[tokio::test]
+    async fn options_are_checked_on_both_paths() {
+        let store = ChannelStore::new(tmp_cfg("post-options"));
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let alice = ActorRef::from(&creator);
+
+        let refused = store
+            .post(
+                &channel,
+                &alice,
+                PostMsg::root("?").with_options(vec!["only".into()]),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(ChannelError::Adapter(e)) if e.contains("invalid options")),
+            "{refused:?}"
+        );
+        store
+            .post(
+                &channel,
+                &alice,
+                PostMsg::root("Ship?").with_options(vec!["Yes".into(), "Not yet".into()]),
+            )
+            .await
+            .unwrap();
+        store
+            .post(&channel, &alice, PostMsg::root("plain"))
+            .await
+            .unwrap();
+
+        let remote = |options: Vec<String>| ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "from B".to_string(),
+            at: "2026-11-04T00:00:00Z".to_string(),
+            via: None,
+            msg_id: None,
+            reply_to: None,
+            attachments: Vec::new(),
+            options,
+        };
+        let flood: Vec<String> = (0..50).map(|i| format!("option {i}")).collect();
+        store
+            .append_remote_event(&channel, &remote(flood))
+            .await
+            .unwrap();
+        store
+            .append_remote_event(&channel, &remote(vec!["A".into(), "B".into()]))
+            .await
+            .unwrap();
+
+        let options: Vec<Vec<String>> = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { options, .. } => Some(options),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            options,
+            vec![
+                vec!["Yes".to_string(), "Not yet".into()],
+                vec![],
+                vec![],
+                vec!["A".to_string(), "B".into()],
+            ]
+        );
+        let plain = serde_json::to_string(&remote(Vec::new())).unwrap();
+        assert!(!plain.contains("options"), "{plain}");
     }
 
     /// ADR-058 D7: provenance envelope round-trip. NEW lines are
@@ -5535,6 +5643,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -5553,6 +5662,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -5641,6 +5751,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -5669,6 +5780,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -5884,6 +5996,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         store
             .append_remote_event(&channel, &remote_event)

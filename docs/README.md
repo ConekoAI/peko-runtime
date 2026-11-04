@@ -129,6 +129,7 @@ For top-level project docs, see [`../README.md`](../README.md).
 | [ADR-083](architecture/adr/ADR-083-quiet-ticks.md) | Cron message jobs can wait for attention (`when: attention`): a due fire with nothing waiting is a quiet tick with no model call, at most an hour apart; the seeded keepalive waits for attention |
 | [ADR-084](architecture/adr/ADR-084-goals-as-plans-and-check-ins.md) | Plan steps carry `checkAt`: snoozed until then, a due check-in wakes the attention-gated heartbeat once; goals are kept as plans by the genesis and nightly briefs |
 | [ADR-085](architecture/adr/ADR-085-memory-claims-reviewed-against-their-sources.md) | A reviewer model checks each sourced hot-memory or conventions line against excerpts of its sources before a scheduled run writes it (fail closed); `ToolLog` `turns` gives per-turn evidence from the ledger |
+| [ADR-093](architecture/adr/ADR-093-suggested-replies.md) | A peko may offer 2–4 suggested replies on a post (`ChannelSend.options`, `Suggest` for its reply); a tap is just the person's message; owner decisions stay runtime-created and separate |
 
 ---
 

@@ -252,6 +252,9 @@ async fn process_response_stream(
     // previously hidden in streaming mode, so per-turn token cost was
     // invisible during normal use.
     let mut summary: Option<crate::summary::RunSummaryView> = None;
+    // Suggested replies posted with the answer (ADR-093), shown as a
+    // hint on stderr so stdout stays the assistant text alone.
+    let mut options: Vec<String> = Vec::new();
     while let Some(packet) = next_or_stop(
         &mut stream,
         &ctrl_c_signal,
@@ -277,7 +280,12 @@ async fn process_response_stream(
             // Final full answer. Chunks were already printed
             // incrementally; only fall back to printing it here if the
             // stream produced no deltas (e.g. a buffered orchestrator).
-            ResponsePacket::PrincipalSentDone { content, .. } => {
+            ResponsePacket::PrincipalSentDone {
+                content,
+                options: offered,
+                ..
+            } => {
+                options = offered;
                 if !has_started_line && !content.is_empty() {
                     print!("\n{}: {}", args.principal, content);
                     std::io::stdout().flush()?;
@@ -341,6 +349,9 @@ async fn process_response_stream(
                 if has_started_line {
                     println!();
                 }
+                if let Some(hint) = crate::commands::log::options_hint(&options) {
+                    eprintln!("{hint}");
+                }
                 if success {
                     if let Some(ref s) = summary {
                         eprintln!("{}", s.format_footer());
@@ -391,6 +402,11 @@ async fn wait_for_queued_reply(
                         ResponsePacket::PrincipalLogAppended { message, .. } => {
                             if message.timestamp > sent_at && &message.sender != peer {
                                 println!("{}: {}", args.principal, message.text);
+                                if let Some(hint) =
+                                    crate::commands::log::options_hint(&message.options)
+                                {
+                                    eprintln!("{hint}");
+                                }
                                 return true;
                             }
                         }

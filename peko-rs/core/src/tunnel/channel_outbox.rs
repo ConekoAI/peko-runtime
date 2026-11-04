@@ -534,6 +534,7 @@ mod tests {
                 msg_id: Some(msg_id.into()),
                 reply_to: None,
                 attachments: Vec::new(),
+                options: Vec::new(),
             },
             source: "prin_a".into(),
         }

@@ -282,10 +282,11 @@ stop the daemon and run `peko vault migrate --to passphrase` (or
 
 ## Tools, roles, skills and MCP servers
 
-Every peko has the same 24 built-in tools: files and shell (`Read`, `Write`,
+Every peko has the same 25 built-in tools: files and shell (`Read`, `Write`,
 `Edit`, `Glob`, `Grep`, `Bash`), delegation (`Agent`, `RoleCatalog`,
 `Skill`), its own sessions, channels and contacts, sending you files
-(`Attach`), plans and tasks,
+(`Attach`), suggesting replies you can send with a tap (`Suggest`), plans
+and tasks,
 scheduling (`Cron`), background work (`Async`), models (`ModelList`,
 `ModelCall`), workflows, MCP and its tool ledger (`ToolLog`). See
 [builtin-tools.md](../architecture/builtin-tools.md) for each tool's

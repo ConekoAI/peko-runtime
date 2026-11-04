@@ -3122,6 +3122,7 @@ mod tests {
                 msg_id: None,
                 reply_to: None,
                 attachments: Vec::new(),
+                options: Vec::new(),
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

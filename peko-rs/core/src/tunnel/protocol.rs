@@ -1283,6 +1283,7 @@ mod tests {
             msg_id: None,
             reply_to: None,
             attachments: Vec::new(),
+            options: Vec::new(),
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

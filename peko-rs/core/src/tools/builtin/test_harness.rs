@@ -197,6 +197,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         )),
         Arc::new(ChannelReadTool::new(backends.channels.clone())),
         Arc::new(AttachTool::new(backends.channels.clone())),
+        Arc::new(SuggestTool::new(backends.channels.clone())),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -545,7 +546,7 @@ mod tests {
         ];
         // Unbound in the harness: ModelCall and Workflow need a
         // PrincipalManager and must fail closed rather than run
-        // unattributed; Attach needs a conversation, and the default
+        // unattributed; Attach and Suggest need a conversation, and the default
         // caller works in the internal tree (its success path is covered
         // in `channel::attach`).
         let fails_closed: Vec<(&str, Value, &str)> = vec![
@@ -554,6 +555,11 @@ mod tests {
             (
                 "Attach",
                 json!({"paths":["notes/hello.txt"]}),
+                "not in a conversation",
+            ),
+            (
+                "Suggest",
+                json!({"replies":["Yes", "Not yet"]}),
                 "not in a conversation",
             ),
         ];

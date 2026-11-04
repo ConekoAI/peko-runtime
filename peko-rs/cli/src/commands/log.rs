@@ -638,7 +638,8 @@ fn render_chat_message(message: &PrincipalLogMessage) {
 /// One human-readable log line. The peko's own replies show its name
 /// (`my-peko: …`, as `peko send` prints them); every other actor
 /// shows its address. Attached files (ADR-088) follow, one per line,
-/// with the path of the peko's copy.
+/// with the path of the peko's copy, then any suggested replies
+/// (ADR-093).
 fn format_chat_message(message: &PrincipalLogMessage) -> String {
     let sender = match message.sender_name.as_deref() {
         Some(name) => name.to_string(),
@@ -659,7 +660,17 @@ fn format_chat_message(message: &PrincipalLogMessage) -> String {
             attachment.path
         ));
     }
+    if let Some(hint) = options_hint(&message.options) {
+        line.push_str(&format!("\n    {hint}"));
+    }
     line
+}
+
+/// The suggested replies a message offers (ADR-093), as one hint line:
+/// `↳ Ship it · Hold off`. Answer with `peko send` and the text, as
+/// with any reply. `None` when there are none.
+pub(crate) fn options_hint(options: &[String]) -> Option<String> {
+    (!options.is_empty()).then(|| format!("↳ {}", options.join(" · ")))
 }
 
 fn human_size(bytes: u64) -> String {
@@ -774,6 +785,15 @@ mod tests {
             ),
             "got {line}"
         );
+
+        // ADR-093: suggested replies follow as one hint line.
+        reply.options = vec!["Ship it".into(), "Hold off".into()];
+        let line = format_chat_message(&reply);
+        assert!(
+            line.ends_with("] my-peko: Hello!\n    ↳ Ship it · Hold off"),
+            "got {line}"
+        );
+        assert_eq!(options_hint(&[]), None);
     }
 
     #[test]

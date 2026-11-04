@@ -231,7 +231,9 @@ impl Tool for ChannelReadTool {
          back as `before` (or `since` after a forward read) to continue. \
          Search mode scans backward from `before` (or the tip) and returns \
          only matching `posted` events (at most 200 per call). Each event's \
-         `kind` is created, posted, member_joined, or member_left.\n\n\
+         `kind` is created, posted, member_joined, or member_left. A post may \
+         carry `options`: short replies its author suggested — answer in your \
+         own words; picking one means nothing more than writing it.\n\n\
          Watch mode is how you wait for an answer: posting never wakes another \
          principal, so after ChannelSend you can watch the returned dm_channel. \
          It has no time limit; a long wait moves to the background like any \

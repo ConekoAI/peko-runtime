@@ -2666,7 +2666,7 @@ async fn run_principal_send(
                 ));
             // Phase 11: the reply's durable home is the peer's DM
             // channel (principal-authored).
-            post_dm_reply(
+            let options = post_dm_reply(
                 channel_port.as_ref(),
                 &principal,
                 dm_channel.as_ref(),
@@ -2688,6 +2688,7 @@ async fn run_principal_send(
                 PrincipalSendResponseKind::Streaming => ResponsePacket::PrincipalSentDone {
                     request_id,
                     content,
+                    options,
                 },
                 PrincipalSendResponseKind::OneShot => ResponsePacket::PrincipalSent {
                     request_id,
@@ -3019,14 +3020,17 @@ impl StreamSteps {
     }
 }
 
+/// Post the reply on the DM; returns the suggested replies that went
+/// with it (ADR-093).
 async fn post_dm_reply(
     port: Option<&Arc<dyn ChannelPort>>,
     principal: &Principal,
     dm_channel: Option<&ChannelId>,
     text: &str,
-) {
-    if let (Some(port), Some(dm)) = (port, dm_channel) {
-        post_peer_dm_reply(port, &principal.id, dm, text).await;
+) -> Vec<String> {
+    match (port, dm_channel) {
+        (Some(port), Some(dm)) => post_peer_dm_reply(port, &principal.id, dm, text).await,
+        _ => Vec::new(),
     }
 }
 
@@ -3883,7 +3887,8 @@ impl LogSelf {
 /// form with a `ActorRef::User` fallback (mirrored `x@runtime` authors).
 /// The principal's own rows (raw id or channel address) also carry its
 /// name as `sender_name`, so `peko log` shows `my-peko:` rather than an
-/// address. Attachment paths become absolute (ADR-088 D3).
+/// address. Attachment paths become absolute (ADR-088 D3); suggested
+/// replies pass through (ADR-093).
 /// Unparseable timestamps surface as "now".
 fn map_posted_to_log_message(
     id: String,
@@ -3891,6 +3896,7 @@ fn map_posted_to_log_message(
     at: &str,
     text: String,
     attachments: Vec<peko_protocol::channel::Attachment>,
+    options: Vec<String>,
     me: &LogSelf,
 ) -> PrincipalLogMessage {
     let parsed_at = chrono::DateTime::parse_from_rfc3339(at)
@@ -3922,6 +3928,7 @@ fn map_posted_to_log_message(
                 ..a
             })
             .collect(),
+        options,
     }
 }
 
@@ -4029,6 +4036,7 @@ async fn read_principal_log(
                 text,
                 at,
                 attachments,
+                options,
                 ..
             } = event
             else {
@@ -4055,6 +4063,7 @@ async fn read_principal_log(
                 &at,
                 text,
                 attachments,
+                options,
                 &me,
             );
             // The `since` cutoff admits unparseable timestamps (surfaced
@@ -4229,6 +4238,7 @@ async fn run_principal_log_watch(
             text,
             at,
             attachments,
+            options,
             ..
         } = event
         else {
@@ -4247,6 +4257,7 @@ async fn run_principal_log_watch(
             &at,
             text,
             attachments,
+            options,
             &me,
         );
         let packet = ResponsePacket::PrincipalLogAppended {
@@ -4269,7 +4280,7 @@ async fn run_principal_log_watch(
         tokio::select! {
             ev = rx.recv() => match ev {
                 Ok(ChannelEvent::Posted {
-                    author, text, at, attachments, ..
+                    author, text, at, attachments, options, ..
                 }) => {
                     // Skip events already covered by the replay
                     // (subscribe→peek overlap window).
@@ -4289,6 +4300,7 @@ async fn run_principal_log_watch(
                         &at,
                         text,
                         attachments,
+                        options,
                         &me,
                     );
                     let packet = ResponsePacket::PrincipalLogAppended { request_id, message };
@@ -4374,7 +4386,7 @@ mod tests {
     /// ADR-088 D3: a log row carries the post's attachments with paths
     /// made absolute against the principal's workspace.
     #[test]
-    fn posted_rows_carry_attachments_with_absolute_paths() {
+    fn posted_rows_carry_attachments_with_absolute_paths_and_options() {
         let me = LogSelf {
             raw_author: "prin_abc".into(),
             address: "principal:local:prin_abc".into(),
@@ -4393,8 +4405,10 @@ mod tests {
                 mime: "image/png".into(),
                 size: 12,
             }],
+            vec!["Yes".into(), "Not yet".into()],
             &me,
         );
+        assert_eq!(row.options, ["Yes", "Not yet"]);
         assert_eq!(row.attachments.len(), 1);
         assert_eq!(
             std::path::Path::new(&row.attachments[0].path),
@@ -4418,6 +4432,7 @@ mod tests {
                 author,
                 "2026-10-24T10:00:00Z",
                 "Hello!".into(),
+                Vec::new(),
                 Vec::new(),
                 &me,
             )
@@ -5065,6 +5080,7 @@ mod tests {
                 msg_id: None,
                 reply_to: None,
                 attachments: Vec::new(),
+                options: Vec::new(),
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -5101,6 +5117,7 @@ mod tests {
                 msg_id: None,
                 reply_to: None,
                 attachments: Vec::new(),
+                options: Vec::new(),
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)

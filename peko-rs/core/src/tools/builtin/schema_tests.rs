@@ -48,6 +48,7 @@ fn parallel_safety_matches_each_tools_side_effects() {
         ("ChannelSend", false),
         ("ChannelRead", true),
         ("Attach", false),
+        ("Suggest", false),
         ("Channel", false),
         ("Contacts", true),
         ("Task", false),
@@ -85,7 +86,7 @@ fn inventory_matches_implementations_and_schemas_compile() {
         .into_iter()
         .collect();
     assert_eq!(actual, declared);
-    assert_eq!(actual.len(), 24);
+    assert_eq!(actual.len(), 25);
     for retired in [
         "TaskCreate",
         "TaskGet",

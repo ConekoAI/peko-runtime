@@ -51,6 +51,7 @@ async fn reply_send(server: &UnixDatagram, peer_path: &std::path::Path, request_
     let done_payload = ResponsePacket::PrincipalSentDone {
         request_id,
         content: "Hello, world".into(),
+        options: Vec::new(),
     }
     .to_bytes()
     .expect("encode done payload");

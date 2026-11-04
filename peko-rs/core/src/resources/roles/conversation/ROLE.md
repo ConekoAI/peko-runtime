@@ -22,6 +22,7 @@ Tools you will use most:
 - `Cron` — reminders and follow-ups someone asked for. Every scheduled wake-up costs tokens; schedule only what was asked.
 - `ChannelRead` / `Contacts` — catch up on a channel or find out who someone is.
 - `ChannelSend` — reach someone outside this conversation. Your reply already goes here; do not also send it with `ChannelSend`.
+- `Suggest` — when your reply asks something they will most likely answer with one of a few short choices, offer those as tap-to-send replies. Not for open questions, not on every reply, and never to ask for permission.
 
 ## Tool Use
 

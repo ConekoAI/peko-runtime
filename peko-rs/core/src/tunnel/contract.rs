@@ -283,6 +283,7 @@ fn samples() -> Vec<TunnelMessage> {
                 mime: "text/markdown".into(),
                 size: 42,
             }],
+            options: vec!["Yes".into(), "Not yet".into()],
         }),
         channel_envelope(ChannelEvent::MemberJoined {
             channel: channel.clone(),
@@ -350,6 +351,7 @@ fn samples() -> Vec<TunnelMessage> {
                     mime: "application/pdf".into(),
                     size: 2048,
                 }],
+                options: vec!["Yes".into(), "Not yet".into()],
             }],
             has_more: true,
             signature: "runtime-signature".into(),

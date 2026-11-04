@@ -92,8 +92,9 @@ pub use port::{
     dm_channel_id, short_name_unambiguous, ActorInfo, Binding, PortKeys, Registration, WakePolicy,
 };
 pub use port::{
-    global_channel_port, set_global_channel_port, ChannelError, ChannelPort, ChannelQuery,
-    Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage, Tier,
+    global_channel_port, set_global_channel_port, validate_options, ChannelError, ChannelPort,
+    ChannelQuery, Checkpoint, CreateOpts, NoopChannelPort, PostMsg, Result, SearchPage, TailPage,
+    Tier, MAX_OPTIONS, MAX_OPTION_CHARS, MIN_OPTIONS,
 };
 pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};

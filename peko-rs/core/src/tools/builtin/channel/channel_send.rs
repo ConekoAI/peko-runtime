@@ -327,6 +327,7 @@ impl ChannelSendTool {
         resolution: &AgentResolution,
         message: &str,
         via: Option<String>,
+        options: Vec<String>,
     ) -> Result<serde_json::Value> {
         let target_did = resolution.agent_did.as_str();
         let target = match ctx
@@ -385,7 +386,9 @@ impl ChannelSendTool {
         };
         // The post has one stable identity, independent of its session binding.
         let msg_id = peko_channel::new_msg_id();
-        let mut own_msg = PostMsg::root(message).with_msg_id(msg_id.clone());
+        let mut own_msg = PostMsg::root(message)
+            .with_msg_id(msg_id.clone())
+            .with_options(options.clone());
         own_msg.via = via.clone();
         let own_line = match ctx
             .channel_port
@@ -435,7 +438,9 @@ impl ChannelSendTool {
                 &format!("ChannelSend: could not join the target's DM channel: {e}"),
             ));
         }
-        let mut target_msg = PostMsg::root(message).with_msg_id(msg_id);
+        let mut target_msg = PostMsg::root(message)
+            .with_msg_id(msg_id)
+            .with_options(options);
         target_msg.via = via;
         if target_channel != own_channel {
             if let Err(e) = ctx
@@ -487,6 +492,7 @@ impl ChannelSendTool {
         message: &str,
         resolution: &AgentResolution,
         via: Option<String>,
+        options: Vec<String>,
     ) -> Result<serde_json::Value> {
         // 1. Caller-side standing child + DM channel (Phase 10/11
         //    machinery): the channel is the conversation's home on
@@ -557,7 +563,9 @@ impl ChannelSendTool {
         //    target's mirror. `via` stamps the calling session's slug
         //    path (attribution only).
         let msg_id = peko_channel::new_msg_id();
-        let mut msg = PostMsg::root(message).with_msg_id(msg_id.clone());
+        let mut msg = PostMsg::root(message)
+            .with_msg_id(msg_id.clone())
+            .with_options(options);
         msg.via = via;
         let line = match ctx
             .channel_port
@@ -649,6 +657,8 @@ impl Tool for ChannelSendTool {
 - `user:local:<id>` / `user:hub:<id>` / `visitor:local:<id>` / `visitor:hub:<id>` — a note to a user's conversation; it appears in their next turn, and their answer arrives in their conversation with you.
 - `dm_<hash>` / `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message. In a group, mentioning `@<name>` does not wake that principal either — only users' mentions do.
 
+`options` offers the reader 2–4 short suggested replies; a tap sends that text as their own message, so they mean nothing more than typed words.
+
 Each post carries your session path as `via`. Not for running work in your own principal's sessions — use the Agent tool.
 
 ## Result
@@ -675,6 +685,13 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
                 "label": {
                     "type": "string",
                     "description": "Notes to users only: short label for the note (shown as 📨 [<label>]); defaults to your agent name."
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "description": "Not for notes to users: 2–4 short suggested replies (one line, up to 60 characters each) the reader can send with a tap instead of typing, e.g. [\"Ship it\", \"Hold off\"]. Only when the answer is likely one of a few short choices; never to ask for permission."
                 }
             },
             "required": ["to", "text"]
@@ -752,6 +769,12 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
             label.is_none() || channel_id.kind() == ProtoChannelKind::User,
             "Labels are only supported for user/visitor notes"
         );
+        let options = parse_options(&params)?;
+        anyhow::ensure!(
+            options.is_empty() || channel_id.kind() != ProtoChannelKind::User,
+            "Options are only supported on channel posts and messages to principals, \
+             not on notes to users"
+        );
 
         // Pull the principal id out of the ToolContext. The F37 funnel
         // supplies this; bare `execute` callers (none in production)
@@ -771,11 +794,11 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
         // choosing the prefix.
         let mut result = match channel_id.kind() {
             ProtoChannelKind::Bare | ProtoChannelKind::Group => {
-                self.execute_bare(&channel_id, text, parent, &principal_str, via)
+                self.execute_bare(&channel_id, text, parent, &principal_str, via, options)
                     .await
             }
             ProtoChannelKind::Principal => {
-                self.execute_principal_branch(&channel_id, text, ctx, via)
+                self.execute_principal_branch(&channel_id, text, ctx, via, options)
                     .await
             }
             ProtoChannelKind::User => {
@@ -800,6 +823,23 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
     }
 }
 
+/// The `options` parameter (ADR-093): absent or null is none; anything
+/// else must be an array of strings within the post limits.
+pub(crate) fn parse_options(params: &serde_json::Value) -> anyhow::Result<Vec<String>> {
+    let Some(raw) = params.get("options").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let items = raw
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("'options' must be an array of strings"))?;
+    let options = items
+        .iter()
+        .map(|v| v.as_str().map(str::to_string))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| anyhow::anyhow!("'options' must be an array of strings"))?;
+    peko_channel::validate_options(&options).map_err(|e| anyhow::anyhow!("options: {e}"))
+}
+
 impl ChannelSendTool {
     /// Bare / Group branch: fire-and-forget post. `principal_str`
     /// comes from `ToolContext::principal_id`; membership is enforced
@@ -813,6 +853,7 @@ impl ChannelSendTool {
         parent: Option<String>,
         principal_str: &str,
         via: Option<String>,
+        options: Vec<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let kind = match channel_id.kind() {
             ProtoChannelKind::Bare => "bare",
@@ -826,7 +867,8 @@ impl ChannelSendTool {
         let mut msg = match parent {
             Some(p) => PostMsg::reply(p, text.to_string()),
             None => PostMsg::root(text.to_string()),
-        };
+        }
+        .with_options(options);
         msg.via = via;
         let sender = ActorRef::from(&PrincipalId(principal_str.to_string()));
         match self.port.post(channel_id, &sender, msg).await {
@@ -908,6 +950,7 @@ impl ChannelSendTool {
         text: &str,
         ctx: &peko_tools_core::exec::ToolContext,
         via: Option<String>,
+        options: Vec<String>,
     ) -> anyhow::Result<serde_json::Value> {
         let raw = channel_id.as_str();
         let reference = raw.strip_prefix("principal:").ok_or_else(|| {
@@ -1016,7 +1059,7 @@ impl ChannelSendTool {
             );
         }
         if resolution.runtime_id == cross_runtime.caller_runtime_id {
-            self.execute_local(cross_runtime, &caller, &resolution, text, via)
+            self.execute_local(cross_runtime, &caller, &resolution, text, via, options)
                 .await
         } else {
             self.execute_remote(
@@ -1026,6 +1069,7 @@ impl ChannelSendTool {
                 text,
                 &resolution,
                 via,
+                options,
             )
             .await
         }
@@ -1325,6 +1369,67 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("ToolContext"), "{error}");
+    }
+
+    /// ADR-093: `options` ride on the post, trimmed; broken ones refuse
+    /// the whole send so the model sees why.
+    #[tokio::test]
+    async fn options_ride_on_the_post() {
+        let fx = Fixture::new();
+        let channel = fx.channel_of(&fx.alice, None).await;
+        fx.send(json!({
+            "to": channel.as_str(),
+            "text": "Ship today?",
+            "options": [" Ship it ", "Hold off"],
+        }))
+        .await
+        .unwrap();
+        let options: Vec<Vec<String>> = fx
+            .port
+            .peek(&channel, &Checkpoint::zero())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                ChannelEvent::Posted { options, .. } => Some(options),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            options,
+            vec![vec!["Ship it".to_string(), "Hold off".into()]]
+        );
+
+        let too_long = "x".repeat(61);
+        for (options, expected) in [
+            (json!(["only one"]), "2 to 4 options"),
+            (json!(["a", "b", "c", "d", "e"]), "2 to 4 options"),
+            (json!(["a", " "]), "empty"),
+            (json!(["a", "two\nlines"]), "more than one line"),
+            (json!(["a", too_long]), "longer than 60"),
+            (json!(["same", "same"]), "twice"),
+            (json!("Ship it"), "array of strings"),
+            (json!(["a", 2]), "array of strings"),
+        ] {
+            let error = fx
+                .send(json!({ "to": channel.as_str(), "text": "?", "options": options }))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{options}: {error}");
+        }
+        assert_eq!(
+            fx.posts(&channel).await.len(),
+            1,
+            "refused sends post nothing"
+        );
+
+        let error = fx
+            .send(json!({ "to": "user:local:bob", "text": "?", "options": ["a", "b"] }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not on notes to users"), "{error}");
     }
 
     /// Without the cross-runtime context (no tunnel on this daemon), the
