@@ -31,10 +31,10 @@ async fn import_displays_inventory_and_restores_workspace_without_confirmation()
     );
     assert!(text.contains("fixture-skill"), "{text}");
     assert!(!text.contains("[y/N]"), "{text}");
-    let root = cli.peko_dir().join("principals").join(&name);
+    let root = cli.peko_dir().join("pekos").join(&name);
     assert!(root.join("skills/fixture-skill/SKILL.md").exists());
     let config: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&std::fs::read_to_string(root.join("principal.toml")).unwrap()).unwrap();
+        toml::from_str(&std::fs::read_to_string(root.join("peko.toml")).unwrap()).unwrap();
     assert!(!toml::to_string(&config).unwrap().contains("capabilities"));
 }
 
@@ -85,11 +85,7 @@ async fn reimport_of_hosted_peko_needs_rotate_keys_and_makes_a_new_actor() {
     assert!(String::from_utf8_lossy(&stdout).contains("New actor"));
 
     let read = |peko: &str| -> peko_core::principal::config::PrincipalConfig {
-        let path = cli
-            .peko_dir()
-            .join("principals")
-            .join(peko)
-            .join("principal.toml");
+        let path = cli.peko_dir().join("pekos").join(peko).join("peko.toml");
         toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     };
     let (hosted, rotated) = (read(&name), read(&copy));

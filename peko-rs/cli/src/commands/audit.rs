@@ -53,9 +53,8 @@ pub enum AuditCommands {
         /// Filter: only events whose `event_type` starts with this prefix.
         #[arg(long = "type", value_name = "PREFIX")]
         event_type: Option<String>,
-        /// Filter: only events whose caller matches this peko name
-        /// (or whose `details.principal_name` matches).
-        #[arg(short, long)]
+        /// Only events about this peko.
+        #[arg(short, long = "peko", alias = "principal", value_name = "PEKO")]
         principal: Option<String>,
         /// Maximum number of events to print (newest first).
         #[arg(short, long, default_value = "100")]
@@ -70,7 +69,7 @@ pub enum AuditCommands {
         json: bool,
     },
 
-    /// Show a principal's tool ledger (ADR-079): newest calls first.
+    /// Show every tool call a peko made, newest first.
     Ledger {
         /// The peko whose ledger to read.
         peko: String,
@@ -83,7 +82,8 @@ pub enum AuditCommands {
         /// Only calls in this session: a slug path (`/user-x/task`) or id.
         #[arg(long)]
         session: Option<String>,
-        /// Only calls acting for this actor address.
+        /// Only calls made while working for this address (e.g.
+        /// `user:hub:<id>`).
         #[arg(long)]
         actor: Option<String>,
         /// Only calls with this outcome (`ok`, `error`, `floor_denied`, …,
@@ -104,8 +104,7 @@ pub enum AuditCommands {
         json: bool,
     },
 
-    /// Check a principal's tool ledger: its hash chain, the checkpoints
-    /// in the global audit log, and every call against `tool.call`.
+    /// Check that a peko's tool-call record is complete and unaltered.
     Verify {
         /// The peko whose ledger to verify.
         peko: String,
@@ -114,16 +113,16 @@ pub enum AuditCommands {
         json: bool,
     },
 
-    /// Print a summary of in-memory audit events (this session).
+    /// Summarize recent events since the daemon started.
     List {
-        /// Maximum number of events to consider (cap: ring buffer size).
+        /// Maximum number of recent events to consider.
         #[arg(short, long, default_value = "1000")]
         limit: u32,
         /// Filter by event type prefix.
         #[arg(long = "type", value_name = "PREFIX")]
         event_type: Option<String>,
-        /// Filter by principal.
-        #[arg(short, long)]
+        /// Only events about this peko.
+        #[arg(short, long = "peko", alias = "principal", value_name = "PEKO")]
         principal: Option<String>,
     },
 }

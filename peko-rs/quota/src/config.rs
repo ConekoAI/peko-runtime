@@ -3,7 +3,7 @@
 //!
 //! ## `QuotaConfig`
 //!
-//! Parsed from the `[quota]` block inside a `principal.toml` (when
+//! Parsed from the `[quota]` block inside a `peko.toml` (when
 //! present). Any of the three limit fields may be `None` — a
 //! missing limit is interpreted as "unlimited" for that dimension.
 //!

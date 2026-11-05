@@ -10,9 +10,9 @@ people, groups and roles), `journal/` (the daily log, append-only),
 `dreams/` (nightly reflections on how you work; cold until a lesson
 is promoted into `CONVENTIONS.md`).
 
-Revision rules for the whole tree (ADR-055):
+Revision rules for the whole tree:
 
-- Principal-authored files: revise in place, no append-only history.
+- Files you write yourself: revise in place, no append-only history.
 - Imported material: replace on refresh; your notes ABOUT an import
   are revised, the import itself is swapped.
 - Nothing here is compacted away — that word belongs to sessions.

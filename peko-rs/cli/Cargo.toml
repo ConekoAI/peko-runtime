@@ -52,7 +52,7 @@ rpassword = "7.3"
 cron = "0.12"
 # ADR-046: `peko principal diff` reads
 # `<data_dir>/runtime/principal-hashes.json` and walks the principals
-# dir; uses sha2 for principal.toml hashing, walkdir to mirror the
+# dir; uses sha2 for peko.toml hashing, walkdir to mirror the
 # daemon-side drift detector, and hex to format the digest.
 walkdir = "2"
 sha2 = "0.10"

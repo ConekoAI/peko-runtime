@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 /// The role every test spawns, stored at
-/// `principals/<name>/roles/worker/ROLE.md`.
+/// `pekos/<name>/roles/worker/ROLE.md`.
 const WORKER: &str = "worker";
 
 // ---------------------------------------------------------------------------
@@ -60,19 +60,15 @@ fn assert_ok(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 
 /// Workspace root used by the daemon's filesystem tools in these tests.
 /// `PekoCli` sets `PEKO_HOME`, and relative Write paths resolve under the
-/// principal's own folder (`<PEKO_HOME>/principals/<name>`).
+/// principal's own folder (`<PEKO_HOME>/pekos/<name>`).
 fn principal_workspace(cli: &PekoCli, principal: &str) -> PathBuf {
-    cli.peko_dir().join("principals").join(principal)
+    cli.peko_dir().join("pekos").join(principal)
 }
 
 /// Write a `worker` subagent prompt for the given Principal using the
 /// flat-file layout (`roles/<worker>.md`).
 fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
-    let dir = cli
-        .peko_dir()
-        .join("principals")
-        .join(principal)
-        .join("roles");
+    let dir = cli.peko_dir().join("pekos").join(principal).join("roles");
     std::fs::create_dir_all(&dir).expect("create roles dir");
     let agent_md = format!(
         "---\n\
@@ -89,7 +85,7 @@ fn write_worker_subagent_flat(cli: &PekoCli, principal: &str, worker: &str) {
 fn write_worker_subagent(cli: &PekoCli, principal: &str, worker: &str) {
     let dir = cli
         .peko_dir()
-        .join("principals")
+        .join("pekos")
         .join(principal)
         .join("roles")
         .join(worker);
@@ -125,7 +121,7 @@ fn assert_child_receipts(cli: &PekoCli, principal: &str, expected: &[&str]) {
 
     let mut dirs = vec![cli
         .peko_dir()
-        .join("data/principals")
+        .join("data/pekos")
         .join(principal)
         .join("local/sessions")];
     let mut outputs = Vec::new();
@@ -357,7 +353,7 @@ async fn subagent_nesting_t1_depth2_writes_file() {
     );
 
     // The grandchild wrote the file into the tool workspace
-    // (`<peko_dir>/principals/{principal}/{file_name}`), since the tool
+    // (`<peko_dir>/pekos/{principal}/{file_name}`), since the tool
     // workspace is the principal's own folder.
     let path = principal_workspace(&cli, agent_name).join(file_name);
     let actual = std::fs::read_to_string(&path).unwrap_or_else(|e| {

@@ -3,6 +3,7 @@
 //! the stamp, the tool, and the path; the dispatcher applies it to every
 //! call.
 
+use crate::common::paths::is_pekos_dir_name;
 use std::path::{Component, Path, PathBuf};
 
 use peko_tools_core::ActingFor;
@@ -64,6 +65,8 @@ pub fn action_refusal(
 /// Workspace files only an owner run may write. Everything an agent's
 /// prompt is built from, plus the policy itself.
 pub const PROTECTED_FILES: &[&str] = &[
+    "peko.toml",
+    // Legacy name, kept until the rename to `peko.toml` has happened.
     "principal.toml",
     "POLICY.md",
     "kb/MEMORY.md",
@@ -90,24 +93,26 @@ pub const PROTECTED_DIRS: &[&str] = &[
 /// Where proposals land. The runtime writes here; no run may.
 pub const INBOX_DIR: &str = "kb/inbox";
 
-/// The Peko home a principal workspace sits in: `<home>/principals/<name>`.
+/// The Peko home a peko's workspace sits in: `<home>/pekos/<name>` (or the
+/// pre-0.1.0 `<home>/principals/<name>`).
 fn peko_home(workspace: &Path) -> Option<&Path> {
     let root = workspace.parent()?;
-    if root.file_name()? != "principals" {
+    if !is_pekos_dir_name(root.file_name()?) {
         return None;
     }
     root.parent()
 }
 
 /// Whether `path` lies in some principal's runtime-local tree
-/// (`…/principals/<name>/local/`): its sessions, ledger, plans, memory
-/// index, and schedules. `path` must already be [`resolve`]d.
+/// (`…/pekos/<name>/local/`, or the legacy `…/principals/<name>/local/`):
+/// its sessions, ledger, plans, memory index, and schedules. `path` must
+/// already be [`resolve`]d.
 #[must_use]
 pub fn in_principal_local(path: &Path) -> bool {
     let parts: Vec<_> = path.components().map(Component::as_os_str).collect();
     parts
         .windows(3)
-        .any(|w| w[0] == "principals" && w[2] == "local")
+        .any(|w| is_pekos_dir_name(w[0]) && w[2] == "local")
 }
 
 /// Whether `path` is the runtime's own state, which only owner runs reach:
@@ -238,14 +243,14 @@ pub fn search_root_refusal(
 }
 
 /// Whether `path` lies in some principal's tool ledger
-/// (`…/principals/<name>/local/ledger/`, ADR-079 D5). Only the
+/// (`…/pekos/<name>/local/ledger/`, ADR-079 D5). Only the
 /// dispatcher writes there. `path` must already be [`resolve`]d.
 #[must_use]
 pub fn in_tool_ledger(path: &Path) -> bool {
     let parts: Vec<_> = path.components().map(Component::as_os_str).collect();
     parts
         .windows(4)
-        .any(|w| w[0] == "principals" && w[2] == "local" && w[3] == "ledger")
+        .any(|w| is_pekos_dir_name(w[0]) && w[2] == "local" && w[3] == "ledger")
 }
 
 /// Why `stamp` may not call `tool_name`, if it may not. `mcp_untrusted_ok`
@@ -388,7 +393,7 @@ pub fn check_path(
     if let Some(workspace) = &workspace {
         let principals_root = workspace
             .parent()
-            .filter(|root| root.file_name().is_some_and(|name| name == "principals"));
+            .filter(|root| root.file_name().is_some_and(is_pekos_dir_name));
         if let Some(root) = principals_root {
             let foreign = target.starts_with(root) && !target.starts_with(workspace);
             if foreign && (write || !stamp.is_owner()) {
@@ -488,7 +493,7 @@ mod tests {
 
     fn tree() -> Tree {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("config/principals");
+        let root = dir.path().join("config/pekos");
         let mine = root.join("mine");
         let other = root.join("other");
         std::fs::create_dir_all(mine.join("kb")).unwrap();
@@ -498,6 +503,23 @@ mod tests {
             other: resolve(&other),
             _dir: dir,
         }
+    }
+
+    #[test]
+    fn both_folder_names_are_runtime_state() {
+        for folder in ["pekos", "principals"] {
+            let base = PathBuf::from("/home/u/.peko");
+            let local = base.join(folder).join("ada/local/sessions/x.jsonl");
+            let ledger = base.join(folder).join("ada/local/ledger/0.jsonl");
+            assert!(in_principal_local(&local), "{folder}");
+            assert!(in_tool_ledger(&ledger), "{folder}");
+            assert_eq!(
+                peko_home(&base.join(folder).join("ada")),
+                Some(base.as_path()),
+                "{folder}"
+            );
+        }
+        assert!(!in_principal_local(Path::new("/home/u/notes/ada/local/x")));
     }
 
     #[test]
@@ -591,9 +613,9 @@ mod tests {
             home.join("runtime/channels/dm_abc/events.jsonl"),
             home.join("runtime/identity.toml"),
             home.join("vault.enc"),
-            home.join("principals/channels/chan_x/events.jsonl"),
-            data.join("principals/mine/local/sessions/s.jsonl"),
-            data.join("principals/other/local/sessions/s.jsonl"),
+            home.join("pekos/channels/chan_x/events.jsonl"),
+            data.join("pekos/mine/local/sessions/s.jsonl"),
+            data.join("pekos/other/local/sessions/s.jsonl"),
             t.mine.join("local/sessions/s.jsonl"),
         ];
         for trust in [Trust::Untrusted, Trust::Trusted] {
@@ -673,7 +695,7 @@ mod tests {
     #[test]
     fn no_run_writes_a_tool_ledger() {
         let dir = tempfile::tempdir().unwrap();
-        let ledger = dir.path().join("data/principals/mine/local/ledger");
+        let ledger = dir.path().join("data/pekos/mine/local/ledger");
         std::fs::create_dir_all(&ledger).unwrap();
         let file = ledger.join("ledger-2026-10-14.jsonl");
         for trust in [Trust::Owner, Trust::Trusted, Trust::Untrusted] {
@@ -685,7 +707,7 @@ mod tests {
         }
         let sneaky = dir
             .path()
-            .join("data/principals/mine/local/cache/../ledger/x.jsonl");
+            .join("data/pekos/mine/local/cache/../ledger/x.jsonl");
         assert!(matches!(
             check_path(&stamp(Trust::Owner), None, &sneaky, true),
             PathDecision::Deny(_)

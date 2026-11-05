@@ -95,28 +95,28 @@ fn send_and_assert(cli: &PekoCli, principal: &str, prompt: &str, expect: &str, s
     );
 }
 
-/// The principal workspace root (`<peko_dir>/principals/<name>/`).
+/// The principal workspace root (`<peko_dir>/pekos/<name>/`).
 fn workspace(cli: &PekoCli, principal: &str) -> PathBuf {
-    cli.peko_dir().join("principals").join(principal)
+    cli.peko_dir().join("pekos").join(principal)
 }
 
-/// Parse + patch + rewrite `principal.toml` (mirrors the capability
+/// Parse + patch + rewrite `peko.toml` (mirrors the capability
 /// patch in `common::agent::create_mock_principal_with_tools`).
 fn patch_principal_config(
     cli: &PekoCli,
     principal: &str,
     f: impl FnOnce(&mut peko_core::principal::config::PrincipalConfig),
 ) {
-    let path = workspace(cli, principal).join("principal.toml");
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
+    let path = workspace(cli, principal).join("peko.toml");
+    let raw = std::fs::read_to_string(&path).expect("read peko.toml");
     let mut cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
+        toml::from_str(&raw).expect("parse peko.toml");
     f(&mut cfg);
     std::fs::write(
         &path,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+        toml::to_string_pretty(&cfg).expect("serialize peko.toml"),
     )
-    .expect("write principal.toml");
+    .expect("write peko.toml");
 }
 
 /// Overwrite the principal's root persona (`roles/root.md`) with a
@@ -509,7 +509,7 @@ async fn d3_role_prompt_reaches_spawned_child() {
     );
 }
 
-/// ADR-052 D4 (T0): `[identity]` + `[intent]` from `principal.toml`
+/// ADR-052 D4 (T0): `[identity]` + `[intent]` from `peko.toml`
 /// render as a `## Principal identity` section of the tail
 /// `<runtime-context>` user message.
 #[tokio::test]

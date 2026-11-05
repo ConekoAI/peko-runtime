@@ -10,34 +10,38 @@ Peko: persistent AI agents (pekos) you own
 Usage: peko [OPTIONS] <COMMAND>
 
 Commands:
-  create         Create a new peko and block until it is alive (ADR-054)
-  register       Register this peko for Hub access (private by default)
-  unregister     Remove the peko's Hub route and keep it locally
+  create         Create a new peko and wait until it is ready
+  register       Put a peko online on PekoHub (private by default)
+  unregister     Take a peko off PekoHub; it stays on this computer
   list           List pekos
   show           Show a peko's configuration and roles
   remove         Remove a peko and all its data
-  export         Export a peko to a `.peko` package (a full-existence snapshot — sessions, authored cron schedule, plans, and installed workspace tooling travel with it; ADR-056)
+  export         Save a peko to a `.peko` file, to back it up or move it
+  seed           Export a peko's seed: its definition without its identity, owner, permissions, or memory
   import         Import a peko from a `.peko` package
   permit         Grant a permission on a peko
   transfer       Transfer a peko to a new owner (only its current owner can)
+  approvals      List the approval requests waiting for you, a peko's owner
+  approve        Approve a waiting request: the call runs for whoever asked
+  deny           Deny a waiting request
   revoke         Revoke a permission from a peko
   permissions    List permissions on a peko
   invite         Mint a signed invite link for a peko (share with one friend)
   revoke-invite  Revoke a previously minted invite token
-  diff           Show pekos whose `principal.toml` has changed since the last daemon boot (ADR-046 drift detection)
-  send           Send a message to a peko (unified command)
-  stop           Soft-stop the running turn on your thread with a peko
-  log            Read a peko's activity (owner-root view by default)
+  diff           Show pekos whose `peko.toml` has changed since the daemon last started
+  send           Send a message to a peko
+  stop           Stop what a peko is doing in your conversation
+  log            Read your conversation with a peko
   auth           Authentication and credential management
   credential     Provider API key management (OS keychain backed)
   system         System diagnostics and maintenance
   daemon         Daemon management (the background process that runs your pekos)
-  channel        Multi-peko chat primitive (channels) — read/create/post events across pekos
+  channel        Direct messages and group chats with people and pekos
   model          LLM model management (runtime model catalog)
-  quota          Per-peko token quota management (F18)
+  quota          How many tokens and requests a peko may use
   update         Update Peko to the latest version
   completions    Generate shell completions
-  audit          Audit log: tail the JSONL or list in-memory events (ADR-046)
+  audit          What your pekos did: the audit log and each peko's tool ledger
   version        Print the runtime version
   help           Print this message or the help of the given subcommand(s)
 
@@ -63,11 +67,11 @@ Examples:
 ## `peko create`
 
 ```text
-Create a new peko and block until it is alive (ADR-054)
+Create a new peko and wait until it is ready
 
-One command for the whole genesis pipeline: provisions the workspace (P0), seeds the definition (P1 — from `--seed` when given, defaults otherwise), makes sure the daemon is running and knows the peko, schedules the genesis turn (P2), and waits for the trunk's first self-turn to complete. Pass `--detach` for fire-and-forget (scripts/CI).
+Makes the peko's folder, writes its definition (from `--seed`, or defaults), starts the daemon if needed, and waits while the peko sets itself up on its first turn. Pass `--detach` to return right away (for scripts).
 
-Re-defining later = edit the peko's `principal.toml` and `roles/root.md` directly; edits apply to the peko's next turn.
+To change a peko later, edit its `peko.toml` and `roles/root.md`; edits apply on its next turn.
 
 Usage: peko create [OPTIONS] <NAME>
 
@@ -80,9 +84,7 @@ Options:
           Configured model id to pin this peko to (see `peko model list`). Optional only when the `--seed` carries `preferred_model_id`; exactly one of the two must provide it. There is no runtime default model, so an unpinned peko fails every send
 
   -s, --seed <SEED_TOML>
-          Path to a seed `principal.toml` carrying the peko's full definition: `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown body for the root role, seeded as `roles/root.md`). Unspecified fields take runtime defaults. `id`, `did`, and `boot_state` in the seed are ignored — a fresh identity is always generated. TOML note: top-level keys (`preferred_model_id`, `persona`) must appear BEFORE the first `[table]` header.
-          
-          A seed is DNA, not a template: the peko that grows from it is never a copy of its source (ADR-060).
+          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown for `roles/root.md`). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header
 
       --force
           Force a destructive re-create. Without `--force`, `peko create <existing>` refuses with a clear error — protects identity, roles, memory, and session history from a one-keystroke wipe. With `--force`, the existing peko is removed first — its workspace, roles/, memory/, and session history are all wiped before the new peko is written. There is no undo. Combine with `--yes` to skip the confirmation prompt in non-interactive shells
@@ -91,10 +93,10 @@ Options:
           Skip the destructive confirmation prompt (use with `--force` in scripts or CI). Has no effect without `--force`
 
       --detach
-          Do not wait for the genesis turn — provision, seed, and return. The genesis turn still fires (daemon boot pass or the scheduled one-shot job)
+          Don't wait for the peko's first turn. It still runs, as soon as the daemon gets to it
 
       --wait-timeout <SECS>
-          How long to wait for the genesis turn before giving up (seconds). The peko stays seeded either way — it will genesis at the next daemon boot
+          How long to wait for the peko's first turn, in seconds. The peko is created either way; if this runs out, it finishes setting up the next time the daemon starts
           
           [default: 300]
 ```
@@ -102,7 +104,7 @@ Options:
 ## `peko register`
 
 ```text
-Register this peko for Hub access (private by default)
+Put a peko online on PekoHub (private by default)
 
 Usage: peko register [OPTIONS] <NAME>
 
@@ -116,7 +118,7 @@ Options:
 ## `peko unregister`
 
 ```text
-Remove the peko's Hub route and keep it locally
+Take a peko off PekoHub; it stays on this computer
 
 Usage: peko unregister [OPTIONS] <NAME>
 
@@ -163,15 +165,37 @@ Options:
 ## `peko export`
 
 ```text
-Export a peko to a `.peko` package (a full-existence snapshot — sessions, authored cron schedule, plans, and installed workspace tooling travel with it; ADR-056)
+Save a peko to a `.peko` file, to back it up or move it
+
+The file holds everything: identity, definition, memory, conversations, schedules, plans, and workspace tooling.
 
 Usage: peko export [OPTIONS] <NAME>
 
 Arguments:
-  <NAME>  Peko name
+  <NAME>
+          Peko name
 
 Options:
-  -o, --output <OUTPUT>          Output file path (defaults to `<name>.peko`)
+  -o, --output <OUTPUT>
+          Output file path (defaults to `<name>.peko`)
+```
+
+## `peko seed`
+
+```text
+Export a peko's seed: its definition without its identity, owner, permissions, or memory
+
+Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
+
+Usage: peko seed [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Peko name
+
+Options:
+  -o, --output <OUTPUT>
+          Write the seed here (prints it when omitted)
 ```
 
 ## `peko import`
@@ -187,7 +211,7 @@ Arguments:
 Options:
   -n, --name <NAME>              Rename the imported peko
   -f, --force                    Overwrite an existing local peko
-      --rotate-keys              Import as a new actor: new keys, DID, and local ID. Use it to import a copy of a peko this runtime already hosts (with `--name` when the package's name is taken)
+      --rotate-keys              Import as a new peko with its own keys and IDs. Use it to import a copy of a peko that already lives on this computer (with `--name` when the name is taken)
 ```
 
 ## `peko permit`
@@ -199,8 +223,8 @@ Usage: peko permit [OPTIONS] <NAME> <SUBJECT> <PERMISSION>
 
 Arguments:
   <NAME>        Peko name
-  <SUBJECT>     Actor to grant permission to: `kind:local:<id>`, `kind:hub:<id>`, or `public`
-  <PERMISSION>  Permission to grant (e.g. `chat`, `manage_settings`). `trusted` is the owner's consent to give this actor's agents the full tool surface, including the shell (ADR-078)
+  <SUBJECT>     Who gets it: an address such as `user:hub:<account>` or `peko:local:<id>`, or `public` for everyone
+  <PERMISSION>  Permission to grant (e.g. `chat`, `manage_settings`). `trusted` lets the peko use all its tools, including the shell, when it works for this person
 
 ```
 
@@ -217,6 +241,49 @@ Arguments:
 
 ```
 
+## `peko approvals`
+
+```text
+List the approval requests waiting for you, a peko's owner
+
+When a peko works for someone other than you and wants to do something sensitive that its POLICY.md doesn't settle, it asks you first. Decide with `peko approve` / `peko deny`.
+
+Usage: peko approvals [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Peko name
+
+```
+
+## `peko approve`
+
+```text
+Approve a waiting request: the call runs for whoever asked
+
+Usage: peko approve [OPTIONS] <NAME> <ID>
+
+Arguments:
+  <NAME>  Peko name
+  <ID>    Request id (`apr_…`, from `peko approvals`)
+
+Options:
+      --always                   Also allow this requester such calls from now on (adds a rule to the peko's POLICY.md)
+```
+
+## `peko deny`
+
+```text
+Deny a waiting request
+
+Usage: peko deny [OPTIONS] <NAME> <ID>
+
+Arguments:
+  <NAME>  Peko name
+  <ID>    Request id (`apr_…`, from `peko approvals`)
+
+```
+
 ## `peko revoke`
 
 ```text
@@ -226,7 +293,7 @@ Usage: peko revoke [OPTIONS] <NAME> <SUBJECT> <PERMISSION>
 
 Arguments:
   <NAME>        Peko name
-  <SUBJECT>     ActorRef to revoke permission from
+  <SUBJECT>     Whose permission to revoke: an address such as `user:hub:<account>` or `peko:local:<id>`, or `public`
   <PERMISSION>  Permission to revoke
 
 ```
@@ -274,9 +341,9 @@ Arguments:
 ## `peko diff`
 
 ```text
-Show pekos whose `principal.toml` has changed since the last daemon boot (ADR-046 drift detection).
+Show pekos whose `peko.toml` has changed since the daemon last started
 
-Compares each peko's SHA-256 against the baseline file the daemon wrote at the previous startup. Outputs the drifted peko name(s) — line-level TOML diff is a follow-up; this is the "something changed" canary.
+Compares each file with the copy the daemon fingerprinted when it started, and prints the names of pekos that changed.
 
 Useful in scripts: peko diff && echo "config drift detected" || true
 
@@ -290,9 +357,9 @@ Options:
 ## `peko send`
 
 ```text
-Send a message to a peko (unified command)
+Send a message to a peko
 
-This is the primary way to interact with a peko. Examples: peko send my-peko "Hello" peko send my-peko --file prompt.txt echo "Hello" | peko send my-peko --stdin
+The main way to talk to a peko. Examples: peko send my-peko "Hello" peko send my-peko --file prompt.txt echo "Hello" | peko send my-peko --stdin
 
 Usage: peko send [OPTIONS] <PEKO> [MESSAGE]
 
@@ -315,14 +382,17 @@ Options:
 
       --model <MODEL_ID>
           Override the configured model for this message only
+
+      --attach <PATH>
+          Attach a file (repeatable, up to 8, 20 MB each). The peko keeps a copy in its workspace; a vision model also sees images
 ```
 
 ## `peko stop`
 
 ```text
-Soft-stop the running turn on your thread with a peko.
+Stop what a peko is doing in your conversation
 
-The run cancels at the next agentic boundary and a `⏹ stopped by user` marker is posted to the thread. Idempotent: with no run in flight it reports "no running turn" and exits 0. Use `--peer <address>` (owner only), such as `user:hub:<id>`, to stop another peer's thread.
+The peko stops at its next step and the conversation shows `⏹ stopped by user`. If it isn't working on anything, this says so and exits 0. With `--peer <address>` (owner only), such as `user:hub:<id>`, stop it in someone else's conversation instead.
 
 Usage: peko stop [OPTIONS] <PEKO>
 
@@ -332,15 +402,15 @@ Arguments:
 
 Options:
       --peer <SUBJECT>
-          Stop the run on this peer's thread instead of your own (owner only). Accepts an actor address: `user:local`, `user:hub:<id>`, `principal:local:<id>` or `principal:hub:<id>`
+          Stop it in this person's or peko's conversation instead of yours (owner only): `user:local`, `user:hub:<id>`, `peko:local:<id>` or `peko:hub:<id>`
 ```
 
 ## `peko log`
 
 ```text
-Read a peko's activity (owner-root view by default)
+Read your conversation with a peko
 
-There is no `peko session` command and there will never be one; this command is the only user-facing way to inspect a peko's working state without running a turn.
+Shows the messages between you and the peko, or with `--peer` a conversation it had with someone else. Reading never wakes the peko.
 
 Usage: peko log [OPTIONS] <PEKO>
 
@@ -350,7 +420,7 @@ Arguments:
 
 Options:
       --peer <SUBJECT>
-          Specific peer's thread, as an actor address: `user:local`, `user:hub:<id>`, `principal:local:<id>` or `principal:hub:<id>`. Defaults to the peko's owner
+          Read the peko's conversation with someone else: `user:local`, `user:hub:<id>`, `peko:local:<id>` or `peko:hub:<id>`. Defaults to your own conversation
 
       --limit <N>
           Cap on number of messages returned (default 50, max 1000). Hard cap: a single page. Use `--all` to drain older pages, or `--cursor` to page manually. Ignored with `--watch`
@@ -362,7 +432,7 @@ Options:
           Case-insensitive substring filter on message text. Combines with paging: the daemon walks older pages until the page fills or the log is exhausted. Ignored with `--watch`
 
       --author <AUTHOR>
-          Exact author filter (the channel-log author: a peer ActorRef like `user:alice`, or the principal's id). Ignored with `--watch`
+          Only messages by this author, written exactly as the log shows it (for example `user:local`). Ignored with `--watch`
 
       --cursor <CURSOR>
           Opaque pagination cursor returned by a prior `peko log` call's `next_cursor` field. Pairs with `--limit` to walk older messages without overlap or gaps. With `--watch`, seeds the replay start (only rows newer than the cursor replay)
@@ -421,14 +491,14 @@ Store or overwrite a credential in the vault
 Usage: peko credential set [OPTIONS] --kind <KIND> <NAMESPACE> <NAME>
 
 Arguments:
-  <NAMESPACE>  Namespace for the credential (e.g. `llm`, `mcp:analytics`)
+  <NAMESPACE>  Namespace for the credential (e.g. `llm`, or `mcp:peko:<local-id>:<server>` for a peko's MCP server)
   <NAME>       Slot name within the namespace (e.g. `default`, a model id)
 
 Options:
       --kind <KIND>                 Credential kind
       --material <SECRET>           Secret material (omit for hidden prompt)
       --metadata <KEY=VALUE>        Optional metadata key/value pairs
-      --replace-on <CREDENTIAL_ID>  PR 3: every catalog entry that references the credential with this id is rewritten to point at the newly stored one. Used to bulk-rotate dependents before deleting the old key
+      --replace-on <CREDENTIAL_ID>  Point every model that uses the credential with this id at the new one. Use it to rotate a key before deleting the old one
 ```
 
 ### `peko credential get`
@@ -458,7 +528,7 @@ Arguments:
 
 Options:
       --force
-          PR 3: detach dependents silently before deleting. The detach is audit-logged. Prefer `--replace-on` on a fresh set when the dependents should keep working
+          Detach the models that use it, then delete. The detach is recorded in the audit log. Prefer `--replace-on` on a fresh `set` when those models should keep working
 ```
 
 ### `peko credential list`
@@ -624,75 +694,85 @@ Usage: peko daemon check [OPTIONS]
 ## `peko channel`
 
 ```text
-Multi-peko chat primitive (channels) — read/create/post events across pekos.
+Direct messages and group chats with people and pekos
 
 Examples: peko channel create alice "team alpha" peko channel invite <chan_id> alice bob peko channel post <chan_id> alice "hello" peko channel peek <chan_id> peko channel members <chan_id>
 
 Usage: peko channel [OPTIONS] <COMMAND>
 
 Commands:
-  create         Create a new channel owned by `creator`
-  invite         Invite `invitee` to `channel` (invited by `inviter`)
-  post           Post a message to `channel` from `sender`
-  peek           List events on `channel` since `since` (None = from start)
-  members        List members of `channel`
-  ls             List channels where `principal` is a member
-  show           Membership snapshot for `channel` (mirrors `peko channel members` today; preserved as a separate verb because the hub frontend uses it)
-  leave          Remove `principal` from `channel`. PR-3a: closes the missing IPC variant — PR-1 had `handle_leave` only on the in-process path
-  pin-to-shared  Copy a Runtime-tier channel into the Shared tier (PR-3d). COPY semantics — the Runtime source remains so `peko channel show` still resolves the channel. The shared root lives at `<shared_dir>/channels/<channel_id>/`. Production requires `channel:write_shared`; the in-process fallback path inherits the same gate via the daemon
-  help           Print this message or the help of the given subcommand(s)
+  create       Create a group chat started by one of your pekos
+  invite       Add a peko or a person to a group
+  post         Post a message to a group or DM
+  peek         Read a group or DM, from the start or after a message
+  members      List a group's members
+  ls           List the groups and DMs a peko is in
+  show         Show a group: its name and members
+  leave        Take one of your pekos out of a group
+  dm           Open a DM with a peko on another computer, or with a person
+  invitations  Groups on other computers that invited you
+  join         Join a group: accept its invitation, or use an invite link (or a public group's ID) from PekoHub
+  decline      Decline a group's invitation, or a person's message request
+  requests     People asking to DM you
+  accept       Accept a person's message request: the DM opens here and they are told; what they wrote arrives
+  block        Block a person: their requests, messages, and history requests are refused on every computer of your account
+  unblock      Unblock a person
+  blocked      The people you blocked
+  register     Give a group an ID on PekoHub, or change who may find it
+  link         Make an invite link to a registered group, or stop them all
+  help         Print this message or the help of the given subcommand(s)
 
 ```
 
 ### `peko channel create`
 
 ```text
-Create a new channel owned by `creator`
+Create a group chat started by one of your pekos
 
 Usage: peko channel create [OPTIONS] <CREATOR> <NAME>
 
 Arguments:
-  <CREATOR>  Creator peko name (must exist on disk)
-  <NAME>     Channel display name (free-form string)
+  <CREATOR>  The peko that starts the group
+  <NAME>     The group's display name
 
 Options:
-      --id <CHANNEL_ID>          Optional explicit channel id (ADR-049 Phase 2, D5), e.g. `group:<slug>` for a named group channel. Omit to mint a fresh `chan_<8 base36>` id
+      --id <CHANNEL_ID>          Choose the group's id, e.g. `group:<slug>` for a named group. Omit for a fresh `chan_…` id
 ```
 
 ### `peko channel invite`
 
 ```text
-Invite `invitee` to `channel` (invited by `inviter`)
+Add a peko or a person to a group
 
 Usage: peko channel invite [OPTIONS] <CHANNEL> <INVITER> <INVITEE>
 
 Arguments:
   <CHANNEL>  Channel id (`chan_xxxxxxxx`)
-  <INVITER>  Inviter peko name (must already be a member)
-  <INVITEE>  Invitee peko name (must exist on disk), or a user's actor address such as `user:hub:<id>` (ADR-049 Phase 1 — validated by form only, no lookup)
+  <INVITER>  The peko doing the inviting (already a member)
+  <INVITEE>  A peko on this computer by name, or a person's address such as `user:hub:<id>`
 
 ```
 
 ### `peko channel post`
 
 ```text
-Post a message to `channel` from `sender`
+Post a message to a group or DM
 
 Usage: peko channel post [OPTIONS] <CHANNEL> <SENDER> <TEXT>
 
 Arguments:
   <CHANNEL>  Channel id
-  <SENDER>   Sender peko name (must be a member), or `me` to post as your own identity (ADR-057: derived from the connection — hub user when logged into pekohub, else `user:local`). A `user:…` sender is refused: user identities are never specified on the wire
+  <SENDER>   A peko that is a member, or `me` to post as yourself (your PekoHub account when this computer is registered, else `user:local`). You can't post as another person
   <TEXT>     Message text
 
 Options:
-      --parent <PARENT>          Optional parent task id (reply target)
+      --parent <PARENT>          Reply to this message id
 ```
 
 ### `peko channel peek`
 
 ```text
-List events on `channel` since `since` (None = from start)
+Read a group or DM, from the start or after a message
 
 Usage: peko channel peek [OPTIONS] <CHANNEL>
 
@@ -700,13 +780,13 @@ Arguments:
   <CHANNEL>  Channel id
 
 Options:
-      --since <SINCE>            Optional cursor (`task_xxxxxxxx`)
+      --since <SINCE>            Only messages after this one (`task_…`)
 ```
 
 ### `peko channel members`
 
 ```text
-List members of `channel`
+List a group's members
 
 Usage: peko channel members [OPTIONS] <CHANNEL>
 
@@ -718,19 +798,19 @@ Arguments:
 ### `peko channel ls`
 
 ```text
-List channels where `principal` is a member
+List the groups and DMs a peko is in
 
-Usage: peko channel ls [OPTIONS] <PRINCIPAL>
+Usage: peko channel ls [OPTIONS] <PEKO>
 
 Arguments:
-  <PRINCIPAL>  Peko name
+  <PEKO>  Peko name
 
 ```
 
 ### `peko channel show`
 
 ```text
-Membership snapshot for `channel` (mirrors `peko channel members` today; preserved as a separate verb because the hub frontend uses it)
+Show a group: its name and members
 
 Usage: peko channel show [OPTIONS] <CHANNEL>
 
@@ -742,26 +822,151 @@ Arguments:
 ### `peko channel leave`
 
 ```text
-Remove `principal` from `channel`. PR-3a: closes the missing IPC variant — PR-1 had `handle_leave` only on the in-process path
+Take one of your pekos out of a group
 
-Usage: peko channel leave [OPTIONS] <CHANNEL> <PRINCIPAL>
-
-Arguments:
-  <CHANNEL>    Channel id
-  <PRINCIPAL>  Peko name (must already be a member)
-
-```
-
-### `peko channel pin-to-shared`
-
-```text
-Copy a Runtime-tier channel into the Shared tier (PR-3d). COPY semantics — the Runtime source remains so `peko channel show` still resolves the channel. The shared root lives at `<shared_dir>/channels/<channel_id>/`. Production requires `channel:write_shared`; the in-process fallback path inherits the same gate via the daemon
-
-Usage: peko channel pin-to-shared [OPTIONS] <CHANNEL>
+Usage: peko channel leave [OPTIONS] <CHANNEL> <PEKO>
 
 Arguments:
   <CHANNEL>  Channel id
+  <PEKO>     Peko name (must already be a member)
 
+```
+
+### `peko channel dm`
+
+```text
+Open a DM with a peko on another computer, or with a person
+
+Name the peko by its ID or PekoHub ID, or a person by `user:hub:<account>` (they get a message request first). Add a message to send it right away. Read replies with `peko channel peek <dm>`; post with `peko channel post <dm> me`.
+
+Usage: peko channel dm [OPTIONS] <PEKO> [MESSAGE]
+
+Arguments:
+  <PEKO>
+          `@owner/name` (a public peko), `peko:hub:<UUID>`, the bare PekoHub ID, or a person as `user:hub:<account>`
+
+  [MESSAGE]
+          Post this message right away
+
+Options:
+      --attach <PATH>
+          Attach a file (repeatable): at most 10 MB a file and 25 MB in all, since it travels through PekoHub
+```
+
+### `peko channel invitations`
+
+```text
+Groups on other computers that invited you
+
+Usage: peko channel invitations [OPTIONS]
+
+```
+
+### `peko channel join`
+
+```text
+Join a group: accept its invitation, or use an invite link (or a public group's ID) from PekoHub
+
+Usage: peko channel join [OPTIONS] <CHANNEL>
+
+Arguments:
+  <CHANNEL>  Channel id from `peko channel invitations`, an invite link, or a public group's ID
+
+```
+
+### `peko channel decline`
+
+```text
+Decline a group's invitation, or a person's message request
+
+Usage: peko channel decline [OPTIONS] <CHANNEL>
+
+Arguments:
+  <CHANNEL>  Channel id from `peko channel invitations` or `peko channel requests`
+
+```
+
+### `peko channel requests`
+
+```text
+People asking to DM you
+
+Usage: peko channel requests [OPTIONS]
+
+```
+
+### `peko channel accept`
+
+```text
+Accept a person's message request: the DM opens here and they are told; what they wrote arrives
+
+Usage: peko channel accept [OPTIONS] <CHANNEL>
+
+Arguments:
+  <CHANNEL>  Channel id from `peko channel requests`
+
+```
+
+### `peko channel block`
+
+```text
+Block a person: their requests, messages, and history requests are refused on every computer of your account
+
+Usage: peko channel block [OPTIONS] <WHO>
+
+Arguments:
+  <WHO>  A request's channel id, `user:hub:<account>`, or the account ID
+
+```
+
+### `peko channel unblock`
+
+```text
+Unblock a person
+
+Usage: peko channel unblock [OPTIONS] <WHO>
+
+Arguments:
+  <WHO>  `user:hub:<account>` or the account ID
+
+```
+
+### `peko channel blocked`
+
+```text
+The people you blocked
+
+Usage: peko channel blocked [OPTIONS]
+
+```
+
+### `peko channel register`
+
+```text
+Give a group an ID on PekoHub, or change who may find it
+
+Usage: peko channel register [OPTIONS] <CHANNEL>
+
+Arguments:
+  <CHANNEL>  The group's channel id (its home is this computer)
+
+Options:
+      --public                   Anyone with the ID may join; otherwise only with an invite link
+```
+
+### `peko channel link`
+
+```text
+Make an invite link to a registered group, or stop them all
+
+Usage: peko channel link [OPTIONS] <CHANNEL>
+
+Arguments:
+  <CHANNEL>  The group's channel id
+
+Options:
+      --days <DAYS>              How long the link works (1–30 days) [default: 7]
+      --revoke                   Stop every link to the group from working instead
 ```
 
 ## `peko model`
@@ -863,7 +1068,7 @@ Options:
       --spec <JSON>                    Optional capability and pricing descriptor as JSON
       --compat <JSON>                  Optional adapter compatibility hints as JSON
       --dry-run                        Print what would be added without touching the catalog or vault. Useful for double-checking `--key "$ENV_VAR"` expansions and `--credential-id` references before they land on disk
-      --note <TEXT>                    Phase 2 of `feature/multi-model-subagents`: attach a free-text note to the entry. Parent agents read this via the `ModelList` tool before choosing which model to spawn with — standardized `ModelSpec` flags cannot capture subjective annotations like "use it for cron". Empty string is rejected; pass no flag to leave the note unchanged on `edit`. Capped at 500 chars (enforced by the catalog)
+      --note <TEXT>                    A free-text note on the model that your pekos read when they choose a model for a task, for what the capability flags can't say (e.g. "cheap; use it for reminders"). At most 500 characters; an empty note is refused. Leave the flag out to keep the note unchanged on `edit`
 ```
 
 ### `peko model edit`
@@ -910,19 +1115,19 @@ Arguments:
 ## `peko quota`
 
 ```text
-Per-peko token quota management (F18)
+How many tokens and requests a peko may use
 
-Inspect or replace a peko's input / output / request limits. The daemon owns the live counters; the CLI is a thin IPC client.
+Show or change a peko's input, output, and request limits per cycle, and its spending budget.
 
 Examples: peko quota status my-peko peko quota set my-peko --input 1000000 --output 500000 --cycle daily peko quota reset my-peko
 
 Usage: peko quota [OPTIONS] <COMMAND>
 
 Commands:
-  list    Alias for `status` — `list` is the discoverable verb a user reaches for after seeing `principal list` / `model list`. We accept it instead of renaming `status` so existing scripts (`peko quota status <name>`) keep working
-  status  Show a principal's live quota counters and window
-  set     Replace a principal's quota configuration
-  reset   Force a fresh quota window (counters → 0)
+  list    Same as `status`
+  status  Show a peko's quota: what it has used this cycle, and its limits
+  set     Change a peko's quota
+  reset   Start a fresh quota cycle now (usage goes back to 0)
   help    Print this message or the help of the given subcommand(s)
 
 ```
@@ -930,7 +1135,7 @@ Commands:
 ### `peko quota list`
 
 ```text
-Alias for `status` — `list` is the discoverable verb a user reaches for after seeing `principal list` / `model list`. We accept it instead of renaming `status` so existing scripts (`peko quota status <name>`) keep working
+Same as `status`
 
 Usage: peko quota list [OPTIONS] <NAME>
 
@@ -938,15 +1143,15 @@ Arguments:
   <NAME>  Peko name (or peer id when `--peer` is set)
 
 Options:
-      --peer                     Query a peer's quota instead of a principal's
+      --peer                     Use a peer's quota (a person or peko that talks to your pekos) instead of a peko's
 ```
 
 ### `peko quota status`
 
 ```text
-Show a principal's live quota counters and window.
+Show a peko's quota: what it has used this cycle, and its limits.
 
-F20: pass `--peer` to query a peer's quota instead of a principal's. The `name` is then interpreted as a peer id.
+With `--peer`, `name` is a peer's id and their quota is shown.
 
 Usage: peko quota status [OPTIONS] <NAME>
 
@@ -956,17 +1161,17 @@ Arguments:
 
 Options:
       --peer
-          Query a peer's quota instead of a principal's
+          Use a peer's quota (a person or peko that talks to your pekos) instead of a peko's
 ```
 
 ### `peko quota set`
 
 ```text
-Replace a principal's quota configuration.
+Change a peko's quota.
 
-All four flags are optional; any flag you omit keeps its current value. Pass `--clear` to remove the quota entirely (the principal becomes unlimited).
+Every flag is optional; a flag you leave out keeps its current value. `--clear` removes the quota (the peko becomes unlimited).
 
-F20: pass `--peer` to set a peer's quota. The `name` is then interpreted as a peer id and the config is persisted to `<config_dir>/peers/<peer_id>/peer.toml`.
+With `--peer`, `name` is a peer's id and their quota is set.
 
 Usage: peko quota set [OPTIONS] <NAME>
 
@@ -987,19 +1192,25 @@ Options:
       --cycle <CYCLE>
           Reset cycle: hourly | daily | weekly | monthly
 
+      --budget <USD>
+          Spending budget per cycle, in US dollars (omit to keep current). Cost comes from the models' prices; a run stops when the cycle's spend reaches it
+
+      --no-budget
+          Remove the spending budget
+
       --clear
-          Remove the quota (principal becomes unlimited)
+          Remove the quota (the peko becomes unlimited)
 
       --peer
-          Set a peer's quota instead of a principal's
+          Set a peer's quota (a person or peko that talks to your pekos) instead of a peko's
 ```
 
 ### `peko quota reset`
 
 ```text
-Force a fresh quota window (counters → 0).
+Start a fresh quota cycle now (usage goes back to 0).
 
-F20: pass `--peer` to reset a peer's quota.
+With `--peer`, `name` is a peer's id and their usage is reset.
 
 Usage: peko quota reset [OPTIONS] <NAME>
 
@@ -1009,7 +1220,7 @@ Arguments:
 
 Options:
       --peer
-          Reset a peer's quota instead of a principal's
+          Reset a peer's usage (a person or peko that talks to your pekos) instead of a peko's
 ```
 
 ## `peko update`
@@ -1039,19 +1250,19 @@ Arguments:
 ## `peko audit`
 
 ```text
-Audit log: tail the JSONL or list in-memory events (ADR-046).
+What your pekos did: the audit log and each peko's tool ledger
 
-Two subcommands: peko audit tail [--since 1h] [--principal foo] [--limit N] [--follow] Reads `<data_dir>/runtime/audit/audit-YYYY-MM-DD.jsonl` directly. Survives daemon restarts. `--follow` is single-file (today's file). peko audit list [--principal foo] Sends an IPC query to the daemon and reads the in-memory ring buffer. Fast path for "what just happened this session"; never touches disk.
+peko audit tail [--since 1h] [--peko NAME] [--limit N] [--follow] Read the audit log files (kept across restarts). peko audit list [--peko NAME] Recent events since the daemon started. peko audit ledger NAME / peko audit verify NAME Every tool call a peko made, and a check that none was altered.
 
-Examples: peko audit tail --since 30m peko audit tail --principal alice --limit 20 peko audit list --type principal.config_drift
+Examples: peko audit tail --since 30m peko audit tail --peko alice --limit 20 peko audit list --type tool.call
 
 Usage: peko audit [OPTIONS] <COMMAND>
 
 Commands:
   tail    Print audit events from the JSONL file (durable history)
-  ledger  Show a principal's tool ledger (ADR-079): newest calls first
-  verify  Check a principal's tool ledger: its hash chain, the checkpoints in the global audit log, and every call against `tool.call`
-  list    Print a summary of in-memory audit events (this session)
+  ledger  Show every tool call a peko made, newest first
+  verify  Check that a peko's tool-call record is complete and unaltered
+  list    Summarize recent events since the daemon started
   help    Print this message or the help of the given subcommand(s)
 
 ```
@@ -1066,7 +1277,7 @@ Usage: peko audit tail [OPTIONS]
 Options:
       --since <SINCE>            Filter: only events at or after this many seconds ago. Examples: `--since 1h`, `--since 30m`, `--since 86400`
       --type <PREFIX>            Filter: only events whose `event_type` starts with this prefix
-  -p, --principal <PRINCIPAL>    Filter: only events whose caller matches this peko name (or whose `details.principal_name` matches)
+  -p, --peko <PEKO>              Only events about this peko
   -l, --limit <LIMIT>            Maximum number of events to print (newest first) [default: 100]
   -f, --follow                   Stream new events as they arrive (single-file; today's audit-YYYY-MM-DD.jsonl only). For multi-day follow use `tail -F <audit_dir>/audit-*.jsonl`
 ```
@@ -1074,7 +1285,7 @@ Options:
 ### `peko audit ledger`
 
 ```text
-Show a principal's tool ledger (ADR-079): newest calls first
+Show every tool call a peko made, newest first
 
 Usage: peko audit ledger [OPTIONS] <PEKO>
 
@@ -1085,7 +1296,7 @@ Options:
       --since <SINCE>            Only calls started at or after this time (`1h`, `2d`, RFC3339)
       --tool <TOOL>              Only calls to this tool (exact name, e.g. `Bash`)
       --session <SESSION>        Only calls in this session: a slug path (`/user-x/task`) or id
-      --actor <ACTOR>            Only calls acting for this actor address
+      --actor <ACTOR>            Only calls made while working for this address (e.g. `user:hub:<id>`)
       --outcome <OUTCOME>        Only calls with this outcome (`ok`, `error`, `floor_denied`, …, or `in_flight`)
       --call <CALL_ID>           Print one call in full: its records, parent, and children
   -l, --limit <LIMIT>            Maximum number of calls to print [default: 50]
@@ -1095,7 +1306,7 @@ Options:
 ### `peko audit verify`
 
 ```text
-Check a principal's tool ledger: its hash chain, the checkpoints in the global audit log, and every call against `tool.call`
+Check that a peko's tool-call record is complete and unaltered
 
 Usage: peko audit verify [OPTIONS] <PEKO>
 
@@ -1107,14 +1318,14 @@ Arguments:
 ### `peko audit list`
 
 ```text
-Print a summary of in-memory audit events (this session)
+Summarize recent events since the daemon started
 
 Usage: peko audit list [OPTIONS]
 
 Options:
-  -l, --limit <LIMIT>            Maximum number of events to consider (cap: ring buffer size) [default: 1000]
+  -l, --limit <LIMIT>            Maximum number of recent events to consider [default: 1000]
       --type <PREFIX>            Filter by event type prefix
-  -p, --principal <PRINCIPAL>    Filter by principal
+  -p, --peko <PEKO>              Only events about this peko
 ```
 
 ## `peko version`
@@ -1122,7 +1333,7 @@ Options:
 ```text
 Print the runtime version
 
-Distinct from `peko --version` (handled by clap). This subcommand exists for programmatic consumption — notably peko-desktop's SidecarSupervisor (ADR-043) — and supports `--json` output.
+Like `peko --version`, plus `--json` output for scripts and the desktop app.
 
 Examples: peko version peko version --json
 

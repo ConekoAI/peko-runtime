@@ -326,7 +326,7 @@ mod tests {
     }
 
     /// ADR-066 D1 (P2): presence = visibility = executability. A fresh
-    /// principal carries no grants (`principal.toml` never persists a
+    /// principal carries no grants (`peko.toml` never persists a
     /// `[capabilities]` section), so this path exercises exactly what a
     /// fresh principal gets: the full wire catalog, and `Bash` runs.
     #[tokio::test]

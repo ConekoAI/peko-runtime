@@ -143,7 +143,7 @@ impl PrincipalPackager {
         self.create_archive(&files, &manifest, &options).await
     }
 
-    /// The stripped seed TOML (ADR-056): a `principal.toml` whose
+    /// The stripped seed TOML (ADR-056): a `peko.toml` whose
     /// identity, boot state, owner, and grants are removed, so
     /// `peko create -s` mints a fresh identity owned by whoever grows it
     /// (ADR-081 D4).
@@ -245,11 +245,8 @@ impl PrincipalPackager {
         let mut config = self.config.clone();
         super::portable::rewrite_config(&mut config, &|s| self.exported(s));
         let config_toml = toml::to_string_pretty(&config)?;
-        files.insert(
-            "config/principal.toml".to_string(),
-            config_toml.into_bytes(),
-        );
-        manifest.add_file("config/principal.toml", &files["config/principal.toml"]);
+        files.insert("config/peko.toml".to_string(), config_toml.into_bytes());
+        manifest.add_file("config/peko.toml", &files["config/peko.toml"]);
         Ok(())
     }
 
@@ -570,7 +567,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(manifest.files.contains_key("config/principal.toml"));
+        assert!(manifest.files.contains_key("config/peko.toml"));
         assert!(manifest.files.contains_key("identity/keys.enc"));
         assert!(manifest.files.contains_key("roles/a.md"));
     }
@@ -669,7 +666,7 @@ mod tests {
     }
 
     /// ADR-056: the seed artifact is a plain TOML template — a
-    /// `principal.toml` stripped of `id`/`did`/`boot_state`. It is
+    /// `peko.toml` stripped of `id`/`did`/`boot_state`. It is
     /// not a package at all: inspectable with `cat`, groundable via
     /// `peko create -s`, and incapable of carrying keys or lived
     /// state.

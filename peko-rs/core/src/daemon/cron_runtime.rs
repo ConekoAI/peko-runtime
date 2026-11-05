@@ -105,7 +105,7 @@ impl DaemonCronAdapter {
         let principal =
             crate::daemon::cron_engine::resolve_principal(&self.principal_manager, principal_id)
                 .await
-                .ok_or_else(|| anyhow::anyhow!("Principal '{}' is not loaded", principal_id.0))?;
+                .ok_or_else(|| anyhow::anyhow!("Peko '{}' is not loaded", principal_id.0))?;
         Ok(self.path_resolver.cron_schedule(&principal.name().await))
     }
 
@@ -312,7 +312,7 @@ mod tests {
         root: &Path,
         name: &str,
     ) -> Arc<Principal> {
-        let roles = root.join("principals").join(name).join("roles");
+        let roles = root.join("pekos").join(name).join("roles");
         tokio::fs::create_dir_all(&roles).await.unwrap();
         tokio::fs::write(
             roles.join("primary.md"),

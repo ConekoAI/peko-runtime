@@ -1,6 +1,6 @@
 //! Exporting a seed (ADR-060): a peko's definition without its existence.
 //!
-//! `peko seed <name>` turns a `principal.toml` into a file PekoHub will
+//! `peko seed <name>` turns a `peko.toml` into a file PekoHub will
 //! publish and `peko create <name> -s <file>` will grow. Everything that
 //! belongs to this one peko — its identity, owner, grants, lifecycle,
 //! deployment state, and the operator's spend policy — is removed; the
@@ -31,13 +31,13 @@ pub const EXISTENCE_KEYS: &[&str] = &[
 /// peko's workspace.
 const LOCAL_KEYS: &[&str] = &["quota"];
 
-/// A seed from the text of a `principal.toml`.
+/// A seed from the text of a `peko.toml`.
 ///
 /// # Errors
 /// When the text is not TOML.
 pub fn seed_from_config(principal_toml: &str) -> Result<String> {
     let mut doc: toml::Table =
-        toml::from_str(principal_toml).context("principal.toml is not valid TOML")?;
+        toml::from_str(principal_toml).context("peko.toml is not valid TOML")?;
     for key in EXISTENCE_KEYS.iter().chain(LOCAL_KEYS) {
         doc.remove(*key);
     }
@@ -63,18 +63,17 @@ pub struct Seed {
     pub persona: Option<String>,
 }
 
-/// Parse a seed. It IS a `principal.toml` (plus a tolerated `persona`),
+/// Parse a seed. It IS a `peko.toml` (plus a tolerated `persona`),
 /// so `peko seed` output and hand-written files both read.
 ///
 /// # Errors
-/// When the text is not a valid `principal.toml`.
+/// When the text is not a valid `peko.toml`.
 pub fn parse_seed(text: &str) -> Result<Seed> {
     #[derive(serde::Deserialize)]
     struct Extras {
         persona: Option<String>,
     }
-    let config: PrincipalConfig =
-        toml::from_str(text).context("parse the seed as principal.toml")?;
+    let config: PrincipalConfig = toml::from_str(text).context("parse the seed as peko.toml")?;
     let extras: Extras = toml::from_str(text).context("parse the seed's persona")?;
     Ok(Seed {
         config,

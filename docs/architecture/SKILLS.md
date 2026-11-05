@@ -16,7 +16,7 @@ A **skill** is a reusable procedure a peko can load on demand: a Markdown
 file with a small YAML header, living in the peko's workspace:
 
 ```
-~/.peko/principals/<name>/skills/<skill-name>/SKILL.md
+~/.peko/pekos/<name>/skills/<skill-name>/SKILL.md
 ```
 
 That is the whole mechanism. Skills are *just files* — no registry, no

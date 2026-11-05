@@ -28,8 +28,8 @@ For the trust-and-audit posture that makes this safe, see
 ## Workspace Layout
 
 ```
-~/.peko/principals/<name>/
-├── principal.toml
+~/.peko/pekos/<name>/
+├── peko.toml
 ├── roles/<name>.md
 ├── POLICY.md                        # owner's rules for non-owner runs (ADR-078)
 ├── kb/                              # persistent knowledge base (ADR-055)
@@ -52,14 +52,14 @@ For the trust-and-audit posture that makes this safe, see
 ```
 
 The workspace is the Shared tier (packaged with the peko). Runtime state
-lives in the Local tier, `<data_dir>/principals/<name>/local/`: sessions
+lives in the Local tier, `<data_dir>/pekos/<name>/local/`: sessions
 (`sessions/`, with their `sessions.json` / `peers.json` index), cron
 (`cron/schedule.toml`, `cron/seeded_jobs.json`), plans, the tool ledger,
 caches and locks. It is never packaged.
 
 | Path                       | Contents                                                                  |
 |----------------------------|---------------------------------------------------------------------------|
-| `principal.toml`           | Owner, permissions, exposure, quota, root prompt                    |
+| `peko.toml`           | Owner, permissions, exposure, quota, root prompt                    |
 | `roles/<name>.md`         | Role prompts (per-peko) — T1 role bodies (ADR-064)                   |
 | `kb/`                      | Persistent knowledge base (ADR-055) — hot set: `MEMORY.md` + `index.md` + `CONVENTIONS.md` (pointer-only); everything else cold, read on demand, except targeted scope injections (D8): `groups/<channel>.md` for the bound channel, `roles/<name>.md` for the named role |
 | `POLICY.md`                | The owner's plain-language rules for non-owner runs (ADR-078 D7)          |
@@ -91,9 +91,9 @@ sugar over the workspace — the files are the truth, so manage them
 directly:
 
 ```
-ls ~/.peko/principals/<name>/{skills,mcp,hooks,plugins}/         # list
-cp -r ./my-skill ~/.peko/principals/<name>/skills/<id>/          # install
-rm -r ~/.peko/principals/<name>/skills/<id>                      # remove
+ls ~/.peko/pekos/<name>/{skills,mcp,hooks,plugins}/         # list
+cp -r ./my-skill ~/.peko/pekos/<name>/skills/<id>/          # install
+rm -r ~/.peko/pekos/<name>/skills/<id>                      # remove
 peko show                  # includes catalog summary
 ```
 
@@ -112,7 +112,7 @@ The legacy `peko ext *` command tree was retired in Phase 5.
 There are exactly two grounding paths, with two artifact shapes:
 
 - **Grow** — `peko create [-s <seed.toml>]`: a seed
-  is a **plain TOML file** (a `principal.toml` with `id`/`did`/
+  is a **plain TOML file** (a `peko.toml` with `id`/`did`/
   `boot_state` stripped). PekoHub distributes seeds outside the runtime;
   downloaded seeds ground with `create -s` and a freshly minted identity.
   Because the identity is always minted fresh, the artifact is a
@@ -205,9 +205,9 @@ If you have existing extensions installed under the legacy
 workspace by hand (the install CLI was removed in ADR-050):
 
 ```
-cp -r <skill-dir>     ~/.peko/principals/<name>/skills/<id>/      # SKILL.md inside
-cp <path>/server.json ~/.peko/principals/<name>/mcp/<id>/server.json
-cp <path>/hook.toml   ~/.peko/principals/<name>/hooks/<id>/hook.toml
+cp -r <skill-dir>     ~/.peko/pekos/<name>/skills/<id>/      # SKILL.md inside
+cp <path>/server.json ~/.peko/pekos/<name>/mcp/<id>/server.json
+cp <path>/hook.toml   ~/.peko/pekos/<name>/hooks/<id>/hook.toml
 ```
 
 Universal tools (`tools/<id>/manifest.yaml`) no longer load — they were

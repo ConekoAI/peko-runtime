@@ -25,21 +25,19 @@ use peko_core::principal::{
     PrincipalManager,
 };
 
-/// Subcommands for peko lifecycle management. Flattened to the top
-/// level (`peko create`, ...) since ADR-059.
+/// Subcommands for peko lifecycle management, flattened to the top
+/// level (`peko create`, ...).
 #[derive(Subcommand)]
 pub enum PrincipalCommands {
-    /// Create a new peko and block until it is alive (ADR-054)
+    /// Create a new peko and wait until it is ready
     ///
-    /// One command for the whole genesis pipeline: provisions the
-    /// workspace (P0), seeds the definition (P1 — from `--seed` when
-    /// given, defaults otherwise), makes sure the daemon is running
-    /// and knows the peko, schedules the genesis turn (P2), and
-    /// waits for the trunk's first self-turn to complete. Pass
-    /// `--detach` for fire-and-forget (scripts/CI).
+    /// Makes the peko's folder, writes its definition (from `--seed`, or
+    /// defaults), starts the daemon if needed, and waits while the peko
+    /// sets itself up on its first turn. Pass `--detach` to return right
+    /// away (for scripts).
     ///
-    /// Re-defining later = edit the peko's `principal.toml` and
-    /// `roles/root.md` directly; edits apply to the peko's next turn.
+    /// To change a peko later, edit its `peko.toml` and `roles/root.md`;
+    /// edits apply on its next turn.
     Create {
         /// Peko name
         name: String,
@@ -52,18 +50,14 @@ pub enum PrincipalCommands {
         #[arg(long, value_name = "MODEL_ID")]
         model: Option<String>,
 
-        /// Path to a seed `principal.toml` carrying the peko's
-        /// full definition: `[identity]`, `[intent]`, `preferred_model_id`,
+        /// Path to a seed: a `peko.toml` with the peko's definition —
+        /// `[identity]`, `[intent]`, `preferred_model_id`,
         /// `[[permissions]]`, `exposure`, `quota`, and an optional
-        /// inline `persona` (Markdown body for the root role, seeded
-        /// as `roles/root.md`). Unspecified fields take runtime defaults.
-        /// `id`, `did`, and `boot_state` in the seed are ignored —
-        /// a fresh identity is always generated. TOML note: top-level
-        /// keys (`preferred_model_id`, `persona`) must appear BEFORE
-        /// the first `[table]` header.
-        ///
-        /// A seed is DNA, not a template: the peko that grows from it
-        /// is never a copy of its source (ADR-060).
+        /// inline `persona` (Markdown for `roles/root.md`). Fields you
+        /// leave out take defaults. The new peko always gets its own
+        /// identity; `id`, `did`, and `boot_state` in the seed are
+        /// ignored. TOML note: top-level keys (`preferred_model_id`,
+        /// `persona`) must come BEFORE the first `[table]` header.
         #[arg(short = 's', long = "seed", value_name = "SEED_TOML")]
         seed: Option<String>,
 
@@ -85,26 +79,25 @@ pub enum PrincipalCommands {
         #[arg(long)]
         yes: bool,
 
-        /// Do not wait for the genesis turn — provision, seed, and
-        /// return. The genesis turn still fires (daemon boot pass or
-        /// the scheduled one-shot job).
+        /// Don't wait for the peko's first turn. It still runs, as soon
+        /// as the daemon gets to it.
         #[arg(long)]
         detach: bool,
 
-        /// How long to wait for the genesis turn before giving up
-        /// (seconds). The peko stays seeded either way — it will
-        /// genesis at the next daemon boot.
+        /// How long to wait for the peko's first turn, in seconds. The
+        /// peko is created either way; if this runs out, it finishes
+        /// setting up the next time the daemon starts.
         #[arg(long, value_name = "SECS", default_value_t = 300)]
         wait_timeout: u64,
     },
 
-    /// Register this peko for Hub access (private by default).
+    /// Put a peko online on PekoHub (private by default)
     Register {
         name: String,
         #[arg(long)]
         public: bool,
     },
-    /// Remove the peko's Hub route and keep it locally.
+    /// Take a peko off PekoHub; it stays on this computer
     Unregister { name: String },
     /// List pekos
     List,
@@ -125,9 +118,10 @@ pub enum PrincipalCommands {
         yes: bool,
     },
 
-    /// Export a peko to a `.peko` package (a full-existence
-    /// snapshot — sessions, authored cron schedule, plans, and
-    /// installed workspace tooling travel with it; ADR-056)
+    /// Save a peko to a `.peko` file, to back it up or move it
+    ///
+    /// The file holds everything: identity, definition, memory,
+    /// conversations, schedules, plans, and workspace tooling.
     Export {
         /// Peko name
         name: String,
@@ -138,8 +132,11 @@ pub enum PrincipalCommands {
     },
 
     /// Export a peko's seed: its definition without its identity,
-    /// owner, grants, or memory. Publish it on PekoHub, or grow a new
-    /// peko from it with `peko create <name> -s <file>` (ADR-060)
+    /// owner, permissions, or memory
+    ///
+    /// Share it on PekoHub, or start a new peko from it with
+    /// `peko create <name> -s <file>`. The new peko is its own peko,
+    /// not a copy.
     Seed {
         /// Peko name
         name: String,
@@ -162,9 +159,9 @@ pub enum PrincipalCommands {
         #[arg(short, long)]
         force: bool,
 
-        /// Import as a new actor: new keys, DID, and local ID. Use it to
-        /// import a copy of a peko this runtime already hosts (with
-        /// `--name` when the package's name is taken).
+        /// Import as a new peko with its own keys and IDs. Use it to
+        /// import a copy of a peko that already lives on this computer
+        /// (with `--name` when the name is taken).
         #[arg(long)]
         rotate_keys: bool,
 
@@ -178,13 +175,13 @@ pub enum PrincipalCommands {
         /// Peko name
         name: String,
 
-        /// Actor to grant permission to: `kind:local:<id>`, `kind:hub:<id>`,
-        /// or `public`
+        /// Who gets it: an address such as `user:hub:<account>` or
+        /// `peko:local:<id>`, or `public` for everyone
         subject: String,
 
-        /// Permission to grant (e.g. `chat`, `manage_settings`). `trusted` is
-        /// the owner's consent to give this actor's agents the full tool
-        /// surface, including the shell (ADR-078).
+        /// Permission to grant (e.g. `chat`, `manage_settings`).
+        /// `trusted` lets the peko use all its tools, including the
+        /// shell, when it works for this person.
         permission: String,
     },
 
@@ -200,9 +197,9 @@ pub enum PrincipalCommands {
 
     /// List the approval requests waiting for you, a peko's owner
     ///
-    /// A peko acting for someone else asks its owner before a sensitive
-    /// call its policy reviewer can't settle (ADR-078). Decide with
-    /// `peko approve` / `peko deny`.
+    /// When a peko works for someone other than you and wants to do
+    /// something sensitive that its POLICY.md doesn't settle, it asks you
+    /// first. Decide with `peko approve` / `peko deny`.
     Approvals {
         /// Peko name
         name: String,
@@ -233,7 +230,8 @@ pub enum PrincipalCommands {
         /// Peko name
         name: String,
 
-        /// ActorRef to revoke permission from
+        /// Whose permission to revoke: an address such as
+        /// `user:hub:<account>` or `peko:local:<id>`, or `public`
         subject: String,
 
         /// Permission to revoke
@@ -272,13 +270,11 @@ pub enum PrincipalCommands {
         jti: String,
     },
 
-    /// Show pekos whose `principal.toml` has changed since
-    /// the last daemon boot (ADR-046 drift detection).
+    /// Show pekos whose `peko.toml` has changed since the daemon
+    /// last started
     ///
-    /// Compares each peko's SHA-256 against the baseline file
-    /// the daemon wrote at the previous startup. Outputs the
-    /// drifted peko name(s) — line-level TOML diff is a
-    /// follow-up; this is the "something changed" canary.
+    /// Compares each file with the copy the daemon fingerprinted when
+    /// it started, and prints the names of pekos that changed.
     ///
     /// Useful in scripts:
     ///   peko diff && echo "config drift detected" || true
@@ -383,10 +379,10 @@ pub async fn handle_principal(
 }
 
 /// ADR-046: `peko diff` — show principals whose
-/// `principal.toml` has drifted since the last daemon boot.
+/// `peko.toml` has drifted since the last daemon boot.
 ///
 /// Reads the baseline at `<data_dir>/runtime/principal-hashes.json`,
-/// walks the principals dir, SHA-256s each `principal.toml`, and
+/// walks the principals dir, SHA-256s each `peko.toml`, and
 /// reports drifted entries. Empty baseline (first boot) → "no
 /// drift" rather than a flood of false positives.
 ///
@@ -419,7 +415,7 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
         _ => BTreeMap::new(),
     };
 
-    // Walk `<root>/<name>/principal.toml`. Same depth bounds as
+    // Walk `<root>/<name>/peko.toml`. Same depth bounds as
     // the daemon-side drift detector — we deliberately mirror that
     // shape so the CLI and the daemon agree on what's "a
     // principal". WalkDir over min_depth(2).max_depth(2) skips the
@@ -434,7 +430,10 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
         if !entry.file_type().is_file() {
             continue;
         }
-        if entry.file_name() != "principal.toml" {
+        let file_name = entry.file_name();
+        if file_name != peko_core::common::paths::PEKO_CONFIG_FILE
+            && file_name != peko_core::common::paths::LEGACY_PEKO_CONFIG_FILE
+        {
             continue;
         }
         let Some(principal_name) = entry
@@ -548,7 +547,7 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     Ok(())
 }
 
-/// Load a `--seed` file (`principal.toml` plus an optional `persona`), so
+/// Load a `--seed` file (`peko.toml` plus an optional `persona`), so
 /// exports round-trip: `peko seed` → edit → `peko create -s`.
 fn load_seed(path: &str) -> Result<peko_core::principal::seed::Seed> {
     let content = std::fs::read_to_string(path).with_context(|| format!("read seed {}", path))?;
@@ -607,8 +606,8 @@ async fn provision_principal(
     if shared_layout.config_file.exists() {
         if !force {
             anyhow::bail!(
-                "principal '{name}' already exists at {}.\n\
-                 Refusing to overwrite an existing principal.\n\
+                "peko '{name}' already exists at {}.\n\
+                 Refusing to overwrite an existing peko.\n\
                  To replace it, pass --force (destructive; see --help) or remove it first:\n  \
                  peko remove {name}\n  \
                  peko create {name} --model <MODEL_ID>",
@@ -619,8 +618,8 @@ async fn provision_principal(
         // Destructive --force: confirm unless --yes or non-interactive.
         if !yes && std::io::stdin().is_terminal() {
             let prompt = format!(
-                "DESTRUCTIVE: re-create principal '{name}'? This wipes its workspace, \
-                 roles/, memory/, and session history. There is no undo. Proceed?"
+                "DESTRUCTIVE: re-create peko '{name}'? This wipes its folder, \
+                 roles/, memory, and conversations. There is no undo. Proceed?"
             );
             if !confirm_prompt(&prompt)? {
                 println!("Create cancelled.");
@@ -804,7 +803,7 @@ async fn boot_principal(
             }
         }
     } else {
-        println!("Starting daemon (genesis needs it)…");
+        println!("Starting the daemon…");
         // Same defaults as `peko daemon start` (interval 5s, 50
         // reconnect attempts — see the Start command).
         service
@@ -835,7 +834,7 @@ async fn boot_principal(
         .await
         .context("failed to seed the genesis pipeline jobs")?;
     if !report.is_empty() {
-        println!("Genesis: {report}");
+        tracing::debug!("setup: {report}");
     }
 
     let state = match manager.get_by_name(name).await {
@@ -844,19 +843,20 @@ async fn boot_principal(
     };
 
     if detach {
+        let _ = state;
         println!(
-            "Boot state: {state:?} — detached. The genesis turn fires shortly; \
+            "Peko '{name}' is created and will set itself up shortly; \
              watch it with `peko log {name}`"
         );
         return Ok(());
     }
 
     // ── P2 wait: block until the genesis turn is done ───────────────
-    println!("Waiting for the genesis turn (the trunk's first self-turn)…");
+    println!("Waiting for '{name}' to set itself up (its first turn)…");
     let schedule_path = paths.resolver().cron_schedule(name);
     let config_path = paths.resolver().principal_layout(name).shared.config_file;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_timeout);
-    let state = loop {
+    loop {
         let scheduler = peko_cron::CronScheduler::new(&schedule_path)
             .with_context(|| format!("open cron schedule for '{name}'"))?;
         if genesis_completed(&scheduler)? {
@@ -864,21 +864,21 @@ async fn boot_principal(
             // Wait for both persisted writes, not this CLI's stale cache.
             let config: PrincipalConfig = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
             if config.boot_state() == peko_core::principal::config::BootState::Organized {
-                break config.boot_state();
+                break;
             }
         }
         if std::time::Instant::now() > deadline {
             anyhow::bail!(
-                "genesis turn did not complete within {wait_timeout}s. The peko is \
-                 fully seeded — it will genesis at the next daemon boot; watch with \
-                 `peko log {name}`"
+                "'{name}' did not finish setting up within {wait_timeout}s. The peko \
+                 is created and finishes setting up the next time the daemon \
+                 starts; watch with `peko log {name}`"
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    };
+    }
     println!(
-        "🎉 Peko '{name}' is alive (boot state: {state:?}). \
-         Talk to it: peko send {name} \"…\" — inspect it: peko log {name}"
+        "🎉 Peko '{name}' is ready. \
+         Talk to it: peko send {name} \"…\" — read along: peko log {name}"
     );
 
     Ok(())
@@ -895,8 +895,8 @@ fn genesis_completed(scheduler: &peko_cron::CronScheduler) -> Result<bool> {
         return Ok(true);
     }
     anyhow::bail!(
-        "genesis turn failed ({}): {}. Inspect the daemon log; restart the daemon \
-         to retry initialization",
+        "the peko's first turn failed ({}): {}. Check the daemon log; restart the daemon \
+         to try again",
         run.status,
         run.error
             .as_deref()
@@ -918,7 +918,7 @@ async fn list_principals(paths: &GlobalPaths, json: bool) -> Result<()> {
         let mut entries = tokio::fs::read_dir(root).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.is_dir() && path.join("principal.toml").exists() {
+            if path.is_dir() && peko_core::common::paths::peko_config_path(&path).exists() {
                 names.push(
                     path.file_name()
                         .unwrap_or_default()
@@ -992,7 +992,7 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
         // `agents` is an array of {name, description, prompt_path};
         // `persona` is the identity + intent block (Bug D, 2026-08-01
         // v2) so non-tech users can confirm the persona fields without
-        // parsing principal.toml by hand.
+        // parsing peko.toml by hand.
         //
         // `catalog` (ADR-047 §5.3) is the per-principal view of
         // installed tooling. `entries[]` is grouped by `kind` so a
@@ -1090,9 +1090,9 @@ async fn show_principal(name: &str, paths: &GlobalPaths, json: bool) -> Result<(
 
     println!("Peko: {}", display_name);
     let config = principal.config.read().await;
-    println!("  Local ID: principal:local:{}", principal.id.0);
+    println!("  Local ID: peko:local:{}", principal.id.0);
     if let Some(hub) = &hub_id {
-        println!("  Hub ID: principal:hub:{hub}");
+        println!("  Hub ID: peko:hub:{hub}");
     }
     println!(
         "  Registration: {}",
@@ -1213,13 +1213,11 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
     }
 }
 
-/// `peko seed` — reads the peko's `principal.toml` directly; the daemon
+/// `peko seed` — reads the peko's `peko.toml` directly; the daemon
 /// need not be running.
 fn export_seed(name: &str, output: Option<String>, paths: &GlobalPaths) -> Result<()> {
-    let config_path = paths
-        .principals_root_dir()
-        .join(name)
-        .join("principal.toml");
+    let config_path =
+        peko_core::common::paths::peko_config_path(&paths.principals_root_dir().join(name));
     let config = std::fs::read_to_string(&config_path).with_context(|| {
         format!(
             "no peko named '{name}' (looked for {})",
@@ -1451,10 +1449,10 @@ async fn list_approvals(name: &str, json: bool) -> Result<()> {
                 println!("No approval requests are waiting for '{name}'.");
             } else {
                 for a in &approvals {
-                    let who = a
-                        .actor_name
-                        .as_deref()
-                        .map_or_else(|| a.actor.clone(), |n| format!("{n} ({})", a.actor));
+                    let who = a.actor_name.as_deref().map_or_else(
+                        || super::shown_address(&a.actor),
+                        |n| format!("{n} ({})", super::shown_address(&a.actor)),
+                    );
                     println!("{}  {who} [{}] wants {}", a.id, a.trust, a.summary);
                     println!("    reviewer: {}", a.reason);
                     println!("    expires {}", a.expires_at);
@@ -1572,7 +1570,10 @@ async fn list_permissions(name: &str) -> Result<()> {
             for grant in permissions {
                 println!(
                     "  {:?} for {} (granted by {} at {})",
-                    grant.permission, grant.subject, grant.granted_by, grant.granted_at
+                    grant.permission,
+                    super::shown_address(&grant.subject.to_string()),
+                    super::shown_address(&grant.granted_by.to_string()),
+                    grant.granted_at
                 );
             }
             Ok(())
@@ -2260,7 +2261,7 @@ mod tests {
             "create",
             "scout",
             "-s",
-            "/tmp/scout.principal.toml",
+            "/tmp/scout.peko.toml",
             "--detach",
         ])
         .expect("should parse create with -s seed");
@@ -2268,7 +2269,7 @@ mod tests {
         match cli.command {
             Commands::Peko(PrincipalCommands::Create { name, seed, .. }) => {
                 assert_eq!(name, "scout");
-                assert_eq!(seed.as_deref(), Some("/tmp/scout.principal.toml"));
+                assert_eq!(seed.as_deref(), Some("/tmp/scout.peko.toml"));
             }
             _other => panic!("expected flattened top-level create command"),
         }
@@ -2280,14 +2281,14 @@ mod tests {
     fn principal_create_seed_aliases_removed() {
         for flag in ["-s", "--seed"] {
             let cli =
-                Cli::try_parse_from(["peko", "create", "scout", flag, "/tmp/scout.principal.toml"])
+                Cli::try_parse_from(["peko", "create", "scout", flag, "/tmp/scout.peko.toml"])
                     .unwrap_or_else(|e| panic!("`{flag}` should parse as the seed flag: {e}"));
 
             match cli.command {
                 Commands::Peko(PrincipalCommands::Create { seed, .. }) => {
                     assert_eq!(
                         seed.as_deref(),
-                        Some("/tmp/scout.principal.toml"),
+                        Some("/tmp/scout.peko.toml"),
                         "`{flag}` must bind the seed field"
                     );
                 }
@@ -2297,10 +2298,8 @@ mod tests {
 
         for flag in ["-f", "--file"] {
             assert!(
-                Cli::try_parse_from(
-                    ["peko", "create", "scout", flag, "/tmp/scout.principal.toml",]
-                )
-                .is_err(),
+                Cli::try_parse_from(["peko", "create", "scout", flag, "/tmp/scout.peko.toml",])
+                    .is_err(),
                 "retired alias `{flag}` must no longer parse"
             );
         }
@@ -2539,11 +2538,11 @@ updated_at = "2026-01-01T00:00:00Z"
             "destructive --force must remove the prior peko's on-disk state"
         );
 
-        // And a fresh principal.toml must be in place — the new
+        // And a fresh peko.toml must be in place — the new
         // principal really did get created.
         assert!(
             shared.config_file.exists(),
-            "destructive --force must end with a fresh principal.toml"
+            "destructive --force must end with a fresh peko.toml"
         );
     }
 

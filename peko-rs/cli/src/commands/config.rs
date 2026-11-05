@@ -23,7 +23,7 @@ pub enum ConfigCommands {
     /// Initialize a new configuration
     Init {
         /// Output file
-        #[arg(short, long, default_value = "peko.toml")]
+        #[arg(short, long, default_value = "runtime.toml")]
         output: String,
         /// Template to use (minimal, full)
         #[arg(short, long, default_value = "minimal")]
@@ -218,18 +218,18 @@ pub async fn handle_config(
 // Config templates
 // ---------------------------------------------------------------------------
 //
-// The daemon reads `peko.toml` from the config dir (`$PEKO_HOME` or
+// The daemon reads `runtime.toml` from the config dir (`$PEKO_HOME` or
 // `~/.peko`); the only block it consumes today is `[provider.retry]`.
 // Models and API keys live in the catalog + vault (`peko model add
-// --key ...`), per-peko settings in each peko's `principal.toml`, and
+// --key ...`), per-peko settings in each peko's `peko.toml`, and
 // session-compaction tuning in the `[compaction]` block of
 // `~/.peko/config.toml`. Templates carry comments, so they are string
 // constants rather than `toml::Value` builders.
 
-const MINIMAL_CONFIG_TEMPLATE: &str = r#"# Peko daemon configuration (peko.toml)
+const MINIMAL_CONFIG_TEMPLATE: &str = r#"# Peko runtime configuration (runtime.toml)
 # Everything here is optional — the daemon boots with built-in defaults.
 # Models/keys: `peko model add --template <id> --model <wire-id> --key "$KEY"`.
-# Per-peko settings: the peko's own principal.toml.
+# Per-peko settings: the peko's own peko.toml.
 
 [provider.retry]
 max_retries = 5          # transport-level retries for transient errors
@@ -241,17 +241,17 @@ max_attempts = 8         # total transport+engine attempts (shared budget)
 
 const FULL_CONFIG_TEMPLATE: &str = r#"# Peko configuration — two files, two jobs:
 #
-#   ~/.peko/peko.toml     — daemon config; only [provider.retry] is consumed
+#   ~/.peko/runtime.toml  — runtime config; only [provider.retry] is consumed
 #   ~/.peko/config.toml   — session compaction tuning ([compaction] block)
 #                           and `peko config get/set` scratch space
 #
 # Everything else lives outside both files:
 #   models + API keys ... `peko model add` (catalog: ~/.peko/models.toml;
 #                         keys: OS keychain vault via `peko credential set`)
-#   per-peko settings ... the peko's principal.toml (quota, capabilities,
+#   per-peko settings ... the peko's peko.toml (quota, capabilities,
 #                         routing) — edit directly or via `peko quota set`
 
-# ── peko.toml ─────────────────────────────────────────────────────────
+# ── runtime.toml ──────────────────────────────────────────────────────
 
 [provider.retry]
 max_retries = 5

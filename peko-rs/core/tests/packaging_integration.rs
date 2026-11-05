@@ -22,7 +22,7 @@ async fn snapshot_tar_lists_flat_manifest_and_workspace_files() {
     let listing = String::from_utf8_lossy(&output.stdout);
     for file in [
         "manifest.toml",
-        "config/principal.toml",
+        "config/peko.toml",
         "identity/did.json",
         "identity/keys.enc",
         "skills/skill-one/SKILL.md",

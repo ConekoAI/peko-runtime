@@ -322,7 +322,7 @@ mod tests {
             .with_channel_port(channel_port.clone()),
         );
 
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let roles_dir = workspace.join("boss").join("roles");
         tokio::fs::create_dir_all(&roles_dir).await.unwrap();

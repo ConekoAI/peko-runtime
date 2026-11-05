@@ -810,7 +810,7 @@ fn format_custom_section(name: &str, text: &str) -> String {
 }
 
 /// ADR-052 D4 (T0): the principal's `[identity]` + `[intent]` from
-/// `principal.toml`, rendered by the core-side
+/// `peko.toml`, rendered by the core-side
 /// `WorkspaceIdentityPromptHandler` into the `identity` prompt section.
 /// Empty text (no handler, missing file, all fields empty) → no
 /// section (presence = visibility).
@@ -895,7 +895,7 @@ fn format_conventions_section(hot: &HotKb) -> String {
         return String::new();
     }
     format!(
-        "## Principal conventions (kb/CONVENTIONS.md)\n\n\
+        "## Conventions (kb/CONVENTIONS.md)\n\n\
          The shared behavioral rulebook for every agent in this \
          principal — yours to revise in place.\n\n\
          {trimmed}\n"
@@ -2215,7 +2215,7 @@ mod tests {
         let mut ctx = empty_ctx();
         ctx.workspace = dir.path().to_path_buf();
         let rendered = format_conventions_section(&hot(&ctx));
-        assert!(rendered.starts_with("## Principal conventions (kb/CONVENTIONS.md)"));
+        assert!(rendered.starts_with("## Conventions (kb/CONVENTIONS.md)"));
         assert!(rendered.contains("Journal"));
     }
 

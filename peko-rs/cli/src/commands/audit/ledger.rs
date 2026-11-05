@@ -41,7 +41,7 @@ fn target(paths: &GlobalPaths, peko: &str) -> Result<Target> {
     let principal_id = config
         .id
         .map(|id| id.0)
-        .with_context(|| format!("'{peko}' has no principal id yet"))?;
+        .with_context(|| format!("'{peko}' has no id yet; it is still being set up"))?;
     Ok(Target {
         principal_id,
         ledger_dir: layout.local.ledger_dir,
@@ -239,7 +239,7 @@ pub fn verify(paths: &GlobalPaths, peko: &str, json: bool) -> Result<()> {
             println!("   params differ between the logs: {id}");
         }
         println!(
-            "   Tamper evidence only: anyone who can write both logs can rewrite both (ADR-079 D5)."
+            "   This shows tampering, it can't prevent it: anyone who can write both logs can rewrite both."
         );
     }
     if !report.is_intact() {

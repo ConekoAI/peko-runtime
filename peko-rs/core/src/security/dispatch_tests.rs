@@ -108,7 +108,7 @@ async fn a_trusted_run_cannot_read_the_runtimes_conversation_records() {
         .dispatcher()
         .set_policy_gate(FakeGate::new(Verdict::Allow));
     let dir = tempfile::tempdir().unwrap();
-    let sessions = dir.path().join("data/principals/other/local/sessions");
+    let sessions = dir.path().join("data/pekos/other/local/sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     let log = sessions.join("s.jsonl");
     std::fs::write(&log, "{\"text\":\"private\"}").unwrap();

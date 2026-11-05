@@ -163,7 +163,7 @@ impl Fixture {
         let tool_runtime = ToolRuntime::with_workspace(path_resolver.clone(), temp.path())
             .await
             .expect("tool runtime should initialize");
-        let workspace = temp.path().join("principals");
+        let workspace = temp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let (resolver, _adapter) = LlmResolver::mock(
             peko_providers::MockAdapter::new(),
@@ -424,7 +424,7 @@ async fn three_local_principals_can_send_and_thread_replies_without_a_hub() {
     fx.connect(); // local directory; the Hub fallback panics if called
     let third = create_test_principal(
         &fx.manager,
-        &fx._temp.path().join("principals"),
+        &fx._temp.path().join("pekos"),
         "third",
         ActorRef::Public,
     )

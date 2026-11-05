@@ -138,14 +138,14 @@ remains dormant scaffolding.
 ### 2.2 Standing named children
 
 > **Removed 2026-09-12.** The runtime no longer provisions declared
-> children; `[children]` in `principal.toml` is parsed only so old files
+> children; `[children]` in `peko.toml` is parsed only so old files
 > load, and named at load time as ignored. Sessions are spawned on demand
 > with the `Agent` tool; ingress peers get standing conversation children
 > automatically, and the only other auto-created nodes are `/tmp` and
 > `/trash` (`principal::default_nodes`). The original design follows.
 
 **(implemented — Phase 2 of the paradigm sprint, 2026-08-15)** A
-principal declares standing first-level children in `principal.toml`:
+principal declares standing first-level children in `peko.toml`:
 
 ```toml
 [children.memory]
@@ -441,7 +441,7 @@ self-triggering root will happily burn tokens reorganizing memory at
 3am. The instruments exist — `budget_per_cycle` (mid-stream rolling
 cap), `cost_per_call_max` (spawn pre-flight), per-principal quota — and
   should be wired as the supervision loop's ceiling from day one. Note
-  they are *per-principal* (`quota_state.json` next to `principal.toml`);
+  they are *per-principal* (`quota_state.json` next to `peko.toml`);
   nothing attributes spend to a session or subtree (§5).
 
 ## 5. Supervision: what root can see and do today

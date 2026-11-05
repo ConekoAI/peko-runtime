@@ -96,7 +96,7 @@ fn principal_create_list_show() {
     common::agent::seed_mock_provider_in_catalog(cli.home(), "http://127.0.0.1:9/v1");
 
     // Create a Principal — provisions the workspace, `agents/primary.md`,
-    // the kb scaffold (ADR-055), identity, and `principal.toml`; the
+    // the kb scaffold (ADR-055), identity, and `peko.toml`; the
     // `--detach` form returns once the daemon sidecar has the principal.
     // 30s budget: with no daemon up, create spawns the sidecar first.
     let (create_res, _, _) = run_with_timeout(
@@ -239,11 +239,11 @@ fn config_init_creates_config_file() {
     assert_ok(&out, &err, &status);
 
     // PekoCli isolates the subprocess CWD to the temp HOME, so `config init`
-    // should have written peko.toml there rather than the project root.
-    let created = cli.home().join("peko.toml");
+    // should have written runtime.toml there rather than the project root.
+    let created = cli.home().join("runtime.toml");
     assert!(
         created.exists(),
-        "config init should create peko.toml in isolated CWD ({}): {out}",
+        "config init should create runtime.toml in isolated CWD ({}): {out}",
         created.display()
     );
     assert!(

@@ -23,39 +23,34 @@ use std::str::FromStr;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum QuotaCommands {
-    /// Alias for `status` — `list` is the discoverable verb a user
-    /// reaches for after seeing `principal list` / `model list`. We
-    /// accept it instead of renaming `status` so existing scripts
-    /// (`peko quota status <name>`) keep working.
+    /// Same as `status`.
     List {
         /// Peko name (or peer id when `--peer` is set)
         name: String,
-        /// Query a peer's quota instead of a principal's
+        /// Use a peer's quota (a person or peko that talks to your
+        /// pekos) instead of a peko's
         #[arg(long)]
         peer: bool,
     },
 
-    /// Show a principal's live quota counters and window.
+    /// Show a peko's quota: what it has used this cycle, and its limits.
     ///
-    /// F20: pass `--peer` to query a peer's quota instead of a
-    /// principal's. The `name` is then interpreted as a peer id.
+    /// With `--peer`, `name` is a peer's id and their quota is shown.
     Status {
         /// Peko name (or peer id when `--peer` is set)
         name: String,
-        /// Query a peer's quota instead of a principal's
+        /// Use a peer's quota (a person or peko that talks to your
+        /// pekos) instead of a peko's
         #[arg(long)]
         peer: bool,
     },
 
-    /// Replace a principal's quota configuration.
+    /// Change a peko's quota.
     ///
-    /// All four flags are optional; any flag you omit keeps its
-    /// current value. Pass `--clear` to remove the quota entirely
-    /// (the principal becomes unlimited).
+    /// Every flag is optional; a flag you leave out keeps its current
+    /// value. `--clear` removes the quota (the peko becomes unlimited).
     ///
-    /// F20: pass `--peer` to set a peer's quota. The `name` is then
-    /// interpreted as a peer id and the config is persisted to
-    /// `<config_dir>/peers/<peer_id>/peer.toml`.
+    /// With `--peer`, `name` is a peer's id and their quota is set.
     Set {
         /// Peko name (or peer id when `--peer` is set)
         name: String,
@@ -79,21 +74,23 @@ pub enum QuotaCommands {
         /// Remove the spending budget
         #[arg(long)]
         no_budget: bool,
-        /// Remove the quota (principal becomes unlimited)
+        /// Remove the quota (the peko becomes unlimited)
         #[arg(long)]
         clear: bool,
-        /// Set a peer's quota instead of a principal's
+        /// Set a peer's quota (a person or peko that talks to your
+        /// pekos) instead of a peko's
         #[arg(long)]
         peer: bool,
     },
 
-    /// Force a fresh quota window (counters → 0).
+    /// Start a fresh quota cycle now (usage goes back to 0).
     ///
-    /// F20: pass `--peer` to reset a peer's quota.
+    /// With `--peer`, `name` is a peer's id and their usage is reset.
     Reset {
         /// Peko name (or peer id when `--peer` is set)
         name: String,
-        /// Reset a peer's quota instead of a principal's
+        /// Reset a peer's usage (a person or peko that talks to your
+        /// pekos) instead of a peko's
         #[arg(long)]
         peer: bool,
     },

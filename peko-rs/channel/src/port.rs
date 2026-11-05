@@ -1363,7 +1363,7 @@ pub enum ChannelError {
     /// Fan-out cap exceeded. PR-1: hard cap of 8 principal members per
     /// channel (ADR-049 Phase 4: user members are uncapped — they add
     /// no per-post fan-out cost; see `store::FAN_OUT_CAP`).
-    #[error("fan-out cap exceeded ({current}); max 8 principal members per channel")]
+    #[error("fan-out cap exceeded ({current}); max 8 pekos per channel")]
     FanOutCap { current: usize },
 
     /// Generic adapter-level error. Avoid for new code; prefer a

@@ -153,7 +153,7 @@ impl CronEngine {
         let principal_name = self
             .principal_name_for(principal_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("principal '{principal_id}' not found on disk"))?;
+            .ok_or_else(|| anyhow::anyhow!("peko '{principal_id}' not found on disk"))?;
         let path = self
             .authority
             .local_cron_schedule_runtime_for_name(&principal_name)
@@ -194,7 +194,7 @@ impl CronEngine {
     /// **Phase B.** The manager stores `Principal`s keyed by an
     /// internal generated `PrincipalId`, but the wire identity
     /// (`CronJob::principal_id`, `ActorRef::Principal`, on-disk
-    /// `principal.toml`'s `did` field) is the DID. The two are not
+    /// `peko.toml`'s `did` field) is the DID. The two are not
     /// the same in the freshly-created case, so we try both lookups:
     /// id first (the manager's primary key), then DID (the wire
     /// identity that cron jobs carry).
@@ -922,7 +922,7 @@ impl CronEngine {
 
         let principal = resolve_principal(pm, &job.principal_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("Principal '{}' not loaded", job.principal_id.0))?;
+            .ok_or_else(|| anyhow::anyhow!("Peko '{}' not loaded", job.principal_id.0))?;
 
         // Validate the target. `None` (default) and "trunk" are the
         // same destination since Phase 7; the DTO deserializer and
@@ -1059,7 +1059,7 @@ impl CronEngine {
             Ok(response) => Ok(("success".to_string(), Some(response.content))),
             Err(e) => Ok((
                 "failed".to_string(),
-                Some(format!("Principal trunk execution error: {e}")),
+                Some(format!("Scheduled turn failed: {e}")),
             )),
         }
     }
@@ -1151,7 +1151,7 @@ impl CronEngine {
                 return Ok((
                     "failed".to_string(),
                     None,
-                    Some(format!("Principal '{}' not loaded", job.principal_id.0)),
+                    Some(format!("Peko '{}' not loaded", job.principal_id.0)),
                 ));
             }
         };
@@ -1721,8 +1721,7 @@ mod tests {
     async fn first_open_send_recovery_unblocks_fires_and_never_reaps_live_alias_runs() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let did = PrincipalId::from_did(&principal.did().await);
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -1778,8 +1777,7 @@ mod tests {
     async fn first_open_untracked_spawn_recovery_unblocks_tools_and_preserves_live_runs() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let did = PrincipalId::from_did(&principal.did().await);
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -1839,8 +1837,7 @@ mod tests {
     async fn attached_task_restart_recovery_preserves_partial_effects_and_unblocks_future_ticks() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let did = PrincipalId::from_did(&principal.did().await);
         let resolver = PathResolver::with_dirs(
             tmp.path().to_path_buf(),
@@ -1991,7 +1988,7 @@ mod tests {
             .await
             .expect("tool runtime should initialize");
 
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let catalog_path = tmp.path().join("models.toml");
@@ -2015,7 +2012,7 @@ mod tests {
         name: &str,
     ) -> Arc<crate::principal::Principal> {
         // Phase A: agents live in the Shared tier
-        // (`{config_dir}/principals/{name}/agents`). In tests the
+        // (`{config_dir}/pekos/{name}/agents`). In tests the
         // `workspace` passed in is the Shared principal root
         // (`{tmp}/principals`), so `agents` is just one join below.
         let roles_dir = workspace.join(name).join("roles");
@@ -2040,7 +2037,7 @@ mod tests {
             owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig {
                 display_name: Some(name.to_string()),
-                description: Some(format!("The {name} Principal")),
+                description: Some(format!("The {name} peko")),
                 avatar: None,
             },
             intent: PrincipalIntentConfig::default(),
@@ -2138,7 +2135,7 @@ mod tests {
                 .is_none());
             assert_eq!(principal.config.read().await.boot_state(), expected_state);
             let persisted: PrincipalConfig = toml::from_str(
-                &std::fs::read_to_string(principal.workspace_path.join("principal.toml")).unwrap(),
+                &std::fs::read_to_string(principal.workspace_path.join("peko.toml")).unwrap(),
             )
             .unwrap();
             assert_eq!(persisted.boot_state(), expected_state);
@@ -2157,7 +2154,7 @@ mod tests {
     async fn test_check_and_run_executes_principal_job() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
         let idle = Arc::new(IdleDetector::new());
@@ -2255,7 +2252,7 @@ mod tests {
             .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(llm),
         );
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "patient").await;
         let resolver = crate::common::paths::PathResolver::with_dirs(
@@ -2344,7 +2341,7 @@ mod tests {
             .with_tooling(tool_runtime.tooling().clone())
             .with_resolver(llm),
         );
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "hush").await;
         let resolver = crate::common::paths::PathResolver::with_dirs(
@@ -2441,7 +2438,7 @@ mod tests {
     async fn quiet_fires_wait_for_a_quiet_stretch() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "sleepy").await;
         let idle = Arc::new(IdleDetector::new());
         let talked = Utc::now() - Duration::hours(1);
@@ -2506,7 +2503,7 @@ mod tests {
     async fn idle_job_fires_once_per_idle_stretch() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "dozy").await;
         let idle = Arc::new(IdleDetector::new());
         let now = Utc::now();
@@ -2678,7 +2675,7 @@ mod tests {
 
         // Phase A: build a resolver pointing at the test tmp so the
         // engine derives per-principal schedule files at
-        // `<tmp>/principals/{name}/local/cron/...`.
+        // `<tmp>/pekos/{name}/local/cron/...`.
         let cron_resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
@@ -2779,7 +2776,7 @@ mod tests {
 
         // Phase A: build a path resolver pointing at the test's
         // tmp dir so the cron engine derives per-principal schedule
-        // files at `<tmp>/principals/{name}/local/cron/...`.
+        // files at `<tmp>/pekos/{name}/local/cron/...`.
         let cron_resolver = crate::common::paths::PathResolver::with_dirs(
             tmp.path().to_path_buf(),
             tmp.path().join("data"),
@@ -2886,7 +2883,7 @@ mod tests {
             .with_resolver(resolver),
         );
 
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
@@ -3044,7 +3041,7 @@ mod tests {
             .with_tooling(core.clone())
             .with_resolver(resolver),
         );
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "limited-cron").await;
         principal.config.write().await.governance.max_running_agents =
             std::num::NonZeroUsize::new(1).unwrap();
@@ -3175,7 +3172,7 @@ mod tests {
             .with_resolver(resolver),
         );
 
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
         let principal = create_test_principal(&manager, &workspace, "crony").await;
         let owner = ActorRef::User("test-owner".into());
@@ -3428,8 +3425,7 @@ mod tests {
             )
             .with_resolver(llm_resolver),
         );
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let core = crate::tools::runtime::ToolingRuntime::standalone();
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -3571,7 +3567,7 @@ mod tests {
             )
             .with_resolver(llm_resolver),
         );
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
         // ADR-066 P2: no capability gate — the stub tool executes by
         // presence. The engine now awaits the tool's outcome, and this
@@ -3714,7 +3710,7 @@ mod tests {
             )
             .with_resolver(llm_resolver),
         );
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
         // Grant the tool catalog so the F37 gate lets the stub run and
         // the failure comes from the tool body, not the gate.
@@ -3851,8 +3847,7 @@ mod tests {
             )
             .with_resolver(llm_resolver),
         );
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let core = crate::tools::runtime::ToolingRuntime::standalone();
         core.catalog()
             .register(
@@ -3914,7 +3909,7 @@ mod tests {
     async fn execute_job_for_id_fires_job_for_loaded_principal() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
         let idle = Arc::new(IdleDetector::new());
@@ -4019,7 +4014,7 @@ mod tests {
     async fn execute_job_for_id_returns_error_for_unknown_job() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
         let idle = Arc::new(IdleDetector::new());
@@ -4056,7 +4051,7 @@ mod tests {
     async fn check_and_run_does_not_block_on_slow_send_job() {
         let tmp = TempDir::new().unwrap();
         let manager = setup_principal_manager(&tmp).await;
-        let workspace = tmp.path().join("principals");
+        let workspace = tmp.path().join("pekos");
         let principal = create_test_principal(&manager, &workspace, "crony").await;
 
         let idle = Arc::new(IdleDetector::new());
@@ -4137,8 +4132,7 @@ mod tests {
         Arc<crate::principal::Principal>,
     ) {
         let manager = setup_principal_manager(tmp).await;
-        let principal =
-            create_test_principal(&manager, &tmp.path().join("principals"), "crony").await;
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "crony").await;
         let tooling = manager.tooling();
         tooling.services().set_channel_port(port);
         let resolver = PathResolver::with_dirs(

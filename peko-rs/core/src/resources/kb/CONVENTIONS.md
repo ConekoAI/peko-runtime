@@ -1,8 +1,7 @@
-# Principal conventions
+# Conventions
 
-This file is the shared behavioral rulebook for EVERY agent in this
-principal — it rides in every prompt, every turn (ADR-052 T0
-conventions layer). Revise in place; when a convention changes,
+This file is the shared behavioral rulebook for EVERY agent this peko
+runs — it is part of every prompt, every turn. Revise in place; when a convention changes,
 change it here, not in a role file.
 
 Conventions of the house:

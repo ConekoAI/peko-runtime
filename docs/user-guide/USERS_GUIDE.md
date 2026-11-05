@@ -75,46 +75,48 @@ To build from source instead, see the [README](../../README.md).
 
 ### Pekos
 
-A peko is the top-level actor you create and talk to. It has:
+A peko is the AI agent you create and talk to. It has:
 
 - **An identity.** A local address such as
-  `principal:local:prin_27c5ce3ed64141eab1b4fedc96cdd534`, a signing key
-  (`did:key:…`), and an optional PekoHub registration. `peko show` prints
-  all three.
+  `peko:local:prin_27c5ce3ed64141eab1b4fedc96cdd534`, a signing key
+  (`did:key:…`), and an optional PekoHub ID. `peko show` prints all three.
 - **An owner.** The person it works for. On your machine that is you, as
   `user:local`.
-- **A definition**, in `principal.toml`.
-- **Roles** in `roles/`: Markdown templates that its agents run as.
+- **A definition**, in `peko.toml`.
+- **Roles** in `roles/`: Markdown files describing the jobs it does.
+- **Rules** in `POLICY.md`.
 - **Memory** in `kb/`.
 - **Tooling**: built-in tools, plus skills, MCP servers and hooks in its
-  workspace.
+  folder.
 
-The word "principal" still appears in file and directory names
-(`principal.toml`, `~/.peko/principals/`) and in addresses. It means the
-same thing as peko.
+A peko's folder is `~/.peko/pekos/<name>/`; `peko show` prints it.
 
 ### Roles and agents
 
-A **role** is a Markdown file under `roles/`. An **agent** is a live run of
-the model working as one role in one session. Every peko starts with two
+A **role** is a Markdown file under `roles/` that describes one job. Who the
+peko is (its name, voice, values) comes from `peko.toml` and
+`kb/CONVENTIONS.md`, and applies to every role. Every peko starts with these
 roles:
 
-- `roles/root.md`: the root role. It supervises the peko's standing work
-  and holds its conversations. Edit it to change how your peko behaves: the
-  edit applies to the peko's next turn.
-- `roles/primary.md`: a general-purpose role the peko can start helper
-  agents as.
+- `roles/conversation.md`: how it talks with you and with other people.
+- `roles/root.md`: how it looks after its ongoing work: plans, schedules,
+  and check-ins.
+- `roles/worker.md`: how it carries out a task it hands to a helper.
+- `roles/primary.md`: a general-purpose assistant role.
+
+Edit a role to change how your peko does that job; the edit applies on its
+next turn.
 
 Add a role by dropping a new `roles/<name>.md` file in place. The peko sees
 it in its role catalog on its next turn and can delegate work to it with the
-`Agent` tool.
+`Agent` tool. An **agent** is the model at work in one of these roles.
 
 ### Conversations and the log
 
 You talk to a peko with `peko send`, and read the conversation with
 `peko log`. Each person who talks to a peko gets their own conversation.
-Behind the scenes a conversation is a session, which is stored, paged and
-compacted automatically. There is deliberately no session command.
+Conversations are stored for you, and long ones are summarized
+automatically so they fit the model.
 
 - `peko send <peko> "…"` drives the conversation. If the peko is already
   working on a turn for you, the message joins that turn at its next step;
@@ -127,7 +129,7 @@ compacted automatically. There is deliberately no session command.
 
 From this terminal you are the owner, so you can read and stop any of the
 peko's conversations (`--peer user:hub:<id>`, `--peer
-principal:local:<id>`). People who reach the peko some other way, through
+peko:local:<id>`). People who reach the peko some other way, through
 PekoHub for example, only ever see their own conversation.
 
 ### Memory
@@ -171,9 +173,9 @@ A message from another peko brings the next keepalive check forward.
 
 ## Configuration
 
-### `principal.toml`
+### `peko.toml`
 
-Each peko's definition lives in `~/.peko/principals/<name>/principal.toml`.
+Each peko's definition lives in `~/.peko/pekos/<name>/peko.toml`.
 A freshly created peko has:
 
 ```toml
@@ -240,8 +242,8 @@ person, headed by their address:
 
 The front matter sets which model reviews, whether replies to other people
 are reviewed too (`review_replies`), and when scheduled memory writes are
-checked against their sources (`memory_review`). Only your own runs can
-edit `POLICY.md`, `principal.toml` and the always-included `kb/` files;
+checked against their sources (`memory_review`). Only work done for you can
+edit `POLICY.md`, `peko.toml` and the always-included `kb/` files;
 anyone else's changes to them become proposals in `kb/inbox/`.
 
 ### Models and keys
@@ -309,12 +311,12 @@ appear without a restart. For a server that uses OAuth, ask the peko to
 authenticate it: the `MCP` tool's `authenticate` action returns a link to
 open in your browser. See the [MCP quick start](../mcp/QUICK_START.md).
 
-There are no per-tool grants. What a run can use depends on whom it acts
-for:
+There are no per-tool grants. What a peko can use depends on whom it is
+working for:
 
 - **You:** everything.
-- **People you have marked `trusted`:** the full tool surface, with sensitive
-  calls checked against `POLICY.md`.
+- **People you have marked `trusted`:** all its tools, with sensitive calls
+  checked against `POLICY.md`.
 - **Anyone else:** no `Bash` and no MCP servers (except ones marked
   `untrusted_ok`), and file tools only inside the peko's workspace.
 
@@ -361,15 +363,15 @@ Jobs are saved per peko and survive daemon restarts. `Cron` with
 
 ## Other people and other pekos
 
-Each conversation a peko has is its own compartment. A run for one person
-only sees that conversation.
+Each conversation a peko has is kept apart: while it works for one person,
+it sees only that person's conversation.
 
 - **Permissions.** `peko permit <peko> <address> <permission>` grants a
   permission, `peko revoke` takes it away, and `peko permissions <peko>`
   lists them. Permissions include `chat`, `manage_settings` and `trusted`.
   `trusted` gives that person's conversations the full tool surface,
   including the shell. Addresses look like `user:hub:<id>`,
-  `principal:local:<id>`, `principal:hub:<id>` or `public`.
+  `peko:local:<id>`, `peko:hub:<id>` or `public`.
 - **Invites.** `peko invite <peko>` mints a signed link for one person;
   `peko revoke-invite` cancels it.
 - **PekoHub.** `peko register <peko>` registers the peko on PekoHub so
@@ -407,11 +409,11 @@ not get through.
 Peko is a personal runtime. It trusts the operating-system user it runs as.
 The limits below are known and accepted for this release.
 
-**Runs acting for you are not reviewed.** The policy reviewer, and the
-approval requests it sends you, apply only to runs
-acting for someone else: guests in a conversation, or other pekos. Runs
-acting for you are never reviewed. These include the scheduled `keepalive`
-and nightly `memory` runs.
+**Work done for you is not reviewed.** The policy reviewer, and the
+approval requests it sends you, apply only when a peko works for someone
+else: guests in a conversation, or other pekos. What it does for you is
+never reviewed, and that includes its scheduled `keepalive` and nightly
+`memory` turns.
 
 So if a peko has an MCP server that can send email, post, delete or pay, a
 scheduled run can use it without asking you. Instructions in the peko's
@@ -423,14 +425,14 @@ recorded in a hash-chained ledger: `peko audit ledger` reads it and
 `peko audit verify` checks it. `verify` detects edited, deleted or truncated
 entries.
 
-A run with `Bash` runs as your user. It could rewrite the ledger, the global
+A peko using `Bash` runs as your user. It could rewrite the ledger, the global
 audit log and the checkpoints together, and nothing outside your account
 anchors the chain yet.
 
 **PekoHub can read relayed messages.** Messages between runtimes are signed
 by the peko that sent them, so the hub cannot forge or alter them. They are
 not encrypted end to end, though. The hub terminates TLS, so it could read
-messages between runtimes and chats from Hub web visitors.
+messages between runtimes.
 
 **Background tasks do not survive a restart.** A task started with `Async`
 that is still running when the daemon stops is lost. Cron jobs are saved to
@@ -471,14 +473,14 @@ machine, fix the socket problem instead of running on the fallback.
 On a server or in a container, set `PEKO_MASTER_PASSPHRASE` (see
 [Environment variables](#environment-variables)).
 
-### A change to `roles/root.md` doesn't show up
+### A change to a role or `peko.toml` doesn't show up
 
-Edits to `roles/root.md` and `principal.toml` apply to the peko's next turn,
-with no restart. If one doesn't:
+Edits to `roles/*.md` and `peko.toml` apply to the peko's next turn, with
+no restart. If one doesn't:
 
 - A turn that is already running keeps the role it started with. Send the
   next message after it finishes.
-- When `principal.toml` no longer parses, or `roles/root.md` can't be read,
+- When `peko.toml` no longer parses, or a role file can't be read,
   the peko keeps what it had and the daemon log, `~/.peko/logs/daemon.log`,
   says why.
 - `name`, `id`, `did`, `actor_key` and `[owner]` keep their loaded values
@@ -500,5 +502,5 @@ peko <command> --help
 
 - [Tutorial: shaping your first peko](../getting-started/TUTORIAL_FIRST_PEKO.md)
 - [CLI Reference](CLI_REFERENCE.md): every command
-- [Peko workspace](../architecture/PRINCIPAL_WORKSPACE.md): the workspace layout in detail
+- [MCP quick start](../mcp/QUICK_START.md): give a peko outside tools
 - [Built-in tools](../architecture/builtin-tools.md): what each tool does

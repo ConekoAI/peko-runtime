@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn flat_manifest_roundtrip() {
         let mut m = PrincipalManifest::new("test", "did:peko:test");
-        m.add_file("config/principal.toml", b"config");
+        m.add_file("config/peko.toml", b"config");
         m.add_file("skills/check/scripts/check.sh", b"script");
         m.executable_files
             .insert("skills/check/scripts/check.sh".into());

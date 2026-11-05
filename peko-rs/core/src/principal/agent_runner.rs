@@ -22,7 +22,7 @@ use crate::principal::agent_prompt::AgentPrompt;
 /// `preferred_model_id`, or a per-message `--model` override). Without a
 /// non-`None` hint the root agent's `SubagentExecutor` raises the
 /// actionable "no model configured for principal '{name}'" error
-/// pointing the user at the principal.toml pin — there is no runtime
+/// pointing the user at the peko.toml pin — there is no runtime
 /// default model and no other code path that can recover a provider
 /// for the root agent at run time.
 ///
@@ -74,7 +74,7 @@ async fn validate_principal_hint(
     tracing::warn!(
         "principal prefers model '{id}' but it is not in the catalog. \
          Re-add it with `peko model add ...` or clear the principal's \
-         `preferred_model_id` in principal.toml."
+         `preferred_model_id` in peko.toml."
     );
     None
 }

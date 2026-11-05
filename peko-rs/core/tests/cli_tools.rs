@@ -34,9 +34,9 @@ fn mock_llm_url() -> Option<String> {
 }
 
 /// Directory the daemon's built-in tools treat as their workspace root:
-/// the principal's own folder, `<PEKO_HOME>/principals/<name>`.
+/// the principal's own folder, `<PEKO_HOME>/pekos/<name>`.
 fn principal_workspace(cli: &PekoCli, principal: &str) -> PathBuf {
-    cli.peko_dir().join("principals").join(principal)
+    cli.peko_dir().join("pekos").join(principal)
 }
 
 /// Every persisted `.jsonl` under the data dir, concatenated — the session

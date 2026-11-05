@@ -5,7 +5,7 @@ for every agent you run. Keep it curated — beliefs, commitments,
 preferences, standing decisions. It is NOT a log and NOT a dump:
 everything here costs tokens on every turn.
 
-Rules of the house (ADR-055):
+Rules of the house:
 
 - Revise in place. Never append history; update the statement.
 - Anything that ages out of relevance gets deleted, not archived —

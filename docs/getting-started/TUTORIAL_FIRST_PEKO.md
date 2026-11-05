@@ -13,11 +13,11 @@ have Peko installed, a model added, the daemon running and a peko called
 Every output below is from a real run with MiMo v2.6 Flash. Your peko's
 wording will differ.
 
-The peko's files live in `~/.peko/principals/my-peko/`. The commands below
+The peko's files live in `~/.peko/pekos/my-peko/`. The commands below
 use `W` for that path:
 
 ```bash
-W=~/.peko/principals/my-peko
+W=~/.peko/pekos/my-peko
 ```
 
 ---
@@ -187,7 +187,7 @@ Snapshot inventory: DID did:key:z6MkpQGGPZVcjpB5jwRLC3YeLor2YDV2pVwtT1bKi4DBhjhT
   Roles:
     - primary
     - root
-Imported peko 'my-peko' at ~/.peko/principals/my-peko/principal.toml
+Imported peko 'my-peko' at ~/.peko/pekos/my-peko/peko.toml
 ```
 
 `import` first prints what the package contains, including any skills and

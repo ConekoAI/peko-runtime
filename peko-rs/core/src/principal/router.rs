@@ -77,7 +77,7 @@ pub struct RouterContext {
     pub intent: PrincipalIntentConfig,
     pub governance: PrincipalGovernanceConfig,
     /// The principal's `preferred_model_id` as of this message (read
-    /// per message, so an edit to `principal.toml` applies without a
+    /// per message, so an edit to `peko.toml` applies without a
     /// restart).
     pub preferred_model_id: Option<String>,
     /// Shared inbox registry so the router can wire the root agent

@@ -10,7 +10,7 @@
 //!
 //! 1. **Explicit caller override** — passed via IPC / CLI /
 //!    `peko send --model <configured-model-id>`. Wins unconditionally.
-//! 2. **Principal-pinned choice** — set in `principal.toml` as
+//! 2. **Principal-pinned choice** — set in `peko.toml` as
 //!    `preferred_model_id`. The Principal must be created with a model.
 //! 3. error — "no model configured for this call"
 //!

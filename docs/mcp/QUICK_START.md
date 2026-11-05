@@ -1,6 +1,6 @@
 # MCP quick start
 
-Create `<principal-workspace>/mcp/notes/server.json` alongside an existing MCP
+Create `mcp/notes/server.json` in the peko's folder (`peko show` prints it), beside an existing MCP
 server executable or script. Dependencies are installed through ordinary shell
 operations; Peko does not install packages automatically.
 
@@ -17,7 +17,7 @@ Put `server.py` beside the manifest or use an absolute script path. Relative `cw
 resolves from the manifest directory. Stdio receives the minimal process environment
 plus explicitly declared `env` values.
 
-The next model request discovers the server's methods. The principal can also call:
+The next model request discovers the server's tools. To pick it up right away, the peko can call:
 
 ```json
 {"action":"refresh","server":"notes"}
@@ -38,15 +38,16 @@ For Streamable HTTP with a bearer token:
 }
 ```
 
-Provision `api_token` through the existing credential command under
-`mcp:principal:<local-principal-id>:notes`. Use a prompted/secure material input;
+Store `api_token` with `peko credential set` under
+`mcp:peko:<local-id>:notes`, where `<local-id>` is the part of the peko's
+address after `peko:local:` (`peko show` prints it). Use a prompted/secure material input;
 keep the token out of the manifest. Stdio secrets use
 `"env": { "SERVICE_TOKEN": { "credential": "api_token" } }` instead.
 
 For OAuth, use `"auth": { "type": "oauth" }`, call
 `MCP {"action":"authenticate","server":"notes"}`, and open the returned URL.
 After consent, call refresh or allow the next model iteration to reconcile.
-Tokens belong to this principal/server only.
+Tokens belong to this peko and this server only.
 
 `resources`, `resource_templates` and `prompts` require `server`.
 `read_resource` also requires `uri`; `get_prompt` requires `name` and accepts an

@@ -185,7 +185,7 @@ bs58 = "0.5"
 sha2 = "0.10"
 
 # Filesystem walking for the principal-config drift detector
-# (ADR-046): walks `{config_dir}/principals/*/principal.toml` at
+# (ADR-046): walks `{config_dir}/pekos/*/peko.toml` at
 # daemon startup to hash each principal's shared-tier config and
 # compare against the previous-boot baseline.
 walkdir = "2"

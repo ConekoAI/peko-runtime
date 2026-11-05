@@ -522,6 +522,11 @@ impl FromStr for ActorRef {
 
     /// Parse `"kind:<route>"` (e.g. `"user:local"`, `"user:hub:<id>"`,
     /// `"principal:local:prin_x"`) or `"public"`. Empty IDs are rejected.
+    ///
+    /// `peko:` is the spelling people see and type for a principal
+    /// (`peko:local:<id>`, `peko:hub:<id>`); it parses to the same actor.
+    /// [`Display`](fmt::Display) keeps writing `principal:`, the wire and
+    /// storage form.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "public" {
             return Ok(Self::Public);
@@ -535,7 +540,7 @@ impl FromStr for ActorRef {
         }
         match kind {
             "user" => Ok(Self::User(route)),
-            "principal" => Ok(Self::Principal(route)),
+            "principal" | "peko" => Ok(Self::Principal(route)),
             "visitor" => Ok(Self::Visitor(route)),
             other => Err(ActorRefParseError(format!("unknown kind '{other}'"))),
         }
@@ -833,5 +838,18 @@ mod tests {
         // `local` is the reserved local-owner id; a visitor must never
         // claim it (it would land in the `/local-user` peer child).
         assert!(ActorRef::from_bridge_claim("visitor", "local").is_err());
+    }
+
+    #[test]
+    fn peko_is_the_user_facing_spelling_of_principal() {
+        let typed: ActorRef = "peko:local:prin_x".parse().unwrap();
+        let wire: ActorRef = "principal:local:prin_x".parse().unwrap();
+        assert_eq!(typed, wire);
+        assert_eq!(typed.to_string(), wire.to_string());
+        assert!(typed.to_string().starts_with("principal:"), "display keeps the wire form");
+        assert_eq!(
+            ActorRef::parse_scoped("peko:hub:abc").unwrap(),
+            "principal:hub:abc".parse::<ActorRef>().unwrap()
+        );
     }
 }

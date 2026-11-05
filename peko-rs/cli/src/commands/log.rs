@@ -34,15 +34,15 @@ use peko_core::ipc::{DaemonClient, ResponsePacket};
 use peko_protocol::channel::ChannelEvent;
 use std::str::FromStr;
 
-/// `peko log [OPTIONS] <PRINCIPAL>`
+/// `peko log [OPTIONS] <PEKO>`
 ///
 /// Examples:
-///   peko log my-principal
-///   peko log my-principal --limit 100
-///   peko log my-principal --since 24h
-///   peko log my-principal --watch
-///   peko log my-principal --peer user:alice
-///   peko log my-principal --json | jq '.[].sender'
+///   peko log my-peko
+///   peko log my-peko --limit 100
+///   peko log my-peko --since 24h
+///   peko log my-peko --watch
+///   peko log my-peko --peer user:hub:<id>
+///   peko log my-peko --json | jq '.[].sender'
 #[derive(Args)]
 #[command(disable_version_flag = true)]
 pub struct LogCommand {
@@ -50,9 +50,9 @@ pub struct LogCommand {
     #[arg(value_name = "PEKO")]
     pub principal: String,
 
-    /// Specific peer's thread, as an actor address: `user:local`,
-    /// `user:hub:<id>`, `principal:local:<id>` or `principal:hub:<id>`.
-    /// Defaults to the peko's owner.
+    /// Read the peko's conversation with someone else: `user:local`,
+    /// `user:hub:<id>`, `peko:local:<id>` or `peko:hub:<id>`. Defaults
+    /// to your own conversation.
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 
@@ -74,9 +74,8 @@ pub struct LogCommand {
     #[arg(long, value_name = "TEXT")]
     pub search: Option<String>,
 
-    /// Exact author filter (the channel-log author: a peer ActorRef
-    /// like `user:alice`, or the principal's id). Ignored with
-    /// `--watch`.
+    /// Only messages by this author, written exactly as the log shows
+    /// it (for example `user:local`). Ignored with `--watch`.
     #[arg(long, value_name = "AUTHOR")]
     pub author: Option<String>,
 
@@ -246,9 +245,11 @@ pub async fn handle_log(cmd: LogCommand, _paths: &GlobalPaths, json: bool) -> Re
         })?;
         println!("{json}");
     } else if accumulated.is_empty() {
-        println!("📭 No messages for peer '{resolved_peer}' on peko '{principal}'.");
+        let peer = super::shown_address(&resolved_peer.to_string());
+        println!("📭 No messages with '{peer}' on peko '{principal}'.");
     } else {
-        println!("📜 Peko '{principal}' — peer '{resolved_peer}':");
+        let peer = super::shown_address(&resolved_peer.to_string());
+        println!("📜 Peko '{principal}' — conversation with '{peer}':");
         for msg in &accumulated {
             render_chat_message(msg);
         }
@@ -588,7 +589,7 @@ fn render_group_row(at: &str, author: &str, text: &str) {
     println!(
         "[{}] {}: {}",
         timestamp_short(at),
-        author,
+        super::shown_address(author),
         truncate(text, 240)
     );
 }
@@ -643,7 +644,7 @@ fn render_chat_message(message: &PrincipalLogMessage) {
 fn format_chat_message(message: &PrincipalLogMessage) -> String {
     let sender = match message.sender_name.as_deref() {
         Some(name) => name.to_string(),
-        None => message.sender.to_string(),
+        None => super::shown_address(&message.sender.to_string()),
     };
     let mut line = format!(
         "[{}] {}: {}",

@@ -62,7 +62,7 @@ where
     })
 }
 
-/// On-disk configuration for a Principal. Deserialized from `principal.toml`.
+/// On-disk configuration for a Principal. Deserialized from `peko.toml`.
 ///
 /// Unknown tables are ignored on load and never written back — notably
 /// the retired `[memory]` table (tier / consolidation / ttl_policy /
@@ -73,7 +73,7 @@ pub struct PrincipalConfig {
     /// Stable runtime id (`prin_*`). Persisted so daemon restarts keep
     /// the same principal identity — peer DM channels, cron ownership,
     /// and per-principal runtime state are keyed by it. Generated at
-    /// create; pre-existing `principal.toml` files without this field
+    /// create; pre-existing `peko.toml` files without this field
     /// get one assigned at load (the config is re-persisted so it
     /// stabilizes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,7 +119,7 @@ pub struct PrincipalConfig {
     pub status: Option<Status>,
 
     /// Genesis-pipeline boot state (ADR-054). `None` on legacy configs
-    /// (pre-ADR-054 `principal.toml` files) — [`Self::boot_state`]
+    /// (pre-ADR-054 `peko.toml` files) — [`Self::boot_state`]
     /// infers the effective state for them. The field is written once
     /// the runtime itself advances the state (create stamp, define,
     /// boot seeding) and round-trips from then on.
@@ -170,7 +170,7 @@ pub struct PrincipalConfig {
     /// demand via the `Agent` tool, ingress peers get standing children
     /// automatically, and the only auto-created nodes are the default
     /// `/tmp` and `/trash` (see `principal::default_nodes`). The table
-    /// is still parsed (unvalidated) so legacy `principal.toml` files
+    /// is still parsed (unvalidated) so legacy `peko.toml` files
     /// keep loading; `warn_deprecated_children` names the ignored
     /// entries at load time.
     ///
@@ -235,7 +235,7 @@ impl PrincipalConfig {
 }
 
 /// A legacy standing named child declared under `[children]` in
-/// `principal.toml`. Parsed only so legacy configs keep loading; the
+/// `peko.toml`. Parsed only so legacy configs keep loading; the
 /// runtime ignores the declarations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildDeclaration {
@@ -515,7 +515,7 @@ mod tests {
         .is_err());
     }
 
-    /// Existing `principal.toml` files in the wild must keep parsing —
+    /// Existing `peko.toml` files in the wild must keep parsing —
     /// the new model field is `#[serde(default)]` so absence ==
     /// `None`.
     #[test]
@@ -562,7 +562,7 @@ mod tests {
         );
     }
 
-    /// Pre-existing `principal.toml` files without an `id` field must
+    /// Pre-existing `peko.toml` files without an `id` field must
     /// still load (`#[serde(default)]` ⇒ `None`); the manager's load
     /// path assigns + re-persists one.
     #[test]
@@ -637,7 +637,7 @@ mod tests {
     }
 
     /// ADR-066 D1: the `[capabilities]` section is never serialized —
-    /// newly written `principal.toml` files carry no grants.
+    /// newly written `peko.toml` files carry no grants.
     #[test]
     fn principal_config_never_serializes_capabilities() {
         let cfg = PrincipalConfig {

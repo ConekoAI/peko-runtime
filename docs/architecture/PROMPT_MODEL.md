@@ -77,7 +77,7 @@ derived by the runtime; **hook** = dispatched to a registered handler
 
 | # | Section | Tier | Source | Freshness | Who gets it |
 |---|---|---|---|---|---|
-| 1 | Identity — `[identity]` / `[intent]` | T0 | file: `principal.toml` | on change | every agent |
+| 1 | Identity — `[identity]` / `[intent]` | T0 | file: `peko.toml` | on change | every agent |
 | 2 | Current time (local + UTC) | — | computed | every iteration (notice-exempt) | every agent |
 | 3 | Memory — `## Your long-term memory` | T0 | file: `kb/MEMORY.md` (what rows 4–7 leave of the 32 KiB hot budget; ≥ 16 KiB) | on change | every agent |
 | 4 | Conventions — `## Principal conventions` | T0 | file: `kb/CONVENTIONS.md` (4 KiB) | on change | every agent |
@@ -142,7 +142,7 @@ When the `Agent` tool spawns a child:
 | Role name (spawn / binding) | T1 body, role note |
 | Channel binding | Binding note, conversation context |
 | Focus directory (last path-bearing tool call) | Which `AGENTS.md` rides as project instructions |
-| Principal workspace | All `kb/` hot files, `principal.toml` identity, catalogs, hooks |
+| Principal workspace | All `kb/` hot files, `peko.toml` identity, catalogs, hooks |
 | Model / sandbox / thinking level | Runtime + sandbox sections, model aliases |
 | Quota / cancel state | Event banners |
 | Spawn depth / concurrency | Wrapper rules, refusal errors |
@@ -161,7 +161,7 @@ peko-rs/engine/src/prompt/
 
 peko-rs/core/src/
 ├── extensions/role/adapter.rs          # RoleAdapter: roles/ scan + WorkspaceRolesPromptHandler
-├── principal/identity_prompt.rs        # principal.toml [identity]/[intent] section
+├── principal/identity_prompt.rs        # peko.toml [identity]/[intent] section
 ├── principal/routers/root.rs           # default_root_prompt (compiled-in root role)
 ├── principal/genesis.rs                # kb/roles scaffold seeding + agents/→roles/ migration
 └── resources/roles/root/ROLE.md        # root role SEED source (stamped to roles/root.md; no render fallback)

@@ -20,7 +20,7 @@
 //!
 //! 1. **Principal grant/revoke round-trip** — `ActorRef::Principal("peer")`
 //!    granted to a Principal, then revoked via IPC; on-disk
-//!    `principal.toml` shows the grant is gone.
+//!    `peko.toml` shows the grant is gone.
 //! 2. **Public grant/revoke round-trip** — `ActorRef::Public` granted
 //!    to a Principal, then revoked.
 //! 3. **Idempotent revoke** — revoking a subject that was never
@@ -56,14 +56,10 @@ fn create_principal(cli: &PekoCli, name: &str) {
 
 /// Read the principal config from disk and return the granted permissions.
 fn read_principal_permissions(cli: &PekoCli, name: &str) -> Vec<Permission> {
-    let path = cli
-        .peko_dir()
-        .join("principals")
-        .join(name)
-        .join("principal.toml");
-    let raw = std::fs::read_to_string(&path).expect("read principal.toml");
+    let path = cli.peko_dir().join("pekos").join(name).join("peko.toml");
+    let raw = std::fs::read_to_string(&path).expect("read peko.toml");
     let cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
+        toml::from_str(&raw).expect("parse peko.toml");
     cfg.permissions
         .iter()
         .map(|g| g.permission.clone())

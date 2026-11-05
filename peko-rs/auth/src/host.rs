@@ -67,7 +67,7 @@ pub trait RuntimePaths: Send + Sync + 'static {
 }
 
 /// Network exposure level for a Principal (persisted in
-/// `principal.toml`).
+/// `peko.toml`).
 ///
 /// This used to live in `peko_principal::config::Exposure` and was
 /// imported by `auth::Resource::Principal` to fill the `exposure`

@@ -5,20 +5,20 @@
 //! Registered **once** per core (see `principal/context.rs`), next to
 //! the `agents` / `skills` catalog handlers. At invoke time the handler
 //! resolves the workspace from the hook context's `ToolRuntimeContext`,
-//! reads `<workspace>/principal.toml`, and renders the `[identity]`
+//! reads `<workspace>/peko.toml`, and renders the `[identity]`
 //! (display name, description) and `[intent]` (goals, values,
 //! preferences) sections as a compact catalog. This config is otherwise
 //! registry display metadata only — the handler is what makes it reach
 //! every agent in the tree.
 //!
-//! Presence = visibility (ADR-050): a missing `principal.toml`, or one
+//! Presence = visibility (ADR-050): a missing `peko.toml`, or one
 //! whose identity/intent fields are all empty, yields
 //! `None` so the section is stripped from the
 //! prompt. There is deliberately **no** capability filter.
 //!
 //! The render result is cached in a `Mutex` keyed on the FILE's
 //! `(path, mtime, len)` — not the workspace dir's mtime — so in-place
-//! edits to `principal.toml` invalidate the section on the next
+//! edits to `peko.toml` invalidate the section on the next
 //! iteration (ADR-052 D2's file-level freshness fix), and the path in
 //! the key keeps co-hosted principals from sharing a cache entry. That keeps the handler
 //! well within the renderer's 2-second hook timeout: one `stat` per
@@ -53,14 +53,14 @@ impl WorkspaceIdentityPromptHandler {
 
     /// Render the identity section for `workspace`, using the
     /// `(path, file_mtime, file_len)`-keyed cache. Returns `None` when
-    /// there is nothing to render (no `principal.toml`, or all
+    /// there is nothing to render (no `peko.toml`, or all
     /// identity/intent fields empty).
     fn render_section(&self, workspace: &str) -> Option<String> {
-        let toml_path = Path::new(workspace).join("principal.toml");
+        let toml_path = crate::common::paths::peko_config_path(Path::new(workspace));
         let metadata = std::fs::metadata(&toml_path).ok()?;
         // The path rides the key: this handler is registered once on
         // the daemon-global core but serves every principal, and two
-        // principals' `principal.toml` files may share `(mtime, len)`.
+        // principals' `peko.toml` files may share `(mtime, len)`.
         let key = (
             toml_path.to_string_lossy().to_string(),
             metadata.modified().ok()?,
@@ -110,10 +110,10 @@ impl crate::tools::prompt_sections::PromptSectionProvider for WorkspaceIdentityP
     }
 }
 
-/// The `[identity]` + `[intent]` subset of `principal.toml`. Parsed
+/// The `[identity]` + `[intent]` subset of `peko.toml`. Parsed
 /// with the canonical config types so the on-disk shape stays defined
 /// in exactly one place (`principal/config.rs`); the rest of the file
-/// is ignored, so a partial or unrelated `principal.toml` still parses.
+/// is ignored, so a partial or unrelated `peko.toml` still parses.
 #[derive(Debug, Deserialize)]
 struct IdentityIntentConfig {
     #[serde(default)]
@@ -123,7 +123,7 @@ struct IdentityIntentConfig {
 }
 
 /// Render the compact identity/intent section body from a
-/// `principal.toml`'s content. Returns `None` when the file doesn't
+/// `peko.toml`'s content. Returns `None` when the file doesn't
 /// parse or every rendered field is empty.
 fn render_identity_section(toml_content: &str) -> Option<String> {
     let config: IdentityIntentConfig = toml::from_str(toml_content).ok()?;
@@ -194,7 +194,7 @@ preferences = [" terse answers "]
     #[tokio::test]
     async fn identity_handler_renders_identity_and_intent() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join("principal.toml"), PRINCIPAL_TOML).unwrap();
+        std::fs::write(temp.path().join("peko.toml"), PRINCIPAL_TOML).unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();
         let text = handler
@@ -227,14 +227,14 @@ preferences = [" terse answers "]
         let result = handler.render(&identity_input(temp.path())).await;
         assert!(
             result.is_none(),
-            "Expected no section without principal.toml, got {result:?}"
+            "Expected no section without peko.toml, got {result:?}"
         );
     }
 
     #[tokio::test]
     async fn identity_handler_passes_through_on_empty_fields() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(temp.path().join("principal.toml"), "name = \"bare\"\n").unwrap();
+        std::fs::write(temp.path().join("peko.toml"), "name = \"bare\"\n").unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();
         let result = handler.render(&identity_input(temp.path())).await;
@@ -247,7 +247,7 @@ preferences = [" terse answers "]
     #[tokio::test]
     async fn identity_handler_caches_and_invalidates_on_in_place_edit() {
         let temp = TempDir::new().unwrap();
-        let toml_path = temp.path().join("principal.toml");
+        let toml_path = temp.path().join("peko.toml");
         std::fs::write(&toml_path, PRINCIPAL_TOML).unwrap();
 
         let handler = WorkspaceIdentityPromptHandler::new();

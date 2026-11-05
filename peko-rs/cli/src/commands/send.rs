@@ -9,7 +9,7 @@
 //!
 //! Examples:
 //!   peko send myprincipal "What is the weather?"
-//!   peko send myprincipal --file prompt.txt
+//!   peko send my-peko --file prompt.txt
 //!   echo "Hello" | peko send myprincipal --stdin
 //!   peko send myprincipal "also check the calendar" --wait
 //!   peko send myprincipal "Hello" --model openai-gpt-4o
@@ -83,9 +83,9 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         anyhow::bail!(
             "Message is empty. Provide a non-empty message as an argument, via --file, or via --stdin.\n\
              Examples:\n  \
-             peko send myprincipal \"Hello\"\n  \
-             peko send myprincipal --file prompt.txt\n  \
-             echo \"Hello\" | peko send myprincipal --stdin"
+             peko send my-peko \"Hello\"\n  \
+             peko send my-peko --file prompt.txt\n  \
+             echo \"Hello\" | peko send my-peko --stdin"
         );
     }
 
@@ -114,7 +114,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths) -> Result<()> {
         return post_to_group(paths, &channel, &message, attachments).await;
     }
 
-    info!("Sending message to principal '{}'", args.principal);
+    info!("Sending message to peko '{}'", args.principal);
 
     let client = DaemonClient::connect().await?;
     // Always use the streaming request. It emits `PrincipalSentChunk`
@@ -558,9 +558,9 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
         anyhow::bail!(
             "Message is required. Provide it as an argument, use --file, or --stdin.\n\
              Examples:\n  \
-             peko send myprincipal \"Hello\"\n  \
-             peko send myprincipal --file prompt.txt\n  \
-             echo \"Hello\" | peko send myprincipal --stdin"
+             peko send my-peko \"Hello\"\n  \
+             peko send my-peko --file prompt.txt\n  \
+             echo \"Hello\" | peko send my-peko --stdin"
         )
     }
 }

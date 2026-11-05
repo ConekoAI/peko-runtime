@@ -1,41 +1,55 @@
-# Principal-owned MCP
+# MCP: give a peko outside tools
 
-Peko integrates Model Context Protocol servers as native principal tools (ADR-075).
-Each principal owns one service: connections, catalog cache, credential slots and
-sampling quota/model. All its sessions share that service. Another principal
-using the same server ID or URL gets an independent connection and account.
+[Model Context Protocol](https://modelcontextprotocol.io) servers give a peko
+tools beyond its built-in ones: a calendar, a notes app, a database, an API.
+Each peko has its own servers. Two pekos that use the same server each get
+their own connection and their own account.
 
-Configure ordinary workspace files at `mcp/<id>/server.json`. The runtime scans
-before each model request, discovers cold servers, and publishes all discovered
-methods as `mcp__<id>__<method>` through the existing ToolCatalog/ToolDispatcher.
-A valid local cached catalog permits lazy startup. No capability grant, install
-command, daemon restart, or global MCP configuration is required.
+## Add a server
 
-Each model request captures an immutable catalog binding. Removed definitions and
-changed endpoints, credentials or schemas reject calls that have not been admitted.
-Started calls retain their original client; owner removal shuts down all generations.
-Business calls are never automatically replayed after an ambiguous disconnect.
+Put a `server.json` in the peko's folder at `mcp/<id>/server.json`. There is
+nothing to install and no restart: before each model request the peko looks
+for new or changed servers, and their tools appear as `mcp__<id>__<tool>`.
+The [quick start](QUICK_START.md) has examples for a local script, a server
+with an API token, and one that signs in with OAuth.
 
-`MCP` provides status, refresh, reconnect, authenticate, resources,
-resource_templates, read_resource, prompts and get_prompt. It is an operational
-surface; `Write`/`Edit` manage files. Server prompts/resources remain structured tool
-results. `isError` marks tool failure while preserving result content.
+## Manage it through the peko
 
-Stdio and Streamable HTTP use `rmcp` 3.5.1. Legacy SSE is supported for compatibility.
-Discovery handles pagination with page/item/size/deadline limits. SDK list-change
-notifications trigger refresh; unnotified changes are checked on reconnect, explicit
-refresh and inventory expiry. Cancellation and progress are request-scoped.
+Ask the peko, or call its `MCP` tool yourself, to:
 
-Secrets reference local vault slots in `mcp:principal:<local-id>:<server-id>`.
-OAuth supports metadata discovery, public client registration, PKCE, loopback
-callbacks and refresh. `MCP authenticate` returns a URL for the user to open.
-The callback updates owner credentials without creating an agent run.
+- `status`: what each server is doing, how many tools it has, and any errors.
+- `refresh` or `reconnect`: pick up a change now, or retry a failed server.
+- `authenticate`: sign in to a server that uses OAuth. It returns a link to
+  open in your browser.
+- `resources`, `read_resource`, `prompts`, `get_prompt`: use what a server
+  offers besides tools.
 
-Sampling is opt-in. It requires an active owned outbound operation, the configured
-principal/server model and the principal's actual quota/cost meter. Missing model
-configuration fails. Elicitation has no frontend bridge and is not advertised.
+To change or remove a server, edit or delete its folder.
 
-See [Quick start](QUICK_START.md), [migration](MIGRATION_GUIDE.md),
-[reserved parameters](mcp_reserved_params_guide.md),
-[on-disk contracts](../../DATA_MODEL.md#12-workspace-mcp-server-definitions), and
+## Secrets
+
+Keep tokens out of `server.json`. Store them in the vault with
+`peko credential set` under `mcp:peko:<local-id>:<server-id>`, where
+`<local-id>` is the part of the peko's address after `peko:local:`
+(`peko show` prints it). `server.json` refers to the stored token by name.
+
+## Who can use it
+
+A peko's servers are available when it works for you or for people you have
+marked `trusted`. When it works for anyone else, a server is available only if
+its `server.json` sets `untrusted_ok`. Connect only servers you are willing to
+let the peko use on its own: scheduled work runs on your behalf and is not
+reviewed (see [Security limits](../user-guide/USERS_GUIDE.md#security-limits)).
+
+## Details
+
+A call that already started keeps its connection even if you edit the server
+meanwhile; a call is never repeated automatically after a dropped connection.
+Servers can use stdio, Streamable HTTP, or legacy SSE. A server may ask the
+peko's model to write text for it (sampling) only when you turn that on, and
+that use counts against the peko's quota.
+
+For every field of `server.json`, see the
+[data model](../../DATA_MODEL.md#12-workspace-mcp-server-definitions). The
+design record is
 [ADR-075](../architecture/adr/ADR-075-principal-owned-mcp-runtime.md).

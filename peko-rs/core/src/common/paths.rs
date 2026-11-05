@@ -16,7 +16,7 @@
 //! │       └── skills/               # Agent-specific skills
 //! └── principals/                   # Principal container configs
 //!     └── {principal}/
-//!         └── principal.toml        # Principal metadata
+//!         └── peko.toml        # Principal metadata
 //!
 //! ## Data Directory (`{data_dir}`, e.g., `~/.local/share/peko`)
 //! ```text
@@ -35,6 +35,106 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use peko_session::safe_filename_component;
+
+/// File name of a peko's definition inside its directory.
+pub const PEKO_CONFIG_FILE: &str = "peko.toml";
+
+/// Name the definition file had before 0.1.0 (`principal.toml`). [`peko_config_path`]
+/// renames it to [`PEKO_CONFIG_FILE`] the first time it is reached.
+pub const LEGACY_PEKO_CONFIG_FILE: &str = "principal.toml";
+
+/// File name of the runtime's own settings in the config directory
+/// (`~/.peko/runtime.toml`; only `[provider.retry]` is read today).
+pub const RUNTIME_CONFIG_FILE: &str = "runtime.toml";
+
+/// Name the runtime settings file had before 0.1.0, when `peko.toml` did not
+/// yet name a peko's definition.
+pub const LEGACY_RUNTIME_CONFIG_FILE: &str = "peko.toml";
+
+/// Folder that holds one subfolder per peko, in both the config and the
+/// data directory (`~/.peko/pekos/<name>/`).
+pub const PEKOS_DIR: &str = "pekos";
+
+/// Name that folder had before 0.1.0. [`pekos_root`] falls back to it until
+/// [`migrate_legacy_pekos_dir`] has renamed it.
+pub const LEGACY_PEKOS_DIR: &str = "principals";
+
+/// Whether a path component names the folder of pekos, under its current
+/// or its pre-0.1.0 name. Security checks match both, so a folder whose
+/// rename has not happened yet is protected the same way.
+#[must_use]
+pub fn is_pekos_dir_name(name: &std::ffi::OsStr) -> bool {
+    name == PEKOS_DIR || name == LEGACY_PEKOS_DIR
+}
+
+/// The folder of pekos under `base` (a config or data directory):
+/// `<base>/pekos`, or the legacy `<base>/principals` while only that one
+/// exists (before the daemon has migrated it, or when the rename failed).
+#[must_use]
+pub fn pekos_root(base: &Path) -> PathBuf {
+    let root = base.join(PEKOS_DIR);
+    if !root.exists() {
+        let legacy = base.join(LEGACY_PEKOS_DIR);
+        if legacy.is_dir() {
+            return legacy;
+        }
+    }
+    root
+}
+
+/// Rename `<base>/principals` to `<base>/pekos`, the one-time move of the
+/// pre-0.1.0 layout. Run by the daemon at boot, before anything reads
+/// either folder. When both exist, each peko only in the legacy folder is
+/// moved over and the legacy folder is removed once empty; a name present
+/// in both is left where it is and reported. Failures are returned so the
+/// caller can log them; [`pekos_root`] keeps reading the legacy folder
+/// meanwhile, and the next boot retries.
+pub fn migrate_legacy_pekos_dir(base: &Path) -> std::io::Result<Vec<String>> {
+    let legacy = base.join(LEGACY_PEKOS_DIR);
+    if !legacy.is_dir() {
+        return Ok(Vec::new());
+    }
+    let root = base.join(PEKOS_DIR);
+    if !root.exists() {
+        std::fs::rename(&legacy, &root)?;
+        return Ok(Vec::new());
+    }
+    let mut left_behind = Vec::new();
+    for entry in std::fs::read_dir(&legacy)? {
+        let entry = entry?;
+        let target = root.join(entry.file_name());
+        if target.exists() {
+            left_behind.push(entry.file_name().to_string_lossy().into_owned());
+            continue;
+        }
+        std::fs::rename(entry.path(), target)?;
+    }
+    if left_behind.is_empty() {
+        std::fs::remove_dir(&legacy)?;
+    }
+    Ok(left_behind)
+}
+
+/// The definition file of the peko whose directory is `dir`.
+///
+/// A directory that still holds only the legacy `principal.toml` has it
+/// renamed to `peko.toml` here, so every reader migrates it on first
+/// access. When the rename fails (Windows refuses to rename a file another
+/// process holds open), the legacy path is returned so the read still
+/// works; a later access retries the rename. A directory with neither file
+/// gets the new name, which is where a new peko's definition is written.
+#[must_use]
+pub fn peko_config_path(dir: &Path) -> PathBuf {
+    let path = dir.join(PEKO_CONFIG_FILE);
+    if path.exists() {
+        return path;
+    }
+    let legacy = dir.join(LEGACY_PEKO_CONFIG_FILE);
+    if legacy.is_file() && std::fs::rename(&legacy, &path).is_err() && legacy.is_file() {
+        return legacy;
+    }
+    path
+}
 
 // =========================================================================
 // Three-Tier Storage Layout (Phase A)
@@ -119,7 +219,7 @@ pub struct LocalLayout {
 pub struct SharedLayout {
     /// `{config_dir}/principals/{name}`
     pub root: PathBuf,
-    /// `…/principal.toml`
+    /// `…/peko.toml`
     pub config_file: PathBuf,
     /// `…/identity.json` (public DID). The private-key seed lives in the
     /// vault's `principal-identity` namespace (ADR-058 D1).
@@ -354,17 +454,43 @@ impl PathResolver {
         self.config_dir.join("mcp.toml")
     }
 
-    /// Get the principals configuration directory
+    /// The folder of pekos in the config directory.
     ///
-    /// Path: `{config_dir}/principals`
+    /// Path: `{config_dir}/pekos` (see [`pekos_root`] for the legacy
+    /// `principals` fallback)
     #[must_use]
     pub fn principals_root_dir(&self) -> PathBuf {
-        self.config_dir.join("principals")
+        pekos_root(&self.config_dir)
+    }
+
+    /// The folder of pekos in the data directory.
+    ///
+    /// Path: `{data_dir}/pekos`
+    #[must_use]
+    pub fn pekos_data_root_dir(&self) -> PathBuf {
+        pekos_root(&self.data_dir)
+    }
+
+    /// Move a pre-0.1.0 layout (`principals/` in the config and data
+    /// directories) to `pekos/`. Daemon boot calls this before loading any
+    /// peko; see [`migrate_legacy_pekos_dir`].
+    pub fn migrate_legacy_pekos_dirs(&self) -> Vec<(PathBuf, std::io::Result<Vec<String>>)> {
+        let mut bases = vec![self.config_dir.clone()];
+        if self.data_dir != self.config_dir {
+            bases.push(self.data_dir.clone());
+        }
+        bases
+            .into_iter()
+            .map(|base| {
+                let result = migrate_legacy_pekos_dir(&base);
+                (base, result)
+            })
+            .collect()
     }
 
     /// Get a specific principal's configuration directory
     ///
-    /// Path: `{config_dir}/principals/{principal}`
+    /// Path: `{config_dir}/pekos/{principal}`
     #[must_use]
     pub fn principal_dir(&self, principal: &str) -> PathBuf {
         self.principals_root_dir().join(principal)
@@ -424,7 +550,7 @@ impl PathResolver {
     #[must_use]
     pub fn principal_layout(&self, principal: &str) -> PrincipalLayout {
         let principals_root = self.principals_root_dir();
-        let data_root = self.data_dir.join("principals").join(principal);
+        let data_root = self.pekos_data_root_dir().join(principal);
 
         let local_root = data_root.join("local");
         let shared_root = principals_root.join(principal);
@@ -444,7 +570,7 @@ impl PathResolver {
             },
             shared: SharedLayout {
                 root: shared_root.clone(),
-                config_file: shared_root.join("principal.toml"),
+                config_file: peko_config_path(&shared_root),
                 identity_file: shared_root.join("identity.json"),
                 roles_dir: shared_root.join("roles"),
                 mcp_dir: shared_root.join("mcp"),
@@ -508,7 +634,7 @@ impl PathResolver {
     /// Path: `{data_dir}/runtime/principal-hashes.json` — written by
     /// [`crate::daemon::config_drift::run_drift_check`] at the end of
     /// every daemon startup so the next boot can detect mid-session
-    /// edits to `principal.toml`. File is a JSON object of
+    /// edits to `peko.toml`. File is a JSON object of
     /// `{principal_name: hex_sha256_hash}`.
     ///
     /// **v1 limitation (ADR-046):** drift is only detected at daemon
@@ -530,9 +656,9 @@ impl PathResolver {
 
     /// Resolve a `PrincipalId` (DID) to the on-disk principal name.
     ///
-    /// Scans `{config_dir}/principals/` for `principal.toml` files whose
+    /// Scans `{config_dir}/principals/` for `peko.toml` files whose
     /// `did` field matches the given id. Returns `None` if no
-    /// `principal.toml` matches — including the case where the
+    /// `peko.toml` matches — including the case where the
     /// directory is empty or missing (a freshly initialized runtime).
     ///
     /// **Phase B.** This is the DID → name lookup the tier-typed
@@ -543,7 +669,7 @@ impl PathResolver {
     /// and the result is cached inside `RuntimeAuthority` once the
     /// principal layout is materialised.
     ///
-    /// The scan reads `principal.toml` as a generic `toml::Value` so
+    /// The scan reads `peko.toml` as a generic `toml::Value` so
     /// `paths.rs` does not need to depend on `crate::principal::config`
     /// (which would create a cycle — `principal` depends on `common`).
     #[must_use]
@@ -559,7 +685,7 @@ impl PathResolver {
             if !path.is_dir() {
                 continue;
             }
-            let config_path = path.join("principal.toml");
+            let config_path = peko_config_path(&path);
             let contents = match std::fs::read_to_string(&config_path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -589,7 +715,7 @@ impl PathResolver {
     }
 
     /// Inverse of [`Self::lookup_principal_name`]: scan for the
-    /// `PrincipalId` whose `principal.toml` carries the given name.
+    /// `PrincipalId` whose `peko.toml` carries the given name.
     ///
     /// Used by CLI commands that take a principal *name* from `--principal`
     /// but need to populate a wire-shape `PrincipalId`. Returns `None`
@@ -611,7 +737,7 @@ impl PathResolver {
             // Match either by directory name (cheap) or by `name` field
             // (authoritative when both are present).
             if dir_name != principal_name {
-                let config_path = path.join("principal.toml");
+                let config_path = peko_config_path(&path);
                 let contents = match std::fs::read_to_string(&config_path) {
                     Ok(c) => c,
                     Err(_) => continue,
@@ -625,7 +751,7 @@ impl PathResolver {
                     continue;
                 }
             }
-            let config_path = path.join("principal.toml");
+            let config_path = peko_config_path(&path);
             let contents = std::fs::read_to_string(&config_path).ok()?;
             let value: toml::Value = contents.parse().ok()?;
             let did = value.get("did").and_then(|v| v.as_str()).unwrap_or("");
@@ -842,6 +968,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_legacy_principals_folder_moves_to_pekos() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy = base.path().join(LEGACY_PEKOS_DIR);
+        std::fs::create_dir_all(legacy.join("ada").join("kb")).unwrap();
+        assert_eq!(pekos_root(base.path()), legacy);
+
+        let left = migrate_legacy_pekos_dir(base.path()).unwrap();
+
+        assert!(left.is_empty());
+        assert!(base.path().join(PEKOS_DIR).join("ada").join("kb").is_dir());
+        assert!(!legacy.exists());
+        assert_eq!(pekos_root(base.path()), base.path().join(PEKOS_DIR));
+        assert!(migrate_legacy_pekos_dir(base.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_split_layout_merges_and_keeps_name_clashes() {
+        let base = tempfile::tempdir().unwrap();
+        let legacy = base.path().join(LEGACY_PEKOS_DIR);
+        let root = base.path().join(PEKOS_DIR);
+        std::fs::create_dir_all(root.join("ada")).unwrap();
+        std::fs::create_dir_all(legacy.join("ada")).unwrap();
+        std::fs::create_dir_all(legacy.join("bo")).unwrap();
+
+        let left = migrate_legacy_pekos_dir(base.path()).unwrap();
+
+        assert_eq!(left, vec!["ada".to_string()]);
+        assert!(root.join("bo").is_dir());
+        assert!(legacy.join("ada").is_dir(), "a clash stays put");
+    }
+
+    #[test]
+    fn the_resolver_migrates_config_and_data_folders() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("cfg");
+        let data = home.path().join("data");
+        std::fs::create_dir_all(config.join(LEGACY_PEKOS_DIR).join("ada")).unwrap();
+        std::fs::create_dir_all(data.join(LEGACY_PEKOS_DIR).join("ada").join("local")).unwrap();
+        let resolver = PathResolver::with_dirs(config.clone(), data.clone(), home.path().into());
+
+        for (_, result) in resolver.migrate_legacy_pekos_dirs() {
+            result.unwrap();
+        }
+
+        let layout = resolver.principal_layout("ada");
+        assert_eq!(layout.shared.root, config.join(PEKOS_DIR).join("ada"));
+        assert_eq!(
+            layout.local.root,
+            data.join(PEKOS_DIR).join("ada").join("local")
+        );
+        assert!(layout.local.root.is_dir());
+    }
+
+    #[test]
+    fn peko_config_path_renames_a_legacy_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("principal.toml"), "name = \"ada\"\n").unwrap();
+
+        let path = peko_config_path(dir.path());
+
+        assert_eq!(path, dir.path().join("peko.toml"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "name = \"ada\"\n");
+        assert!(!dir.path().join("principal.toml").exists());
+    }
+
+    #[test]
+    fn peko_config_path_prefers_peko_toml_and_names_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(peko_config_path(dir.path()), dir.path().join("peko.toml"));
+        assert!(!dir.path().join("peko.toml").exists(), "nothing is created");
+
+        std::fs::write(dir.path().join("peko.toml"), "name = \"new\"\n").unwrap();
+        std::fs::write(dir.path().join("principal.toml"), "name = \"old\"\n").unwrap();
+        let path = peko_config_path(dir.path());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "name = \"new\"\n");
+        assert!(
+            dir.path().join("principal.toml").exists(),
+            "a legacy file beside peko.toml is left alone"
+        );
+    }
+
+    #[test]
     fn test_expand_tilde_home() {
         let home = dirs::home_dir().expect("should have home dir");
         assert_eq!(expand_tilde("~/foo"), home.join("foo"));
@@ -957,8 +1165,8 @@ mod tests {
         );
         let layout = resolver.principal_layout("alice");
         let local = layout.local;
-        // Local root lives under `<data_dir>/principals/<name>/local/`.
-        assert!(local.root.ends_with("principals/alice/local"));
+        // Local root lives under `<data_dir>/pekos/<name>/local/`.
+        assert!(local.root.ends_with("pekos/alice/local"));
         assert!(local.sessions_dir.ends_with("alice/local/sessions"));
         assert!(local
             .memory_index
@@ -981,16 +1189,12 @@ mod tests {
         );
         let layout = resolver.principal_layout("alice");
         let shared = layout.shared;
-        // Shared root lives under `<config_dir>/principals/<name>/`.
-        assert!(shared.root.ends_with("principals/alice"));
-        assert!(shared
-            .config_file
-            .ends_with("principals/alice/principal.toml"));
-        assert!(shared.roles_dir.ends_with("principals/alice/roles"));
-        assert!(shared
-            .identity_file
-            .ends_with("principals/alice/identity.json"));
-        assert!(shared.mcp_dir.ends_with("principals/alice/mcp"));
+        // Shared root lives under `<config_dir>/pekos/<name>/`.
+        assert!(shared.root.ends_with("pekos/alice"));
+        assert!(shared.config_file.ends_with("pekos/alice/peko.toml"));
+        assert!(shared.roles_dir.ends_with("pekos/alice/roles"));
+        assert!(shared.identity_file.ends_with("pekos/alice/identity.json"));
+        assert!(shared.mcp_dir.ends_with("pekos/alice/mcp"));
     }
 
     #[test]
@@ -1024,7 +1228,7 @@ mod tests {
         assert!(runtime.registry_root.ends_with("/data/runtime/registry"));
         assert!(runtime.locks_dir.ends_with("/data/runtime/locks"));
         assert!(runtime.audit_dir.ends_with("/data/runtime/audit"));
-        assert!(runtime.principals_root.ends_with("/config/principals"));
+        assert!(runtime.principals_root.ends_with("/config/pekos"));
     }
 
     #[test]
@@ -1036,7 +1240,7 @@ mod tests {
         );
         assert_eq!(
             resolver.principals_root_dir(),
-            PathBuf::from("/config/principals")
+            PathBuf::from("/config/pekos")
         );
     }
 }
@@ -1279,7 +1483,7 @@ impl GlobalPaths {
     ///
     /// **Phase B.** CLI commands receive a principal *name* via `--principal`
     /// but cron jobs are keyed by `PrincipalId` on the wire. This helper
-    /// scans `principals_root_dir` for `principal.toml` whose `[name]`
+    /// scans `principals_root_dir` for `peko.toml` whose `[name]`
     /// matches and returns the corresponding `PrincipalId`. Returns
     /// `None` if the principal directory doesn't exist or has no DID
     /// configured — callers should surface the error to the user.
