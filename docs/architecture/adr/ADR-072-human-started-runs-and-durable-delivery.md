@@ -176,6 +176,12 @@ everything else is still shown once. Users' posts stay one-shot: a user
 post that wants an answer starts a turn itself (a DM root post, an
 `@<name>` mention).
 
+(Amended 2026-11-05, [ADR-096](ADR-096-peer-posts-are-handled-where-they-arrive.md):
+only a channel's own conversation session keeps a list for it. Owner runs
+elsewhere are told how many posts came and which session answers them, and
+never see their text; the keepalive answers them in that session, acting for
+their author.)
+
 Each session has its own list, as it has its own marks. A list keeps at
 most 50 posts per channel; older ones drop and stay in the channel log.
 Both per-session files are now written under a file lock, so two sessions

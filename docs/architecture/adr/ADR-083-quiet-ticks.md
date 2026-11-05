@@ -10,6 +10,10 @@
 **Amended by:**
 - [ADR-086](ADR-086-peer-posts-bring-the-keepalive-forward.md): a post by
   another principal brings an attention-gated keepalive's next fire forward.
+- [ADR-096](ADR-096-peer-posts-are-handled-where-they-arrive.md): other
+  principals' posts wait in their own conversation, and the keepalive answers
+  them there, acting for whoever wrote them; the trunk turn runs only for its
+  own work.
 
 **Builds on:**
 - [ADR-072](ADR-072-human-started-runs-and-durable-delivery.md): only humans and
