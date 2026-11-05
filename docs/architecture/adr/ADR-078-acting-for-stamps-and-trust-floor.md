@@ -198,7 +198,7 @@ A non-owner run's note to someone other than the actor it serves carries a runti
 - G1 and G2 are closed for untrusted actors, as are F3–F9.
 - **Trusted actors keep Bash**; the file and session rules stop their agents, not a determined human.
 - **The reviewer is a model.** It can be wrong or influenced through arguments, but it cannot grant persistence or a shell: the floor runs first.
-- **Owner runs still read untrusted content** (peer posts, proposals, the web). Defused tags, untrusted framing, and never-auto-merged proposals reduce it; an outbound-action gate for owner runs needs a vetoing hook point (follow-up).
+- **Owner runs still read untrusted content** (peer posts, proposals, the web). (Amended 2026-11-05, [ADR-096](ADR-096-peer-posts-are-handled-where-they-arrive.md): the keepalive used to bring peer posts into an owner run on its own; they are now answered in their own conversation, acting for their author, and owner runs see only counts. An owner run that deliberately reads them remains this residual.) Defused tags, untrusted framing, and never-auto-merged proposals reduce it; an outbound-action gate for owner runs needs a vetoing hook point (follow-up).
 - **Owners get capped runs in mixed groups.** Powerful requests go through the owner's DM.
 - **Cost**: one review per non-exempt call of non-owner runs, reduced by caching and a cheap `judge_model`.
 - **Shared OS user**: owner and trusted Bash can still reach other principals' files (follow-up: per-principal sandboxing).

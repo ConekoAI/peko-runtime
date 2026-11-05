@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: another peko's message no longer gets work done as the owner (ADR-096, 2026-11-05)
+
+- A message from another peko is answered in that peko's own conversation,
+  by a keepalive turn acting for that peko: its floor (no shell, files only
+  in the workspace, no runtime state) and the policy reviewer apply. Before,
+  the keepalive answered it in the trunk acting for the owner, so another
+  peko could have the trunk read runtime files, write protected files or use
+  the shell, unreviewed (found in a live test: bo had ada read
+  `local/sessions/sessions.json`).
+- The trunk and the owner's DM no longer quote other channels' posts or keep
+  them waiting: the summary says how many came, from whom, and which
+  conversation answers them. The trunk's keepalive turn runs only for its
+  own work (plans, check-ins, failed jobs, the hourly floor).
+- A keepalive fire runs at most four conversations, oldest first; a group
+  whose binding has `wake: off` is not run. The posts a conversation turn ran
+  for are handled whether or not it replied.
+- A DM session made after its channel opened keeps the other peko's
+  unanswered posts on its first look; before, its first message was skipped.
+- The runtime's keepalive text is rendered fresh at each fire and no longer
+  tells the trunk to check channels.
+
 ### Fix: what a live upgrade test turned up (2026-11-05)
 
 - Pekos stop calling themselves "principal": the first-turn brief and the
@@ -670,7 +691,6 @@ there). `~/…` paths expand to the home directory. The runtime prompt no
 longer warns that the default directory can differ.
 `peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
 printed as `2026-10-30 T04:06:44.511473`).
-
 
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
@@ -2842,7 +2862,6 @@ falsely held 13 correct owner facts.
   runtime; scopes workspace hooks to their owning principal.
 - Migrated singleton-dependent tests to explicitly constructed runtimes.
 
-
 #### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
 
 - Deleted capability gates for tool visibility/execution, roles, skills,
@@ -2855,7 +2874,6 @@ falsely held 13 correct owner facts.
 - Moved async execution and session inbox to `async_exec`. Deleted the inert
   extension store, discovery/storage, adapter trait, configuration services,
   and tool execution service; re-homed live principal tooling and catalog glue.
-
 
 #### Iteration cap removed from the agentic loop (2026-09-30)
 
@@ -3123,7 +3141,6 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   and `set_page_limit`. The `pruned_pages` counter is persisted by the
   caller's own `MetadataController` (each controller instance carries
   an in-memory index view; see `Session::prune_overflow`).
-
 
 #### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
 

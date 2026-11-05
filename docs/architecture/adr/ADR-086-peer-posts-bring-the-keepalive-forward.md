@@ -7,6 +7,11 @@
 - [ADR-083](ADR-083-quiet-ticks.md): an attention-gated keepalive can fire
   before its slot.
 
+**Amended by:**
+- [ADR-096](ADR-096-peer-posts-are-handled-where-they-arrive.md): the nudged
+  fire answers the post in its own conversation, acting for its author, not in
+  the trunk acting for the owner.
+
 **Builds on:**
 - [ADR-072](ADR-072-human-started-runs-and-durable-delivery.md) D1: only humans
   and cron start runs. D4a: another principal's post waits on the recipient's
