@@ -61,19 +61,19 @@ impl PekoCli {
         )
         .expect("create test vault");
 
-        // Per-test unique named pipe on Windows. The PID + a short random
-        // suffix guarantees uniqueness across concurrent test processes.
+        // Per-test unique named pipe on Windows: a random UUID, never a
+        // clock reading. Tests in one binary run in parallel threads of the
+        // same process, and two of them read the same `SystemTime` on CI
+        // (2026-11-05): the second daemon failed to bind, `wait_ready` took
+        // the first one's answer, and the test's commands ran against the
+        // other test's home. Pipe names are global, so the PID stays in the
+        // name to tell a leftover pipe's owner apart when debugging.
         #[cfg(windows)]
-        let pipe_name = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            // Win32 pipe-name max is 256 chars; `\\.\pipe\peko-test-` is 18,
-            // pid is ≤10, separator is 1, nanos is ≤20, so well under budget.
-            format!(r"\\.\pipe\peko-test-{}-{}", std::process::id(), nanos)
-        };
+        let pipe_name = format!(
+            r"\\.\pipe\peko-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        );
         Self {
             home,
             vault_passphrase,

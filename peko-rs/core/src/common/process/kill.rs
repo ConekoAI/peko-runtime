@@ -4,28 +4,38 @@ use anyhow::Result;
 use std::time::Duration;
 
 /// Check if a process with the given PID is currently running
+///
+/// Windows asks the kernel directly (`OpenProcess` + a zero-timeout wait
+/// on the process handle). It used to start PowerShell for every check,
+/// which takes one to several seconds on a busy machine; `peko daemon
+/// stop` polls this, so a stop that the daemon finished in a second
+/// still ran past ten.
 #[must_use]
 pub fn is_process_running(pid: u32) -> bool {
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let output = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!(
-                    "Get-Process -Id {} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id",
-                    pid
-                ),
-            ])
-            .output();
-        match output {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                stdout.lines().any(|line| line.trim() == pid.to_string())
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_ACCESS_DENIED, WAIT_TIMEOUT,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE,
+        };
+        // SAFETY: plain Win32 calls on a handle this block owns and closes.
+        unsafe {
+            let handle = OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            );
+            if handle == 0 {
+                // A process we may not open still exists; any other error
+                // (ERROR_INVALID_PARAMETER) means no such PID.
+                return GetLastError() == ERROR_ACCESS_DENIED;
             }
-            Err(_) => false,
+            let running = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
+            CloseHandle(handle);
+            running
         }
     }
     #[cfg(unix)]
@@ -36,18 +46,29 @@ pub fn is_process_running(pid: u32) -> bool {
 
 /// Kill a process by PID using platform-specific tools
 ///
-/// On Windows, uses `taskkill`. On Unix, uses `kill` with SIGTERM
-/// (or SIGKILL if `force` is true).
+/// On Windows, `TerminateProcess` (what `taskkill /F` does, without
+/// starting a process for it). On Unix, `kill` with SIGTERM (or SIGKILL
+/// if `force` is true).
 pub async fn kill_by_pid(pid: u32, force: bool) -> Result<()> {
     #[cfg(windows)]
     {
-        let output = tokio::process::Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output()
-            .await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("taskkill failed for PID {pid}: {stderr}");
+        let _ = force;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        // SAFETY: plain Win32 calls on a handle this block owns and closes.
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle == 0 {
+                anyhow::bail!("cannot open PID {pid}: Win32 error {}", GetLastError());
+            }
+            let ok = TerminateProcess(handle, 1) != 0;
+            let error = GetLastError();
+            CloseHandle(handle);
+            if !ok {
+                anyhow::bail!("TerminateProcess failed for PID {pid}: Win32 error {error}");
+            }
         }
     }
     #[cfg(unix)]
