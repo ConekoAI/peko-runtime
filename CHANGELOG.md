@@ -18,6 +18,15 @@ All notable changes to Peko.
   They now run on the same trigger as the Linux jobs (Windows is in MVP
   scope).
 
+### Feature: tunnel status names the local user's Hub account (2026-11-05)
+
+- IPC `tunnel_status` carries `account` (the Hub account UUID the local user
+  is linked to, ADR-081 D3) and `account_name` (its name as Hub gave it at
+  registration). Both are absent when the runtime isn't registered. A peko
+  owned by `user:hub:<account>` is the local user's own, so the desktop can
+  show it as "You" and name the account.
+- `peko tunnel status` prints the account; `--json` includes both fields.
+
 ### Feature: pick a model from the endpoint's own list (2026-11-05)
 
 - `peko model add` without `--model` asks the endpoint which models it

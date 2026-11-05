@@ -2634,6 +2634,10 @@ impl crate::ipc::handlers::tunnel::TunnelHost for AppState {
         Ok(registered)
     }
 
+    async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount> {
+        crate::tunnel::registration::linked_account(&self.path_resolver).await
+    }
+
     async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()> {
         crate::tunnel::registration::unregister_runtime(
             &self.path_resolver,
