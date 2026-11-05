@@ -11,9 +11,7 @@
 //! `src/commands/daemon.rs` with testable, reusable primitives.
 
 use crate::common::paths::PathResolver;
-use crate::common::process::{
-    is_process_running, kill_all_by_name, kill_by_pid, wait_for_exit, wait_for_healthy,
-};
+use crate::common::process::{is_process_running, kill_by_pid, wait_for_exit, wait_for_healthy};
 use crate::ipc::{ConnectionManager, RequestPacket, ResponsePacket};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -835,20 +833,39 @@ impl DaemonProcessService {
             }
         }
 
-        self.remove_pid_file();
-
-        // 4. Final verification
+        // 4. Final verification. Nothing is killed by name: a name
+        // reaches every peko of every home on the machine (other users'
+        // daemons, parallel test runs, this very CLI), never only the one
+        // this home runs. Only the PID this home's lockfile names is ours.
         tokio::time::sleep(Duration::from_millis(500)).await;
         if self.is_daemon_running().await? {
-            warn!("Daemon still responding after stop attempt — attempting fallback kill");
-            kill_all_by_name().await?;
-            anyhow::bail!(
-                "Daemon process is still running after stop attempt. \
-                 Try: taskkill /F /IM peko.exe"
-            );
+            warn!("Daemon still responding after stop attempt");
+            anyhow::bail!(still_running_message(pid, &self.pid_file_path(false)));
         }
+        self.remove_pid_file();
 
         Ok(())
+    }
+}
+
+/// What `peko daemon stop` says when the daemon still answers after
+/// everything it may do: the PID to end by hand when this home's lockfile
+/// named one, or where the lockfile should have been when it did not.
+fn still_running_message(pid: Option<u32>, pid_file: &std::path::Path) -> String {
+    match pid {
+        Some(pid) => {
+            let command = if cfg!(windows) {
+                format!("taskkill /F /PID {pid}")
+            } else {
+                format!("kill -9 {pid}")
+            };
+            format!("The daemon (PID {pid}) is still running after the stop attempt. End it with: {command}")
+        }
+        None => format!(
+            "A daemon still answers on this home's IPC endpoint, but {} names no running \
+             process, so it was not killed. Find its PID in your process list and end it.",
+            pid_file.display()
+        ),
     }
 }
 
@@ -909,6 +926,28 @@ fn spawn_without_inheriting_std_handles(cmd: &mut Command) -> std::io::Result<Ch
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The last resort names this home's daemon and how to end it; it never
+    /// suggests (or runs) a kill by process name.
+    #[test]
+    fn still_running_message_names_only_this_homes_daemon() {
+        let pid_file = std::path::Path::new("/home/a/.peko/run/daemon.pid");
+        let known = still_running_message(Some(4242), pid_file);
+        assert!(known.contains("PID 4242"), "{known}");
+        let command = if cfg!(windows) {
+            "taskkill /F /PID 4242"
+        } else {
+            "kill -9 4242"
+        };
+        assert!(known.contains(command), "{known}");
+
+        let unknown = still_running_message(None, pid_file);
+        assert!(unknown.contains("daemon.pid"), "{unknown}");
+        for message in [&known, &unknown] {
+            assert!(!message.contains("/IM"), "{message}");
+            assert!(!message.contains("pkill"), "{message}");
+        }
+    }
 
     #[test]
     fn test_pid_file_path() {
