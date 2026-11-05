@@ -251,3 +251,50 @@ fn config_init_creates_config_file() {
         "config init should report creating a config file: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Local IPC is never rate limited
+// ---------------------------------------------------------------------------
+
+/// The desktop polls every peko over the local socket, each call preceded
+/// by a status probe. The daemon used to charge those requests to one
+/// shared `local` rate-limit bucket (100/min + 20 burst, on whenever
+/// PekoHub JWT auth is enabled — the default), so with the desktop open
+/// the CLI's connect ping got "Rate limit exceeded" and `peko daemon
+/// status` reported "Not responding". Local requests carry no credential
+/// and must never be limited.
+#[cfg(unix)]
+#[test]
+fn local_requests_are_not_rate_limited() {
+    use std::os::unix::net::UnixDatagram;
+
+    let cli = PekoCli::new();
+    let _daemon = common::DaemonGuard::spawn(&cli);
+
+    // Twice the limit + burst, from one client, inside one window.
+    let client_dir = tempfile::Builder::new()
+        .prefix("rl-")
+        .tempdir_in("/tmp")
+        .expect("client tempdir");
+    let client_path = client_dir.path().join("c.sock");
+    let client = UnixDatagram::bind(&client_path).expect("bind client socket");
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut buf = vec![0u8; 65536];
+    for i in 0..240u64 {
+        let ping = serde_json::json!({ "type": "ping", "request_id": i });
+        client
+            .send_to(&serde_json::to_vec(&ping).unwrap(), cli.daemon_sock())
+            .expect("send ping");
+        let len = client.recv(&mut buf).expect("daemon answers every ping");
+        let reply: serde_json::Value = serde_json::from_slice(&buf[..len]).expect("json reply");
+        assert_eq!(reply["type"], "pong", "request {i} was refused: {reply}");
+    }
+
+    let (stdout, stderr, status) = run(&cli, &["daemon", "status", "--json"]);
+    assert_ok(&stdout, &stderr, &status);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("status --json: {e}\nstdout: {stdout}"));
+    assert_eq!(parsed["running"], true, "status after the burst: {stdout}");
+}

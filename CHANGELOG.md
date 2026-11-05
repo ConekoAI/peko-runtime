@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the CLI keeps working while the desktop is open (2026-11-05)
+
+- The daemon no longer rate-limits local requests. Every request used to
+  be charged to the IPC rate limiter, which is on whenever PekoHub sign-in
+  is enabled (the default), and all local callers shared one bucket
+  (100 a minute + 20 burst). The desktop polls each peko and probes the
+  daemon before every call, so with a few pekos it used up the bucket;
+  the CLI's connect ping was then refused, and `peko daemon status` said
+  "Not responding" (other commands: "Daemon is not running"). Only
+  requests that carry a PekoHub token or an API key are limited now; a
+  local request already runs as the runtime's owner.
 ### Fix: another peko's message no longer gets work done as the owner (ADR-096, 2026-11-05)
 
 - A message from another peko is answered in that peko's own conversation,
