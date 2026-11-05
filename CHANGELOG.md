@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko daemon stop` ends only its own daemon (2026-11-05)
+
+- When the daemon still answered after its PID was killed, `stop` killed
+  by process name: `taskkill /F /IM peko.exe` on Windows (every peko CLI
+  on the machine, the one running `stop` included, and never the daemon,
+  `peko-daemon.exe`), `pkill -9 -f "peko daemon"` elsewhere (any matching
+  process of any home). It now kills nothing by name. It reports the
+  daemon's PID from this home's lockfile with the command to end it, and
+  keeps the lockfile while that process lives.
+
 ### Fix: groups you start from the CLI are yours to read; `peko channel show` works (2026-11-05)
 
 - A group created over IPC (`peko channel create`, the desktop) now has

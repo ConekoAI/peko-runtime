@@ -17,4 +17,4 @@ pub mod kill;
 
 pub use health::wait_for_healthy;
 pub use job_object::JobObject;
-pub use kill::{is_process_running, kill_all_by_name, kill_by_pid, wait_for_exit};
+pub use kill::{is_process_running, kill_by_pid, wait_for_exit};
