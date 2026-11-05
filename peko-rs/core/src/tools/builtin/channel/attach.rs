@@ -316,7 +316,7 @@ mod tests {
         assert!(
             refused
                 .to_string()
-                .contains("outside this principal's workspace"),
+                .contains("outside this peko's workspace"),
             "{refused}"
         );
         assert!(!h.workspace().join("attachments").exists());

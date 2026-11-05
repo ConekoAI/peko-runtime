@@ -58,8 +58,18 @@ pub fn action_refusal(
     };
     Some(format!(
         "{what} is not available while acting for {} (untrusted). Ask the owner to set it up.",
-        stamp.actor
+        shown_actor(&stamp.actor)
     ))
+}
+
+/// An actor address as a refusal message shows it: a peko's wire form
+/// `principal:<route>` reads as `peko:<route>` (models quote these
+/// messages to people).
+fn shown_actor(actor: &str) -> String {
+    match actor.strip_prefix("principal:") {
+        Some(rest) => format!("peko:{rest}"),
+        None => actor.to_string(),
+    }
 }
 
 /// Workspace files only an owner run may write. Everything an agent's
@@ -236,7 +246,7 @@ pub fn search_root_refusal(
             "a search from {} would read the runtime's conversations and keys; while acting \
              for {} ({}) search inside the workspace or a project folder",
             root.display(),
-            stamp.actor,
+            shown_actor(&stamp.actor),
             stamp.trust.as_str()
         )
     })
@@ -273,9 +283,10 @@ pub fn tool_refusal(
     }
     if tool_name == "Bash" {
         return Some(format!(
-            "`Bash` is not available while acting for {} ({}): only the owner's runs get the \
-             shell. Use the file tools inside the workspace, or ask the owner for the result.",
-            stamp.actor,
+            "`Bash` is not available while acting for {} ({}): only work done for the owner \
+             gets the shell. Use the file tools inside the workspace, or ask the owner for the \
+             result.",
+            shown_actor(&stamp.actor),
             stamp.trust.as_str()
         ));
     }
@@ -283,7 +294,7 @@ pub fn tool_refusal(
         return Some(format!(
             "`{tool_name}` holds the owner's internal work and is not available while acting \
              for {} ({}). Track this conversation's work in your replies or with `Task`.",
-            stamp.actor,
+            shown_actor(&stamp.actor),
             stamp.trust.as_str()
         ));
     }
@@ -295,7 +306,7 @@ pub fn tool_refusal(
         format!(
             "`{tool_name}` is not available while acting for {} (untrusted). The owner can \
              permit this actor as `trusted`, or ask for the result on their behalf.",
-            stamp.actor
+            shown_actor(&stamp.actor)
         )
     })
 }
@@ -397,17 +408,14 @@ pub fn check_path(
         if let Some(root) = principals_root {
             let foreign = target.starts_with(root) && !target.starts_with(workspace);
             if foreign && (write || !stamp.is_owner()) {
-                return PathDecision::Deny(format!(
-                    "{} belongs to another principal",
-                    target.display()
-                ));
+                return PathDecision::Deny(format!("{} belongs to another peko", target.display()));
             }
         }
     }
     if !stamp.is_owner() && is_runtime_state(workspace.as_deref(), &target) {
         return PathDecision::Deny(format!(
-            "{} is the runtime's own state (conversations, keys, settings); only the owner's \
-             runs reach it",
+            "{} is the runtime's own state (conversations, keys, settings); only work \
+             done for the owner reaches it",
             target.display()
         ));
     }
@@ -417,10 +425,10 @@ pub fn check_path(
             .is_some_and(|workspace| target.starts_with(workspace));
         if !inside {
             return PathDecision::Deny(format!(
-                "{} is outside this principal's workspace; while acting for {} (untrusted) \
+                "{} is outside this peko's workspace; while acting for {} (untrusted) \
                  only workspace files are reachable",
                 target.display(),
-                stamp.actor
+                shown_actor(&stamp.actor)
             ));
         }
     }

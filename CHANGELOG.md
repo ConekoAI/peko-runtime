@@ -4,6 +4,13 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: refusals a peko quotes say peko (2026-11-05)
+
+- The trust floor's refusal messages say "another peko" and "this peko's
+  workspace", and show the actor as `peko:<route>`. Pekos quote these to
+  whoever asked: in a live ADR-096 check, ada told another peko its file
+  "belongs to another principal".
+
 ### Fix: the CLI keeps working while the desktop is open (2026-11-05)
 
 - The daemon no longer rate-limits local requests. Every request used to
