@@ -167,7 +167,10 @@ Every peko starts with two scheduled jobs:
   model.
 - **`memory`**, once a day in a quiet stretch.
 
-A message from another peko brings the next keepalive check forward.
+A message from another peko brings the next keepalive check forward. The
+keepalive answers it in that peko's own conversation, with what that peko
+is allowed (see [Security limits](#security-limits)), not in the peko's main
+session on your behalf.
 
 ---
 
@@ -414,6 +417,12 @@ approval requests it sends you, apply only when a peko works for someone
 else: guests in a conversation, or other pekos. What it does for you is
 never reviewed, and that includes its scheduled `keepalive` and nightly
 `memory` turns.
+
+Messages from other pekos, and group posts, are not work for you. The
+keepalive answers another peko's message in that peko's conversation,
+acting for that peko: no shell, files only inside the peko's workspace, and
+sensitive actions reviewed or sent to you for approval. The main session is
+told only that a message came and where it is answered, never what it says.
 
 So if a peko has an MCP server that can send email, post, delete or pay, a
 scheduled run can use it without asking you. Instructions in the peko's

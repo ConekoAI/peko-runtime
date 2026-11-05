@@ -15,6 +15,27 @@ All notable changes to Peko.
   "Not responding" (other commands: "Daemon is not running"). Only
   requests that carry a PekoHub token or an API key are limited now; a
   local request already runs as the runtime's owner.
+### Fix: another peko's message no longer gets work done as the owner (ADR-096, 2026-11-05)
+
+- A message from another peko is answered in that peko's own conversation,
+  by a keepalive turn acting for that peko: its floor (no shell, files only
+  in the workspace, no runtime state) and the policy reviewer apply. Before,
+  the keepalive answered it in the trunk acting for the owner, so another
+  peko could have the trunk read runtime files, write protected files or use
+  the shell, unreviewed (found in a live test: bo had ada read
+  `local/sessions/sessions.json`).
+- The trunk and the owner's DM no longer quote other channels' posts or keep
+  them waiting: the summary says how many came, from whom, and which
+  conversation answers them. The trunk's keepalive turn runs only for its
+  own work (plans, check-ins, failed jobs, the hourly floor).
+- A keepalive fire runs at most four conversations, oldest first; a group
+  whose binding has `wake: off` is not run. The posts a conversation turn ran
+  for are handled whether or not it replied.
+- A DM session made after its channel opened keeps the other peko's
+  unanswered posts on its first look; before, its first message was skipped.
+- The runtime's keepalive text is rendered fresh at each fire and no longer
+  tells the trunk to check channels.
+
 ### Fix: what a live upgrade test turned up (2026-11-05)
 
 - Pekos stop calling themselves "principal": the first-turn brief and the

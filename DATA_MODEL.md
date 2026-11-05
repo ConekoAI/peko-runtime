@@ -2057,8 +2057,12 @@ suffix. The shape is unchanged.
 principals the digest has shown but the session has not answered — each an
 `AttentionItem {id, author, at, preview}` (line id, author wire form,
 RFC 3339 time, truncated body), oldest first, at most 50 per session.
-An item leaves when the session's `ChannelRead` returns that line or a post
-by the principal lands after it. `read_marks.json` and `attention.json` are
+An item leaves when the session's `ChannelRead` returns that line, a post
+by the principal lands after it, or a keepalive turn run for it in that
+session finishes (ADR-096 D3). Only a channel's own conversation session
+keeps a list for it: owner runs elsewhere (the trunk, the owner's DM) are only
+told that posts came and where they are answered, and keep none (ADR-096 D2).
+`read_marks.json` and `attention.json` are
 written under a `FileLock` (`<file>.lock`) held across load → save.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout

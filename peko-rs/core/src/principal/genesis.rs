@@ -139,7 +139,32 @@ pub fn fire_message(job: &CronJob, config: &PrincipalConfig) -> String {
     if carries_memory_brief(job) {
         return memory_maintenance_brief(config);
     }
+    if carries_keepalive_tick(job) {
+        return keepalive_tick_message(config);
+    }
     job.task_description()
+}
+
+/// Whether `job` is the seeded keepalive still carrying the runtime's
+/// tick text (any earlier build's). Such a job gets the current tick
+/// text at each fire (ADR-096 D5); one whose text the principal rewrote
+/// keeps its own words.
+pub(crate) fn carries_keepalive_tick(job: &CronJob) -> bool {
+    job.id == KEEPALIVE_JOB_ID
+        && matches!(&job.action, CronJobAction::Send { message, .. }
+            if message.starts_with(KEEPALIVE_TICK_PREFIX))
+}
+
+/// What the keepalive says in a conversation where other pekos' posts
+/// wait (ADR-096 D1). The turn runs in that conversation, acting for
+/// whoever wrote them, and its reply is posted there.
+#[must_use]
+pub fn keepalive_conversation_message() -> String {
+    "[keepalive] Other pekos posted in this conversation and nobody has answered yet: \
+their posts are under \"waiting on you\". Answer them if they call for an answer. Your reply \
+is posted to this conversation exactly as you write it, so write only what they should read, \
+and leave it empty if no answer is needed. Don't also send it with ChannelSend."
+        .to_string()
 }
 
 /// The runtime-authored brief for the trunk's FIRST self-turn (P2).
@@ -247,9 +272,10 @@ pub fn keepalive_tick_message(config: &PrincipalConfig) -> String {
     format!(
         "[keepalive] Supervision tick for `{display}`. You are this peko's \
 supervisor, in its main session: review your session tree (`session list`), tend your memory \
-and workspace, check channels (`channel read`), and continue or adjust \
-your standing work. A tick runs only when something waits on you (posts, \
-a plan that changed since your last tick, a check-in that came due, a failed \
+and workspace, and continue or adjust your standing work. Other pekos' posts are answered \
+in their own conversations, by turns that act for whoever wrote them; the channel summary \
+only names them, so don't act on them here. A tick runs only when something waits on you \
+(a plan that changed since your last tick, a check-in that came due, a failed \
 job) or an hour has passed since the last one, so a quiet tick costs \
 nothing: keep the 10-minute cadence unless your owner asks otherwise. Keep \
 standing work in `Plan`, and give a step you mean to come back to a \
