@@ -53,7 +53,8 @@ pub enum PrincipalCommands {
         /// Path to a seed: a `peko.toml` with the peko's definition —
         /// `[identity]`, `[intent]`, `preferred_model_id`,
         /// `[[permissions]]`, `exposure`, `quota`, and an optional
-        /// inline `persona` (Markdown for `roles/root.md`). Fields you
+        /// inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the
+        /// house rules every role follows). Fields you
         /// leave out take defaults. The new peko always gets its own
         /// identity; `id`, `did`, and `boot_state` in the seed are
         /// ignored. TOML note: top-level keys (`preferred_model_id`,
@@ -722,15 +723,7 @@ async fn provision_principal(
     let roles_dir = paths.resolver().principal_layout(name).shared.roles_dir;
     tokio::fs::create_dir_all(&roles_dir).await?;
     let prompt_path = roles_dir.join("primary.md");
-    let prompt_body = match &persona {
-        Some(body) => peko_core::principal::seed::persona_prompt(
-            name,
-            config.identity.description.as_deref(),
-            body,
-        ),
-        None => default_agent_prompt(name),
-    };
-    tokio::fs::write(&prompt_path, prompt_body).await?;
+    tokio::fs::write(&prompt_path, default_agent_prompt(name)).await?;
 
     // ── P0 provision: seed the kb scaffold (ADR-055) ────────────────
     // The persistent-knowledge floor: `kb/` with the pinned hot set
@@ -739,6 +732,10 @@ async fn provision_principal(
     // `--force` re-create the fresh workspace is empty, so this lays
     // down the full floor.
     let kb_created = peko_core::principal::kb::seed_kb_scaffold(&shared_layout.root)?;
+    // A seed's persona joins the house rules every role follows.
+    if let Some(body) = &persona {
+        peko_core::principal::seed::add_persona(&shared_layout.root, body)?;
+    }
     // ADR-078 D7: the owner's plain-language policy for everyone else.
     peko_core::security::policy::seed(&shared_layout.root)?;
 

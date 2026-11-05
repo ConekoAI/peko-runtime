@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a persona reaches conversations (2026-11-05)
+
+- A seed's `persona` (`peko create -s`, and creating from a seed over IPC)
+  was written into `roles/primary.md`, a role conversations never run, so
+  it had no effect. It now goes in a `## Persona` section of
+  `kb/CONVENTIONS.md`, the house rules every role follows (ADR-087), and
+  `roles/primary.md` gets the default prompt.
+- The tutorial's first step put the persona in `roles/root.md`, which only
+  the peko's own check-ins run; on a live model the peko answered without
+  it. The step now adds it to `kb/CONVENTIONS.md`, with output from a live
+  run.
+
 ### Fix: `peko daemon stop` ends only its own daemon (2026-11-05)
 
 - When the daemon still answered after its PID was killed, `stop` killed

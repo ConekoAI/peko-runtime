@@ -84,7 +84,7 @@ Options:
           Configured model id to pin this peko to (see `peko model list`). Optional only when the `--seed` carries `preferred_model_id`; exactly one of the two must provide it. There is no runtime default model, so an unpinned peko fails every send
 
   -s, --seed <SEED_TOML>
-          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown for `roles/root.md`). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header
+          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the house rules every role follows). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header
 
       --force
           Force a destructive re-create. Without `--force`, `peko create <existing>` refuses with a clear error — protects identity, roles, memory, and session history from a one-keystroke wipe. With `--force`, the existing peko is removed first — its workspace, roles/, memory/, and session history are all wiped before the new peko is written. There is no undo. Combine with `--yes` to skip the confirmation prompt in non-interactive shells

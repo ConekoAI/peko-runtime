@@ -112,7 +112,7 @@ directly; changes apply on its next turn.
 | `peko.toml` | Name, description, goals and values, model, limits, who may talk to it |
 | `roles/conversation.md` | How it talks with you and other people |
 | `roles/root.md` | How it looks after its ongoing work: plans, schedules, check-ins |
-| `kb/CONVENTIONS.md` | House rules every role follows |
+| `kb/CONVENTIONS.md` | House rules every role follows, including its persona and voice |
 | `POLICY.md` | Your rules for what it may do for other people |
 | `kb/MEMORY.md` | What it remembers about you and its work |
 | `skills/<name>/SKILL.md` | Instructions it loads when a task calls for them |

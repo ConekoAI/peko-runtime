@@ -24,11 +24,13 @@ W=~/.peko/pekos/my-peko
 
 ## 1. Give it a persona
 
-How a peko behaves in conversation comes from its root role,
-`roles/root.md`. Add a short persona at the end of the file:
+Who a peko is (its name, voice and manners) lives in `kb/CONVENTIONS.md`,
+the house rules every one of its roles follows, and in the `[identity]`
+section of `peko.toml`. Roles in `roles/` describe jobs, not personality.
+Add a short persona at the end of the conventions:
 
 ```bash
-cat >> $W/roles/root.md <<'EOF'
+cat >> $W/kb/CONVENTIONS.md <<'EOF'
 
 ## Persona
 
@@ -43,12 +45,16 @@ peko send my-peko "Who are you?"
 ```
 
 ```
-my-peko: I'm Mochi — your personal AI assistant. I keep notes in my knowledge base, help with everyday tasks, and keep an eye on any scheduled work we've set up.
+my-peko: I'm **Mochi** — your personal agent, private and local. I keep your notes, run tasks and reminders, and keep answers short and to the point.
 
-What can I do for you?
+What's first?
 
 — Mochi
 ```
+
+To start new pekos with a persona, put it in a seed instead: a
+`persona = """…"""` line at the top of the seed file, then
+`peko create <name> -s <seed>`. It lands in the same place.
 
 ---
 
