@@ -64,7 +64,8 @@ fn assert_err(stdout: &str, stderr: &str, status: &std::process::ExitStatus) {
 // cron seeds) still happens synchronously, but the command returns without
 // waiting for the genesis turn. These tests use `--detach` and stop the
 // spawned sidecar at the end; a placeholder mock-llm URL is fine — the
-// endpoint is never dialed. There is no `principal remove`/`move` command,
+// genesis turn is due three seconds after create and may dial it, which
+// only fails that turn. There is no `principal remove`/`move` command,
 // so the removal/rename cases (and the legacy `--json`/`--provider` create
 // flags, which Principal create does not expose) are dropped rather than
 // rewritten.
