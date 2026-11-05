@@ -17,6 +17,26 @@ All notable changes to Peko.
   changed, or with a `[windows]` tag the gate never saw on a pull request.
   They now run on the same trigger as the Linux jobs (Windows is in MVP
   scope).
+### Fix: a peko made in the desktop goes on PekoHub when you're signed in (2026-11-05)
+
+- The desktop creates pekos as private, but nothing put them on PekoHub: the
+  profile said "Private" while no other computer could reach the peko. Now a
+  peko whose registration says private or public and that has no Hub ID yet
+  is registered as soon as it can be — right after it is created over IPC on
+  a signed-in computer, and when the tunnel becomes ready (a peko made before
+  this computer signed in). Only the local user's own pekos; a peko owned by
+  someone else still goes online through its owner's consent, and a
+  local-only peko stays local. After registering, the peko is announced again,
+  so an avatar set while the receipt was on its way reaches PekoHub.
+  `TunnelDispatcher::register_pending_principals`.
+
+### Fix: your DMs reach a new computer when your other computer wakes (2026-11-05)
+
+- A runtime that signed in while every other computer of its account was
+  offline asked them for the person's DMs once, and nobody answered. PekoHub
+  reports each of them when it connects (`peer_runtime_online`); the runtime
+  now asks again then, so the DMs, with their history, arrive without a
+  reconnect (ADR-095 D5).
 
 ### Feature: tunnel status names the local user's Hub account (2026-11-05)
 

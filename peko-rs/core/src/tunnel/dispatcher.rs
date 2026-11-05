@@ -510,6 +510,50 @@ impl TunnelDispatcher {
         Ok(())
     }
 
+    /// Put on PekoHub the local user's pekos whose registration says they
+    /// belong there but that have no Hub ID yet: a peko the desktop made
+    /// (private by default) before or after this computer signed in. Only
+    /// the local user's own pekos; one owned by someone else goes online
+    /// through its owner's consent, not here. Each registration waits for
+    /// PekoHub's receipt, so call this from a spawned task, never from the
+    /// tunnel's message loop.
+    pub async fn register_pending_principals(&self) {
+        let port: Arc<dyn ChannelPort> = self.host.tunnel_channel_port();
+        let local_user = ActorRef::User("local".into());
+        if port.actor_info(&local_user).await.hub_id.is_none() {
+            return;
+        }
+        for principal in self.host.principal_manager().list_all().await {
+            let (name, exposure, owner) = {
+                let config = principal.config.read().await;
+                (config.name.clone(), config.exposure, config.owner.clone())
+            };
+            if exposure == peko_auth::Exposure::LocalOnly
+                || manager_hub_id(&self.host, &principal).await.is_some()
+                || !peko_subject::ActorKeys::same_actor(
+                    &peko_channel::PortKeys(port.as_ref()),
+                    &owner,
+                    &local_user,
+                )
+            {
+                continue;
+            }
+            match self.register_principal(&name, exposure.into()).await {
+                Ok(hub_id) => {
+                    info!(principal = %name, ?hub_id, "registered with PekoHub");
+                    // The profile may have changed while the receipt was
+                    // on its way (the desktop sets a new peko's avatar
+                    // right after creating it, and an unregistered peko
+                    // announces nothing): announce what it is now.
+                    if let Err(e) = self.announce_single_instance(&name).await {
+                        warn!(principal = %name, "announce after registering failed: {e}");
+                    }
+                }
+                Err(e) => warn!(principal = %name, "not registered with PekoHub yet: {e}"),
+            }
+        }
+    }
+
     /// Announce a single Principal instance through the tunnel.
     ///
     /// Used when a new Principal is created after the tunnel is already connected.
@@ -696,6 +740,10 @@ impl TunnelDispatcher {
                     port.retry_wanted(Some(&runtime_id)).await;
                     // ADR-095 D6: a person asked while it was away.
                     port.resend_person_dm_invites().await;
+                    // ADR-095 D5: it may be another computer of this
+                    // account that missed our request for the person's
+                    // DMs; ask again so it answers now.
+                    port.sync_account_dms().await;
                 });
             }
             TunnelMessage::PrincipalOwnerChanged {
@@ -838,6 +886,12 @@ impl TunnelDispatcher {
                 if let Err(e) = self.announce_instances(&handle).await {
                     warn!("Failed to announce instances: {}", e);
                 }
+                // Then register the local user's pekos that should be on
+                // PekoHub and are not yet (a peko the desktop made before
+                // this computer signed in). Spawned: each waits for a
+                // receipt this loop delivers.
+                let dispatcher = self.clone();
+                tokio::spawn(async move { dispatcher.register_pending_principals().await });
                 // Keep this connection's instances online at the Hub: it
                 // marks an instance offline after 90 s without a heartbeat,
                 // and public chat to an offline peko answers 503. The task
@@ -4526,6 +4580,98 @@ mod tests {
 
     // ─── Phase 2: Principal tunnel exposure tests ─────────────────────────
 
+    /// A peko the desktop made is private by intent. Once this computer
+    /// is registered, the dispatcher puts the local user's such pekos on
+    /// PekoHub; a local-only one stays local, and one owned by someone
+    /// else waits for its owner.
+    #[tokio::test]
+    async fn the_local_users_private_pekos_go_on_pekohub_once_signed_in() {
+        let app_state = create_test_app_state().await;
+        let dispatcher = TunnelDispatcher::new(Arc::new(app_state.clone()));
+        let (handle, mut rx) = mock_tunnel_handle();
+        dispatcher.state.write().await.tunnel_handle = Some(handle.clone());
+        dispatcher.mark_ready(30).await;
+        let mine = create_test_principal(
+            &app_state,
+            "mine",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        create_test_principal(
+            &app_state,
+            "kept-local",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::LocalOnly,
+        )
+        .await;
+        create_test_principal(
+            &app_state,
+            "theirs",
+            ActorRef::User(peko_subject::Route::hub(uuid::Uuid::new_v4().to_string())),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+
+        // Not signed in: nothing goes to PekoHub.
+        dispatcher.register_pending_principals().await;
+        assert!(rx.try_recv().is_err());
+
+        // Signed in: the one peko is announced; PekoHub answers.
+        app_state
+            .tunnel_channel_port()
+            .local()
+            .link_local_user(&app_state.runtime_did(), &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        let pending = dispatcher.clone();
+        let registering = tokio::spawn(async move { pending.register_pending_principals().await });
+        let announced = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("announced")
+            .expect("tunnel open");
+        let TunnelMessage::InstanceAnnounce { payload } = announced else {
+            panic!("expected an announce, got {announced:?}");
+        };
+        assert_eq!(payload.local_id, mine.id.0);
+        let hub = uuid::Uuid::new_v4().to_string();
+        dispatcher
+            .dispatch(
+                TunnelMessage::PrincipalRegistered {
+                    registration_id: payload.registration_id.clone(),
+                    local_id: mine.id.0.clone(),
+                    hub_id: hub.clone(),
+                    signing_did: mine.did().await.0,
+                },
+                handle.clone(),
+            )
+            .await
+            .unwrap();
+        registering.await.unwrap();
+        assert_eq!(
+            manager_hub_id(&dispatcher.host, &mine).await.as_deref(),
+            Some(hub.as_str())
+        );
+        // Then it announces what it is now (an avatar set meanwhile).
+        let TunnelMessage::InstanceAnnounce { payload } = rx.try_recv().expect("re-announced")
+        else {
+            panic!("expected the profile announce");
+        };
+        assert_eq!(payload.local_id, mine.id.0);
+        assert_eq!(payload.registration_id, None);
+        assert!(
+            rx.try_recv().is_err(),
+            "neither the local-only peko nor someone else's"
+        );
+
+        // Already registered: asking again sends nothing.
+        dispatcher.register_pending_principals().await;
+        assert!(rx.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn local_principals_are_not_announced_and_receipts_require_matching_request() {
         let app_state = create_test_app_state().await;
@@ -8118,13 +8264,20 @@ mod tests {
         assert_eq!(people, [format!("user:hub:{eve}")]);
     }
 
-    /// ADR-095 D5 + D1: alice's new computer learns of her DM with a peko
-    /// elsewhere from her laptop, opens the same conversation, and keeps
-    /// its whole history, older pages included.
-    #[tokio::test]
-    async fn a_new_computer_finds_the_persons_dms_and_keeps_their_history() {
+    /// Alice's DM with a private peko on `host`, opened from her laptop
+    /// (registered to her account, ADR-090).
+    struct AliceDm {
+        host: DmRuntime,
+        laptop: DmRuntime,
+        channel: peko_channel::ChannelId,
+        account: String,
+        peko: ActorRef,
+        peko_did: String,
+    }
+
+    async fn alice_dm_with_a_peko_elsewhere() -> AliceDm {
         use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
-        use peko_channel::{ChannelPort, Checkpoint};
+        use peko_channel::ChannelPort;
 
         let account = uuid::Uuid::new_v4().to_string();
         let alice = ActorRef::User(peko_subject::Route::hub(account.clone()));
@@ -8193,13 +8346,40 @@ mod tests {
             panic!("the laptop opens the DM");
         };
         relay(&mut laptop, &mut host).await;
+        AliceDm {
+            host,
+            laptop,
+            channel,
+            account,
+            peko: ActorRef::from(&peko.id),
+            peko_did,
+        }
+    }
+
+    /// ADR-095 D5 + D1: alice's new computer learns of her DM with a peko
+    /// elsewhere from her laptop, opens the same conversation, and keeps
+    /// its whole history, older pages included.
+    #[tokio::test]
+    async fn a_new_computer_finds_the_persons_dms_and_keeps_their_history() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let AliceDm {
+            mut host,
+            mut laptop,
+            channel,
+            account,
+            peko,
+            peko_did,
+        } = alice_dm_with_a_peko_elsewhere().await;
+        let host_port = host.app.tunnel_channel_port();
         let total = crate::tunnel::HISTORY_PAGE_LIMIT as usize + 20;
         for i in 0..total {
             host_port
                 .local()
                 .post(
                     &channel,
-                    &ActorRef::from(&peko.id),
+                    &peko,
                     peko_channel::PostMsg::root(format!("note {i}")),
                 )
                 .await
@@ -8287,6 +8467,95 @@ mod tests {
             .conversation_kind(&peko_channel::ChannelId(forged.channel_id))
             .await
             .is_err());
+    }
+
+    /// ADR-095 D5: alice's new computer asks for her DMs while her laptop
+    /// is asleep, so nobody answers. When PekoHub reports the laptop back
+    /// (`peer_runtime_online`), the new computer asks again and gets the
+    /// DM, with no reconnect of its own.
+    #[tokio::test]
+    async fn a_new_computer_asks_again_when_the_persons_other_computer_wakes() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let AliceDm {
+            mut host,
+            mut laptop,
+            channel,
+            account,
+            peko,
+            ..
+        } = alice_dm_with_a_peko_elsewhere().await;
+        host.app
+            .tunnel_channel_port()
+            .local()
+            .post(
+                &channel,
+                &peko,
+                peko_channel::PostMsg::root("said before".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let mut desktop = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let desktop_port = desktop.app.tunnel_channel_port();
+        desktop_port
+            .local()
+            .link_local_user(&desktop.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        // Signing in asks; the laptop is asleep, so PekoHub delivers it
+        // to no one.
+        desktop_port.sync_account_dms().await;
+        assert!(desktop
+            .sent()
+            .iter()
+            .any(|m| matches!(m, TunnelMessage::TunnelAccountDmsRequest { .. })));
+        assert!(desktop_port.conversation_kind(&channel).await.is_err());
+
+        // The laptop connects; PekoHub tells the desktop.
+        let handle = desktop
+            .app
+            .tunnel_handle_slot()
+            .read()
+            .await
+            .clone()
+            .unwrap();
+        desktop
+            .dispatcher
+            .dispatch(
+                TunnelMessage::PeerRuntimeOnline {
+                    runtime_id: laptop.app.runtime_did(),
+                },
+                handle,
+            )
+            .await
+            .unwrap();
+        let account_runtimes = [
+            (laptop.app.runtime_did(), account.clone()),
+            (desktop.app.runtime_did(), account.clone()),
+        ];
+        let mut texts = Vec::new();
+        for _ in 0..200 {
+            route_account(
+                &mut [&mut host, &mut laptop, &mut desktop],
+                &account_runtimes,
+            )
+            .await;
+            texts = desktop_port
+                .peek(&channel, &Checkpoint::zero())
+                .await
+                .map(|events| posts(&events))
+                .unwrap_or_default();
+            if !texts.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            texts.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+            ["said before"]
+        );
     }
 
     /// ADR-095 D7 (F7): alice talks to her peko on its host, L1, then from

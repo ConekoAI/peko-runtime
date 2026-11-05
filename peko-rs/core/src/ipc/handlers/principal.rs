@@ -1467,6 +1467,16 @@ impl RequestHandler for PrincipalHandler {
                             principal: summary,
                         };
                         send_response(sink, response).await?;
+                        // A peko made here is private: on a signed-in
+                        // computer it goes on PekoHub now, so your other
+                        // computers reach it (only you and its contacts
+                        // can). Unregistered, the tunnel's next ready
+                        // does it.
+                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
+                            tokio::spawn(
+                                async move { dispatcher.register_pending_principals().await },
+                            );
+                        }
                     }
                     Err(e) => {
                         // `Manager::create` surfaces AlreadyExists with
