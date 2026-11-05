@@ -27,6 +27,8 @@ pub struct DaemonGuard {
     /// `<peko_dir>/run/daemon.pid`, which the foreground wrapper
     /// populates with the real `peko-daemon` PID.
     pid_file: PathBuf,
+    /// The daemon's stderr, for the panic when it exits during start-up.
+    log_file: PathBuf,
 }
 
 impl DaemonGuard {
@@ -52,13 +54,12 @@ impl DaemonGuard {
             super::agent::seed_mock_provider_in_catalog(cli.home(), &mock_url.to_string_lossy());
         }
 
-        // The temp dir, not `/tmp`: on Windows that is `\tmp` on the
-        // current drive, which usually doesn't exist.
-        let tmp = std::env::temp_dir();
-        let debug_out = std::fs::File::create(tmp.join("peko-daemon-debug.out"))
+        // In this test's own home: tests run in parallel, and a shared
+        // file in the temp dir held whichever daemon started last.
+        let log_file = cli.peko_dir().join("daemon-debug.err");
+        let debug_out = std::fs::File::create(cli.peko_dir().join("daemon-debug.out"))
             .expect("create daemon debug out");
-        let debug_err = std::fs::File::create(tmp.join("peko-daemon-debug.err"))
-            .expect("create daemon debug err");
+        let debug_err = std::fs::File::create(&log_file).expect("create daemon debug err");
         let child = cli
             .cmd()
             .args(["daemon", "start", "--foreground", "-vv"])
@@ -68,7 +69,11 @@ impl DaemonGuard {
             .expect("spawn peko daemon start --foreground");
 
         let pid_file = cli.peko_dir().join("run").join("daemon.pid");
-        let mut guard = Self { child, pid_file };
+        let mut guard = Self {
+            child,
+            pid_file,
+            log_file,
+        };
         guard.wait_ready(cli, Duration::from_secs(30));
         guard
     }
@@ -118,8 +123,21 @@ impl DaemonGuard {
                 }
                 _ => false,
             };
-            if running {
+            // A pipe or socket answers for whichever daemon bound it. Ours
+            // writes `run/daemon.pid` in this test's home only once it has
+            // bound the endpoint, so "running" without that file is some
+            // other daemon answering (a name clash): keep waiting, and the
+            // exit check below reports our daemon's failure.
+            if running && self.pid_file.exists() {
                 return;
+            }
+            if let Ok(Some(status)) = self.child.try_wait() {
+                panic!(
+                    "peko daemon exited before it was ready ({status}; endpoint: {})\n\
+                     --- daemon stderr ---\n{}\n--- end ---",
+                    cli.daemon_endpoint(),
+                    std::fs::read_to_string(&self.log_file).unwrap_or_default(),
+                );
             }
             if Instant::now() >= deadline {
                 panic!(
