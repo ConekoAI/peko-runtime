@@ -56,7 +56,8 @@ pub fn seed_from_config(principal_toml: &str) -> Result<String> {
 }
 
 /// A seed read back: the definition plus its optional inline `persona`
-/// (the Markdown body for the root agent prompt).
+/// (Markdown added to the grown peko's `kb/CONVENTIONS.md`; see
+/// [`add_persona`]).
 #[derive(Debug, Clone)]
 pub struct Seed {
     pub config: PrincipalConfig,
@@ -81,18 +82,28 @@ pub fn parse_seed(text: &str) -> Result<Seed> {
     })
 }
 
-/// The root agent prompt of a peko grown with a `persona`: the default
-/// frontmatter and `{{memory}}` slot around the persona body.
-#[must_use]
-pub fn persona_prompt(name: &str, description: Option<&str>, persona: &str) -> String {
-    let description = description
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("The {name} peko"));
-    format!(
-        "---\nname: primary\ndescription: \"{description}\"\n---\n\n\
-         {persona}\n\n\
-         {{{{memory}}}}\n"
-    )
+/// Give a peko grown from a seed its `persona`: a `## Persona` section
+/// in `kb/CONVENTIONS.md`, the house rules every role follows (ADR-087:
+/// who a peko is lives in `peko.toml` `[identity]` and the conventions,
+/// never in a role). The kb scaffold is laid down first, so the persona
+/// joins the default conventions instead of replacing them. A file that
+/// already has a `## Persona` section is left alone.
+///
+/// # Errors
+/// When the kb scaffold or `CONVENTIONS.md` cannot be written.
+pub fn add_persona(workspace: &std::path::Path, persona: &str) -> Result<()> {
+    let persona = persona.trim();
+    if persona.is_empty() {
+        return Ok(());
+    }
+    crate::principal::kb::seed_kb_scaffold(workspace)?;
+    let path = workspace.join("kb").join("CONVENTIONS.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    if text.lines().any(|line| line.trim() == "## Persona") {
+        return Ok(());
+    }
+    let text = format!("{}\n\n## Persona\n\n{persona}\n", text.trim_end());
+    std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))
 }
 
 impl Seed {
@@ -118,6 +129,25 @@ impl Seed {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_persona_joins_the_conventions_every_role_follows() {
+        let ws = tempfile::tempdir().unwrap();
+        super::add_persona(ws.path(), "Your name is Mochi. Sign replies \"— Mochi\".\n").unwrap();
+        let conventions = std::fs::read_to_string(ws.path().join("kb/CONVENTIONS.md")).unwrap();
+        assert!(
+            conventions.starts_with("# Conventions"),
+            "the default rules stay"
+        );
+        assert!(
+            conventions.ends_with("## Persona\n\nYour name is Mochi. Sign replies \"— Mochi\".\n")
+        );
+
+        super::add_persona(ws.path(), "Something else").unwrap();
+        let again = std::fs::read_to_string(ws.path().join("kb/CONVENTIONS.md")).unwrap();
+        assert_eq!(again, conventions, "an existing persona is kept");
+        assert!(!ws.path().join("roles").exists(), "no role is written");
+    }
     use super::*;
 
     const CONFIG: &str = r#"

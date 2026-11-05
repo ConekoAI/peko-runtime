@@ -1412,20 +1412,24 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
                 let persona = seed.as_ref().and_then(|seed| seed.persona.clone());
-                let prompt_body = match &persona {
-                    Some(body) => crate::principal::seed::persona_prompt(
-                        &name,
-                        description
-                            .as_deref()
-                            .or(seed.as_ref().and_then(|s| s.config.identity.description.as_deref())),
-                        body,
-                    ),
-                    None => format!(
-                        "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
-                         You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
-                         {{{{memory}}}}\n"
-                    ),
-                };
+                let prompt_body = format!(
+                    "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
+                     You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
+                     {{{{memory}}}}\n"
+                );
+                // A seed's persona joins the house rules every role
+                // follows (`kb/CONVENTIONS.md`), not a role.
+                if let Some(body) = &persona {
+                    let workspace = roles_dir.parent().unwrap_or(&roles_dir).to_path_buf();
+                    if let Err(e) = crate::principal::seed::add_persona(&workspace, body) {
+                        let response = ResponsePacket::Error {
+                            request_id,
+                            message: format!("write persona: {e}"),
+                        };
+                        send_response(sink, response).await?;
+                        return Ok(());
+                    }
+                }
                 if let Err(e) = tokio::fs::write(roles_dir.join("primary.md"), prompt_body).await {
                     let response = ResponsePacket::Error {
                         request_id,
