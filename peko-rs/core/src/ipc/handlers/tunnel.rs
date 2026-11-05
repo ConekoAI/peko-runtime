@@ -53,6 +53,10 @@ pub(crate) trait TunnelHost: Send + Sync {
 
     /// Remove the Hub registration and close the tunnel.
     async fn unregister_runtime(&self, token: &str, discard_unsent: bool) -> anyhow::Result<()>;
+
+    /// The Hub account the local user is linked to, `None` when
+    /// unregistered (ADR-081 D3).
+    async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount>;
 }
 
 /// `tunnel` domain request handler. Constructed with an `Arc<dyn TunnelHost>`
@@ -104,12 +108,15 @@ impl RequestHandler for TunnelHandler {
             RequestPacket::TunnelStatus { request_id } => {
                 let configured = crate::tunnel::credential::has_pekohub_credential();
                 let connected = self.host.tunnel_connected().await;
+                let account = self.host.linked_account().await;
                 let response = ResponsePacket::TunnelStatus {
                     request_id,
                     configured,
                     daemon_running: true,
                     connected,
                     hub_url: crate::tunnel::credential::registered_hub_origin(),
+                    account_name: account.as_ref().and_then(|a| a.name.clone()),
+                    account: account.map(|a| a.id),
                 };
                 send_response(sink, response).await?;
             }
@@ -184,6 +191,7 @@ mod tests {
     #[derive(Default)]
     struct Host {
         registered: Mutex<Vec<(String, String)>>,
+        linked: Mutex<Option<crate::tunnel::registration::LinkedAccount>>,
     }
 
     #[async_trait]
@@ -213,6 +221,9 @@ mod tests {
             _discard_unsent: bool,
         ) -> anyhow::Result<()> {
             Ok(())
+        }
+        async fn linked_account(&self) -> Option<crate::tunnel::registration::LinkedAccount> {
+            self.linked.lock().unwrap().clone()
         }
     }
 
@@ -302,5 +313,41 @@ mod tests {
             "{response:?}"
         );
         assert!(host.registered.lock().unwrap().is_empty());
+    }
+
+    /// The desktop learns which Hub account is the local user, so it can
+    /// tell `user:hub:<account>` is "you" and name the account.
+    #[tokio::test]
+    async fn tunnel_status_names_the_linked_account() {
+        let host = Arc::new(Host::default());
+        let status = |host: Arc<Host>| async move {
+            match send(
+                host,
+                CallerContext::local(),
+                RequestPacket::TunnelStatus { request_id: 9 },
+            )
+            .await
+            {
+                ResponsePacket::TunnelStatus {
+                    account,
+                    account_name,
+                    ..
+                } => (account, account_name),
+                other => panic!("expected TunnelStatus, got {other:?}"),
+            }
+        };
+        assert_eq!(status(host.clone()).await, (None, None));
+
+        *host.linked.lock().unwrap() = Some(crate::tunnel::registration::LinkedAccount {
+            id: "0b6c7a4e-0000-4000-8000-000000000000".into(),
+            name: Some("Alice".into()),
+        });
+        assert_eq!(
+            status(host).await,
+            (
+                Some("0b6c7a4e-0000-4000-8000-000000000000".into()),
+                Some("Alice".into())
+            )
+        );
     }
 }

@@ -67,12 +67,16 @@ pub async fn handle_tunnel(
                         daemon_running,
                         connected,
                         hub_url,
+                        account,
+                        account_name,
                         ..
                     }) => {
                         if json_flag || json {
                             let output = serde_json::json!({
                                 "configured": configured,
                                 "hub_url": hub_url,
+                                "account": account,
+                                "account_name": account_name,
                                 "credential_path": cred_path.to_string_lossy().to_string(),
                                 "daemon_running": daemon_running,
                                 "connected": connected,
@@ -97,6 +101,12 @@ pub async fn handle_tunnel(
                             }
                             if let Some(hub) = &hub_url {
                                 println!("  Hub:        {hub}");
+                            }
+                            if let Some(account) = &account {
+                                match &account_name {
+                                    Some(name) => println!("  Account:    {name} ({account})"),
+                                    None => println!("  Account:    {account}"),
+                                }
                             }
                             println!();
                             println!("  Start with: peko daemon start  (auto-starts tunnel if cred exists)");
@@ -250,6 +260,8 @@ mod tests {
             daemon_running: true,
             connected: false,
             hub_url: Some("https://pekohub.ai".to_string()),
+            account: Some("0b6c7a4e-0000-4000-8000-000000000000".to_string()),
+            account_name: Some("Alice".to_string()),
         };
         let bytes = resp.to_bytes().unwrap();
         let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
@@ -260,9 +272,16 @@ mod tests {
                 daemon_running,
                 connected,
                 hub_url,
+                account,
+                account_name,
             } => {
                 assert_eq!(request_id, 702);
                 assert_eq!(hub_url.as_deref(), Some("https://pekohub.ai"));
+                assert_eq!(
+                    account.as_deref(),
+                    Some("0b6c7a4e-0000-4000-8000-000000000000")
+                );
+                assert_eq!(account_name.as_deref(), Some("Alice"));
                 assert!(configured);
                 assert!(daemon_running);
                 assert!(!connected);
@@ -285,6 +304,8 @@ mod tests {
             daemon_running: true,
             connected: false,
             hub_url: None,
+            account: None,
+            account_name: None,
         };
         assert_eq!(resp.request_id(), 3);
     }
