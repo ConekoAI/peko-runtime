@@ -284,9 +284,7 @@ impl PrincipalPolicyGate {
 impl PolicyGate for PrincipalPolicyGate {
     async fn review(&self, call: &GatedCall) -> Verdict {
         let Some((manager, principal)) = self.principal(&call.principal_id).await else {
-            return Verdict::Deny(
-                "the principal is not loaded; nothing can review the call".into(),
-            );
+            return Verdict::Deny("the peko is not loaded; nothing can review the call".into());
         };
         let policy = policy::load(&principal.workspace_path).unwrap_or_default();
         let keys = crate::security::shared_actor_keys(manager.channel_port());

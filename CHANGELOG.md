@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: what a live upgrade test turned up (2026-11-05)
+
+- Pekos stop calling themselves "principal": the first-turn brief and the
+  keepalive message say "peko", and the journal's first line reads "created
+  as peko". Pekos set up before this keep the description they wrote.
+- A local peko's address shows as `peko:local:<id>` everywhere (log rows,
+  members, peek, permissions, grant and revoke messages); a bare local
+  route printed `peko:<id>` before.
+- `peko diff` reads the baseline the daemon writes (`{name: {principal,
+  hooks, mcp}}`) and reports drift again; it always said "no baseline".
+- User-facing errors that still said principal (a missing preferred model,
+  a missing root role, the policy reviewer's refusal) say peko.
+
 ### Change: everything you see says peko (2026-11-05)
 
 - A peko's definition is now `peko.toml` (was `principal.toml`), and the

@@ -167,7 +167,7 @@ impl DefaultPrincipalRouterFactory {
 
         // 3. No root role file — fail loudly with remediation.
         Err(anyhow::anyhow!(
-            "No root role prompt found for this principal: expected {} or {} \
+            "No root role prompt found for this peko: expected {} or {} \
              (or set `[routing].root_prompt` in peko.toml). Seed one with \
              `peko create` / restart the daemon (the boot pass stamps the \
              compiled-in default), or write roles/root.md by hand.",

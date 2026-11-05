@@ -380,7 +380,7 @@ async fn digest_pass(
     let mut sections = Vec::new();
     if !waiting.is_empty() {
         sections.push(format!(
-            "waiting on you — other principals' posts you have not answered. They stay \
+            "waiting on you — other pekos' posts you have not answered. They stay \
              listed until you ChannelRead the channel or post there:\n{}",
             waiting.join("\n")
         ));
