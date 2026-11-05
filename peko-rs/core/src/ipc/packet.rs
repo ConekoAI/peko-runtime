@@ -2010,6 +2010,15 @@ pub enum ResponsePacket {
         /// absent when unregistered, and from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hub_url: Option<String>,
+        /// The Hub account the local user is linked to (ADR-081 D3), as
+        /// its UUID: the local user is also `user:hub:<account>`. Absent
+        /// when unregistered, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// That account's name as Hub gave it at registration (its
+        /// display name, else its handle).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_name: Option<String>,
     },
 
     /// Comprehensive daemon status payload (issue #8). Includes tunnel

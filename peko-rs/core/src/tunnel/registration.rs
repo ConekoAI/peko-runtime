@@ -418,6 +418,24 @@ pub async fn local_user(resolver: &PathResolver) -> peko_channel::ActorInfo {
         .await
 }
 
+/// The Hub account the local user is linked to (ADR-081 D3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedAccount {
+    /// The account's UUID: the local user is also `user:hub:<id>`.
+    pub id: String,
+    /// Its name as Hub gave it at registration.
+    pub name: Option<String>,
+}
+
+/// The local user's linked Hub account, `None` when unregistered.
+pub async fn linked_account(resolver: &PathResolver) -> Option<LinkedAccount> {
+    let id = local_user(resolver).await.hub_id?;
+    Some(LinkedAccount {
+        id,
+        name: actor_store(resolver).person_display_name().await,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,5 +565,37 @@ mod tests {
             .is_err());
         store.unlink_local_user().await.unwrap();
         assert_ne!(store.key_of(&hub), store.key_of(&local_subject));
+    }
+
+    /// The status surface reports the account the local user is linked
+    /// to, with the name Hub gave, and nothing once unlinked.
+    #[tokio::test]
+    async fn linked_account_follows_the_local_user_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolver = PathResolver::with_dirs(
+            dir.path().to_path_buf(),
+            dir.path().join("data"),
+            dir.path().join("cache"),
+        );
+        let store = actor_store(&resolver);
+        store.ensure_local_user("did:key:zRuntime").await.unwrap();
+        assert_eq!(linked_account(&resolver).await, None);
+
+        let account = uuid::Uuid::new_v4().to_string();
+        store
+            .link_local_user("did:key:zRuntime", &account)
+            .await
+            .unwrap();
+        store.set_person_display_name(Some("Alice")).await.unwrap();
+        assert_eq!(
+            linked_account(&resolver).await,
+            Some(LinkedAccount {
+                id: account,
+                name: Some("Alice".into()),
+            })
+        );
+
+        store.unlink_local_user().await.unwrap();
+        assert_eq!(linked_account(&resolver).await, None);
     }
 }
