@@ -7,8 +7,8 @@ name: Integration Tests
 # lint         every PR that touches peko-rs/core/src/  < 1 min       scripts/check_*.sh
 # unit-linux   source/tests/build changes           lib tests           cargo test --lib
 # native-linux source/tests/build changes           native tests        shutdown + test-native (parallel with unit-linux)
-# unit-windows `[windows]` / Windows paths / nightly lib tests           gated; expensive runner; blocking (Windows in MVP)
-# native-windows same gate as unit-windows          native tests        test-native suites (parallel with unit-windows); blocking
+# unit-windows same trigger as unit-linux           lib tests           blocking (Windows in MVP)
+# native-windows same trigger as native-linux       native tests        test-native suites (parallel with unit-windows); blocking
 # integration  PR that touches integration paths    mock/Hub tests      docker compose + PekoHub (parallel with unit tiers)
 #
 # Doc-only PRs (only *.md, PLAN.md, CHANGES.md, docs/**) DO NOT trigger
@@ -72,7 +72,7 @@ on:
       - 'scripts/check_*.ps1'
       - '.github/workflows/integration.yml'
   schedule:
-    - cron: '0 2 * * *'       # nightly full run (unit-windows + integration)
+    - cron: '0 2 * * *'       # nightly full run (every tier)
   workflow_dispatch:          # manual force-trigger
 
 env:
@@ -93,7 +93,6 @@ jobs:
   #   docker         — .github/docker/** changed
   #   dockerfile     — Dockerfile* / docker-compose*.yml changed
   #   workflow       — this file changed
-  #   windows_code   — windows-specific code paths changed
   # Always runs on any trigger so downstream jobs can branch on its outputs.
   changes:
     name: Detect changed paths
@@ -107,7 +106,6 @@ jobs:
       docker: ${{ steps.filter.outputs.docker }}
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
       workflow: ${{ steps.filter.outputs.workflow }}
-      windows_code: ${{ steps.filter.outputs.windows_code }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -169,43 +167,6 @@ jobs:
             workflow:
               - '.github/workflows/integration.yml'
               - 'Makefile'
-            windows_code:
-              # Phase 0.Z-D: src/ → peko-rs/core/src/.
-              - 'peko-rs/core/src/common/process/**'
-              - 'peko-rs/core/src/extensions/skill/adapter.rs'
-              - 'peko-rs/core/src/ipc/pipe_security.rs'
-              # Phase 10a moved fs/grep.rs into peko-rs/tools-builtin;
-              # the new path is platform-neutral (uses the `regex`
-              # crate, no libc/cfg gates) so the old `src/...` entry
-              # would always be stale going forward.
-              # Phase 10d moved skill/preprocess.rs into peko-tools-builtin
-              # as peko-rs/tools-builtin/src/skill/body.rs (which uses
-              # tokio::process::Command — Unix-only); src/.../preprocess.rs
-              # is now a 5-line re-export shim with no platform-specific
-              # code, so the old entry would always be stale going forward.
-              # Phase F4 foldback (2026-07-25): peko-rs/tools-builtin/src/skill/body.rs
-              # moved to peko-rs/core/src/tools/builtin/skill/body.rs (no
-              # platform-specific code in the file — pure environment-parser
-              # logic — but the surrounding builtin tree now has Win32
-              # gateways next to unix-only sibling tools, so tracking the
-              # file from the lifted path keeps the filter honest).
-              # Phase 0.Z-E (2026-07-25): peko-tools-builtin deleted; cron
-              # port + tool_search_metadata moved to peko-cron / peko-engine
-              # respectively. Bulk tool impls (including skill/body.rs) stay
-              # at the F4-lifted path; this filter entry remains valid.
-              - 'peko-rs/core/src/tools/builtin/skill/body.rs'
-              # Process-group cleanup for shell tools (unix-gated killpg).
-              - 'peko-rs/core/src/tools/builtin/process.rs'
-              # Phase 0.Z-D: tests/common/cli.rs → peko-rs/core/tests/common/cli.rs
-              - 'peko-rs/core/tests/common/cli.rs'
-              - 'peko-rs/core/tests/common/daemon.rs'
-              # 2026-11-03: the named-pipe transport (ADR-038), daemon
-              # spawning, and the tools with Windows-specific shells and
-              # interpreters.
-              - 'peko-rs/core/src/ipc/**'
-              - 'peko-rs/core/src/common/services/daemon_process_service.rs'
-              - 'peko-rs/core/src/tools/builtin/bash.rs'
-              - 'peko-rs/core/src/tools/builtin/workflow.rs'
 
   # ── Tier 0b: Lint — Issue-015 boundary rules, every PR ───────────────
   # HARD GATE. `scripts/check_module_boundaries.sh` enforces the three
@@ -298,26 +259,23 @@ jobs:
       - name: Run native integration tests
         run: make test-native
 
-  # ── Tier 0d: Windows unit tests, gated ───────────────────────────────
-  # Gates (existing):
-  #   - `[windows]` in PR title, body, commit message, or branch name
-  #   - nightly schedule
-  #   - manual workflow_dispatch
-  # Additionally gate on changes to Windows-specific code paths so a
-  # Linux-only refactor doesn't accidentally trigger this expensive job.
-  # Windows is in MVP scope (docs/MVP_GATE.md gate 0), so a failure here
-  # fails the workflow.
+  # ── Tier 0d: Windows tests, every PR ─────────────────────────────────
+  # Windows is in MVP scope (docs/MVP_GATE.md gate 0), so the Windows
+  # tiers run whenever the Linux ones do and a failure fails the workflow.
+  # They used to be gated on a list of Windows-specific paths (or a
+  # `[windows]` tag the gate could not see on a PR), so a change to shared
+  # code that behaves differently on Windows could skip them.
   unit-windows:
     name: Unit Tests (windows-latest)
     runs-on: windows-latest
     needs: changes
     if: >-
-      (needs.changes.outputs.windows_code == 'true'
-       || github.event_name == 'schedule'
-       || github.event_name == 'workflow_dispatch'
-       || contains(github.event.head_commit.message, '[windows]')
-       || contains(github.ref_name, '[windows]')
-       || startsWith(github.ref_name, 'windows/'))
+      needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.tests == 'true'
+      || needs.changes.outputs.crates == 'true'
+      || needs.changes.outputs.workflow == 'true'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -340,12 +298,12 @@ jobs:
     runs-on: windows-latest
     needs: changes
     if: >-
-      (needs.changes.outputs.windows_code == 'true'
-       || github.event_name == 'schedule'
-       || github.event_name == 'workflow_dispatch'
-       || contains(github.event.head_commit.message, '[windows]')
-       || contains(github.ref_name, '[windows]')
-       || startsWith(github.ref_name, 'windows/'))
+      needs.changes.outputs.src == 'true'
+      || needs.changes.outputs.tests == 'true'
+      || needs.changes.outputs.crates == 'true'
+      || needs.changes.outputs.workflow == 'true'
+      || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -1987,6 +1987,48 @@ mod tests {
         );
         assert!(loaded.list_running_runs().unwrap().is_empty());
     }
+
+    /// The fresh run the recovery tests fire after a restart. It runs in
+    /// process: these tests are about recovery, not the shell. With `Bash`
+    /// the run started PowerShell, whose start is CPU-bound (about 0.9 s on
+    /// an idle machine) and grows with load; on a busy Windows runner it
+    /// passed the job's 10 s limit and the run ended `timed_out`.
+    struct CronRecoveredStubTool;
+
+    #[async_trait::async_trait]
+    impl peko_tools_core::Tool for CronRecoveredStubTool {
+        fn name(&self) -> &str {
+            "cron_recovered_stub"
+        }
+        fn description(&self) -> String {
+            "stub tool for cron restart-recovery tests".to_string()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!({"stdout": "cron-recovered"}))
+        }
+    }
+
+    async fn register_recovered_stub(tooling: &ToolRuntime) {
+        tooling
+            .tooling()
+            .catalog()
+            .register(
+                Arc::new(CronRecoveredStubTool),
+                crate::tools::metadata::ToolSource::BuiltIn,
+                peko_subject::PrincipalId::system(),
+            )
+            .await;
+    }
+
+    fn recovered_stub_action() -> CronJobAction {
+        CronJobAction::SpawnTool {
+            tool_name: "cron_recovered_stub".into(),
+            tool_params: serde_json::json!({}),
+            wake_on_completion: Some(false),
+            timeout_secs: Some(10),
+        }
+    }
+
     #[tokio::test]
     async fn first_open_untracked_spawn_recovery_unblocks_tools_and_preserves_live_runs() {
         let tmp = TempDir::new().unwrap();
@@ -2002,13 +2044,9 @@ mod tests {
             .await
             .unwrap();
         let scheduler = CronScheduler::new(resolver.cron_schedule("crony")).unwrap();
+        register_recovered_stub(&tooling).await;
         let mut job = recovery_job(did.clone());
-        job.action = CronJobAction::SpawnTool {
-            tool_name: "Bash".into(),
-            tool_params: serde_json::json!({"command": "echo cron-recovered"}),
-            wake_on_completion: Some(false),
-            timeout_secs: Some(10),
-        };
+        job.action = recovered_stub_action();
         scheduler.add_job(&job).unwrap();
         scheduler
             .record_run(&open_recovery_run(&job.id, "previous-daemon"))
@@ -2062,13 +2100,9 @@ mod tests {
             .await
             .unwrap();
         let scheduler = CronScheduler::new(resolver.cron_schedule("crony")).unwrap();
+        register_recovered_stub(&tooling).await;
         let mut job = recovery_job(did.clone());
-        job.action = CronJobAction::SpawnTool {
-            tool_name: "Bash".into(),
-            tool_params: serde_json::json!({"command": "echo cron-recovered"}),
-            wake_on_completion: Some(false),
-            timeout_secs: Some(10),
-        };
+        job.action = recovered_stub_action();
         scheduler.add_job(&job).unwrap();
         // An effect happened before the previous daemon lost its result.
         // Recovery must preserve it, never replay the old task, and never

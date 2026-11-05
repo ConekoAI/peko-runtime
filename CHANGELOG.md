@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: cron recovery tests stop timing out on Windows; Windows CI runs on every PR (2026-11-05)
+
+- Two cron restart-recovery tests fired a `Bash` job (`echo cron-recovered`)
+  with a 10 s limit. On Windows that starts PowerShell, whose start is
+  CPU-bound (about 0.9 s idle) and grows with load: on a busy runner the run
+  ended `timed_out` (PRs #582 and #584, both unrelated to cron). Locally, 24
+  copies on two cores took 7 to 13 s and mostly timed out; nothing hung. The
+  tests now fire an in-process stub tool, since their subject is recovery,
+  not the shell; under the same load it finishes in under 2 s.
+- The Windows unit and native jobs ran only when a listed Windows path
+  changed, or with a `[windows]` tag the gate never saw on a pull request.
+  They now run on the same trigger as the Linux jobs (Windows is in MVP
+  scope).
+
 ### Feature: pick a model from the endpoint's own list (2026-11-05)
 
 - `peko model add` without `--model` asks the endpoint which models it
