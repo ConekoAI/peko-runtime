@@ -692,7 +692,6 @@ longer warns that the default directory can differ.
 `peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
 printed as `2026-10-30 T04:06:44.511473`).
 
-
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
 An agent can look at an image, listen to audio, or watch video whenever it
@@ -2863,7 +2862,6 @@ falsely held 13 correct owner facts.
   runtime; scopes workspace hooks to their owning principal.
 - Migrated singleton-dependent tests to explicitly constructed runtimes.
 
-
 #### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
 
 - Deleted capability gates for tool visibility/execution, roles, skills,
@@ -2876,7 +2874,6 @@ falsely held 13 correct owner facts.
 - Moved async execution and session inbox to `async_exec`. Deleted the inert
   extension store, discovery/storage, adapter trait, configuration services,
   and tool execution service; re-homed live principal tooling and catalog glue.
-
 
 #### Iteration cap removed from the agentic loop (2026-09-30)
 
@@ -3144,7 +3141,6 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   and `set_page_limit`. The `pruned_pages` counter is persisted by the
   caller's own `MetadataController` (each controller instance carries
   an in-memory index view; see `Session::prune_overflow`).
-
 
 #### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
 
