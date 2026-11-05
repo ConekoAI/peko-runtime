@@ -262,6 +262,9 @@ peko model remove <id>
 
 Models are added generically: there are no vendor presets. `--api-format`
 is one of `anthropic_messages`, `openai_completions` or `openai_responses`.
+Leave out `--model` and Peko asks the endpoint which models it offers and
+lists them (adding the model directly when there is only one); endpoints
+that keep no list need the id from their docs.
 The catalog is `~/.peko/models.toml`; keys live in the encrypted vault, never
 in a plain file, and are never read from environment variables. Use
 `--no-key` for a local endpoint without a key, and

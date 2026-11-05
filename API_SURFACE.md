@@ -777,6 +777,11 @@ The CLI and IPC add surfaces accept explicit endpoint/model settings. IPC
 error. `ModelTemplates` remains a compatibility endpoint returning empty
 `presets`. Existing catalog entries and their credential references still load.
 
+`Validator::list_models(config, key)` (`peko-providers`) returns the chat
+models an endpoint lists (`GET /models`, `GET /v1/models` for Anthropic
+Messages), in its order, without embedding, speech, image or moderation
+models. `peko model add` without `--model` and IPC `ModelDiscover` use it.
+
 ---
 
 ## Module: `common::services`

@@ -343,6 +343,15 @@ pub enum RequestPacket {
     #[serde(rename = "model_templates")]
     ModelTemplates { request_id: u64 },
 
+    /// The chat models an endpoint offers, read from the endpoint
+    /// itself with the given key, so a model is chosen without knowing
+    /// its id. Nothing is stored.
+    #[serde(rename = "model_discover")]
+    ModelDiscover {
+        request_id: u64,
+        args: ModelDiscoverArgs,
+    },
+
     /// Add a model using explicit endpoint settings and optional metadata.
     /// Optionally stores a key in the vault in the same round trip.
     #[serde(rename = "model_add")]
@@ -1068,6 +1077,7 @@ impl RequestPacket {
             | Self::ModelList { request_id }
             | Self::ModelReload { request_id }
             | Self::ModelTemplates { request_id }
+            | Self::ModelDiscover { request_id, .. }
             | Self::ModelAdd { request_id, .. }
             | Self::ModelUpdate { request_id, .. }
             | Self::ModelRemove { request_id, .. }
@@ -1926,6 +1936,15 @@ pub enum ResponsePacket {
         presets: Vec<ModelPresetInfo>,
     },
 
+    /// Result of `ModelDiscover`: the chat models the endpoint lists,
+    /// in its order. A failure (a refused key, an unreachable
+    /// endpoint) is a `ResponsePacket::Error`.
+    #[serde(rename = "models_discovered")]
+    ModelsDiscovered {
+        request_id: u64,
+        models: Vec<String>,
+    },
+
     /// Result of `ModelAdd`. Returns the catalog-summary view
     /// (`ModelSummary`) of the newly-inserted entry so the desktop
     /// can refresh its model list without a follow-up list call.
@@ -2527,6 +2546,28 @@ pub struct ModelPresetInfo {
     pub models: Vec<ModelTemplateInfo>,
 }
 
+/// Arguments for `RequestPacket::ModelDiscover`: the endpoint, as for
+/// `ModelAdd`, and the key to list with.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ModelDiscoverArgs {
+    pub base_url: String,
+    /// `openai_completions`, `openai_responses`, or `anthropic_messages`.
+    pub api_format: String,
+    /// Not stored. Absent for keyless endpoints.
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+impl std::fmt::Debug for ModelDiscoverArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelDiscoverArgs")
+            .field("base_url", &self.base_url)
+            .field("api_format", &self.api_format)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// A group's home and PekoHub registration in a `ChannelInfoResult`
 /// (ADR-092 D1/D5).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2853,6 +2894,7 @@ impl ResponsePacket {
             | Self::ModelList { request_id, .. }
             | Self::ModelReloaded { request_id, .. }
             | Self::ModelTemplates { request_id, .. }
+            | Self::ModelsDiscovered { request_id, .. }
             | Self::ModelAdded { request_id, .. }
             | Self::ModelUpdated { request_id, .. }
             | Self::ModelRemoved { request_id, .. }
@@ -2950,6 +2992,7 @@ impl ResponsePacket {
             Self::ModelList { .. } => "ModelList",
             Self::ModelReloaded { .. } => "ModelReloaded",
             Self::ModelTemplates { .. } => "ModelTemplates",
+            Self::ModelsDiscovered { .. } => "ModelsDiscovered",
             Self::ModelAdded { .. } => "ModelAdded",
             Self::ModelUpdated { .. } => "ModelUpdated",
             Self::ModelRemoved { .. } => "ModelRemoved",

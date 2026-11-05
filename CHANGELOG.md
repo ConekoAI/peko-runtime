@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: pick a model from the endpoint's own list (2026-11-05)
+
+- `peko model add` without `--model` asks the endpoint which models it
+  offers (`GET /models`; `GET /v1/models` for Anthropic Messages) and lists
+  them, leaving out embedding, speech, image and moderation models. An
+  endpoint that offers one model gets it added directly. No vendor presets
+  come back (ADR-068): the endpoint is still given explicitly.
+- New IPC `ModelDiscover` returns the same list, so the desktop's model form
+  can offer it.
+- `peko create` without `--model` uses the only model set up. Its "model not
+  in the catalog" hint no longer names the retired `--template` flag.
+
 ### Fix: a persona reaches conversations (2026-11-05)
 
 - A seed's `persona` (`peko create -s`, and creating from a seed over IPC)
