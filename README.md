@@ -70,12 +70,14 @@ Until 0.1.0 is final, name a release candidate:
 `... | bash -s -- --version 0.1.0-rc.5` (PowerShell: set
 `$env:PEKO_VERSION = '0.1.0-rc.5'` first).
 
-Connect a model, create a peko, and say hello:
+Connect a model, create a peko, and say hello. Take the base URL from your
+provider's docs (most say "OpenAI-compatible": `openai_completions`); leave
+out `--model` once to see the models the endpoint offers:
 
 ```bash
-peko model add --id my-model --api-format anthropic_messages \
-    --base-url https://llm.example.com/anthropic --model <model-id> --key "<your-api-key>"
-peko create my-peko --model my-model
+peko model add --id my-model --api-format openai_completions \
+    --base-url https://llm.example.com/v1 --model <model-id> --key "<your-api-key>"
+peko create my-peko
 peko send my-peko "Hello, what can you do?"
 ```
 

@@ -66,16 +66,33 @@ peko 0.1.0
 
 ## 2. Add a model
 
+Your provider's docs give a base URL and say which API it speaks; most say
+"OpenAI-compatible" (`openai_completions`). Give those and your key, without
+a model id, and Peko asks the endpoint which models it offers:
+
 ```bash
-peko model add --id my-model \
-    --api-format anthropic_messages \
-    --base-url https://llm.example.com/anthropic \
-    --model <wire-model-id> \
-    --key "<your-api-key>"
+peko model add --api-format openai_completions \
+    --base-url https://api.minimaxi.com/v1 --key "<your-api-key>"
 ```
 
 ```
-Stored API key for 'my-model' in the vault (credential id b85e0524-8f90-438e-af88-b81d8ea7c088).
+❌ Error: pick a model with --model <wire-id>. The endpoint offers:
+  MiniMax-M3.1-Flash
+  MiniMax-M3
+  MiniMax-M2.7
+  ...
+```
+
+Nothing is stored yet. Run it again with the model you want (an endpoint that
+offers only one model gets that one without asking):
+
+```bash
+peko model add --id my-model --api-format openai_completions \
+    --base-url https://api.minimaxi.com/v1 --model MiniMax-M3 --key "<your-api-key>"
+```
+
+```
+Stored API key for 'my-model' in the vault (credential id c903a917-d949-4df4-9796-3a48c36671f7).
 Added model 'my-model' (my-model).
 ```
 
@@ -84,13 +101,15 @@ Added model 'my-model' (my-model).
 | `--id` | The name you use for this model inside Peko (defaults to `--model`) |
 | `--api-format` | Wire format: `anthropic_messages`, `openai_completions` or `openai_responses` |
 | `--base-url` | Endpoint base URL, including any path prefix the endpoint needs (such as `/v1`) |
-| `--model` | The model id the endpoint expects |
+| `--model` | The model id the endpoint expects. Leave it out to see the ones it offers |
 | `--key` | API key. It is stored in the encrypted vault (OS keychain), never in a plain file |
 
-The model's wiring goes into `~/.peko/models.toml` and the key into the
-vault. Peko does not read provider keys from environment variables. For a
-local endpoint that needs no key, pass `--no-key` instead of `--key`. Add
-`--dry-run` to preview without writing anything.
+Some endpoints don't list their models (many Anthropic-compatible gateways
+don't); then take the model id from the provider's docs. The model's wiring
+goes into `~/.peko/models.toml` and the key into the vault. Peko does not read
+provider keys from environment variables. For a local endpoint that needs no
+key, pass `--no-key` instead of `--key`. Add `--dry-run` to preview without
+writing anything.
 
 Then check that the endpoint accepts the key:
 
@@ -129,14 +148,16 @@ peko daemon start
 ## 4. Create your peko
 
 ```bash
-peko create my-peko --model my-model
+peko create my-peko
 ```
 
-`create` waits for the peko's first turn, in which it sets itself up. How
-long that takes depends on your model; the turn starts a few seconds after
-the daemon is up:
+With only one model set up, the peko uses it; with several, name one with
+`--model my-model`. `create` waits for the peko's first turn, in which it
+sets itself up. How long that takes depends on your model; the turn starts a
+few seconds after the daemon is up:
 
 ```
+Using model 'my-model', the only one set up.
 Created peko 'my-peko' at ~/.peko/pekos/my-peko (model: my-model)
   kb scaffold: 8 files seeded
   root role: roles/root.md seeded

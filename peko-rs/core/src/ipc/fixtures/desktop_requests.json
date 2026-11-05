@@ -16,6 +16,7 @@
   {"type": "model_update", "protocol_version": 1, "request_id": 1, "args": {"id": "anthropic/claude-sonnet-5-5", "display_name": "Sonnet"}},
   {"type": "model_remove", "protocol_version": 1, "request_id": 1, "id": "anthropic/claude-sonnet-5-5"},
   {"type": "model_test", "protocol_version": 1, "request_id": 1, "id": "anthropic/claude-sonnet-5-5"},
+  {"type": "model_discover", "protocol_version": 1, "request_id": 1, "args": {"base_url": "https://api.example.com/v1", "api_format": "openai", "key": "sk-test"}},
   {"type": "principal_send_stream", "protocol_version": 1, "request_id": 7, "name": "alice", "message": "hello", "override_model": "anthropic/claude-sonnet-5-5", "attachments": ["/Users/alice/Desktop/photo.png"]},
   {"type": "principal_stop", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": null},
   {"type": "principal_send", "protocol_version": 1, "request_id": 1, "name": "alice", "message": "hello"},

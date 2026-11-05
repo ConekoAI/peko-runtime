@@ -589,6 +589,11 @@ flag is ignored; `template` requests are rejected with migration guidance.
 The legacy `ModelTemplates` IPC response is retained with an empty `presets`
 list so old desktop clients can still use their custom-model form.
 
+`ModelDiscover { args: { base_url, api_format, key? } }` answers
+`models_discovered { models: [String] }`: the chat models the endpoint lists,
+read with that key and in the endpoint's order. The key is not stored;
+failures (a refused key, an endpoint without a list) are `error` packets.
+
 Agent configs carry `preferred_model_id` only — never an inline
 `[provider]` block. The v3-cleanup series
 deleted the deprecated field entirely (PR #43 follow-up).

@@ -981,7 +981,7 @@ Commands:
   show     Show one configured model in detail
   compare  Compare 2+ configured models side by side as a capability matrix (vision, tools, thinking, json_mode, pricing, context window). The first column is the field name; each remaining column is one requested model
   search   Filter configured models by capability predicate. At least one of `--vision` / `--tools` / `--thinking` / `--json-mode` / `--no-key` / `--enabled` / `--disabled` is required; combining predicates ANDs them
-  add      Add a model using its base URL, API format, and wire model id
+  add      Add a model using its base URL, API format, and wire model id. Leave out --model to see the models the endpoint offers
   edit     Edit an existing catalog entry. Only the supplied flags (`--note`) are touched; everything else is preserved
   remove   Remove a model from the catalog (does not delete its credential)
   test     Live-test a configured model: ping its endpoint with the stored credential and report the outcome
@@ -1049,13 +1049,13 @@ Options:
 ### `peko model add`
 
 ```text
-Add a model using its base URL, API format, and wire model id
+Add a model using its base URL, API format, and wire model id. Leave out --model to see the models the endpoint offers
 
 Usage: peko model add [OPTIONS]
 
 Options:
       --id <ID>                        Configured model id. Defaults to the wire model id
-      --model <WIRE_MODEL_ID>          Wire model id (the id the API expects on the wire, e.g. `gpt-4o`, `claude-sonnet-4-5`). Required
+      --model <WIRE_MODEL_ID>          Wire model id (the id the API expects on the wire, e.g. `gpt-4o`, `claude-sonnet-4-5`). Leave it out to list the models the endpoint offers; if it offers only one, that one is added
       --display-name <DISPLAY_NAME>    Display name. Defaults to the configured model id
       --api-format <API_FORMAT>        API format: openai_completions, openai_responses, or anthropic_messages
       --base-url <BASE_URL>            API base URL, including any required path prefix

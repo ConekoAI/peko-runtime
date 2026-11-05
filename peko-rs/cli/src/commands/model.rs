@@ -7,6 +7,7 @@
 //! into the vault. There is no separate provider layer.
 //!
 //! Models use explicit endpoint settings. API keys are stored in the vault.
+//! Leave out `--model` to list the models the endpoint offers.
 //! ```text
 //! peko model add --id my-model --api-format anthropic_messages \
 //!   --base-url https://api.anthropic.com --model <wire-id> --key "$API_KEY"
@@ -17,6 +18,7 @@ use anyhow::{Context, Result};
 use peko_core::common::vault::{Credential, CredentialKind, Vault};
 use peko_providers::catalog::{ApiFormat, ModelCatalog, ModelConfig};
 use peko_providers::spec::{PricingHint, ThinkingMode, ToolSupport};
+use peko_providers::validator::Validator;
 use serde::Serialize;
 
 /// Vault namespace for model API keys.
@@ -76,6 +78,7 @@ pub enum ModelCommands {
     /// required; combining predicates ANDs them.
     Search(SearchArgs),
     /// Add a model using its base URL, API format, and wire model id.
+    /// Leave out --model to see the models the endpoint offers.
     Add(AddArgs),
     /// Edit an existing catalog entry. Only the supplied flags
     /// (`--note`) are touched; everything else is preserved.
@@ -160,7 +163,8 @@ pub struct AddArgs {
     #[arg(long)]
     id: Option<String>,
     /// Wire model id (the id the API expects on the wire, e.g.
-    /// `gpt-4o`, `claude-sonnet-4-5`). Required.
+    /// `gpt-4o`, `claude-sonnet-4-5`). Leave it out to list the models
+    /// the endpoint offers; if it offers only one, that one is added.
     #[arg(long, value_name = "WIRE_MODEL_ID")]
     model: Option<String>,
     /// Display name. Defaults to the configured model id.
@@ -378,17 +382,69 @@ async fn templates_cmd() -> Result<()> {
     anyhow::bail!("model templates have been retired; use peko model add --api-format <fmt> --base-url <url> --model <wire-id>")
 }
 
+/// The model to add when `--model` is left out: the endpoint's only
+/// chat model, or else an error that lists them.
+async fn listed_model(probe: &ModelConfig, key: Option<&str>) -> Result<String> {
+    let key = key.map(|k| secrecy::SecretString::from(k.to_string()));
+    let models = Validator::list_models(probe, key.as_ref())
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "--model <wire-id> is required (listing the endpoint's models failed: {e})"
+            )
+        })?;
+    match models.as_slice() {
+        [only] => {
+            println!("Using {only}, the only model the endpoint lists.");
+            Ok(only.clone())
+        }
+        [] => anyhow::bail!("--model <wire-id> is required; the endpoint lists no models"),
+        many => {
+            let shown: Vec<&str> = many.iter().take(40).map(String::as_str).collect();
+            let more = many.len() - shown.len();
+            anyhow::bail!(
+                "pick a model with --model <wire-id>. The endpoint offers:\n  {}{}",
+                shown.join("\n  "),
+                if more > 0 {
+                    format!("\n  … and {more} more")
+                } else {
+                    String::new()
+                }
+            )
+        }
+    }
+}
+
 async fn add_cmd(args: AddArgs, paths: &GlobalPaths) -> Result<()> {
     if args.template.is_some() {
         anyhow::bail!("model templates have been retired; supply --api-format, --base-url, and --model explicitly");
     }
-    let model_id = args.model.clone().context("--model <wire-id> is required; use peko model add --api-format <fmt> --base-url <url> --model <wire-id> [--key <key>]")?;
+    if args.api_format.is_none() && args.base_url.is_none() && args.model.is_none() {
+        anyhow::bail!(
+            "give the endpoint from your provider's docs: peko model add --api-format <fmt> \
+             --base-url <url> --key <key> [--model <wire-id>]. Without --model, the models \
+             the endpoint offers are listed"
+        );
+    }
     let format = args.api_format.as_deref().context(
         "--api-format is required (openai_completions | openai_responses | anthropic_messages)",
     )?;
     let api_format =
         ApiFormat::from_wire(format).with_context(|| format!("unknown --api-format '{format}'"))?;
     let base_url = args.base_url.clone().context("--base-url is required")?;
+    let model_id = match &args.model {
+        Some(m) => m.clone(),
+        None => {
+            let mut probe = ModelConfig::new("probe", api_format, base_url.clone(), String::new());
+            probe.requires_key = !args.no_key && args.key.is_some();
+            for header in &args.headers {
+                if let Some((name, value)) = header.split_once('=') {
+                    probe.headers.insert(name.to_string(), value.to_string());
+                }
+            }
+            listed_model(&probe, args.key.as_deref().filter(|_| !args.no_key)).await?
+        }
+    };
     let id = args.id.clone().unwrap_or_else(|| model_id.clone());
     let mut entry = ModelConfig::new(id, api_format, base_url, model_id);
     if let Some(name) = &args.display_name {
@@ -2136,6 +2192,62 @@ mod tests {
             open_catalog(&paths).await.unwrap().list_all().await.len(),
             1
         );
+    }
+
+    /// A one-shot `GET /models` endpoint on localhost.
+    async fn models_endpoint(body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.write_all(resp.as_bytes()).await;
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn without_a_model_id_the_endpoints_models_are_offered() {
+        let paths = fresh_paths();
+        let base =
+            models_endpoint(r#"{"data":[{"id":"whisper-1"},{"id":"a-model"},{"id":"b-model"}]}"#)
+                .await;
+        let args = AddArgs {
+            api_format: Some("openai_completions".into()),
+            base_url: Some(base),
+            key: Some("sk-test".into()),
+            ..Default::default()
+        };
+        let err = add_cmd(args, &paths).await.unwrap_err().to_string();
+        assert!(
+            err.contains("--model") && err.contains("offers:\n  a-model\n  b-model"),
+            "{err}"
+        );
+        assert!(!catalog_path(&paths).exists());
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_with_one_model_needs_no_model_id() {
+        let paths = fresh_paths();
+        let base =
+            models_endpoint(r#"{"data":[{"id":"text-embedding-3-small"},{"id":"llama3.2"}]}"#)
+                .await;
+        let args = AddArgs {
+            id: Some("local".into()),
+            api_format: Some("openai_completions".into()),
+            base_url: Some(base),
+            no_key: true,
+            ..Default::default()
+        };
+        add_cmd(args, &paths).await.unwrap();
+        let cat = open_catalog(&paths).await.unwrap();
+        assert_eq!(cat.get("local").await.unwrap().model_id, "llama3.2");
     }
 
     #[tokio::test]

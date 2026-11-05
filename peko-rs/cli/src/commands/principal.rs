@@ -684,27 +684,45 @@ async fn provision_principal(
 
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
-    // "no model configured". `--model` overrides the seed value;
-    // exactly one of the two must provide it. Validate against the
-    // catalog now so a typo'd id fails here instead of at first use.
-    let model_id = match model_id {
-        Some(m) => {
-            config.preferred_model_id = Some(m.to_string());
-            m.to_string()
-        }
-        None => config.preferred_model_id.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "no model pinned — pass --model <MODEL_ID> or set \
-                 `preferred_model_id` in the --seed"
-            )
-        })?,
-    };
+    // "no model configured". `--model` overrides the seed value; with
+    // neither, the only enabled model in the catalog is used (the
+    // first-run case). Validate against the catalog now so a typo'd id
+    // fails here instead of at first use.
     let cat_path = paths.config_dir.join(ModelCatalog::FILENAME);
     let catalog = ModelCatalog::load_or_init(&cat_path).await?;
+    let model_id = match model_id
+        .map(str::to_string)
+        .or_else(|| config.preferred_model_id.clone())
+    {
+        Some(m) => m,
+        None => {
+            let enabled: Vec<String> = catalog
+                .list_enabled()
+                .await
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
+            match enabled.as_slice() {
+                [only] => {
+                    println!("Using model '{only}', the only one set up.");
+                    only.clone()
+                }
+                [] => anyhow::bail!(
+                    "no model is set up yet. Add one with: peko model add --api-format <fmt> \
+                     --base-url <url> --key \"$YOUR_KEY\""
+                ),
+                many => anyhow::bail!(
+                    "pick the model it uses with --model <MODEL_ID>: {}",
+                    many.join(", ")
+                ),
+            }
+        }
+    };
+    config.preferred_model_id = Some(model_id.clone());
     if catalog.get_enabled(&model_id).await.is_none() {
         anyhow::bail!(
             "model '{model_id}' is not in the catalog (or is disabled).\n\
-             Add one with: peko model add --template <anthropic|openai|ollama|...> --model <wire-id> --key \"$YOUR_KEY\"\n\
+             Add one with: peko model add --api-format <fmt> --base-url <url> --key \"$YOUR_KEY\"\n\
              Or list configured models: peko model list"
         );
     }
@@ -2376,6 +2394,47 @@ mod tests {
             format!("{err:#}").contains("no-such-model"),
             "error should name the offending model id: {err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn create_without_a_model_says_how_to_add_or_pick_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::parse_from([
+            "peko",
+            "--config-dir",
+            dir.path().join("config").to_str().unwrap(),
+            "--data-dir",
+            dir.path().join("data").to_str().unwrap(),
+            "--cache-dir",
+            dir.path().join("cache").to_str().unwrap(),
+            "list",
+        ]);
+        let paths = from_cli(&cli);
+        let err = match provision_principal("alice", None, None, false, false, &paths).await {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("no model must fail creation"),
+        };
+        assert!(err.contains("peko model add --api-format"), "{err}");
+
+        use peko_providers::catalog::ModelCatalog;
+        let cat = ModelCatalog::load_or_init(&paths.config_dir.join(ModelCatalog::FILENAME))
+            .await
+            .unwrap();
+        for id in ["a", "b"] {
+            let mut m = peko_providers::ModelConfig::new(
+                id,
+                peko_providers::ApiFormat::OpenaiCompletions,
+                "http://localhost:1/v1",
+                id,
+            );
+            m.requires_key = false;
+            cat.upsert(m).await.unwrap();
+        }
+        let err = match provision_principal("alice", None, None, false, false, &paths).await {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("two models must ask which"),
+        };
+        assert!(err.contains("--model") && err.contains("a, b"), "{err}");
     }
 
     #[test]

@@ -112,62 +112,12 @@ impl Validator {
         }
 
         let started = Instant::now();
-        // We pick a stable adapter per format so we can read its
-        // `auth_config` / `extra_headers` for the `HttpClient`. The
-        // adapter is otherwise unused — we build our own `HttpClient`
-        // so we can suppress retries (the default policy would mask
-        // 429s by waiting and retrying, which is wrong for a ping).
-        let adapter = build_adapter(config);
-
-        let mut extra_headers = adapter.extra_headers();
-        // Merge catalog-level headers on top of adapter defaults;
-        // same precedence rule as `Provider::new` so a Test ping
-        // reaches the endpoint with the same headers a real call
-        // would.
-        for (name, value) in &config.headers {
-            let needle = name.to_ascii_lowercase();
-            if let Some(existing) = extra_headers
-                .iter_mut()
-                .find(|(n, _)| n.to_ascii_lowercase() == needle)
-            {
-                existing.1 = value.clone();
-            } else {
-                extra_headers.push((name.clone(), value.clone()));
-            }
-        }
-
-        let auth = match (&api_key, config.requires_key) {
-            (Some(key), _) => adapter.auth_config(key.expose_secret()),
-            // Local / keyless model (Ollama). The HTTP request still
-            // goes out; we just don't attach an Authorization header.
-            (None, false) => AuthConfig::Bearer {
-                token: String::new(),
-            },
-            // Vault says "no key" but the model requires one — that's
-            // a misconfiguration on the user's side. Bail without
-            // making the network call.
-            (None, true) => {
-                return CredentialTestOutcome {
-                    ok: false,
-                    message: format!("No key stored for '{}'", config.id),
-                    latency_ms: started.elapsed().as_millis() as u32,
-                    http_status: None,
-                    model_used: None,
-                };
-            }
-        };
-
-        let client = match HttpClient::with_headers(
-            config.base_url.clone(),
-            auth,
-            timeout_secs,
-            extra_headers,
-        ) {
+        let client = match client_for(config, api_key, timeout_secs) {
             Ok(c) => c,
-            Err(e) => {
+            Err(message) => {
                 return CredentialTestOutcome {
                     ok: false,
-                    message: format!("Failed to construct HTTP client: {e}"),
+                    message,
                     latency_ms: started.elapsed().as_millis() as u32,
                     http_status: None,
                     model_used: None,
@@ -190,6 +140,151 @@ impl Validator {
             ..outcome
         }
     }
+}
+
+/// The chat models an endpoint offers, from its own list (`GET /models`;
+/// `GET /v1/models` for Anthropic Messages), so a model is chosen
+/// without knowing its id. Ids come back in the endpoint's order, with a
+/// Gemini-style `models/` prefix removed and embedding, speech, image
+/// and moderation models left out (anyone can still type one in).
+/// Errors are one line, safe to show as is.
+impl Validator {
+    pub async fn list_models(
+        config: &ModelConfig,
+        api_key: Option<&SecretString>,
+    ) -> Result<Vec<String>, String> {
+        Self::list_models_within(config, api_key, VALIDATOR_TIMEOUT_SECS).await
+    }
+
+    async fn list_models_within(
+        config: &ModelConfig,
+        api_key: Option<&SecretString>,
+        timeout_secs: u64,
+    ) -> Result<Vec<String>, String> {
+        #[derive(Deserialize)]
+        struct Listed {
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct ListModels {
+            #[serde(default)]
+            data: Vec<Listed>,
+        }
+
+        if config.base_url.trim().is_empty() {
+            return Err("No base URL".to_string());
+        }
+        let client = client_for(config, api_key, timeout_secs)?;
+        let path = match config.api_format {
+            // Anthropic pages at 20 by default.
+            ApiFormat::AnthropicMessages => "/v1/models?limit=1000",
+            ApiFormat::OpenaiCompletions | ApiFormat::OpenAiResponses => "/models",
+        };
+        match client.get::<ListModels>(path).await {
+            Ok(list) => {
+                let mut ids: Vec<String> = Vec::with_capacity(list.data.len());
+                for m in list.data {
+                    let id = m.id.strip_prefix("models/").unwrap_or(&m.id).to_string();
+                    if !id.is_empty() && is_chat_model(&id) && !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                Ok(ids)
+            }
+            Err(e) => {
+                let outcome = map_error(e, timeout_secs);
+                Err(match outcome.http_status {
+                    // Many gateways serve the model API but no list.
+                    Some(404) | Some(405) => {
+                        "the endpoint keeps no model list (HTTP 404)".to_string()
+                    }
+                    _ => outcome
+                        .message
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Whether a listed model is one a peko can talk through. Endpoints
+/// also list embedding, speech, image and moderation models.
+fn is_chat_model(id: &str) -> bool {
+    const NOT_CHAT: &[&str] = &[
+        "embed",
+        "whisper",
+        "asr",
+        "voice",
+        "tts",
+        "dall-e",
+        "gpt-image",
+        "-image",
+        "imagen",
+        "moderation",
+        "transcribe",
+        "realtime",
+        "-audio",
+        "audio-",
+        "babbage",
+        "davinci",
+        "sora",
+        "veo-",
+        "aqa",
+        "guard",
+    ];
+    let lower = id.to_ascii_lowercase();
+    !NOT_CHAT.iter().any(|n| lower.contains(n))
+}
+
+/// The `HttpClient` a ping or a model list goes out on: the adapter's
+/// auth and headers, the entry's own headers on top, and no retries.
+/// Errors are one line, safe to show as is.
+fn client_for(
+    config: &ModelConfig,
+    api_key: Option<&SecretString>,
+    timeout_secs: u64,
+) -> Result<HttpClient, String> {
+    // We pick a stable adapter per format so we can read its
+    // `auth_config` / `extra_headers` for the `HttpClient`. The
+    // adapter is otherwise unused — we build our own `HttpClient`
+    // so we can suppress retries (the default policy would mask
+    // 429s by waiting and retrying, which is wrong for a ping).
+    let adapter = build_adapter(config);
+
+    let mut extra_headers = adapter.extra_headers();
+    // Merge catalog-level headers on top of adapter defaults; same
+    // precedence rule as `Provider::new` so a ping reaches the
+    // endpoint with the same headers a real call would.
+    for (name, value) in &config.headers {
+        let needle = name.to_ascii_lowercase();
+        if let Some(existing) = extra_headers
+            .iter_mut()
+            .find(|(n, _)| n.to_ascii_lowercase() == needle)
+        {
+            existing.1 = value.clone();
+        } else {
+            extra_headers.push((name.clone(), value.clone()));
+        }
+    }
+
+    let auth = match (api_key, config.requires_key) {
+        (Some(key), _) => adapter.auth_config(key.expose_secret()),
+        // Local / keyless model (Ollama). The HTTP request still goes
+        // out; we just don't attach an Authorization header.
+        (None, false) => AuthConfig::Bearer {
+            token: String::new(),
+        },
+        // Vault says "no key" but the model requires one — that's a
+        // misconfiguration on the user's side. Bail without making the
+        // network call.
+        (None, true) => return Err(format!("No key stored for '{}'", config.id)),
+    };
+
+    HttpClient::with_headers(config.base_url.clone(), auth, timeout_secs, extra_headers)
+        .map_err(|e| format!("Failed to construct HTTP client: {e}"))
 }
 
 /// Build an `AnyAdapter` purely so we can call its `auth_config` /
@@ -512,6 +607,119 @@ mod tests {
             body.len(),
             body
         )
+    }
+
+    #[test]
+    fn non_chat_models_are_left_out() {
+        for id in [
+            "text-embedding-3-small",
+            "whisper-1",
+            "tts-1-hd",
+            "dall-e-3",
+            "gpt-image-1",
+            "omni-moderation-latest",
+            "gpt-4o-realtime-preview",
+            "gpt-4o-mini-transcribe",
+            "models/embedding-001",
+            "mimo-v2.5-asr",
+            "mimo-v2.5-tts-voiceclone",
+        ] {
+            assert!(!is_chat_model(id), "{id} should be left out");
+        }
+        for id in [
+            "gpt-5",
+            "claude-sonnet-4-5",
+            "deepseek-chat",
+            "gemini-2.5-flash",
+            "llama3.2",
+            "MiniMax-M3",
+            "kimi-for-coding",
+        ] {
+            assert!(is_chat_model(id), "{id} should be offered");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_models_reads_the_endpoints_own_list() {
+        let (tx, rx) = oneshot::channel::<String>();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let base = spawn_once(move |req| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(req.to_string());
+            }
+            ok_response(
+                r#"{"object":"list","data":[{"id":"models/gemini-2.5-flash"},{"id":"text-embedding-3-small"},{"id":"gpt-5"},{"id":"gpt-5"}]}"#,
+            )
+        })
+        .await;
+        let entry = make_entry("x", ApiFormat::OpenaiCompletions, base, "", true);
+        let key = SecretString::from("sk-test".to_string());
+        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            ids,
+            vec!["gemini-2.5-flash".to_string(), "gpt-5".to_string()]
+        );
+        let req = rx.await.unwrap();
+        assert!(req.starts_with("GET /models "), "{req}");
+        assert!(req
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-test"));
+    }
+
+    #[tokio::test]
+    async fn list_models_for_anthropic_uses_its_models_path_and_key_header() {
+        let (tx, rx) = oneshot::channel::<String>();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let base = spawn_once(move |req| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(req.to_string());
+            }
+            ok_response(r#"{"data":[{"id":"claude-sonnet-4-5","type":"model"}],"has_more":false}"#)
+        })
+        .await;
+        let entry = make_entry("x", ApiFormat::AnthropicMessages, base, "", true);
+        let key = SecretString::from("sk-ant-test".to_string());
+        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap();
+        assert_eq!(ids, vec!["claude-sonnet-4-5".to_string()]);
+        let req = rx.await.unwrap().to_ascii_lowercase();
+        assert!(req.starts_with("get /v1/models?limit=1000 "), "{req}");
+        assert!(req.contains("x-api-key: sk-ant-test"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_without_a_list_says_so_plainly() {
+        let base = spawn_once(|_| {
+            status_response(
+                404,
+                "Not Found",
+                "<html>\n<body>404 Not Found</body>\n</html>",
+            )
+        })
+        .await;
+        let entry = make_entry("x", ApiFormat::AnthropicMessages, base, "", true);
+        let key = SecretString::from("k".to_string());
+        let err = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "the endpoint keeps no model list (HTTP 404)");
+    }
+
+    #[tokio::test]
+    async fn list_models_reports_a_refused_key_in_one_line() {
+        let base = spawn_once(|_| {
+            status_response(401, "Unauthorized", r#"{"error":{"message":"bad key"}}"#)
+        })
+        .await;
+        let entry = make_entry("x", ApiFormat::OpenaiCompletions, base, "", true);
+        let key = SecretString::from("nope".to_string());
+        let err = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap_err();
+        assert!(err.starts_with("HTTP 401: invalid api key"), "{err}");
     }
 
     #[tokio::test]
