@@ -6,7 +6,8 @@ __pycache__/
 *.agent
 *.team
 .peko/
-peko.toml
+/peko.toml
+/runtime.toml
 config.toml
 .superpowers/
 AGENTS.md

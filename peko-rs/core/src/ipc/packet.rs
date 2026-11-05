@@ -382,7 +382,7 @@ pub enum RequestPacket {
     },
 
     /// Replace the principal's `QuotaConfig` (input/output/request
-    /// limits + cycle). Persists to `principal.toml` and rebuilds
+    /// limits + cycle). Persists to `peko.toml` and rebuilds
     /// the meter so the new limits take effect on the next call.
     ///
     /// F20: `is_peer` flips the resolver to `PeerRegistry` (writes
@@ -710,7 +710,7 @@ pub enum RequestPacket {
     },
 
     /// Set the live status of a Principal's tunnel instance. Persisted to
-    /// `principal.toml` so the change survives daemon restart. Delegates
+    /// `peko.toml` so the change survives daemon restart. Delegates
     /// to `TunnelDispatcher::set_instance_status` to publish a
     /// `status_update` to the hub.
     #[serde(rename = "principal_set_status")]
@@ -722,7 +722,7 @@ pub enum RequestPacket {
     },
 
     /// Set the exposure of a Principal's tunnel instance. Persisted to
-    /// `principal.toml` so the change survives daemon restart. Delegates
+    /// `peko.toml` so the change survives daemon restart. Delegates
     /// to `TunnelDispatcher::set_instance_exposure` to publish an
     /// `exposure_update` to the hub.
     #[serde(rename = "principal_register")]

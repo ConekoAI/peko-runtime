@@ -11,4 +11,4 @@ Layout at creation: `MEMORY.md` (hot memory), `index.md` (the map),
 injected). Everything beyond that is yours to shape —
 `refs/`, `projects/`, `imports/`, datasets, whatever your work needs.
 Only the hot files ride in every prompt; the rest is looked up
-through the index, except the targeted scope notes (ADR-055 D8).
+through the index, except the targeted scope notes.

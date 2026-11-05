@@ -14,7 +14,7 @@
 //! remains for tests exercising the legacy read path.
 //!
 //! A standing child is a session that was created from a `[children]`
-//! entry in `principal.toml`: `trigger == "spawn"`, `standing == true`,
+//! entry in `peko.toml`: `trigger == "spawn"`, `standing == true`,
 //! `slug == <name>`, parented at the principal's owner root session.
 //!
 //! This module is pure session-level I/O (append / read events) plus

@@ -72,7 +72,7 @@ impl QuotaHandler {
         else {
             return ResponsePacket::Error {
                 request_id,
-                message: format!("principal not found: {principal_name}"),
+                message: format!("peko not found: {principal_name}"),
             };
         };
         let state: QuotaState = principal.quota_meter.snapshot();
@@ -180,7 +180,7 @@ impl RequestHandler for QuotaHandler {
                 let Some(principal) = self.host.principal_manager().get_by_name(&name).await else {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("principal not found: {name}"),
+                        message: format!("peko not found: {name}"),
                     };
                     return send_response(sink, response).await;
                 };
@@ -245,7 +245,7 @@ impl RequestHandler for QuotaHandler {
                 let Some(principal) = self.host.principal_manager().get_by_name(&name).await else {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("principal not found: {name}"),
+                        message: format!("peko not found: {name}"),
                     };
                     return send_response(sink, response).await;
                 };

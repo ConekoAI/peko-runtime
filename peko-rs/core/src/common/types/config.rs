@@ -432,13 +432,13 @@ mod tests {
         assert_eq!(parsed, original);
     }
 
-    /// A minimal `peko.toml` carrying only `[provider.retry]` parses
+    /// A minimal `runtime.toml` carrying only `[provider.retry]` parses
     /// (all other fields are serde-defaulted) instead of falling back
     /// with a warning.
     #[test]
     fn test_peko_config_minimal_file_parses() {
         let cfg: PekoConfig = toml::from_str("[provider.retry]\nmax_retries = 7\n")
-            .expect("minimal peko.toml must parse");
+            .expect("minimal runtime.toml must parse");
         assert_eq!(cfg.provider.retry.max_retries, 7);
         assert_eq!(cfg.app_name, "peko");
         assert_eq!(cfg.network.port, 8080);

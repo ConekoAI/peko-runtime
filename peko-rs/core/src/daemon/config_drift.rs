@@ -3,7 +3,7 @@
 //!
 //! At daemon startup this module:
 //!
-//! 1. Hashes every `principal.toml` and emits a
+//! 1. Hashes every `peko.toml` and emits a
 //!    `principal.config_drift` (Security) event on mismatch.
 //! 2. Hashes every workspace subdirectory under
 //!    `<workspace>/{hooks,mcp}/<id>/` and emits per-category
@@ -21,7 +21,7 @@
 //! the universal tools it watched.)
 //!
 //! **v1 limitation:** drift is only detected at daemon startup —
-//! in-session edits to `principal.toml` or workspace directories go
+//! in-session edits to `peko.toml` or workspace directories go
 //! undetected. Adding the `notify` crate for live watching is
 //! deferred; the start-up check catches the most damaging case
 //! (someone editing while the daemon is stopped, then starting the
@@ -33,7 +33,7 @@
 //! ```json
 //! {
 //!   "<principal>": {
-//!     "principal": "<sha256 of principal.toml>",
+//!     "principal": "<sha256 of peko.toml>",
 //!     "hooks":     {"<id>": "<sha256 of hooks/<id>/*>"},
 //!     "mcp":       {"<id>": "<sha256 of mcp/<id>/*>"}
 //!   }
@@ -44,7 +44,7 @@
 //! doesn't corrupt the baseline and trigger a flood of false drift
 //! events on the next boot.
 //!
-//! **What's hashed:** the entire `principal.toml` file as raw bytes,
+//! **What's hashed:** the entire `peko.toml` file as raw bytes,
 //! plus every file under each workspace subdirectory (path +
 //! content). Hashing the parsed config would miss whitespace-only
 //! changes (which are still a sign of external tampering), and
@@ -74,11 +74,11 @@ use walkdir::WalkDir;
 use peko_observability::{AuditSeverity, Observability};
 
 /// Per-principal baseline entry. `principal` covers the shared-tier
-/// `principal.toml` (Phase A); `hooks`/`mcp` cover the
+/// `peko.toml` (Phase A); `hooks`/`mcp` cover the
 /// workspace subdirectories introduced by ADR-047.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BaselineEntry {
-    /// SHA-256 of the raw bytes of `<shared>/principal.toml`.
+    /// SHA-256 of the raw bytes of `<shared>/peko.toml`.
     pub principal: String,
     /// `<workspace>/hooks/<id>` → SHA-256 of all files inside.
     #[serde(default)]
@@ -118,7 +118,7 @@ const WORKSPACE_CATEGORIES: &[WorkspaceCategory] = &[
 ];
 
 /// Run the drift check. Walks the principals dir, hashes each
-/// `principal.toml`, compares to the baseline, and emits a
+/// `peko.toml`, compares to the baseline, and emits a
 /// `principal.config_drift` Security event per drifted principal.
 /// Then walks each principal's workspace subdirectories and emits
 /// per-category install/remove events at the configured severity.
@@ -155,7 +155,7 @@ pub async fn run_drift_check(
         }
     };
 
-    // Walk principals_root and hash each `principal.toml` + each
+    // Walk principals_root and hash each `peko.toml` + each
     // workspace subdirectory. We use walkdir so an off-pattern file
     // (e.g. an accidentally-created `foo.toml` directly under
     // principals_root) is skipped without erroring.
@@ -168,7 +168,7 @@ pub async fn run_drift_check(
             .filter_map(Result::ok)
         {
             let path = entry.path();
-            if path.file_name().and_then(|n| n.to_str()) != Some("principal.toml") {
+            if !is_peko_config_name(path.file_name()) {
                 continue;
             }
             // The principal name is the parent directory's basename.
@@ -180,10 +180,7 @@ pub async fn run_drift_check(
             let principal_hash = match hash_file(path) {
                 Ok(h) => h,
                 Err(e) => {
-                    warn!(
-                        "drift: failed to hash principal.toml at {}: {e}",
-                        path.display()
-                    );
+                    warn!("drift: failed to hash peko.toml at {}: {e}", path.display());
                     continue;
                 }
             };
@@ -317,7 +314,7 @@ pub async fn run_drift_check(
 }
 
 /// Build a `BaselineEntry` for a single principal by hashing
-/// `principal.toml` (already done) and walking each workspace
+/// `peko.toml` (already done) and walking each workspace
 /// subdirectory. Missing workspace dirs produce empty maps.
 fn build_baseline_entry(
     _principal_name: &str,
@@ -569,8 +566,17 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-/// Extract the principal name from a `principal.toml` path. The
-/// expected shape is `{principals_root}/{name}/principal.toml`;
+/// Whether `name` is a peko definition file: `peko.toml`, or the legacy
+/// `principal.toml` a pre-0.1.0 peko keeps until its rename succeeds.
+fn is_peko_config_name(name: Option<&std::ffi::OsStr>) -> bool {
+    name.is_some_and(|n| {
+        n == crate::common::paths::PEKO_CONFIG_FILE
+            || n == crate::common::paths::LEGACY_PEKO_CONFIG_FILE
+    })
+}
+
+/// Extract the principal name from a `peko.toml` path. The
+/// expected shape is `{principals_root}/{name}/peko.toml`;
 /// returns `None` if the path doesn't match that shape.
 fn principal_name_from_path(
     principals_root: &std::path::Path,
@@ -580,8 +586,8 @@ fn principal_name_from_path(
     let mut components = rel.components();
     let first = components.next()?;
     let second = components.next()?;
-    // First component is the principal name, second is `principal.toml`.
-    if second.as_os_str() != "principal.toml" {
+    // First component is the principal name, second is `peko.toml`.
+    if !is_peko_config_name(Some(second.as_os_str())) {
         return None;
     }
     Some(first.as_os_str().to_string_lossy().into_owned())
@@ -650,7 +656,7 @@ mod tests {
     fn write_principal(root: &std::path::Path, name: &str, body: &str) {
         let dir = root.join(name);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("principal.toml"), body).unwrap();
+        fs::write(dir.join("peko.toml"), body).unwrap();
     }
 
     #[test]
@@ -670,11 +676,11 @@ mod tests {
 
     #[test]
     fn principal_name_extraction_works() {
-        let root = std::path::Path::new("/config/principals");
-        let p = std::path::Path::new("/config/principals/alice/principal.toml");
+        let root = std::path::Path::new("/config/pekos");
+        let p = std::path::Path::new("/config/pekos/alice/peko.toml");
         assert_eq!(principal_name_from_path(root, p).as_deref(), Some("alice"));
-        // Wrong filename — second component is not principal.toml.
-        let p2 = std::path::Path::new("/config/principals/alice/foo.toml");
+        // Wrong filename — second component is not peko.toml.
+        let p2 = std::path::Path::new("/config/pekos/alice/foo.toml");
         assert_eq!(principal_name_from_path(root, p2), None);
     }
 
@@ -689,12 +695,12 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[]\n",
         );
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "bob",
             "[capabilities]\ngrants=[\"tool:Read\"]\n",
         );
@@ -717,7 +723,7 @@ mod tests {
         assert!(baseline.contains_key("bob"));
     }
 
-    /// Edit a principal.toml between boots → drift is reported
+    /// Edit a peko.toml between boots → drift is reported
     /// (kind=changed), the audit log shows the event, and the
     /// baseline is updated.
     #[tokio::test]
@@ -729,7 +735,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[]\n",
         );
@@ -740,9 +746,9 @@ mod tests {
         let first = run_drift_check(&resolver, obs1).await.unwrap();
         assert_eq!(first, 0);
 
-        // Edit alice's principal.toml.
+        // Edit alice's peko.toml.
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[\"tool:Bash\"]\n",
         );
@@ -780,7 +786,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[]\n",
         );
@@ -790,7 +796,7 @@ mod tests {
         assert_eq!(run_drift_check(&resolver, obs1).await.unwrap(), 0);
 
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "mallory",
             "[capabilities]\ngrants=[\"tool:Bash\"]\n",
         );
@@ -819,12 +825,12 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[]\n",
         );
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "bob",
             "[capabilities]\ngrants=[]\n",
         );
@@ -833,7 +839,7 @@ mod tests {
         let obs1 = Arc::new(Observability::new("test"));
         assert_eq!(run_drift_check(&resolver, obs1).await.unwrap(), 0);
 
-        fs::remove_dir_all(config_dir.join("principals").join("bob")).unwrap();
+        fs::remove_dir_all(config_dir.join("pekos").join("bob")).unwrap();
 
         let obs2 = Arc::new(Observability::new("test"));
         assert_eq!(run_drift_check(&resolver, obs2.clone()).await.unwrap(), 1);
@@ -858,7 +864,7 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         write_principal(
-            &config_dir.join("principals"),
+            &config_dir.join("pekos"),
             "alice",
             "[capabilities]\ngrants=[]\n",
         );
@@ -916,10 +922,10 @@ mod tests {
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
 
-        let principal_root = config_dir.join("principals").join("alice");
+        let principal_root = config_dir.join("pekos").join("alice");
         fs::create_dir_all(&principal_root).unwrap();
         fs::write(
-            principal_root.join("principal.toml"),
+            principal_root.join("peko.toml"),
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
@@ -949,10 +955,10 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
-        let principal_root = config_dir.join("principals").join("alice");
+        let principal_root = config_dir.join("pekos").join("alice");
         fs::create_dir_all(&principal_root).unwrap();
         fs::write(
-            principal_root.join("principal.toml"),
+            principal_root.join("peko.toml"),
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
@@ -991,10 +997,10 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
-        let principal_root = config_dir.join("principals").join("alice");
+        let principal_root = config_dir.join("pekos").join("alice");
         fs::create_dir_all(&principal_root).unwrap();
         fs::write(
-            principal_root.join("principal.toml"),
+            principal_root.join("peko.toml"),
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
@@ -1032,10 +1038,10 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
-        let principal_root = config_dir.join("principals").join("alice");
+        let principal_root = config_dir.join("pekos").join("alice");
         fs::create_dir_all(&principal_root).unwrap();
         fs::write(
-            principal_root.join("principal.toml"),
+            principal_root.join("peko.toml"),
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();
@@ -1074,10 +1080,10 @@ mod tests {
         let cache_dir = dir.path().join("cache");
         fs::create_dir_all(&config_dir).unwrap();
         fs::create_dir_all(&data_dir).unwrap();
-        let principal_root = config_dir.join("principals").join("alice");
+        let principal_root = config_dir.join("pekos").join("alice");
         fs::create_dir_all(&principal_root).unwrap();
         fs::write(
-            principal_root.join("principal.toml"),
+            principal_root.join("peko.toml"),
             "[capabilities]\ngrants=[]\n",
         )
         .unwrap();

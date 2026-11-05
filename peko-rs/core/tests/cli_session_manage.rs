@@ -129,7 +129,7 @@ fn live_session_id(cli: &PekoCli) -> String {
 fn write_worker_subagent(cli: &PekoCli, principal: &str) {
     let dir = cli
         .peko_dir()
-        .join("principals")
+        .join("pekos")
         .join(principal)
         .join("roles")
         .join(WORKER);

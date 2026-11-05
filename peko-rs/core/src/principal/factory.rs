@@ -132,7 +132,7 @@ impl DefaultPrincipalRouterFactory {
         routing: &crate::principal::PrincipalRoutingConfig,
         roles_dir: &std::path::Path,
     ) -> anyhow::Result<crate::principal::agent_prompt::AgentPrompt> {
-        // 1. Explicit override from principal.toml.
+        // 1. Explicit override from peko.toml.
         if let Some(ref path) = routing.root_prompt {
             return crate::principal::agent_prompt::load_agent_prompt(path).map_err(|e| {
                 anyhow::anyhow!(
@@ -168,7 +168,7 @@ impl DefaultPrincipalRouterFactory {
         // 3. No root role file — fail loudly with remediation.
         Err(anyhow::anyhow!(
             "No root role prompt found for this principal: expected {} or {} \
-             (or set `[routing].root_prompt` in principal.toml). Seed one with \
+             (or set `[routing].root_prompt` in peko.toml). Seed one with \
              `peko create` / restart the daemon (the boot pass stamps the \
              compiled-in default), or write roles/root.md by hand.",
             workspace_candidates[0].display(),

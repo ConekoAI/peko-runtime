@@ -1444,7 +1444,7 @@ mod tests {
             let temp = TempDir::new().unwrap();
             std::fs::create_dir(temp.path().join("kb")).unwrap();
             std::fs::write(
-                temp.path().join("principal.toml"),
+                temp.path().join("peko.toml"),
                 "[identity]\ndescription = 'Keep the release reliable'\n",
             )
             .unwrap();
@@ -3271,7 +3271,7 @@ mod tests {
     // Goal verification: the system prompt is reconstructed every turn
     // from a freshly read `AgentConfig::prompt`. If the principal's
     // prompt body changes between iterations (via a reload of
-    // `principal.toml`, an editor session, the principal's own
+    // `peko.toml`, an editor session, the principal's own
     // mid-session rewrite, or any path that writes back into the
     // `Agent` the loop is driving), the next iteration's rendered
     // prompt must reflect the change immediately — no cache, no

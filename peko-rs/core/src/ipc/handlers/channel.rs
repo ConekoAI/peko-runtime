@@ -321,7 +321,7 @@ impl ChannelHandler {
             return error_reply(
                 sink,
                 request_id,
-                format!("[not_found] principal '{principal_name}' is not loaded"),
+                format!("[not_found] peko '{principal_name}' is not loaded"),
             )
             .await;
         };
@@ -1049,7 +1049,7 @@ impl RequestHandler for ChannelHandler {
                 let Some(creator) = self.resolve_principal(&creator_name) else {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("Principal '{creator_name}' is not loaded"),
+                        message: format!("Peko '{creator_name}' is not loaded"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1113,7 +1113,7 @@ impl RequestHandler for ChannelHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Inviter principal '{inviter_name}' is not loaded"),
+                            message: format!("Inviter peko '{inviter_name}' is not loaded"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1234,7 +1234,7 @@ impl RequestHandler for ChannelHandler {
                             None => {
                                 let response = ResponsePacket::Error {
                                     request_id,
-                                    message: format!("Sender principal '{raw}' is not loaded"),
+                                    message: format!("Sender peko '{raw}' is not loaded"),
                                 };
                                 send_response(sink, response).await?;
                                 return Ok(());
@@ -1449,7 +1449,7 @@ impl RequestHandler for ChannelHandler {
                 let Some(principal) = self.resolve_principal(&principal_name) else {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("Principal '{principal_name}' is not loaded"),
+                        message: format!("Peko '{principal_name}' is not loaded"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1515,7 +1515,7 @@ impl RequestHandler for ChannelHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{principal_name}' is not loaded"),
+                            message: format!("Peko '{principal_name}' is not loaded"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -2039,7 +2039,7 @@ mod tests {
     #[tokio::test]
     async fn handler_invite_records_kickoff_on_success() {
         // PR-4c: with no `principal_manager`, the invite fails with
-        // `ResponsePacket::Error { "Inviter principal '...' is not loaded" }`
+        // `ResponsePacket::Error { "Inviter peko '...' is not loaded" }`
         // — the kickoff hook is NOT called. To exercise the success
         // path we instead call `ensure_invitee_subscriber` directly
         // (mirrors what the `AppState` override does in production

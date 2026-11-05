@@ -17,7 +17,7 @@ use clap::Args;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
 use std::str::FromStr;
 
-/// Soft-stop the running turn on a thread with a Principal.
+/// Stop what a peko is doing in a conversation.
 #[derive(Args, Clone, Debug)]
 #[command(disable_version_flag = true)]
 pub struct StopArgs {
@@ -25,9 +25,9 @@ pub struct StopArgs {
     #[arg(value_name = "PEKO")]
     pub principal: String,
 
-    /// Stop the run on this peer's thread instead of your own (owner
-    /// only). Accepts an actor address: `user:local`, `user:hub:<id>`,
-    /// `principal:local:<id>` or `principal:hub:<id>`.
+    /// Stop it in this person's or peko's conversation instead of yours
+    /// (owner only): `user:local`, `user:hub:<id>`, `peko:local:<id>` or
+    /// `peko:hub:<id>`.
     #[arg(long, value_name = "SUBJECT")]
     pub peer: Option<String>,
 }

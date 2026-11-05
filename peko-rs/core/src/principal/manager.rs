@@ -28,9 +28,9 @@ use peko_subject::PrincipalDID;
 /// Error type for PrincipalManager operations.
 #[derive(Debug, thiserror::Error)]
 pub enum PrincipalManagerError {
-    #[error("principal not found: {0}")]
+    #[error("peko not found: {0}")]
     NotFound(String),
-    #[error("principal already exists: {0}")]
+    #[error("peko already exists: {0}")]
     AlreadyExists(String),
     #[error("agent prompt not found: {0}")]
     AgentPromptNotFound(String),
@@ -491,7 +491,7 @@ impl PrincipalManager {
             crate::principal::config::BootState::Provisioned
         });
 
-        // Persist principal.toml under the Shared root.
+        // Persist peko.toml under the Shared root.
         self.persist_config(&layout.shared.root, &config).await?;
 
         let memory = self.memory_factory.create(&id, &layout.local.root).await;
@@ -603,7 +603,7 @@ impl PrincipalManager {
         Ok(principal)
     }
 
-    /// Load an existing Principal from a `principal.toml` on disk.
+    /// Load an existing Principal from a `peko.toml` on disk.
     ///
     /// The parent directory of `config_path` becomes the Principal's
     /// workspace. The caller is responsible for ensuring the directory
@@ -635,7 +635,7 @@ impl PrincipalManager {
 
         // Phase A: derive the typed layout from the principal name
         // (already known via `config.name`). `workspace_path` is the
-        // Shared tier root (parent of `principal.toml`); quota state
+        // Shared tier root (parent of `peko.toml`); quota state
         // lives in the Local tier under
         // `<data_dir>/principals/{name}/local/cron/`.
         let layout = self.path_resolver.principal_layout(&name);
@@ -649,7 +649,7 @@ impl PrincipalManager {
             .map_err(|e| PrincipalManagerError::Config(format!("role seed failed: {e:#}")))?;
 
         // Stable principal id: use the persisted one when present. For
-        // pre-existing `principal.toml` files without an `id` field,
+        // pre-existing `peko.toml` files without an `id` field,
         // generate once and re-persist so the id (and everything keyed
         // by it — peer DM channels, cron ownership, quota state)
         // stabilizes across daemon restarts. A persist failure is
@@ -813,7 +813,7 @@ impl PrincipalManager {
     ) -> peko_channel::Result<peko_channel::ActorInfo> {
         let config = principal.config.read().await;
         // Only authenticated Hub receipts and verified directory results establish aliases.
-        // principal.toml is editable workspace content, not a Hub identity attestation.
+        // peko.toml is editable workspace content, not a Hub identity attestation.
         let existing = port
             .resolve_actor(&format!("principal:local:{}", principal.id.0))
             .await
@@ -982,7 +982,7 @@ impl PrincipalManager {
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
 
-        // Pick up edits made to principal.toml since it was loaded (by
+        // Pick up edits made to peko.toml since it was loaded (by
         // hand, or by the principal's own file tools): the write below
         // persists the whole config, and would otherwise put back the
         // old values (a `quota set` reverted a changed model).
@@ -1019,7 +1019,7 @@ impl PrincipalManager {
             .get_by_name(name)
             .await
             .ok_or_else(|| PrincipalManagerError::NotFound(name.to_string()))?;
-        let path = principal.workspace_path.join("principal.toml");
+        let path = crate::common::paths::peko_config_path(&principal.workspace_path);
         let _file_lock = peko_fs_persistence::WorkspaceFileLock::acquire_in(
             self.path_resolver.runtime_locks_dir(),
             &path,
@@ -1054,10 +1054,10 @@ impl PrincipalManager {
     ) -> Result<(), PrincipalManagerError> {
         let toml =
             toml::to_string(config).map_err(|e| PrincipalManagerError::Config(e.to_string()))?;
-        // Write-then-rename: turns re-read principal.toml when it
+        // Write-then-rename: turns re-read peko.toml when it
         // changes (`Principal::reload_config_if_changed`) and must
         // never see a half-written file.
-        let path = workspace_path.join("principal.toml");
+        let path = crate::common::paths::peko_config_path(workspace_path);
         let temp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         tokio::fs::write(&temp_path, toml).await?;
         if let Err(error) = tokio::fs::rename(&temp_path, &path).await {
@@ -1457,7 +1457,7 @@ impl PrincipalManager {
         channel: ChannelContext,
         override_model: Option<String>,
     ) -> Result<RouterContext, PrincipalManagerError> {
-        // Hand edits to principal.toml apply to this message.
+        // Hand edits to peko.toml apply to this message.
         principal.reload_config_if_changed().await;
         // Enforce Principal-level permissions before any routing or session work.
         let resource = {
@@ -2041,7 +2041,7 @@ mod tests {
             .await
             .expect("tool runtime should initialize");
 
-        let workspace = temp.path().join("principals");
+        let workspace = temp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let catalog_path = temp.path().join("models.toml");
@@ -2084,7 +2084,7 @@ mod tests {
             .await
             .expect("tool runtime should initialize");
 
-        let workspace = temp.path().join("principals");
+        let workspace = temp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let catalog_path = temp.path().join("models.toml");
@@ -2209,7 +2209,7 @@ mod tests {
             owner: ActorRef::User("test-owner".into()),
             identity: PrincipalIdentityConfig {
                 display_name: Some(name.to_string()),
-                description: Some(format!("The {name} Principal")),
+                description: Some(format!("The {name} peko")),
                 avatar: None,
             },
             intent: PrincipalIntentConfig::default(),
@@ -2533,7 +2533,7 @@ mod tests {
     }
 
     /// The principal id must survive a daemon restart: `create`
-    /// persists it into `principal.toml` and a fresh manager's `load`
+    /// persists it into `peko.toml` and a fresh manager's `load`
     /// recovers the SAME id instead of minting a new one (peer DM
     /// channels are keyed by it — re-minting fragmented `peko log`
     /// history across restarts).
@@ -2554,13 +2554,13 @@ mod tests {
         );
 
         // Simulate a daemon restart: a fresh manager loading the same
-        // principal.toml must recover the persisted id.
+        // peko.toml must recover the persisted id.
         let manager2 = build_manager(&temp).await;
         let loaded = manager2.load(&config_path).await.expect("load");
         assert_eq!(loaded.id, id);
     }
 
-    /// Pre-existing `principal.toml` files without an `id` field: the
+    /// Pre-existing `peko.toml` files without an `id` field: the
     /// load path generates one, re-persists the config, and the next
     /// restart recovers the same id.
     #[tokio::test(flavor = "multi_thread")]
@@ -2696,11 +2696,11 @@ mod tests {
     }
 
     /// Regression: every principal's sessions must live under its own
-    /// Local tier root (`{data}/principals/{name}/local/sessions/`). The
+    /// Local tier root (`{data}/pekos/{name}/local/sessions/`). The
     /// memory factory receives the Local tier root whose `file_name()` is
     /// always `"local"` — factories that re-derived the principal name
     /// from it once collapsed all sessions into a single shared
-    /// `principals/local/local/sessions/` store, leaking one principal's
+    /// `pekos/local/local/sessions/` store, leaking one principal's
     /// history into another's context.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
@@ -2838,7 +2838,7 @@ mod tests {
         let principal = manager.get(id).await.expect("principal should exist");
         assert_eq!(principal.exposure().await, peko_auth::Exposure::Public);
 
-        let toml = tokio::fs::read_to_string(principal.workspace_path.join("principal.toml"))
+        let toml = tokio::fs::read_to_string(principal.workspace_path.join("peko.toml"))
             .await
             .unwrap();
         assert!(
@@ -2848,13 +2848,13 @@ mod tests {
     }
 
     /// An update through the manager (e.g. `quota set`) keeps an edit
-    /// made to principal.toml on disk since the config was loaded.
+    /// made to peko.toml on disk since the config was loaded.
     #[tokio::test(flavor = "multi_thread")]
     #[serial_test::serial]
     async fn update_config_keeps_edits_made_on_disk() {
         let (_temp, manager, _adapter, id) = setup().await;
         let principal = manager.get(id).await.expect("principal should exist");
-        let path = principal.workspace_path.join("principal.toml");
+        let path = principal.workspace_path.join("peko.toml");
         let mut on_disk: PrincipalConfig =
             toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
         on_disk.preferred_model_id = Some("hand-edited".to_string());
@@ -2885,7 +2885,7 @@ mod tests {
         use super::super::config::BootState;
         let (_temp, manager, _adapter, id) = setup().await;
         let principal = manager.get(id).await.unwrap();
-        let path = principal.workspace_path.join("principal.toml");
+        let path = principal.workspace_path.join("peko.toml");
         let original = tokio::fs::read_to_string(&path).await.unwrap();
         let mut authored: PrincipalConfig = toml::from_str(&original).unwrap();
         authored.identity.description = Some("Maintain the release evidence".into());
@@ -4317,7 +4317,7 @@ mod tests {
     }
 
     // ===================================================================
-    // Live definition: edits to roles/root.md and principal.toml apply
+    // Live definition: edits to roles/root.md and peko.toml apply
     // to the next turn without a daemon restart.
     // ===================================================================
 
@@ -4346,10 +4346,10 @@ mod tests {
         tokio::fs::write(&path, body).await.unwrap();
     }
 
-    /// Set `preferred_model_id` in the principal's `principal.toml` on
+    /// Set `preferred_model_id` in the principal's `peko.toml` on
     /// disk, as a person editing the file would.
     async fn set_model_on_disk(principal: &Principal, model: &str) {
-        let path = principal.workspace_path.join("principal.toml");
+        let path = principal.workspace_path.join("peko.toml");
         let mut doc: toml::Value =
             toml::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
         doc.as_table_mut()
@@ -4508,7 +4508,7 @@ mod tests {
         assert!(last_request_contains(&adapter, marker));
     }
 
-    /// A `principal.toml` that no longer parses keeps the loaded config.
+    /// A `peko.toml` that no longer parses keeps the loaded config.
     /// Identity fields keep their loaded values even when the file
     /// changes them.
     #[tokio::test(flavor = "multi_thread")]
@@ -4516,7 +4516,7 @@ mod tests {
     async fn config_reload_keeps_identity_and_survives_bad_edits() {
         let (_temp, manager, _adapter, id) = setup().await;
         let principal = manager.get(id.clone()).await.unwrap();
-        let path = principal.workspace_path.join("principal.toml");
+        let path = principal.workspace_path.join("peko.toml");
         let loaded = principal.config.read().await.clone();
 
         tokio::fs::write(&path, "this is = = not toml")
@@ -4567,7 +4567,7 @@ mod tests {
             .await
             .expect("tool runtime should initialize");
 
-        let workspace = temp.path().join("principals");
+        let workspace = temp.path().join("pekos");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         let catalog_path = temp.path().join("models.toml");

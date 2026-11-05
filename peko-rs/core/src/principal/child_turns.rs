@@ -31,7 +31,7 @@
 //! ## Live definition
 //!
 //! The bundle is cached for the principal's lifetime, but its roles and
-//! model are not: every turn re-reads `principal.toml`
+//! model are not: every turn re-reads `peko.toml`
 //! ([`Principal::reload_config_if_changed`]), the binding, and the role
 //! file, and re-resolves the provider when `preferred_model_id` changed.
 //! An edit to any of them applies to the next turn without a daemon

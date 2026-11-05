@@ -47,7 +47,7 @@ template implies the output matches its source; `create` strips
 
 | Term | Meaning |
 |---|---|
-| **a seed** | the stripped `principal.toml` DNA — the input to `peko create` |
+| **a seed** | the stripped `peko.toml` DNA — the input to `peko create` |
 | **seeding** | the act: P1 definition, P2 genesis job scheduling |
 | **a peko** | the actor that grows from a seed |
 | **an existence** | a full `.peko` snapshot — never distributed by the hub |
@@ -157,7 +157,7 @@ rather than a passive request handler.
   session with a live run.
 - **Standing children** are the per-peer conversation children below
   and the default `/tmp` and `/trash` nodes (`principal::default_nodes`).
-  Declared `[children]` in `principal.toml` were removed on 2026-09-12;
+  Declared `[children]` in `peko.toml` were removed on 2026-09-12;
   the table is ignored on load. `Agent new` with an existing slug
   resumes that session rather than minting a fresh one.
 - **External-facing children** are auto-spawned on contact
@@ -192,7 +192,7 @@ rather than a passive request handler.
 - Standing children: per-peer conversation children and the default
   `/tmp` and `/trash` nodes.
 - Spawned children and their subtrees.
-- The principal's memory organization (per-`principal.toml`).
+- The principal's memory organization (per-`peko.toml`).
 - Cron jobs targeting the principal.
 
 ### Out of scope
@@ -215,7 +215,7 @@ rather than a passive request handler.
 
 - **Not a single session** — the structure that *contains* sessions.
 - **Not an agent** — the structure that *contains* agents.
-- **Not `principal.toml`** — config in, PEKO out; the PEKO is the
+- **Not `peko.toml`** — config in, PEKO out; the PEKO is the
   runtime instance derived from the principal's config.
 - **Not channels** — channels are the PEKO's external interface, not
   part of the PEKO itself.

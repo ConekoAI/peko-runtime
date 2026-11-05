@@ -35,7 +35,7 @@ pub const PREFIX: &str = "ledger";
 pub const VERSION: u64 = 1;
 /// How often a ledger's head is checkpointed into the global audit log.
 pub const CHECKPOINT_EVERY: Duration = Duration::from_hours(1);
-/// Default retention when `principal.toml` sets none.
+/// Default retention when `peko.toml` sets none.
 pub const DEFAULT_RETENTION_DAYS: u32 = 90;
 
 /// Global audit event types the ledger writes (ADR-079 D5, D7).

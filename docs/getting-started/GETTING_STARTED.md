@@ -137,14 +137,13 @@ long that takes depends on your model; the turn starts a few seconds after
 the daemon is up:
 
 ```
-Created peko 'my-peko' at ~/.peko/principals/my-peko (model: my-model)
+Created peko 'my-peko' at ~/.peko/pekos/my-peko (model: my-model)
   kb scaffold: 8 files seeded
   root role: roles/root.md seeded
   kb journal: birth entry seeded
 Daemon: peko 'my-peko' loaded
-Genesis: genesis seeded for [my-peko], keepalive seeded for [my-peko], state flipped for [my-peko], memory migrated for [], memory job seeded for [my-peko]
-Waiting for the genesis turn (the trunk's first self-turn)…
-🎉 Peko 'my-peko' is alive (boot state: Organized). Talk to it: peko send my-peko "…" — inspect it: peko log my-peko
+Waiting for 'my-peko' to set itself up (its first turn)…
+🎉 Peko 'my-peko' is ready. Talk to it: peko send my-peko "…" — read along: peko log my-peko
 ```
 
 ---
@@ -175,29 +174,31 @@ peko log my-peko
 ```
 
 `user:local` is you, the person at this terminal. The peko's replies show its
-name. Its full address is `principal:local:<id>` (`peko show` prints it), and
-`peko log --json` carries it in each message's `sender` field.
+name. Its full address is `peko:local:<id>` (`peko show` prints it).
 
 ---
 
 ## What a peko is made of
 
-Each peko is a directory of plain files under `~/.peko/principals/<name>/`:
+Each peko is a directory of plain files under `~/.peko/pekos/<name>/`:
 
 ```
 my-peko/
-├── principal.toml   # the peko's definition: name, intent, model, permissions
+├── peko.toml        # the peko's definition: name, goals, model, permissions
 ├── POLICY.md        # your rules for what it may do for other people
 ├── roles/
-│   ├── root.md      # the root role: how it supervises its work and holds conversations
-│   └── primary.md   # a general-purpose role it can run helper agents as
+│   ├── conversation.md  # how it talks with you and other people
+│   ├── root.md          # how it looks after its ongoing work
+│   ├── primary.md       # a general-purpose assistant role
+│   └── worker.md        # how it carries out a task it hands to a helper
 ├── kb/              # its memory: MEMORY.md, index.md, CONVENTIONS.md,
 │                    #   journal/, people/, groups/, roles/, dreams/
 └── mcp/             # MCP servers it can use (one server.json per server)
 ```
 
-A **role** is a Markdown template that a live agent runs as. To change how
-your peko behaves, edit `roles/root.md`: the edit applies to its next turn. See the [User's Guide](../user-guide/USERS_GUIDE.md) for
+A **role** is a Markdown file describing one of the peko's jobs. To change
+how your peko talks, edit `roles/conversation.md` (and its house rules in
+`kb/CONVENTIONS.md`); edits apply on its next turn. See the [User's Guide](../user-guide/USERS_GUIDE.md) for
 roles, skills, MCP servers and memory.
 
 `peko show` summarizes it:
@@ -208,18 +209,19 @@ peko show my-peko
 
 ```
 Peko: my-peko
-  Local ID: principal:local:prin_0c87a26152bb4e82b8a227753c068fae
+  Local ID: peko:local:prin_0c87a26152bb4e82b8a227753c068fae
   Registration: local_only
   Signing DID: did:key:z6Mkgv5mX5QeL3KuKppcPrwANtq8eBd6NsnFfCoxGGNQBUNJ
-  Workspace: ~/.peko/principals/my-peko
+  Workspace: ~/.peko/pekos/my-peko
   Model: my-model (pinned to this peko)
   Roles:
-    - conversation (~/.peko/principals/my-peko/roles/conversation.md): Default conversation role — talks with people and peers in a channel
-    - root (~/.peko/principals/my-peko/roles/root.md): Default root role — supervises the principal's standing work from the trunk
-    - primary (~/.peko/principals/my-peko/roles/primary.md): Default assistant for my-peko
+    - conversation (~/.peko/pekos/my-peko/roles/conversation.md): Default conversation role — talks with people and other pekos
+    - root (~/.peko/pekos/my-peko/roles/root.md): Default root role — looks after the peko's ongoing work and schedule
+    - primary (~/.peko/pekos/my-peko/roles/primary.md): Default assistant for my-peko
+    - worker (~/.peko/pekos/my-peko/roles/worker.md): Default role for delegated work — does one task and reports back
   Catalog:
-    - role: 3/3 enabled
-    - builtin: 23/23 enabled
+    - role: 4/4 enabled
+    - builtin: 25/25 enabled
 ```
 
 ---

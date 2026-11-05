@@ -100,7 +100,7 @@ pub struct PromptSectionRequest {
     pub principal_id: String,
     /// The principal's workspace path (providers scan
     /// `<workspace>/{roles,skills,workflows}` and read
-    /// `<workspace>/principal.toml`).
+    /// `<workspace>/peko.toml`).
     pub workspace: String,
     /// The running session's id (session-context providers key off it).
     pub session_id: String,

@@ -194,7 +194,7 @@ impl Daemon {
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
         // ADR-046: principal-config drift detection. Hashes every
-        // `principal.toml` and compares against the baseline written
+        // `peko.toml` and compares against the baseline written
         // on the previous boot. Drifted principals emit a
         // `principal.config_drift` Security audit event so operators
         // see them in `peko audit tail --since 5m`. The check is

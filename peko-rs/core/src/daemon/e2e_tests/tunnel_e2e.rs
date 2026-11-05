@@ -32,7 +32,7 @@
 //! (see `src/tunnel/dispatcher.rs:296-345`). The runtime's canonical chat surface is
 //! `peko send <principal>`, and the inbound PekoHub-proxied chat is routed to
 //! `PrincipalManager::receive`. This test therefore bootstraps a Principal on disk
-//! at `<workspace>/config/principals/<name>/principal.toml` so `AppState::with_data_dir`
+//! at `<workspace>/config/pekos/<name>/peko.toml` so `AppState::with_data_dir`
 //! picks it up during the `read_dir` loop in `src/daemon/state.rs:425-440`, and the
 //! announcer finds it via `principal_manager.list_all()`.
 //!
@@ -87,7 +87,7 @@ mod real_llm;
 /// surfaces it to the tunnel announce loop.
 ///
 /// On-disk layout (post-Principal migration):
-///   `<workspace>/config/principals/<name>/principal.toml`
+///   `<workspace>/config/pekos/<name>/peko.toml`
 ///
 /// The Principal carries the same `chat` permission grant that the legacy
 /// agent config used — without it the dispatcher's private-instance
@@ -138,11 +138,11 @@ async fn create_test_workspace(
         real_llm::REAL_LLM_MODEL_ID
     };
 
-    // Create the Principal's directory + principal.toml. The Principal's
+    // Create the Principal's directory + peko.toml. The Principal's
     // identity is generated lazily by `PrincipalManager::load` if the
     // `did` field is absent, so we don't need to provision an ed25519
     // key here — the manager takes care of it.
-    let principals_dir = config_dir.join("principals");
+    let principals_dir = config_dir.join("pekos");
     let principal_path = principals_dir.join(principal_name);
     tokio::fs::create_dir_all(&principal_path).await?;
 
@@ -190,7 +190,7 @@ granted_by = {{ kind = "user", id = "system" }}
 "#
     );
 
-    tokio::fs::write(principal_path.join("principal.toml"), principal_toml).await?;
+    tokio::fs::write(principal_path.join("peko.toml"), principal_toml).await?;
 
     Ok(())
 }

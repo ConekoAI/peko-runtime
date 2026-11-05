@@ -1,5 +1,5 @@
 //! Runtime quota state: counters for the current calendar window,
-//! persisted to `quota_state.json` next to `principal.toml`.
+//! persisted to `quota_state.json` next to `peko.toml`.
 //!
 //! ## Persistence
 //!

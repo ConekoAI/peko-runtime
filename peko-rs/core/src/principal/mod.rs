@@ -122,7 +122,7 @@ pub struct Principal {
     /// Reached via `principal.plan_port`; no separate `AppState`
     /// plumbing needed (plans are per-principal, not runtime-global).
     pub plan_port: Arc<dyn peko_plan::PlanPort>,
-    /// `principal.toml` as it was (modified time, length) when `config`
+    /// `peko.toml` as it was (modified time, length) when `config`
     /// last matched it. [`Self::reload_config_if_changed`] re-reads the
     /// file only when this differs.
     config_file_stamp: std::sync::Mutex<Option<ConfigFileStamp>>,
@@ -135,7 +135,7 @@ pub struct Principal {
 }
 
 /// What [`Principal::reload_config_if_changed`] compares to notice an
-/// edit to `principal.toml`.
+/// edit to `peko.toml`.
 type ConfigFileStamp = (std::time::SystemTime, u64);
 
 fn config_file_stamp(path: &std::path::Path) -> Option<ConfigFileStamp> {
@@ -144,15 +144,17 @@ fn config_file_stamp(path: &std::path::Path) -> Option<ConfigFileStamp> {
 }
 
 impl Principal {
-    /// The stamp of `<workspace>/principal.toml` right now, for the
+    /// The stamp of `<workspace>/peko.toml` right now, for the
     /// constructor: the config being installed is the one on disk.
     fn current_config_file_stamp(
         workspace_path: &std::path::Path,
     ) -> std::sync::Mutex<Option<ConfigFileStamp>> {
-        std::sync::Mutex::new(config_file_stamp(&workspace_path.join("principal.toml")))
+        std::sync::Mutex::new(config_file_stamp(&crate::common::paths::peko_config_path(
+            workspace_path,
+        )))
     }
 
-    /// Adopt hand edits to `principal.toml` while the daemon runs: when
+    /// Adopt hand edits to `peko.toml` while the daemon runs: when
     /// the file changed since `config` last matched it, read it again.
     /// Turn builders call this first, so an edit applies to the next
     /// turn without a restart.
@@ -162,7 +164,7 @@ impl Principal {
     /// that no longer parses keeps the loaded config and is reported
     /// once per edit.
     pub async fn reload_config_if_changed(&self) {
-        let path = self.workspace_path.join("principal.toml");
+        let path = crate::common::paths::peko_config_path(&self.workspace_path);
         let Some(stamp) = config_file_stamp(&path) else {
             return;
         };
@@ -186,7 +188,7 @@ impl Principal {
                 tracing::warn!(
                     principal = %self.id,
                     path = %path.display(),
-                    "principal.toml changed but cannot be read; keeping the loaded config: {e:#}"
+                    "peko.toml changed but cannot be read; keeping the loaded config: {e:#}"
                 );
                 return;
             }

@@ -38,15 +38,14 @@ use crate::commands::GlobalPaths;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum ChannelCommands {
-    /// Create a new channel owned by `creator`.
+    /// Create a group chat started by one of your pekos.
     Create {
-        /// Creator peko name (must exist on disk).
+        /// The peko that starts the group.
         creator: String,
-        /// Channel display name (free-form string).
+        /// The group's display name.
         name: String,
-        /// Optional explicit channel id (ADR-049 Phase 2, D5), e.g.
-        /// `group:<slug>` for a named group channel. Omit to mint a
-        /// fresh `chan_<8 base36>` id.
+        /// Choose the group's id, e.g. `group:<slug>` for a named group.
+        /// Omit for a fresh `chan_…` id.
         #[arg(long, value_name = "CHANNEL_ID")]
         id: Option<String>,
         /// Output the new channel id as JSON.
@@ -54,34 +53,31 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Invite `invitee` to `channel` (invited by `inviter`).
+    /// Add a peko or a person to a group.
     Invite {
         /// Channel id (`chan_xxxxxxxx`).
         channel: String,
-        /// Inviter peko name (must already be a member).
+        /// The peko doing the inviting (already a member).
         inviter: String,
-        /// Invitee peko name (must exist on disk), or a user's actor
-        /// address such as `user:hub:<id>` (ADR-049 Phase 1 — validated
-        /// by form only, no lookup).
+        /// A peko on this computer by name, or a person's address such
+        /// as `user:hub:<id>`.
         invitee: String,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
 
-    /// Post a message to `channel` from `sender`.
+    /// Post a message to a group or DM.
     Post {
         /// Channel id.
         channel: String,
-        /// Sender peko name (must be a member), or `me` to post
-        /// as your own identity (ADR-057: derived from the
-        /// connection — hub user when logged into pekohub, else
-        /// `user:local`). A `user:…` sender is refused: user
-        /// identities are never specified on the wire.
+        /// A peko that is a member, or `me` to post as yourself (your
+        /// PekoHub account when this computer is registered, else
+        /// `user:local`). You can't post as another person.
         sender: String,
         /// Message text.
         text: String,
-        /// Optional parent task id (reply target).
+        /// Reply to this message id.
         #[arg(long)]
         parent: Option<String>,
         /// Output as JSON.
@@ -89,11 +85,11 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// List events on `channel` since `since` (None = from start).
+    /// Read a group or DM, from the start or after a message.
     Peek {
         /// Channel id.
         channel: String,
-        /// Optional cursor (`task_xxxxxxxx`).
+        /// Only messages after this one (`task_…`).
         #[arg(long)]
         since: Option<String>,
         /// Output as JSON.
@@ -101,7 +97,7 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// List members of `channel`.
+    /// List a group's members.
     Members {
         /// Channel id.
         channel: String,
@@ -110,18 +106,17 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// List channels where `principal` is a member.
+    /// List the groups and DMs a peko is in.
     Ls {
         /// Peko name.
+        #[arg(value_name = "PEKO")]
         principal: String,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
 
-    /// Membership snapshot for `channel` (mirrors `peko channel members`
-    /// today; preserved as a separate verb because the hub frontend
-    /// uses it).
+    /// Show a group: its name and members.
     Show {
         /// Channel id.
         channel: String,
@@ -130,25 +125,20 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Remove `principal` from `channel`. PR-3a: closes the
-    /// missing IPC variant — PR-1 had `handle_leave` only on the
-    /// in-process path.
+    /// Take one of your pekos out of a group.
     Leave {
         /// Channel id.
         channel: String,
         /// Peko name (must already be a member).
+        #[arg(value_name = "PEKO")]
         principal: String,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
 
-    /// Copy a Runtime-tier channel into the Shared tier (PR-3d).
-    /// COPY semantics — the Runtime source remains so `peko channel
-    /// show` still resolves the channel. The shared root lives at
-    /// `<shared_dir>/channels/<channel_id>/`. Production requires
-    /// `channel:write_shared`; the in-process fallback path inherits
-    /// the same gate via the daemon.
+    /// Copy a channel into shared storage (maintenance).
+    #[command(hide = true)]
     PinToShared {
         /// Channel id.
         channel: String,
@@ -157,19 +147,20 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Open your DM with a peko on another computer (ADR-090 D2), by its
-    /// ID or its PekoHub ID, or with another person by `user:hub:<account>`
-    /// (ADR-095 D6: they get a message request); with a message, post it
-    /// too. Read replies with `peko channel peek <dm>`, post with
-    /// `peko channel post <dm> me`.
+    /// Open a DM with a peko on another computer, or with a person
+    ///
+    /// Name the peko by its ID or PekoHub ID, or a person by
+    /// `user:hub:<account>` (they get a message request first). Add a
+    /// message to send it right away. Read replies with
+    /// `peko channel peek <dm>`; post with `peko channel post <dm> me`.
     Dm {
-        /// `@owner/name` (a public peko), `principal:hub:<UUID>`, the bare
+        /// `@owner/name` (a public peko), `peko:hub:<UUID>`, the bare
         /// PekoHub ID, or a person as `user:hub:<account>`.
         peko: String,
         /// Post this message right away.
         message: Option<String>,
-        /// Attach a file to the message (repeatable; ADR-094): at most
-        /// 10 MB a file and 25 MB in all, since it crosses PekoHub.
+        /// Attach a file (repeatable): at most 10 MB a file and 25 MB in
+        /// all, since it travels through PekoHub.
         #[arg(long = "attach", value_name = "PATH")]
         attach: Vec<String>,
         /// Output as JSON.
@@ -177,15 +168,15 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Groups on other computers that invited you (ADR-092 D2).
+    /// Groups on other computers that invited you.
     Invitations {
         /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
 
-    /// Join a group: accept its invitation, or ask its home with an invite
-    /// link (or a public group's ID) from PekoHub (ADR-092 D5).
+    /// Join a group: accept its invitation, or use an invite link (or a
+    /// public group's ID) from PekoHub.
     Join {
         /// Channel id from `peko channel invitations`, an invite link, or a
         /// public group's ID.
@@ -204,7 +195,7 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// People asking to DM you (ADR-095 D6).
+    /// People asking to DM you.
     Requests {
         /// Output as JSON.
         #[arg(long)]
@@ -247,7 +238,7 @@ pub enum ChannelCommands {
         json: bool,
     },
 
-    /// Give a group an ID on PekoHub, or change who may find it (ADR-092 D5).
+    /// Give a group an ID on PekoHub, or change who may find it.
     Register {
         /// The group's channel id (its home is this computer).
         channel: String,
@@ -421,8 +412,8 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     if matches!(s, ActorRef::User(_)) {
                         anyhow::bail!(
                             "user identities cannot be specified — the daemon derives yours \
-                             from the connection. Use `me` to post as yourself, or a \
-                             principal name to post as a runtime-hosted actor."
+                             from the connection. Use `me` to post as yourself, or the \
+                             name of one of your pekos to post as it."
                         );
                     }
                 }
@@ -500,7 +491,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             } else {
                 println!("{} events:", events.len());
                 for ev in &events {
-                    println!("  {ev:?}");
+                    println!("  {}", super::shown_channel_event(ev));
                 }
             }
             Ok(())
@@ -532,7 +523,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             } else {
                 println!("{} member(s):", members.len());
                 for m in &members {
-                    println!("  {m}");
+                    println!("  {}", super::shown_address(&m.to_string()));
                 }
             }
             Ok(())
@@ -592,7 +583,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             } else {
                 println!("{} member(s):", members.len());
                 for m in &members {
-                    println!("  {m}");
+                    println!("  {}", super::shown_address(&m.to_string()));
                 }
             }
             Ok(())
@@ -999,12 +990,16 @@ async fn dm_request(packet: RequestPacket) -> Result<ResponsePacket> {
     Ok(resp)
 }
 
-/// The PekoHub ID of the peko `target` names: `principal:hub:<UUID>`, a
+/// The PekoHub ID of the peko `target` names: `peko:hub:<UUID>` (or the
+/// wire spelling `principal:hub:<UUID>`), a
 /// bare UUID, or `@owner/name` — a public peko, looked up on the Hub this
 /// runtime is registered with (`GET /v1/public/pekos/:owner/:name`).
 async fn remote_peko_hub_id(paths: &GlobalPaths, target: &str) -> Result<String> {
     let target = target.trim();
-    let bare = target.strip_prefix("principal:hub:").unwrap_or(target);
+    let bare = target
+        .strip_prefix("peko:hub:")
+        .or_else(|| target.strip_prefix("principal:hub:"))
+        .unwrap_or(target);
     if uuid::Uuid::parse_str(bare).is_ok() {
         return Ok(bare.to_string());
     }

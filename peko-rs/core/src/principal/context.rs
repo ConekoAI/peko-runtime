@@ -65,7 +65,7 @@ pub struct PrincipalContext {
     /// LLM resolver used to validate provider hints and surface
     /// catalog defaults.
     pub resolver: Option<Arc<LlmResolver>>,
-    /// Per-principal configured model preference from `principal.toml`.
+    /// Per-principal configured model preference from `peko.toml`.
     /// When `Some`, this model id is used for every LLM call for this
     /// principal unless overridden per-message.
     pub provider_hint: Option<String>,

@@ -188,8 +188,8 @@ pub struct RuntimeAuthority {
 /// reads is surfaced by the caller, not by the authority.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorityError {
-    /// The `PrincipalId` doesn't resolve to any on-disk `principal.toml`.
-    #[error("principal not found: {0}")]
+    /// The `PrincipalId` doesn't resolve to any on-disk `peko.toml`.
+    #[error("peko not found: {0}")]
     UnknownPrincipal(PrincipalId),
 
     /// The caller may not touch the requested tier.
@@ -201,7 +201,7 @@ pub enum AuthorityError {
     /// files these are — not on grant strings. The denial is also
     /// emitted as a `Security` audit event when the authority carries
     /// an audit sink.
-    #[error("cross-principal write denied: {actor} may not write principal '{principal}'")]
+    #[error("write denied: {actor} may not write to peko '{principal}'")]
     OwnershipDenied { actor: String, principal: String },
 }
 
@@ -308,7 +308,7 @@ impl RuntimeAuthority {
     // ownership (ADR-066 D9 — see the `*_write` family below).
     // ---------------------------------------------------------------------
 
-    /// Hand out a `SharedPath` for `principal.toml`.
+    /// Hand out a `SharedPath` for `peko.toml`.
     pub fn shared_config(&self, principal: &PrincipalId) -> Result<SharedPath, AuthorityError> {
         self.assert_shared_read_entitled()?;
         let (_name, layout) = self.principal_layout(principal)?;
@@ -372,7 +372,7 @@ impl RuntimeAuthority {
     // language remains: the boundary is whose files these are.
     // ---------------------------------------------------------------------
 
-    /// Hand out a `SharedPath` for `principal.toml` IF the actor owns
+    /// Hand out a `SharedPath` for `peko.toml` IF the actor owns
     /// the principal (or is the operator). Tier gate fires first.
     pub async fn shared_config_write(
         &self,
@@ -617,7 +617,7 @@ impl RuntimeAuthority {
         }
     }
 
-    /// Read a principal's DID from its on-disk `principal.toml`.
+    /// Read a principal's DID from its on-disk `peko.toml`.
     /// `None` when the principal isn't on disk or carries no `did`.
     fn principal_did_for_name(&self, principal_name: &str) -> Option<String> {
         let config_path = self
@@ -777,7 +777,7 @@ mod tests {
     // ---------------------------------------------------------------------
 
     /// Build a tempdir-backed `PathResolver` with a real
-    /// `principals/alice/principal.toml` on disk. The on-disk `did`
+    /// `pekos/alice/peko.toml` on disk. The on-disk `did`
     /// matches the returned `PrincipalId` so `lookup_principal_name`
     /// succeeds. Returns `(TempDir, PathResolver, PrincipalId)` —
     /// caller keeps the tempdir alive for the duration of the test.
@@ -793,10 +793,10 @@ mod tests {
         // On-disk DID format mirrors what `peko_identity` produces;
         // ID-keyed accessors scan for this string verbatim.
         let did_str = "did:peko:public:alice-test-fixture";
-        let principal_dir = config_dir.join("principals").join("alice");
+        let principal_dir = config_dir.join("pekos").join("alice");
         std::fs::create_dir_all(&principal_dir).unwrap();
         std::fs::write(
-            principal_dir.join("principal.toml"),
+            principal_dir.join("peko.toml"),
             format!("name = \"alice\"\ndid = \"{did_str}\"\n"),
         )
         .unwrap();
@@ -913,7 +913,7 @@ mod tests {
             RuntimeAuthority::for_caller(resolver, ActorRef::Principal(alice_did().into()));
         let result = authority.shared_config_write_for_name("alice").await;
         assert!(result.is_ok());
-        assert!(result.unwrap().as_path().ends_with("alice/principal.toml"));
+        assert!(result.unwrap().as_path().ends_with("alice/peko.toml"));
         assert!(authority
             .shared_roles_dir_write_for_name("alice")
             .await

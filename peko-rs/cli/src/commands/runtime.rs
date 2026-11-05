@@ -12,13 +12,13 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum RuntimeCommands {
-    /// Show this runtime's DID
+    /// Show this computer's runtime identity (its DID)
     Id,
     /// Show runtime metadata
     Info,
-    /// Register this runtime and its local user with PekoHub (ADR-081).
-    /// Required before any principal can go online. Without `--api-key`,
-    /// shows a code to approve on the PekoHub website.
+    /// Link this computer, and you as its user, to your PekoHub account.
+    /// Needed before any peko can go online. Without `--api-key`, shows a
+    /// code to approve on the PekoHub website.
     Register {
         /// PekoHub API origin (`pekohub.ai` and `pekohub.org` are read as
         /// `api.pekohub.ai`)

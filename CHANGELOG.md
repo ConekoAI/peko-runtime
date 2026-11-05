@@ -4,6 +4,41 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Change: everything you see says peko (2026-11-05)
+
+- A peko's definition is now `peko.toml` (was `principal.toml`), and the
+  runtime's own settings are `~/.peko/runtime.toml` (was `~/.peko/peko.toml`).
+  Both are renamed in place the first time they are read; a rename Windows
+  refuses is retried on the next read, and the old file is read meanwhile.
+  `.peko` snapshots now carry `config/peko.toml`, and snapshots with
+  `config/principal.toml` still import. `peko config init` writes
+  `runtime.toml`.
+- Each peko's folders move from `principals/` to `pekos/`, in the config
+  directory (`~/.peko/pekos/<name>/`) and the data directory. The daemon moves
+  them at boot, before loading any peko; when both folders exist, pekos only
+  in the old one move over and a name in both stays put (logged). Until the
+  move succeeds (Windows can refuse a folder another process holds), paths
+  resolve to the old folder and the move is retried next boot. The trust
+  floor treats both folder names as runtime state. Saved state holds no
+  absolute paths into these folders, so nothing else is rewritten.
+- Addresses: `peko:local:<id>` and `peko:hub:<id>` are accepted wherever a
+  `principal:` address is, and the CLI and desktop show pekos that way
+  (`peko show`, `peko log`, `peko channel members|peek`, approvals,
+  permissions). The wire and stored form stays `principal:`: PekoHub and other
+  runtimes parse it, and it is saved in channel records, the actor registry,
+  ledgers, and `[[permissions]]`; `--json` output keeps it too.
+- `peko channel peek` prints `[time] author: text` lines instead of a debug
+  dump of each event.
+- MCP secrets: `peko credential set|list` accept and show
+  `mcp:peko:<local-id>:<server>`; the vault keeps storing
+  `mcp:principal:<local-id>:<server>`.
+- `--help`, CLI output, daemon errors, the seeded role and `kb/` files, the
+  README, and the user docs drop internal terms (principal, trunk, genesis,
+  compartments, ADR and phase numbers). `peko audit --principal` is now
+  `--peko` (the old flag still works). `peko channel pin-to-shared` is hidden.
+- README rewritten around the main use: a persistent assistant you can safely
+  let other people talk to.
+
 ### Fix: the block list names people (2026-11-04, ADR-095)
 
 - Blocking someone from their message request remembers the name the request

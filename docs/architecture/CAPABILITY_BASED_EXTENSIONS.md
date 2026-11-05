@@ -8,7 +8,7 @@
 
 
 **Status:** Implemented (Issue 021).  
-**Purpose:** Define the architecture for peko packaging and extension authority in peko. `Capability`, `Capabilities`, and `ActiveExtensionSet` now live in `extensions::framework::types`. The legacy global tool whitelist and `allowed_extensions` have been removed; `[capabilities] grants` in `principal.toml` is the single source of truth.
+**Purpose:** Define the architecture for peko packaging and extension authority in peko. `Capability`, `Capabilities`, and `ActiveExtensionSet` now live in `extensions::framework::types`. The legacy global tool whitelist and `allowed_extensions` have been removed; `[capabilities] grants` in `peko.toml` is the single source of truth.
 
 ---
 
@@ -20,7 +20,7 @@ peko’s current extension system has the right building blocks — a hook frame
 - **Allowlist semantics are inconsistent.** An empty `allowed_extensions` is deny-all for skills/agents but allow-all for tools.
 - **Subagent spawning lacks a capability gate.** A subagent is resolved from disk without a clear authority check tied to what the peko is allowed to use.
 - **There is no clear separation between global install and per-peko authority.** Installing an extension and allowing a peko to use it are conflated today.
-- **There is no one-click authority UX.** Users must hand-edit `principal.toml` to grant or revoke extensions.
+- **There is no one-click authority UX.** Users must hand-edit `peko.toml` to grant or revoke extensions.
 - **Peko packages are implicit.** Sharing a peko means sharing a directory of files; the recipient has no review step for what tools, agents, or MCPs they are enabling.
 - **Extensions are treated as atomic units.** A bundle that ships dozens of agents or tools must be enabled or disabled as a whole, even when the peko only needs a subset.
 
@@ -32,7 +32,7 @@ The north-star goal is to make peko feel like a capability-based operating syste
 
 1. **Everything is an extension.** Agents, skills, tools, MCP servers, prompt fragments, and memory fragments all share one manifest schema and one runtime model.
 2. **Authority is capability-based, not ID-based.** A peko grants capabilities (e.g., `tool:Read`, `agent:researcher`, `filesystem.read:/path`). Extensions declare required capabilities. The runtime activates an extension only when all required capabilities are satisfied.
-3. **Authority has one human-editable source of truth.** The peko’s `principal.toml` contains `[capabilities] grants = [...]`. All other stores are indexes or caches derived from this file.
+3. **Authority has one human-editable source of truth.** The peko’s `peko.toml` contains `[capabilities] grants = [...]`. All other stores are indexes or caches derived from this file.
 4. **Installation is global; authorization is per-peko.** `peko ext install/uninstall` manages the global extension cache. `peko capability grant/revoke --principal <name>` mutates the peko’s capability grants.
 5. **File presence is discoverability, not permission.** Copying a file into `agents/` or `skills/` makes it visible, but it is not executable until explicitly granted.
 6. **Subagents are threads under the parent peko.** Spawning a subagent does not create a new identity. The subagent runs under the parent’s `PrincipalId`, shares the parent’s capability set, and is gated only by the `agent:<id>` capability. This preserves simple routing, audit, and memory sharing while still preventing arbitrary agent loading.
@@ -91,8 +91,8 @@ Authority is separated from installation:
 |---|---|---|
 | `peko ext install <ext>` | Global runtime | Downloads/unpacks the extension bundle into a global extension cache. No peko is affected. |
 | `peko ext uninstall <ext>` | Global runtime | Removes the bundle from the global cache. Existing peko grants become inert. |
-| `peko capability grant --principal <name> <cap>` | Per-peko | Adds `<cap>` to `principal.toml`. The capability can come from a built-in, a globally installed extension, or a loose file in the peko’s workspace. |
-| `peko capability revoke --principal <name> <cap>` | Per-peko | Removes `<cap>` from `principal.toml`. Does not delete files. |
+| `peko capability grant --principal <name> <cap>` | Per-peko | Adds `<cap>` to `peko.toml`. The capability can come from a built-in, a globally installed extension, or a loose file in the peko’s workspace. |
+| `peko capability revoke --principal <name> <cap>` | Per-peko | Removes `<cap>` from `peko.toml`. Does not delete files. |
 | `peko capability list --principal <name>` | Per-peko | Shows granted, detected, and active capabilities. |
 | `peko materialize <ext>` (optional) | Per-peko | Copies a globally installed extension into the peko’s workspace for a self-contained setup. |
 
@@ -162,7 +162,7 @@ Rules:
 
 ### 3.6 Peko Manifest
 
-A peko’s `principal.toml` becomes a capability manifest and the single source of truth:
+A peko’s `peko.toml` becomes a capability manifest and the single source of truth:
 
 ```toml
 [principal]
@@ -234,7 +234,7 @@ signature.pem   # optional, detached signature over manifest + files
 A tar.gz archive containing:
 
 ```
-principal.toml
+peko.toml
 agents/
 skills/
 mcps/
@@ -258,7 +258,7 @@ This Principal package requests:
 [Allow all] [Review each] [Deny]
 ```
 
-No capability is auto-granted. The user chooses which requested capabilities to add to `principal.toml`.
+No capability is auto-granted. The user chooses which requested capabilities to add to `peko.toml`.
 
 #### Loose files
 
@@ -270,7 +270,7 @@ Copying `researcher.md` into `agents/` creates an `ExtensionRecord` with `trust 
 
 ### 4.1 Peko Startup
 
-1. Load `principal.toml`.
+1. Load `peko.toml`.
 2. Discover extensions in the workspace (`agents/`, `skills/`, `mcps/`) and the global cache.
 3. For each detected extension, upsert into `ExtensionStore` with state `detected`.
 4. Evaluate active extensions from `capabilities.grants`.
@@ -302,11 +302,11 @@ The architecture can be reached incrementally:
 | 1 | Close immediate security gaps: subagent allowlist inheritance, empty-allowlist semantics, `Agent` tool registry check. | peko is safe to share. |
 | 2 | Introduce unified manifest parser alongside existing parsers; support `peko-extension.yaml` for new extensions while keeping backward compatibility. | New extensions use the new model. |
 | 3 | Build global `ExtensionStore` and migrate `ExtensionManager` + registries to it; add `peko ext install/uninstall`. | Single source of truth for installed extension state. |
-| 4 | Replace `allowed_extensions` and `permissions` with `capabilities.grants` in `principal.toml`; provide migration command. | Authority is capability-based and human-editable. |
+| 4 | Replace `allowed_extensions` and `permissions` with `capabilities.grants` in `peko.toml`; provide migration command. | Authority is capability-based and human-editable. |
 | 5 | Add `CapabilityEvaluator`, `peko capability grant/revoke --principal`, capability-based subagent spawn gate, and audit tagging. | Fine-grained per-peko authority. |
 | 6 | Add `.pekoext` / `.peko` packaging, signing, and import review. | One-click install/uninstall/enable/disable for non-technical users. |
 
-Legacy `allowed_extensions` and `permissions` are read at load time and mapped into `capabilities.grants`. New writes use only `[capabilities] grants`. `peko migrate-capabilities <name>` can rewrite `principal.toml` cleanly but is not required for compatibility.
+Legacy `allowed_extensions` and `permissions` are read at load time and mapped into `capabilities.grants`. New writes use only `[capabilities] grants`. `peko migrate-capabilities <name>` can rewrite `peko.toml` cleanly but is not required for compatibility.
 
 ---
 
@@ -318,7 +318,7 @@ Legacy `allowed_extensions` and `permissions` are read at load time and mapped i
 | `ExtensionStateRegistry` | Runtime state inside `ExtensionStore` + `CapabilityEvaluator` |
 | `AgentStateRegistry` | Capability grant `agent:<id>` |
 | `ToolRegistry::is_tool_enabled` | Direct `Capabilities` / `ActiveExtensionSet` evaluation |
-| `allowed_extensions: Vec<String>` and global `tool_config` whitelist | `capabilities.grants: Vec<Capability>` in `principal.toml` |
+| `allowed_extensions: Vec<String>` and global `tool_config` whitelist | `capabilities.grants: Vec<Capability>` in `peko.toml` |
 | `peko ext enable/disable` | Removed; use `peko capability grant/revoke --principal` |
 | `AgentService::resolve_subagent_type` | Capability check for `agent:<id>` + spawn under parent peko context; `AgentService` is now subagent-resolution only |
 | `ConfigAuthorityImpl` enable/disable | `CapabilityEvaluator` + `ExtensionStore` |
@@ -337,4 +337,4 @@ Legacy `allowed_extensions` and `permissions` are read at load time and mapped i
 
 ## 8. Summary
 
-The north-star architecture unifies agents, skills, tools, MCPs, and other artifacts under a single extension model driven by manifests and capabilities. It separates global installation from per-peko authority, keeps `principal.toml` as the single human-editable source of truth, treats extensions as bundles of independently grantable capabilities, and keeps subagents as threads under the parent peko identity. This avoids child-identity and cross-runtime routing complexity while still providing a trust model that supports both power-user copy-paste and one-click installation for non-technical users.
+The north-star architecture unifies agents, skills, tools, MCPs, and other artifacts under a single extension model driven by manifests and capabilities. It separates global installation from per-peko authority, keeps `peko.toml` as the single human-editable source of truth, treats extensions as bundles of independently grantable capabilities, and keeps subagents as threads under the parent peko identity. This avoids child-identity and cross-runtime routing complexity while still providing a trust model that supports both power-user copy-paste and one-click installation for non-technical users.

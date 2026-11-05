@@ -3459,7 +3459,7 @@ mod tests {
         permissions: Vec<PermissionGrant>,
         exposure: peko_auth::Exposure,
     ) -> std::sync::Arc<crate::principal::Principal> {
-        let workspace = app_state.config.data_dir.join("principals").join(name);
+        let workspace = app_state.config.data_dir.join("pekos").join(name);
         let roles_dir = workspace.join("roles");
         tokio::fs::create_dir_all(&roles_dir).await.unwrap();
         tokio::fs::write(

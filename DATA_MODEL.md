@@ -22,6 +22,26 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ---
 
+## Peko folders, file names, and address spellings (0.1.0)
+
+- Each peko lives in `{config_dir}/pekos/<name>/` (definition `peko.toml`,
+  workspace files) and `{data_dir}/pekos/<name>/local/` (sessions, ledger,
+  cron, plans). Before 0.1.0 both folders were `principals/` and the
+  definition was `principal.toml`. Daemon boot moves `principals/` to
+  `pekos/` (`PathResolver::migrate_legacy_pekos_dirs`); `pekos_root` reads
+  the old folder while only it exists, and `peko_config_path` renames a
+  `principal.toml` on first read. The trust floor matches both folder names.
+- The runtime's own settings are `{config_dir}/runtime.toml` (was
+  `{config_dir}/peko.toml`, renamed on first read).
+- `.peko` snapshots carry `config/peko.toml`; `config/principal.toml` is read
+  from older snapshots.
+- Addresses are stored and sent as `principal:local:<id>` /
+  `principal:hub:<id>`. `peko:` parses to the same actor (`ActorRef::from_str`)
+  and is what the CLI and desktop display; `--json` keeps the stored form.
+- MCP secrets are stored under the vault namespace
+  `mcp:principal:<local-id>:<server>`; `peko credential` accepts and shows
+  `mcp:peko:<local-id>:<server>`.
+
 ## Acting-for stamps and the trust floor (ADR-078)
 
 - `SessionEntry.compartment` (optional; `{"kind":"internal"}` or
@@ -64,7 +84,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
   `approval_decide {name, id, approve, always?}` → `approval_decided {id,
   approved, message}`; both refuse callers without the owner's
   `ManageSettings` (`[forbidden]`).
-- `Permission::Trusted` (`"trusted"`) in `principal.toml` grants: the owner's
+- `Permission::Trusted` (`"trusted"`) in `peko.toml` grants: the owner's
   consent to give one named actor full tools. Never `public`, never in invites.
 - MCP definitions gain `untrusted_ok` (default `false`) and the reserved
   runtime fields `acting_for` / `acting_for_trust`; the retired reserved field
@@ -75,7 +95,7 @@ This document defines every on-disk and in-memory data format used by the Peko r
 
 ## Tool ledger (ADR-079)
 
-`{data_dir}/principals/<name>/local/ledger/ledger-YYYY-MM-DD.jsonl`
+`{data_dir}/pekos/<name>/local/ledger/ledger-YYYY-MM-DD.jsonl`
 (`LocalLayout::ledger_dir`): one hash-chained, append-only file per UTC day
 (dir 0700, files 0600, every line fsync'd). Only the dispatcher writes it;
 `Write`/`Edit` refuse the directory at every trust level. Not packed into
@@ -120,7 +140,7 @@ last pruned line, `before`), and `ledger.write_failed` (Security). Its
 `tool.call` details add `call_id`, `run_id`, `tool_call_id`, `parent`, and
 `outcome`.
 
-`principal.toml` `[governance] ledger_retention_days` (positive, default 90)
+`peko.toml` `[governance] ledger_retention_days` (positive, default 90)
 sets how many days are kept. The retired `[governance] audit` level
 (`all`/`commands`/`none`, never read) is ignored on load and not written back.
 
@@ -227,7 +247,7 @@ can continue. It does not undo, certify, or deduplicate interrupted side effects
 
 ## Principal bootstrap completion (ADR-054)
 
-`principal.toml` retains the existing `boot_state` values: `provisioned`,
+`peko.toml` retains the existing `boot_state` values: `provisioned`,
 `defined`, `genesis_pending`, and `organized`. `organized` records a finalized
 successful genesis run; it does not certify the quality of self-organization.
 The cron engine writes it after finalizing history and reaping the bootstrap
@@ -293,18 +313,18 @@ last activity, so it fires once per quiet stretch.
 
 ## Principal avatar (`identity.avatar`)
 
-`principal.toml` `[identity] avatar` is an emoji or a short monogram
+`peko.toml` `[identity] avatar` is an emoji or a short monogram
 (`"🦊"`, `"AB"`): at most 32 bytes, no whitespace or control characters,
 and never an image URL — clients must not fetch remote content to draw a
 peko. `principal_update { avatar }` sets it (`""` clears it; anything else
 is checked by `principal::config::validate_avatar` and refused with
 `[bad_request]`), and `principal_list` / `principal_get` summaries carry it
 as `avatar` (omitted when unset). It travels in `.peko` snapshots with the
-rest of `principal.toml`. Clients draw a peko without one from its name.
+rest of `peko.toml`. Clients draw a peko without one from its name.
 
 ## Principal agent run limit (ADR-067)
 
-`principal.toml` configures admission in the existing governance table:
+`peko.toml` configures admission in the existing governance table:
 
 ```toml
 [governance]
@@ -669,7 +689,7 @@ pid_file    = ".peko/run/daemon.pid"  # Optional. Default: as shown
 #
 # Teams and the standalone `.peko/agents` / `.peko/teams` roots were RETIRED in
 # favor of the Principal-as-container model (ADR-039/041). Agents are thin
-# Markdown prompts that live inside a Principal (`.peko/principals/<name>/` or
+# Markdown prompts that live inside a Principal (`.peko/pekos/<name>/` or
 # bundled in a `.principal` package). The old `[teams]` / `[agents]` config
 # tables and their `workspace_root` keys no longer exist.
 ```
@@ -683,7 +703,7 @@ separate credential flow.
 
 ## 4. team.toml — Team Definition (RETIRED)
 
-> **RETIRED.** Teams were removed in favor of the Principal-as-container model (ADR-039/041). There is no `team.toml` and no `.peko/teams/` directory in the current data model — agents are thin Markdown prompts inside a Principal (`.peko/principals/<name>/` or bundled in a `.principal` package). The schema below is preserved only as historical reference for the pre-ADR-039 layout.
+> **RETIRED.** Teams were removed in favor of the Principal-as-container model (ADR-039/041). There is no `team.toml` and no `.peko/teams/` directory in the current data model — agents are thin Markdown prompts inside a Principal (`.peko/pekos/<name>/` or bundled in a `.principal` package). The schema below is preserved only as historical reference for the pre-ADR-039 layout.
 
 **Historical location:** `.peko/teams/<team-name>/config.toml`
 
@@ -1555,7 +1575,7 @@ ownership-guard style. **Sprint 6 commit 2** retired
 (now that engine-internal ids are opaque UUIDs and the LLM-facing
 grammar is strict two-form).
 
-**Standing named children (`[children]` in `principal.toml`, Phase
+**Standing named children (`[children]` in `peko.toml`, Phase
 2).** A principal may declare standing first-level children that
 persist for the principal's lifetime and are resumed by name:
 
@@ -1565,7 +1585,7 @@ subagent_type = "archivist"        # required, nonempty
 description = "Long-term memory"   # optional; becomes the session title
 ```
 
-**Principal runtime id (2026-09-06).** `principal.toml` carries an
+**Principal runtime id (2026-09-06).** `peko.toml` carries an
 optional top-level `id = "prin_..."` — the principal's stable runtime
 `PrincipalId`. Written at create; on load a missing `id` (legacy file)
 is generated once and re-persisted. Before this field the id was
@@ -1764,7 +1784,7 @@ drive turns in the peer's child via the shared
 2026-09-11).** By default every peer-facing turn (peer-DM ingress
 children, passive channel bindings, group wakes) inherits the
 principal's ROOT persona. A principal may opt out per-workspace by
-naming a role in `principal.toml`:
+naming a role in `peko.toml`:
 
 ```toml
 [routing]
@@ -2582,7 +2602,7 @@ The former `.agent` package and OCI manifest/layer format are retired (ADR-066 P
 
 ```text
 manifest.toml
-config/principal.toml
+config/peko.toml
 identity/did.json
 identity/keys.enc              # plaintext KeyPairExport JSON
 roles/                         # role prompts
@@ -2605,7 +2625,7 @@ description = "Optional description"
 executable_files = ["skills/check/scripts/check.sh"]
 
 [files]
-"config/principal.toml" = "sha256:<64 lowercase hex digits>"
+"config/peko.toml" = "sha256:<64 lowercase hex digits>"
 "identity/did.json" = "sha256:<64 lowercase hex digits>"
 "identity/keys.enc" = "sha256:<64 lowercase hex digits>"
 ```
@@ -3008,7 +3028,7 @@ The runtime spawns the tool as a subprocess and writes a single JSON object to i
   "context": {
     "instance_id": "inst_7k2mxp3q",
     "session_id":  "sess_9nrwbf1v",
-    "workspace":   "/home/user/project/.peko/principals/researcher/workspace"
+    "workspace":   "/home/user/project/.peko/pekos/researcher/workspace"
   }
 }
 ```
@@ -3463,7 +3483,7 @@ which principals learned which contacts lives in each principal's contact book
 (below), not here. The identity key and signing DID are omitted
 from tool profiles. Under ADR-077, `local_id` and `hub_id` are optional, with at
 least one present. Local-only actors have a local ID, registered local principals
-have both, and remote principals/accounts/visitors have only a Hub ID (`local_id:
+have both, and remote pekos/accounts/visitors have only a Hub ID (`local_id:
 null`). Canonical addresses prefer `kind:local:<id>` when a local ID exists,
 otherwise `kind:hub:<UUID>`. Remote actors acquire no local proxy alias.
 Registry writes use a file lock and atomic replacement. Aliases and immutable
@@ -3473,7 +3493,7 @@ retired proxy aliases privately. Failed principal loads skip reconciliation. Loc
 and Hub scopes remain distinct in authorization checks; every check compares the
 registry's immutable keys (ADR-081 D1).
 
-`principal.toml` stores `id`, `actor_key`, signing `did`, `owner`, and `exposure`
+`peko.toml` stores `id`, `actor_key`, signing `did`, `owner`, and `exposure`
 (`local_only`, `private`, `public`). It holds no Hub ID: the registry is the only
 source of a principal's Hub link, written only by its registration receipt. New
 principals are local-only until an explicit registration receipt. Signing keys
@@ -3523,7 +3543,7 @@ Local routes name the runtime that issued them. Outside that runtime they are
 written `kind:local:<id>@<runtime DID>` and match no local actor; on it they read
 as `kind:local:<id>`.
 
-`<data>/principals/<name>/local/contacts.json` — the principal's contact book:
+`<data>/pekos/<name>/local/contacts.json` — the principal's contact book:
 `[{kind, local?: {runtime, id}, hub_id?, identity_key, signing_did?, name?,
 registration}]`, keyed by `identity_key`, written under a file lock with atomic
 replacement. A contact is reachable when this runtime's registry routes one of its
@@ -3537,7 +3557,7 @@ on other runtimes and where they live.
 `local/dms/<pair id>.jsonl` (snapshots only, ADR-095 D4) — each DM's posts, one
 `ChannelEvent::Posted` a line, as a history page serves them: author by Hub address
 where it has one, no `via`, no line `parent`, attachment paths blank. Import leaves
-them in `<data>/principals/<name>/local/dms.pending/` until the loaded principal
+them in `<data>/pekos/<name>/local/dms.pending/` until the loaded principal
 replays them: each DM is recreated at its pair id (a peer with a Hub ID is reached
 by it; the source's local user becomes this runtime's; a peer known only on the
 source runtime stays behind), its remote rows are recorded, its posts merge by

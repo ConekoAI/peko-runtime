@@ -16,6 +16,19 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Archive path of a snapshot's definition.
+const SNAPSHOT_CONFIG: &str = "config/peko.toml";
+
+/// Archive path of the definition in snapshots made before 0.1.0.
+const LEGACY_SNAPSHOT_CONFIG: &str = "config/principal.toml";
+
+/// A snapshot's definition, under its current or its pre-0.1.0 name.
+fn snapshot_config(files: &HashMap<String, Vec<u8>>) -> Option<&Vec<u8>> {
+    files
+        .get(SNAPSHOT_CONFIG)
+        .or_else(|| files.get(LEGACY_SNAPSHOT_CONFIG))
+}
+
 /// Import options for a Principal package.
 #[derive(Debug, Clone)]
 pub struct PrincipalImportOptions {
@@ -205,8 +218,9 @@ impl PrincipalUnpackager {
             "[identity_binding_failed] Snapshot DID document does not match its keys"
         );
         // Parse configuration before any identity or tooling writes.
-        let snapshot_config: PrincipalConfig =
-            toml::from_str(std::str::from_utf8(&files["config/principal.toml"])?)?;
+        let snapshot_config: PrincipalConfig = toml::from_str(std::str::from_utf8(
+            snapshot_config(&files).ok_or_else(|| anyhow::anyhow!("Missing {SNAPSHOT_CONFIG}"))?,
+        )?)?;
 
         let name = options
             .new_name
@@ -226,7 +240,7 @@ impl PrincipalUnpackager {
         }
 
         // Preflight before installing keys or writing any snapshot payload.
-        let workspace = self.config_dir.join("principals").join(&name);
+        let workspace = crate::common::paths::pekos_root(&self.config_dir).join(&name);
         for path in files.keys().filter(|path| is_workspace_payload(path)) {
             reject_destination_links(&workspace, &safe_join(&workspace, path)?)?;
         }
@@ -247,13 +261,15 @@ impl PrincipalUnpackager {
 
         anyhow::ensure!(
             options.force
-                || !self
-                    .config_dir
-                    .join("principals")
+                || !crate::common::paths::pekos_root(&self.config_dir)
                     .join(&name)
-                    .join("principal.toml")
-                    .exists(),
-            "Principal '{name}' already exists locally. Use --force to overwrite it, \
+                    .join(crate::common::paths::PEKO_CONFIG_FILE)
+                    .exists()
+                    && !crate::common::paths::pekos_root(&self.config_dir)
+                        .join(&name)
+                        .join(crate::common::paths::LEGACY_PEKO_CONFIG_FILE)
+                        .exists(),
+            "Peko '{name}' already exists locally. Use --force to overwrite it, \
              or --name <new-name> to import beside it."
         );
         let inventory = super::inventory::ExecutableInventory::from_files(&manifest.did, &files);
@@ -550,9 +566,8 @@ impl PrincipalUnpackager {
         new_name: &str,
         identity: &Identity,
     ) -> anyhow::Result<PrincipalConfig> {
-        let config_bytes = files
-            .get("config/principal.toml")
-            .ok_or_else(|| anyhow::anyhow!("Missing config/principal.toml"))?;
+        let config_bytes =
+            snapshot_config(files).ok_or_else(|| anyhow::anyhow!("Missing {SNAPSHOT_CONFIG}"))?;
         let config_str = std::str::from_utf8(config_bytes)?;
         let mut config: PrincipalConfig = toml::from_str(config_str)?;
 
@@ -750,7 +765,7 @@ impl PrincipalUnpackager {
         target: &str,
         force: bool,
     ) -> anyhow::Result<()> {
-        let Some(bytes) = files.get("config/principal.toml") else {
+        let Some(bytes) = snapshot_config(files) else {
             return Ok(());
         };
         let config: PrincipalConfig = toml::from_str(std::str::from_utf8(bytes)?)?;
@@ -792,7 +807,8 @@ impl PrincipalUnpackager {
         key: &str,
         replaced: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
-        let Ok(entries) = std::fs::read_dir(self.config_dir.join("principals")) else {
+        let Ok(entries) = std::fs::read_dir(crate::common::paths::pekos_root(&self.config_dir))
+        else {
             return Ok(None);
         };
         for entry in entries.flatten() {
@@ -800,7 +816,9 @@ impl PrincipalUnpackager {
             if replaced == Some(name.as_str()) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(entry.path().join("principal.toml")) else {
+            let Ok(text) =
+                std::fs::read_to_string(crate::common::paths::peko_config_path(&entry.path()))
+            else {
                 continue;
             };
             let Ok(config) = toml::from_str::<PrincipalConfig>(&text) else {
@@ -911,9 +929,14 @@ impl PrincipalUnpackager {
     }
 
     async fn save_config(&self, config: &PrincipalConfig, name: &str) -> anyhow::Result<PathBuf> {
-        let principal_dir = self.config_dir.join("principals").join(name);
+        let principal_dir = crate::common::paths::pekos_root(&self.config_dir).join(name);
         tokio::fs::create_dir_all(&principal_dir).await?;
-        let config_path = principal_dir.join("principal.toml");
+        let config_path = principal_dir.join(crate::common::paths::PEKO_CONFIG_FILE);
+        // A `--force` import over a pre-0.1.0 peko replaces its legacy file.
+        let _ = tokio::fs::remove_file(
+            principal_dir.join(crate::common::paths::LEGACY_PEKO_CONFIG_FILE),
+        )
+        .await;
         let config_toml = toml::to_string_pretty(config)?;
         tokio::fs::write(&config_path, config_toml).await?;
         Ok(config_path)
@@ -1027,13 +1050,14 @@ fn validate_package_for_principal(
     }
 
     // Required files for a `.peko` package.
-    let required_files = [
-        "manifest.toml",
-        "identity/did.json",
-        "config/principal.toml",
-    ];
+    let required_files = ["manifest.toml", "identity/did.json", SNAPSHOT_CONFIG];
     for file in required_files {
-        match files.get(file) {
+        let content = if file == SNAPSHOT_CONFIG {
+            snapshot_config(files)
+        } else {
+            files.get(file)
+        };
+        match content {
             None => result.add_error(ValidationError::MissingFile(file.to_string())),
             Some(content) if content.is_empty() => {
                 result.add_error(ValidationError::EmptyFile(file.to_string()));
@@ -1169,7 +1193,7 @@ mod tests {
 
         // Role file restored (Shared tier).
         let role_path = config_dir
-            .join("principals")
+            .join("pekos")
             .join("importme")
             .join("roles")
             .join("planner.md");
@@ -1327,9 +1351,9 @@ mod tests {
 
         assert_eq!(result.name, "renamed");
         assert!(config_dir
-            .join("principals")
+            .join("pekos")
             .join("renamed")
-            .join("principal.toml")
+            .join("peko.toml")
             .exists());
     }
 
@@ -1411,7 +1435,7 @@ mod tests {
         // Workspace tooling restored to the Shared tier root.
         assert!(
             config_dir
-                .join("principals")
+                .join("pekos")
                 .join("live")
                 .join("tools")
                 .join("my-tool")
@@ -1421,7 +1445,7 @@ mod tests {
         );
         assert!(
             config_dir
-                .join("principals")
+                .join("pekos")
                 .join("live")
                 .join("kb")
                 .join("MEMORY.md")
@@ -1432,7 +1456,7 @@ mod tests {
         // Local authored state restored to the Local tier.
         assert!(
             data_dir
-                .join("principals")
+                .join("pekos")
                 .join("live")
                 .join("local")
                 .join("sessions")
@@ -1442,7 +1466,7 @@ mod tests {
         );
         assert!(
             data_dir
-                .join("principals")
+                .join("pekos")
                 .join("live")
                 .join("local")
                 .join("plans")
@@ -1456,7 +1480,7 @@ mod tests {
             toml::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
         let local_id = restored.id.unwrap().0;
         let schedule_path = data_dir
-            .join("principals")
+            .join("pekos")
             .join("live")
             .join("local")
             .join("cron")
@@ -1472,13 +1496,9 @@ mod tests {
         );
 
         // Boot state carried verbatim: no genesis re-seed.
-        let imported = std::fs::read_to_string(
-            config_dir
-                .join("principals")
-                .join("live")
-                .join("principal.toml"),
-        )
-        .unwrap();
+        let imported =
+            std::fs::read_to_string(config_dir.join("pekos").join("live").join("peko.toml"))
+                .unwrap();
         assert!(
             imported.contains("boot_state = \"organized\""),
             "organized state survives the snapshot round-trip: {imported}"
@@ -1632,14 +1652,14 @@ mod tests {
             "prin_src",
             "foreign local ID not adopted"
         );
-        let workspace = dst_config.join("principals/mover");
+        let workspace = dst_config.join("pekos/mover");
         let policy = std::fs::read_to_string(workspace.join("POLICY.md")).unwrap();
         assert!(
             policy.contains("## principal:local:prin_peer@did:key:zSource"),
             "{policy}"
         );
         assert!(workspace.join("workflows/daily.yaml").exists());
-        let dst_local = dst_data.join("principals/mover/local");
+        let dst_local = dst_data.join("pekos/mover/local");
         let book = crate::principal::contacts::ContactBook::in_local_root(&dst_local);
         assert_eq!(
             book.list().unwrap(),
@@ -1710,7 +1730,7 @@ mod tests {
         assert_ne!(copy_config.id, restored.id, "new local ID");
         assert_eq!(copy_config.owner, restored.owner, "same owner");
         assert_eq!(copy_config.exposure, peko_auth::Exposure::LocalOnly);
-        let copy_local = dst_data.join("principals/mover-two/local");
+        let copy_local = dst_data.join("pekos/mover-two/local");
         assert_eq!(
             crate::principal::contacts::ContactBook::in_local_root(&copy_local)
                 .list()
@@ -1737,7 +1757,7 @@ mod tests {
             "the owner's conversation moves to the new actor's DM"
         );
         assert!(
-            dst_config.join("principals/mover/principal.toml").exists(),
+            dst_config.join("pekos/mover/peko.toml").exists(),
             "the hosted copy is untouched"
         );
 
@@ -1756,8 +1776,7 @@ mod tests {
             &home.permissions[0].subject,
             &"principal:local:prin_peer".parse().unwrap()
         ));
-        let policy =
-            std::fs::read_to_string(home_config.join("principals/mover/POLICY.md")).unwrap();
+        let policy = std::fs::read_to_string(home_config.join("pekos/mover/POLICY.md")).unwrap();
         assert!(
             policy.contains("## principal:local:prin_peer\n"),
             "{policy}"
@@ -1864,7 +1883,7 @@ mod tests {
             let expected = format!("user:hub:{alice}");
             assert_eq!(store.actor_info(&owner).await.dm_key(), expected, "{dir}");
             let rebound = peko_session::SessionManager::new()
-                .with_sessions_dir_internal(dst_data.join("principals/mover/local/sessions"))
+                .with_sessions_dir_internal(dst_data.join("pekos/mover/local/sessions"))
                 .list_all_sessions(false)
                 .await
                 .unwrap();
@@ -1910,13 +1929,9 @@ mod tests {
             .unwrap();
 
         assert!(!result.carried_local_state, "no local state in the package");
-        let imported = std::fs::read_to_string(
-            config_dir
-                .join("principals")
-                .join("org")
-                .join("principal.toml"),
-        )
-        .unwrap();
+        let imported =
+            std::fs::read_to_string(config_dir.join("pekos").join("org").join("peko.toml"))
+                .unwrap();
         assert!(
             !imported.contains("boot_state"),
             "an import without local state must infer its boot state, not inherit it: {imported}"
@@ -2043,7 +2058,7 @@ principal_id = "prin_old"
             .expect_err("import should be denied for a visitor caller");
         let msg = format!("{err}");
         assert!(
-            msg.contains("cross-principal write denied"),
+            msg.contains("write denied"),
             "expected ownership denial, got: {msg}"
         );
 
@@ -2105,7 +2120,7 @@ principal_id = "prin_old"
         refresh_manifest(&mut files);
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("cfg");
-        let workspace = config.join("principals/checked");
+        let workspace = config.join("pekos/checked");
         std::fs::create_dir_all(&workspace).unwrap();
         let outside = temp.path().join("other-principal");
         std::fs::create_dir_all(outside.join("check")).unwrap();
@@ -2129,7 +2144,7 @@ principal_id = "prin_old"
             "original"
         );
         assert!(!config.join("vault.enc").exists());
-        assert!(!workspace.join("principal.toml").exists());
+        assert!(!workspace.join("peko.toml").exists());
     }
 
     fn refresh_manifest(files: &mut HashMap<String, Vec<u8>>) {
@@ -2150,14 +2165,14 @@ principal_id = "prin_old"
     async fn invalid_snapshots_fail_before_writes_even_with_force() {
         let files = valid_snapshot_files().await;
         let mut tampered = files.clone();
-        tampered.insert("config/principal.toml".into(), b"name = 'changed'".to_vec());
+        tampered.insert("config/peko.toml".into(), b"name = 'changed'".to_vec());
         let mut undeclared = files.clone();
         undeclared.insert(
             "hooks/extra/hook.toml".into(),
             b"command = '/bin/echo'".to_vec(),
         );
         let mut missing = files.clone();
-        missing.remove("config/principal.toml");
+        missing.remove("config/peko.toml");
         let mut traversal = files.clone();
         traversal.insert("roles/../../escape.md".into(), b"escape".to_vec());
         refresh_manifest(&mut traversal);
@@ -2185,6 +2200,28 @@ principal_id = "prin_old"
             assert!(!cfg.exists(), "no partial shared state");
             assert!(!data.exists(), "no partial local state");
         }
+    }
+
+    /// Snapshots made before 0.1.0 carry the definition as
+    /// `config/principal.toml`; they import, and land as `peko.toml`.
+    #[tokio::test]
+    async fn a_pre_rename_snapshot_imports_as_peko_toml() {
+        let mut files = valid_snapshot_files().await;
+        let config = files.remove(SNAPSHOT_CONFIG).unwrap();
+        files.insert(LEGACY_SNAPSHOT_CONFIG.into(), config);
+        refresh_manifest(&mut files);
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = temp.path().join("cfg");
+        let unpackager = PrincipalUnpackager::new("unused", cfg.clone(), temp.path().join("data"));
+
+        unpackager
+            .import_from_files(files, PrincipalImportOptions::default())
+            .await
+            .expect("a legacy snapshot imports");
+
+        let workspace = cfg.join("pekos").join("checked");
+        assert!(workspace.join("peko.toml").exists());
+        assert!(!workspace.join("principal.toml").exists());
     }
 
     #[tokio::test]
@@ -2368,7 +2405,7 @@ principal_id = "prin_old"
             })
             .await
             .unwrap();
-        let dest = config_dir.join("principals/renamed");
+        let dest = config_dir.join("pekos/renamed");
         for rel in [
             "skills/check/SKILL.md",
             script_rel,

@@ -381,7 +381,7 @@ pub async fn unregister_runtime(
         .collect();
     anyhow::ensure!(
         registered.is_empty(),
-        "Unregister these principals first (peko unregister <name>): {}",
+        "Unregister these pekos first (peko unregister <name>): {}",
         registered.join(", ")
     );
     let path = resolver.pekohub_config();

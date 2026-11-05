@@ -208,14 +208,11 @@ pub struct AddArgs {
     /// land on disk.
     #[arg(long)]
     dry_run: bool,
-    /// Phase 2 of `feature/multi-model-subagents`: attach a
-    /// free-text note to the entry. Parent agents read this via
-    /// the `ModelList` tool before choosing which model to
-    /// spawn with — standardized `ModelSpec` flags cannot
-    /// capture subjective annotations like "use it for cron".
-    /// Empty string is rejected; pass no flag to leave the note
-    /// unchanged on `edit`. Capped at 500 chars (enforced by
-    /// the catalog).
+    /// A free-text note on the model that your pekos read when they
+    /// choose a model for a task, for what the capability flags can't
+    /// say (e.g. "cheap; use it for reminders"). At most 500
+    /// characters; an empty note is refused. Leave the flag out to keep
+    /// the note unchanged on `edit`.
     #[arg(long, value_name = "TEXT")]
     note: Option<String>,
 }

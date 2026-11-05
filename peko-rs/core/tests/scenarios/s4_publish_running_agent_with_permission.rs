@@ -66,7 +66,7 @@ async fn mint_api_key(
         .to_string()
 }
 
-/// Write a Principal config under `<peko_home>/principals/<name>/`
+/// Write a Principal config under `<peko_home>/pekos/<name>/`
 /// with a pre-seeded `[[permissions]]` grant, then seed the
 /// `mock-llm` provider-catalog entry. On the FIRST `instance_announce`
 /// the runtime iterates `PrincipalManager::list_all()`, reads this
@@ -76,7 +76,7 @@ async fn mint_api_key(
 ///
 /// Mirrors the pattern in `tests/scenarios/s6_principal_grant_revoke_roundtrip.rs` —
 /// `peko create` scaffolds the workspace + identity, then we
-/// patch `principal.toml` for the per-test exposure + grant.
+/// patch `peko.toml` for the per-test exposure + grant.
 ///
 /// `owner_did` is the runtime's own DID — pekohub's `resolveRuntimeOwner`
 /// uses it to bind the principal's instance to the owner created via
@@ -99,12 +99,12 @@ fn write_principal_with_perm(
 
     let principal_toml = cli
         .peko_dir()
-        .join("principals")
+        .join("pekos")
         .join(principal_name)
-        .join("principal.toml");
-    let raw = std::fs::read_to_string(&principal_toml).expect("read principal.toml");
+        .join("peko.toml");
+    let raw = std::fs::read_to_string(&principal_toml).expect("read peko.toml");
     let mut cfg: peko_core::principal::config::PrincipalConfig =
-        toml::from_str(&raw).expect("parse principal.toml");
+        toml::from_str(&raw).expect("parse peko.toml");
 
     cfg.exposure = peko_auth::Exposure::Private;
     cfg.owner = peko_auth::ActorRef::User("local".into());
@@ -121,9 +121,9 @@ fn write_principal_with_perm(
 
     std::fs::write(
         &principal_toml,
-        toml::to_string_pretty(&cfg).expect("serialize principal.toml"),
+        toml::to_string_pretty(&cfg).expect("serialize peko.toml"),
     )
-    .expect("write principal.toml");
+    .expect("write peko.toml");
 }
 
 /// Write `pekohub.toml` at `<cli.peko_dir()>/pekohub.toml`. The

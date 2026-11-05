@@ -26,9 +26,9 @@ fn create_waits_for_successful_genesis_and_persists_organized_state() {
         String::from_utf8_lossy(&stdout),
         String::from_utf8_lossy(&stderr),
     );
-    let root = cli.peko_dir().join("principals/genesis-test");
+    let root = cli.peko_dir().join("pekos/genesis-test");
     let config: PrincipalConfig =
-        toml::from_str(&std::fs::read_to_string(root.join("principal.toml")).unwrap()).unwrap();
+        toml::from_str(&std::fs::read_to_string(root.join("peko.toml")).unwrap()).unwrap();
     assert_eq!(config.boot_state(), BootState::Organized);
     let paths = peko_core::common::paths::PathResolver::with_dirs(
         cli.peko_dir(),

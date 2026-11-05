@@ -7,7 +7,7 @@
 #                           --model <wire-id> --key <key>` — catalog in ~/.peko/models.toml,
 #                           key material in the OS keychain vault
 #                           (`peko credential set` for manual management)
-#   per-peko settings ..... the peko's own principal.toml (identity, quota,
+#   per-peko settings ..... the peko's own peko.toml (identity, quota,
 #                           permissions, routing) — edit directly, or use
 #                           `peko quota set` / `peko model` where a CLI exists
 #   workspace tooling ..... plain files under the peko's workspace
@@ -17,8 +17,8 @@
 # optional (missing file = built-in defaults):
 
 # ════════════════════════════════════════════════════════════════════
-# ~/.peko/peko.toml — daemon configuration
-# ($PEKO_HOME/peko.toml when PEKO_HOME is set)
+# ~/.peko/runtime.toml — daemon configuration
+# ($PEKO_HOME/runtime.toml when PEKO_HOME is set)
 # ════════════════════════════════════════════════════════════════════
 #
 # The only block the daemon consumes today is [provider.retry] — overrides
@@ -42,7 +42,7 @@
 # ~/.peko/config.toml — session compaction tuning
 # ════════════════════════════════════════════════════════════════════
 #
-# Read by the compaction subsystem (ADR-022). Values shown are the
+# Controls when long conversations are summarized. Values shown are the
 # defaults; copy the block into ~/.peko/config.toml to change them.
 
 # [compaction]
@@ -61,14 +61,14 @@
 # Notes
 # ════════════════════════════════════════════════════════════════════
 #
-# - The daemon's IPC/HTTP bind is a loopback constant (127.0.0.1:11435);
-#   there is no bind-address knob (ADR-058 D6).
+# - The daemon listens only on this computer (a local socket, with
+#   127.0.0.1:11435 as a fallback); there is no setting to expose it.
 # - Logging verbosity is controlled by the RUST_LOG environment variable,
 #   not a config key.
 # - There are no [agent], [memory], [tools], [channels], [security], or
 #   [debug] blocks — those belonged to retired subsystems (agent CRUD,
 #   sqlite memory, workspace tools, chat-platform adapters).
 #   Unknown keys are ignored, so old config files keep parsing.
-# - Tool grants and remote registry settings are retired (ADR-066).
-#   Legacy principal.toml [capabilities].grants is ignored, warns once,
-#   and is omitted when saved. Peer [[permissions]] remains authoritative.
+# - Tool grants and remote registry settings are retired. A legacy
+#   [capabilities].grants block in a peko.toml is ignored (with one
+#   warning) and dropped when saved; [[permissions]] decides who may do what.

@@ -140,7 +140,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       quick start teaches `peko model add --key` / `peko daemon start` /
       `peko create` / `peko send`; `--version` flag now honored.
 - [x] **`config.example.toml` fixed** (2026-09-29). Rewritten to document the
-      two real config files (`~/.peko/peko.toml` `[provider.retry]`,
+      two real config files (`~/.peko/runtime.toml` `[provider.retry]`,
       `~/.peko/config.toml` `[compaction]`); all retired blocks removed.
       Verified parse-clean via `PekoConfig`'s new serde defaults.
 - [x] **`release.yml` release notes fixed** (2026-09-29) — quick start no

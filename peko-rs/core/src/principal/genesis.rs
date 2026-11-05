@@ -177,7 +177,7 @@ This is your first self-turn — the trunk of a new principal.\n\n",
         }
     }
     brief.push_str(
-        "\nYour definition lives in `principal.toml` in your workspace. Who you \
+        "\nYour definition lives in `peko.toml` in your workspace. Who you \
 are — name, voice, style, values, and the rules every agent you run keeps — \
 belongs there (`[identity]`, `[intent]`) and in `kb/CONVENTIONS.md`, never in \
 a role. Roles in `roles/` describe jobs: `root` is this trunk's supervision, \
@@ -197,7 +197,7 @@ reflections on how you work, cold until you promote a lesson into \
 `CONVENTIONS.md`). It is yours: revise in place, keep the index honest, \
 restructure freely.\n\n\
 On this turn:\n\
-1. Read your own definition (`principal.toml`). If `[identity]` or \
+1. Read your own definition (`peko.toml`). If `[identity]` or \
 `[intent]` are empty placeholders, adopt a working self-description \
 and write it back — your creator will refine it later. Leave `boot_state` \
 unchanged: it is runtime-owned, and the runtime marks this principal \
@@ -1446,7 +1446,7 @@ mod tests {
         assert_eq!(report.state_flipped, vec!["seedling"]);
         assert_eq!(report.memory_job_seeded, vec!["seedling"]);
 
-        // State stamped AND persisted to principal.toml.
+        // State stamped AND persisted to peko.toml.
         let principal = manager.get_by_name("seedling").await.unwrap();
         assert_eq!(
             principal.config.read().await.boot_state(),
@@ -1564,7 +1564,7 @@ mod tests {
             BootState::Organized
         );
         let persisted =
-            std::fs::read_to_string(principal.workspace_path.join("principal.toml")).unwrap();
+            std::fs::read_to_string(principal.workspace_path.join("peko.toml")).unwrap();
         assert!(persisted.contains("boot_state = \"organized\""));
         let left: Vec<_> = scheduler
             .list_jobs(true)

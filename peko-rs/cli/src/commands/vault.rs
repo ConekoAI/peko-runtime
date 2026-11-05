@@ -33,15 +33,12 @@ use secrecy::SecretString;
 pub enum VaultCommands {
     /// Re-encrypt the vault under a different unlock mode.
     ///
-    /// Re-encrypts the vault under a new DEK (passphrase-derived or a
-    /// freshly generated key stored in the OS keychain) and updates the
-    /// keychain entry as needed. Use this to switch between keychain
-    /// mode (the macOS default) and passphrase mode.
+    /// Re-encrypts the vault under a new key (derived from a passphrase,
+    /// or generated and kept in the OS keychain). Use this to switch
+    /// between keychain mode (the macOS default) and passphrase mode.
     ///
-    /// Refuses to run if a peko daemon is reachable over IPC, since the
-    /// daemon holds a long-lived `Vault` whose `unlock_method` is not
-    /// mutable via `reload()`. Stop the daemon with `peko daemon stop`
-    /// first.
+    /// Stop the daemon first (`peko daemon stop`); this refuses to run
+    /// while it is up.
     Migrate {
         /// Target unlock mode.
         #[arg(long, value_enum)]

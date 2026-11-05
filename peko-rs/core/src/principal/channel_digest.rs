@@ -148,10 +148,10 @@ struct Me<'a> {
     name: &'a str,
 }
 
-/// The principal's `name` from `<workspace>/principal.toml` (empty when
+/// The principal's `name` from `<workspace>/peko.toml` (empty when
 /// unreadable — nothing then counts as a mention).
 fn principal_name(workspace: &Path) -> String {
-    std::fs::read_to_string(workspace.join("principal.toml"))
+    std::fs::read_to_string(crate::common::paths::peko_config_path(workspace))
         .ok()
         .and_then(|s| s.parse::<toml::Table>().ok())
         .and_then(|t| t.get("name")?.as_str().map(str::to_string))
@@ -935,7 +935,7 @@ mod tests {
     fn principal_name_reads_principal_toml() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(principal_name(dir.path()), "");
-        std::fs::write(dir.path().join("principal.toml"), "name = \"ada\"\n").unwrap();
+        std::fs::write(dir.path().join("peko.toml"), "name = \"ada\"\n").unwrap();
         assert_eq!(principal_name(dir.path()), "ada");
     }
 

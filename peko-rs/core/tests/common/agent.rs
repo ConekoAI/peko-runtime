@@ -17,7 +17,7 @@ pub fn create_mock_principal(cli: &PekoCli, name: &str, mock_llm_url: &str) {
 /// Like [`create_mock_principal`]. The `tools` list is accepted for
 /// call-site compatibility and ignored: ADR-066 P2 deleted the
 /// capability gate, so a freshly created principal sees every tool
-/// (presence = executability) and `principal.toml` carries no grants.
+/// (presence = executability) and `peko.toml` carries no grants.
 pub fn create_mock_principal_with_tools(
     cli: &PekoCli,
     name: &str,
@@ -26,7 +26,7 @@ pub fn create_mock_principal_with_tools(
 ) {
     seed_mock_provider_in_catalog(cli.home(), mock_llm_url);
 
-    let root = cli.peko_dir().join("principals").join(name);
+    let root = cli.peko_dir().join("pekos").join(name);
     std::fs::create_dir_all(&root).expect("create principal fixture directory");
     peko_core::principal::genesis::seed_default_roles(&root).expect("seed default roles");
     let mut config: peko_core::principal::config::PrincipalConfig =
@@ -35,7 +35,7 @@ pub fn create_mock_principal_with_tools(
     config.preferred_model_id = Some("mock-llm".into());
     config.set_boot_state(peko_core::principal::config::BootState::Organized);
     std::fs::write(
-        root.join("principal.toml"),
+        root.join("peko.toml"),
         toml::to_string_pretty(&config).expect("serialize fixture config"),
     )
     .expect("write fixture config");

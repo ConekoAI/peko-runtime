@@ -1572,7 +1572,7 @@ mod tests {
     #[tokio::test]
     async fn relative_paths_resolve_in_the_principal_workspace() {
         let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("principals").join("juno");
+        let workspace = dir.path().join("pekos").join("juno");
         let catalog = Arc::new(ToolCatalog::new());
         catalog
             .register_system(Arc::new(ProbeTool), ToolSource::BuiltIn)

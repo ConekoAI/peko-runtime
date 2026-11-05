@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! QuotaMeter::new(config, state_path)
-//!     ├─ QuotaConfig — parsed from `principal.toml`. `None`
+//!     ├─ QuotaConfig — parsed from `peko.toml`. `None`
 //!     │  limits mean "unlimited for that dimension".
 //!     └─ state_path — Optional path to `quota_state.json`.
 //!        When `None`, the meter is in-memory only (test mode,

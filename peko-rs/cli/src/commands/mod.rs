@@ -85,39 +85,34 @@ pub struct Cli {
 /// Top-level commands
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Peko lifecycle management (ADR-059)
+    /// Create, list, move, and remove pekos
     ///
-    /// A peko is the user-facing AI actor: identity, memory, intent,
-    /// governance, and thin Markdown role files.
-    /// The lifecycle verbs live directly at the top level —
-    /// `peko create`, `peko list`, `peko export`, ... — because
-    /// `peko send` / `peko log` / `peko stop` already address a peko
-    /// without a namespace.
+    /// A peko is an AI agent you own: its identity, memory, rules, and
+    /// roles are files in one folder. These commands sit at the top level
+    /// (`peko create`, `peko list`, `peko export`, ...).
     #[command(flatten)]
     Peko(principal::PrincipalCommands),
 
-    /// Send a message to a peko (unified command)
+    /// Send a message to a peko
     ///
-    /// This is the primary way to interact with a peko. Examples:
+    /// The main way to talk to a peko. Examples:
     ///   peko send my-peko "Hello"
     ///   peko send my-peko --file prompt.txt
     ///   echo "Hello" | peko send my-peko --stdin
     Send(send::SendArgs),
 
-    /// Soft-stop the running turn on your thread with a peko.
+    /// Stop what a peko is doing in your conversation
     ///
-    /// The run cancels at the next agentic boundary and a
-    /// `⏹ stopped by user` marker is posted to the thread. Idempotent:
-    /// with no run in flight it reports "no running turn" and exits 0.
-    /// Use `--peer <address>` (owner only), such as `user:hub:<id>`,
-    /// to stop another peer's thread.
+    /// The peko stops at its next step and the conversation shows
+    /// `⏹ stopped by user`. If it isn't working on anything, this says so
+    /// and exits 0. With `--peer <address>` (owner only), such as
+    /// `user:hub:<id>`, stop it in someone else's conversation instead.
     Stop(stop::StopArgs),
 
-    /// Read a peko's activity (owner-root view by default)
+    /// Read your conversation with a peko
     ///
-    /// There is no `peko session` command and there will never be one;
-    /// this command is the only user-facing way to inspect a peko's
-    /// working state without running a turn.
+    /// Shows the messages between you and the peko, or with `--peer` a
+    /// conversation it had with someone else. Reading never wakes the peko.
     Log(log::LogCommand),
 
     /// Authentication and credential management
@@ -128,11 +123,11 @@ pub enum Commands {
     #[command(subcommand)]
     Credential(credential::CredentialCommands),
 
-    /// Vault management (advanced / hidden)
+    /// Encrypted key vault (advanced)
     #[command(subcommand, hide = true)]
     Vault(vault::VaultCommands),
 
-    /// Configuration management (advanced / hidden)
+    /// Runtime settings files (advanced)
     #[command(subcommand, hide = true)]
     Config(config::ConfigCommands),
 
@@ -144,8 +139,7 @@ pub enum Commands {
     #[command(subcommand)]
     Daemon(daemon::DaemonCommands),
 
-    /// Multi-peko chat primitive (channels) — read/create/post
-    /// events across pekos.
+    /// Direct messages and group chats with people and pekos
     ///
     /// Examples:
     ///   peko channel create alice "team alpha"
@@ -160,19 +154,18 @@ pub enum Commands {
     #[command(subcommand)]
     Model(model::ModelCommands),
 
-    /// Runtime identity and registry management (advanced / hidden)
+    /// This computer's identity and PekoHub registration (advanced)
     #[command(subcommand, hide = true)]
     Runtime(runtime::RuntimeCommands),
 
-    /// PekoHub tunnel management (advanced / hidden)
+    /// PekoHub connection (advanced)
     #[command(subcommand, hide = true)]
     Tunnel(tunnel::TunnelCommands),
 
-    /// Per-peko token quota management (F18)
+    /// How many tokens and requests a peko may use
     ///
-    /// Inspect or replace a peko's input / output / request
-    /// limits. The daemon owns the live counters; the CLI is a thin
-    /// IPC client.
+    /// Show or change a peko's input, output, and request limits per
+    /// cycle, and its spending budget.
     ///
     /// Examples:
     ///   peko quota status my-peko
@@ -199,30 +192,26 @@ pub enum Commands {
         shell: Shell,
     },
 
-    /// Audit log: tail the JSONL or list in-memory events (ADR-046).
+    /// What your pekos did: the audit log and each peko's tool ledger
     ///
-    /// Two subcommands:
-    ///   peko audit tail [--since 1h] [--principal foo] [--limit N] [--follow]
-    ///     Reads `<data_dir>/runtime/audit/audit-YYYY-MM-DD.jsonl`
-    ///     directly. Survives daemon restarts. `--follow` is
-    ///     single-file (today's file).
-    ///   peko audit list [--principal foo]
-    ///     Sends an IPC query to the daemon and reads the in-memory
-    ///     ring buffer. Fast path for "what just happened this
-    ///     session"; never touches disk.
+    ///   peko audit tail [--since 1h] [--peko NAME] [--limit N] [--follow]
+    ///     Read the audit log files (kept across restarts).
+    ///   peko audit list [--peko NAME]
+    ///     Recent events since the daemon started.
+    ///   peko audit ledger NAME / peko audit verify NAME
+    ///     Every tool call a peko made, and a check that none was altered.
     ///
     /// Examples:
     ///   peko audit tail --since 30m
-    ///   peko audit tail --principal alice --limit 20
-    ///   peko audit list --type principal.config_drift
+    ///   peko audit tail --peko alice --limit 20
+    ///   peko audit list --type tool.call
     #[command(subcommand)]
     Audit(audit::AuditCommands),
 
     /// Print the runtime version
     ///
-    /// Distinct from `peko --version` (handled by clap). This subcommand
-    /// exists for programmatic consumption — notably peko-desktop's
-    /// SidecarSupervisor (ADR-043) — and supports `--json` output.
+    /// Like `peko --version`, plus `--json` output for scripts and the
+    /// desktop app.
     ///
     /// Examples:
     ///   peko version
@@ -253,6 +242,37 @@ pub(crate) enum Recipient {
 }
 
 /// Split a recipient positional into principal vs group channel.
+/// An actor address as people read it: a peko's `principal:local:<id>` /
+/// `principal:hub:<id>` (the wire and storage form) shows as `peko:…`.
+/// Every other text passes through unchanged; `--json` output keeps the
+/// wire form. Both spellings are accepted wherever an address is typed.
+pub(crate) fn shown_address(address: &str) -> String {
+    match address.strip_prefix("principal:") {
+        Some(rest) => format!("peko:{rest}"),
+        None => address.to_string(),
+    }
+}
+
+/// One channel event as a line for people (`peko channel peek`).
+pub(crate) fn shown_channel_event(event: &peko_protocol::channel::ChannelEvent) -> String {
+    use peko_protocol::channel::ChannelEvent;
+    match event {
+        ChannelEvent::Created {
+            creator, name, at, ..
+        } => format!("[{at}] {} created \"{name}\"", shown_address(creator)),
+        ChannelEvent::Posted {
+            author, text, at, ..
+        } => format!("[{at}] {}: {text}", shown_address(author)),
+        ChannelEvent::MemberJoined { member, at, .. } => {
+            format!("[{at}] {} joined", shown_address(member))
+        }
+        ChannelEvent::MemberLeft { member, at, .. } => {
+            format!("[{at}] {} left", shown_address(member))
+        }
+        ChannelEvent::Received { at, .. } => format!("[{at}] (delivery receipt)"),
+    }
+}
+
 pub(crate) fn parse_recipient(s: &str) -> Recipient {
     match s.strip_prefix("group:") {
         Some(slug) if !slug.is_empty() => Recipient::Group(slug.to_string()),
@@ -308,6 +328,17 @@ pub fn init_logging(verbosity: u8, quiet: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn addresses_show_pekos_as_peko() {
+        assert_eq!(
+            super::shown_address("principal:local:prin_x"),
+            "peko:local:prin_x"
+        );
+        assert_eq!(super::shown_address("principal:hub:abc"), "peko:hub:abc");
+        assert_eq!(super::shown_address("user:hub:abc"), "user:hub:abc");
+        assert_eq!(super::shown_address("public"), "public");
+    }
+
     use super::{parse_recipient, Recipient};
 
     #[test]

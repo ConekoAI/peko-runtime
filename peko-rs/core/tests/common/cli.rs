@@ -162,7 +162,7 @@ impl PekoCli {
     /// platform-specific IPC override (`PEKO_DAEMON_SOCK` on Unix,
     /// `PEKO_DAEMON_PIPE` on Windows), and changes the subprocess current
     /// working directory to the isolated `HOME`. The CWD isolation prevents
-    /// commands like `config init` (which writes `peko.toml` relative to
+    /// commands like `config init` (which writes `runtime.toml` relative to
     /// CWD) from polluting the project root and causing flaky environmental
     /// failures.
     ///

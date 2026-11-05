@@ -447,6 +447,23 @@ impl AppState {
             data_dir.clone(),
             cache_dir.clone(),
         );
+        // Before anything reads them: pre-0.1.0 runtimes kept pekos under
+        // `principals/`. A failed move is retried next boot; until then the
+        // resolver keeps reading the old folder.
+        for (base, result) in path_resolver.migrate_legacy_pekos_dirs() {
+            match result {
+                Ok(left) if left.is_empty() => {}
+                Ok(left) => tracing::warn!(
+                    "pekos in both {0}/principals and {0}/pekos were left in place: {1}",
+                    base.display(),
+                    left.join(", ")
+                ),
+                Err(e) => tracing::warn!(
+                    "could not move {}/principals to pekos/ (retried next start): {e}",
+                    base.display()
+                ),
+            }
+        }
 
         // PR-2c: capture the runtime-tier channel directory BEFORE the
         // `path_resolver` is consumed by `RuntimeAuthority::for_runtime`.
@@ -488,7 +505,7 @@ impl AppState {
         )?;
 
         // Load the runtime's private signing key from the vault and the
-        // on-disk `peko.toml` configuration. These are needed by the
+        // on-disk `runtime.toml` configuration. These are needed by the
         // tunnel client.
         let runtime_signing_key = load_runtime_signing_key(&runtime_identity, &vault)?;
         let peko_config = load_peko_config(&config_dir);
@@ -713,7 +730,7 @@ impl AppState {
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
                     if path.is_dir() {
-                        let config_path = path.join("principal.toml");
+                        let config_path = crate::common::paths::peko_config_path(&path);
                         if config_path.exists() {
                             if let Err(e) = manager.load(&config_path).await {
                                 complete_inventory = false;
@@ -1805,8 +1822,12 @@ impl crate::tunnel::cross_runtime_channel::PrincipalSigningKeys for VaultPrincip
     }
 }
 
-/// Load `peko.toml` from the config directory, falling back to defaults
+/// Load `runtime.toml` from the config directory, falling back to defaults
 /// if the file does not exist or cannot be parsed.
+///
+/// Before 0.1.0 this file was `peko.toml`; that name now belongs to each
+/// peko's own definition, so a legacy `<config_dir>/peko.toml` is renamed to
+/// `runtime.toml` here (and read in place if the rename fails).
 ///
 /// F40b: also validates the `[provider.retry]` block — invalid jitter
 /// fractions, zero delay, or `max_retries > max_attempts` surface as
@@ -1817,7 +1838,7 @@ impl crate::tunnel::cross_runtime_channel::PrincipalSigningKeys for VaultPrincip
 /// still boots in a degraded-but-functional state (matches the
 /// pre-F40b behavior of swallowing unknown file errors).
 fn load_peko_config(config_dir: &Path) -> PekoConfig {
-    let path = config_dir.join("peko.toml");
+    let path = runtime_config_path(config_dir);
     if path.exists() {
         match PekoConfig::from_file(&path) {
             Ok(cfg) => {
@@ -1841,6 +1862,20 @@ fn load_peko_config(config_dir: &Path) -> PekoConfig {
         }
     }
     PekoConfig::default()
+}
+
+/// The runtime's settings file, `<config_dir>/runtime.toml`, migrating a
+/// legacy `<config_dir>/peko.toml` to that name on first access.
+fn runtime_config_path(config_dir: &Path) -> PathBuf {
+    let path = config_dir.join(crate::common::paths::RUNTIME_CONFIG_FILE);
+    if path.exists() {
+        return path;
+    }
+    let legacy = config_dir.join(crate::common::paths::LEGACY_RUNTIME_CONFIG_FILE);
+    if legacy.is_file() && std::fs::rename(&legacy, &path).is_err() && legacy.is_file() {
+        return legacy;
+    }
+    path
 }
 
 // Memory placement is the default: `PrincipalManager` already passes the
@@ -2015,10 +2050,9 @@ impl crate::tunnel::TunnelHost for AppState {
             .filter(|m| m.runtime_id.is_some())
         {
             if member.principal_did.starts_with("did:key:") {
-                let hub = member
-                    .hub_id
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("Principal membership requires a Hub ID"))?;
+                let hub = member.hub_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("A peko in a group on PekoHub needs a PekoHub ID")
+                })?;
                 let resolved = directory
                     .directory
                     .resolve_by_hub_id_as(hub, &principal.did().await.0)
@@ -3324,6 +3358,23 @@ impl crate::security::ledger::redact::SecretSource for RuntimeSecrets {
                 .map(|token| ("run_token".to_string(), token)),
         );
         secrets
+    }
+}
+
+#[cfg(test)]
+mod runtime_config_path_tests {
+    use super::runtime_config_path;
+
+    #[test]
+    fn a_legacy_peko_toml_in_the_config_dir_becomes_runtime_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("peko.toml"), "[provider.retry]\n").unwrap();
+
+        let path = runtime_config_path(dir.path());
+
+        assert_eq!(path, dir.path().join("runtime.toml"));
+        assert!(path.exists());
+        assert!(!dir.path().join("peko.toml").exists());
     }
 }
 

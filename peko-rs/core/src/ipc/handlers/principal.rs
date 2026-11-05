@@ -553,7 +553,7 @@ impl RequestHandler for PrincipalHandler {
                 Err(e) => {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("Principal export failed: {e}"),
+                        message: format!("Export failed: {e}"),
                     };
                     send_response(sink, response).await?;
                 }
@@ -593,7 +593,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal import preview failed: {e}"),
+                            message: format!("Import preview failed: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -619,7 +619,7 @@ impl RequestHandler for PrincipalHandler {
                     if let Err(e) = validate_agent_name(proposed) {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("[unsafe_name] invalid principal name: {e}"),
+                            message: format!("[unsafe_name] invalid peko name: {e}"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -647,7 +647,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal import failed: {e}"),
+                            message: format!("Import failed: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -666,7 +666,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -682,7 +682,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -729,7 +729,7 @@ impl RequestHandler for PrincipalHandler {
                     }
                 }
                 // ADR-066 D9: ownership gate — `update_config`
-                // rewrites `principal.toml`, so the actor must own
+                // rewrites `peko.toml`, so the actor must own
                 // this principal (or be the operator). The tier gate
                 // fires inside `shared_config_write_for_name` via
                 // `for_caller(caller)` in `authority_for`.
@@ -815,7 +815,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -831,7 +831,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -892,7 +892,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -903,7 +903,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -944,12 +944,12 @@ impl RequestHandler for PrincipalHandler {
                 // Validate name at the IPC boundary so a hostile caller can't
                 // reach `principal_manager().update_config(&name, …)` with a
                 // path-traversal spelling. The manager joins `name` into
-                // `config_dir/principals/<name>/principal.toml`.
+                // `config_dir/principals/<name>/peko.toml`.
                 use crate::common::identifiers::validate_agent_name;
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -974,7 +974,7 @@ impl RequestHandler for PrincipalHandler {
                 };
 
                 // ADR-066 D9: ownership gate — `update_config`
-                // rewrites `principal.toml`, so the actor must own
+                // rewrites `peko.toml`, so the actor must own
                 // this principal (or be the operator).
                 if let Err(e) = host
                     .authority_for(caller)
@@ -1038,7 +1038,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1151,7 +1151,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1162,7 +1162,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1271,7 +1271,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1282,7 +1282,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1343,7 +1343,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("invalid principal name: {e}"),
+                        message: format!("invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1495,7 +1495,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1508,7 +1508,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1660,7 +1660,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Failed to update principal: {e}"),
+                            message: format!("Failed to update peko: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -1679,7 +1679,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1692,7 +1692,7 @@ impl RequestHandler for PrincipalHandler {
                 if !config_path.exists() {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("Principal '{}' not found", name),
+                        message: format!("Peko '{}' not found", name),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1705,7 +1705,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("read principal.toml: {e}"),
+                            message: format!("read peko.toml: {e}"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1716,7 +1716,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("parse principal.toml: {e}"),
+                            message: format!("parse peko.toml: {e}"),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1753,7 +1753,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("load principal '{}': {e}", name),
+                            message: format!("load peko '{}': {e}", name),
                         };
                         send_response(sink, response).await?;
                     }
@@ -1768,7 +1768,7 @@ impl RequestHandler for PrincipalHandler {
                 if let Err(e) = validate_agent_name(&name) {
                     let response = ResponsePacket::Error {
                         request_id,
-                        message: format!("[unsafe_name] invalid principal name: {e}"),
+                        message: format!("[unsafe_name] invalid peko name: {e}"),
                     };
                     send_response(sink, response).await?;
                     return Ok(());
@@ -1778,7 +1778,7 @@ impl RequestHandler for PrincipalHandler {
                     None => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Principal '{}' not found", name),
+                            message: format!("Peko '{}' not found", name),
                         };
                         send_response(sink, response).await?;
                         return Ok(());
@@ -1823,7 +1823,7 @@ impl RequestHandler for PrincipalHandler {
                     Err(e) => {
                         let response = ResponsePacket::Error {
                             request_id,
-                            message: format!("Failed to remove principal: {e}"),
+                            message: format!("Failed to remove peko: {e}"),
                         };
                         send_response(sink, response).await?;
                     }
@@ -1852,7 +1852,7 @@ async fn owner_principal(
     caller: &CallerContext,
 ) -> Result<Arc<Principal>, String> {
     let Some(principal) = load_principal(host, name).await else {
-        return Err(format!("[not_found] Principal '{name}' not found"));
+        return Err(format!("[not_found] Peko '{name}' not found"));
     };
     let config = principal.config.read().await;
     let resource = principal_resource(&*config);
@@ -1908,7 +1908,7 @@ async fn handle_principal_stop(
     let Some(principal) = load_principal(host, name).await else {
         let response = ResponsePacket::Error {
             request_id,
-            message: format!("[not_found] Principal '{name}' not found"),
+            message: format!("[not_found] Peko '{name}' not found"),
         };
         send_response(sink, response).await?;
         return Ok(());
@@ -2154,13 +2154,13 @@ async fn run_principal_send(
         None => {
             let response = ResponsePacket::Error {
                 request_id,
-                message: format!("Principal '{}' not found", name),
+                message: format!("Peko '{}' not found", name),
             };
             send_response(sink, response).await?;
             let done = ResponsePacket::Done {
                 request_id,
                 success: false,
-                error: Some(format!("Principal '{name}' not found")),
+                error: Some(format!("Peko '{name}' not found")),
             };
             send_response(sink, done).await?;
             return Ok(());
@@ -2304,7 +2304,7 @@ async fn run_principal_send(
                         request_id,
                         success: false,
                         error: Some(format!(
-                            "[queued] principal '{name}' is busy — message queued for session {child_id}"
+                            "[queued] peko '{name}' is busy — message queued for session {child_id}"
                         )),
                     };
                     send_response(sink, done).await?;
@@ -3309,7 +3309,7 @@ async fn load_principal(host: &dyn PrincipalHost, name: &str) -> Option<Arc<Prin
     if config_path.exists() {
         if let Err(e) = manager.load(&config_path).await {
             warn!(
-                "Failed to load principal '{}' from {}: {}",
+                "Failed to load peko '{}' from {}: {}",
                 name,
                 config_path.display(),
                 e
@@ -3328,13 +3328,13 @@ async fn build_principal_packager(
 ) -> anyhow::Result<crate::registry::packaging::PrincipalPackager> {
     let principal = load_principal(host, name)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Principal '{}' not found", name))?;
+        .ok_or_else(|| anyhow::anyhow!("Peko '{}' not found", name))?;
     let config = principal.config.read().await.clone();
     let did = config
         .did
         .as_ref()
         .map(|d| d.0.clone())
-        .ok_or_else(|| anyhow::anyhow!("Principal '{}' has no identity DID", name))?;
+        .ok_or_else(|| anyhow::anyhow!("Peko '{}' has no identity DID", name))?;
 
     // Phase A: every packager path is read from the typed layout.
     // `roles_dir` is the Shared tier; `sessions_dir` is the Local
@@ -3404,7 +3404,7 @@ async fn transfer_principal(
 ) -> anyhow::Result<Transfer> {
     use crate::common::identifiers::validate_agent_name;
     validate_agent_name(name)
-        .map_err(|e| anyhow::anyhow!("[unsafe_name] invalid principal name: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("[unsafe_name] invalid peko name: {e}"))?;
     anyhow::ensure!(
         owner.is_session_peer() && owner.route_runtime().is_none(),
         "The new owner must be a user, visitor, or principal of this runtime or Hub"
@@ -3412,7 +3412,7 @@ async fn transfer_principal(
     let manager = host.principal_manager();
     let principal = load_principal(host, name)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Principal '{name}' not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Peko '{name}' not found"))?;
     let keys = host_keys(host);
     let previous = principal.config.read().await.owner.clone();
     anyhow::ensure!(
@@ -3434,10 +3434,9 @@ async fn transfer_principal(
             // The rule registration and Hub move approval use: an online
             // principal's owner is a Hub user account.
             let next = port.actor_info(&owner).await;
-            let account = next
-                .hub_id
-                .filter(|_| next.kind == "user")
-                .ok_or_else(|| anyhow::anyhow!("An online principal's owner must be a Hub user"))?;
+            let account = next.hub_id.filter(|_| next.kind == "user").ok_or_else(|| {
+                anyhow::anyhow!("An online peko's owner must have a PekoHub account")
+            })?;
             Some(account)
         }
         _ => None,
@@ -3847,7 +3846,7 @@ async fn resolve_log_thread(
     let principal = manager
         .get_by_name(name)
         .await
-        .ok_or_else(|| PrincipalLogError::NotFound(format!("Principal '{name}' not loaded")))?;
+        .ok_or_else(|| PrincipalLogError::NotFound(format!("Peko '{name}' not loaded")))?;
 
     // ── Build the resource for permission gating ──────────────────
     let (owner, permissions, exposure) = {
@@ -4613,7 +4612,7 @@ mod tests {
         files.insert("agents/primary.md".to_string(), vec![]);
         files.insert("agents/researcher/AGENT.md".to_string(), vec![]);
         files.insert("agents/utils.toml".to_string(), vec![]);
-        files.insert("config/principal.toml".to_string(), vec![]);
+        files.insert("config/peko.toml".to_string(), vec![]);
 
         let mut names = extract_agent_names_from_package(&files);
         names.sort();
@@ -4805,7 +4804,10 @@ mod tests {
             let err = transfer_principal(&host, &CallerContext::local(), "online", hub_principal)
                 .await
                 .unwrap_err();
-            assert!(err.to_string().contains("must be a Hub user"), "{err}");
+            assert!(
+                err.to_string().contains("must have a PekoHub account"),
+                "{err}"
+            );
             let local_peer = ActorRef::User("visitor-x".into());
             assert!(
                 transfer_principal(&host, &CallerContext::local(), "online", local_peer)

@@ -27,12 +27,31 @@ use anyhow::{Context, Result};
 use peko_core::common::vault::{Credential, CredentialFilter, CredentialKind, Vault};
 use peko_providers::catalog::ModelCatalog;
 
+/// The vault namespace of a peko's MCP secrets is
+/// `mcp:principal:<local-id>:<server>`; people type and read it as
+/// `mcp:peko:<local-id>:<server>`. Map what was typed to the stored form.
+fn stored_namespace(namespace: &str) -> String {
+    match namespace.strip_prefix("mcp:peko:") {
+        Some(rest) => format!("mcp:principal:{rest}"),
+        None => namespace.to_string(),
+    }
+}
+
+/// A stored namespace as people read it (the inverse of [`stored_namespace`]).
+fn shown_namespace(namespace: &str) -> String {
+    match namespace.strip_prefix("mcp:principal:") {
+        Some(rest) => format!("mcp:peko:{rest}"),
+        None => namespace.to_string(),
+    }
+}
+
 /// Credential commands
 #[derive(clap::Subcommand)]
 pub enum CredentialCommands {
     /// Store or overwrite a credential in the vault.
     Set {
-        /// Namespace for the credential (e.g. `llm`, `mcp:analytics`).
+        /// Namespace for the credential (e.g. `llm`, or
+        /// `mcp:peko:<local-id>:<server>` for a peko's MCP server).
         namespace: String,
         /// Slot name within the namespace (e.g. `default`, a model id).
         name: String,
@@ -45,9 +64,9 @@ pub enum CredentialCommands {
         /// Optional metadata key/value pairs.
         #[arg(long = "metadata", value_name = "KEY=VALUE", value_parser = parse_metadata_pair)]
         metadata: Vec<(String, String)>,
-        /// PR 3: every catalog entry that references the credential
-        /// with this id is rewritten to point at the newly stored one.
-        /// Used to bulk-rotate dependents before deleting the old key.
+        /// Point every model that uses the credential with this id at
+        /// the new one. Use it to rotate a key before deleting the old
+        /// one.
         #[arg(long, value_name = "CREDENTIAL_ID")]
         replace_on: Option<String>,
     },
@@ -66,9 +85,9 @@ pub enum CredentialCommands {
     Delete {
         /// Credential id (UUID).
         id: String,
-        /// PR 3: detach dependents silently before deleting. The
-        /// detach is audit-logged. Prefer `--replace-on` on a fresh
-        /// set when the dependents should keep working.
+        /// Detach the models that use it, then delete. The detach is
+        /// recorded in the audit log. Prefer `--replace-on` on a fresh
+        /// `set` when those models should keep working.
         #[arg(long)]
         force: bool,
     },
@@ -105,6 +124,7 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
             metadata,
             replace_on,
         } => {
+            let namespace = stored_namespace(&namespace);
             set_cmd(
                 paths, &vault, &namespace, &name, &kind, material, metadata, replace_on,
             )
@@ -129,6 +149,7 @@ pub async fn execute(cmd: CredentialCommands, paths: &GlobalPaths) -> Result<()>
             kind,
             include_system,
         } => {
+            let namespace = namespace.as_deref().map(stored_namespace);
             list_cmd(
                 &vault,
                 paths,
@@ -175,6 +196,7 @@ async fn set_cmd(
     metadata_pairs: Vec<(String, String)>,
     replace_on: Option<String>,
 ) -> Result<()> {
+    let shown = shown_namespace(namespace);
     let kind = parse_kind(kind)
         .with_context(|| format!("unknown credential kind '{kind}'; expected one of: api_key, bearer_token, oauth_token, basic_auth, private_key, generic_secret"))?;
     let material = read_material(material, "Credential material: ")?;
@@ -199,13 +221,12 @@ async fn set_cmd(
                 })
             {
                 anyhow::bail!(
-                    "credential '{namespace}/{name}' is runtime-owned and cannot be changed with this command; \
+                    "credential '{shown}/{name}' is runtime-owned and cannot be changed with this command; \
                      use the runtime-specific command instead"
                 );
             }
-            return Err(e).with_context(|| {
-                format!("failed to store credential '{namespace}/{name}' in vault")
-            });
+            return Err(e)
+                .with_context(|| format!("failed to store credential '{shown}/{name}' in vault"));
         }
     }
 
@@ -229,11 +250,11 @@ async fn set_cmd(
 
     if rewired > 0 {
         println!(
-            "Stored credential '{namespace}/{name}' (id {id}). Rewired {rewired} model(s) from '{old}'.",
+            "Stored credential '{shown}/{name}' (id {id}). Rewired {rewired} model(s) from '{old}'.",
             old = replace_on.as_deref().unwrap_or("?"),
         );
     } else {
-        println!("Stored credential '{namespace}/{name}' (id {id}).");
+        println!("Stored credential '{shown}/{name}' (id {id}).");
     }
     notify_daemon_reload().await;
     Ok(())
@@ -244,7 +265,7 @@ async fn get_cmd(vault: &Vault, id: &str) -> Result<()> {
         .get_credential(id)
         .with_context(|| format!("credential not found: {id}"))?;
     println!("id:           {}", credential.id);
-    println!("namespace:    {}", credential.namespace);
+    println!("namespace:    {}", shown_namespace(&credential.namespace));
     println!("name:         {}", credential.name);
     println!("kind:         {}", credential.kind.as_str());
     if !credential.metadata.is_null()
@@ -418,7 +439,7 @@ async fn list_cmd(
         println!(
             "  {}  {}:{}{}  {}{}",
             s.id,
-            s.namespace,
+            shown_namespace(&s.namespace),
             s.name,
             ref_badge,
             s.kind.as_str(),
@@ -549,6 +570,20 @@ mod tests {
     use secrecy::ExposeSecret;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tempfile::tempdir;
+
+    #[test]
+    fn mcp_peko_namespaces_map_to_the_stored_form() {
+        assert_eq!(
+            super::stored_namespace("mcp:peko:prin_a:notes"),
+            "mcp:principal:prin_a:notes"
+        );
+        assert_eq!(super::stored_namespace("llm"), "llm");
+        assert_eq!(
+            super::shown_namespace("mcp:principal:prin_a:notes"),
+            "mcp:peko:prin_a:notes"
+        );
+        assert_eq!(super::shown_namespace("mcp:analytics"), "mcp:analytics");
+    }
 
     fn test_vault() -> (tempfile::TempDir, Vault) {
         let tmp = tempdir().unwrap();
