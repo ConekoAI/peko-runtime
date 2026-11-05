@@ -15,6 +15,18 @@ All notable changes to Peko.
   "Not responding" (other commands: "Daemon is not running"). Only
   requests that carry a PekoHub token or an API key are limited now; a
   local request already runs as the runtime's owner.
+### Fix: what a live upgrade test turned up (2026-11-05)
+
+- Pekos stop calling themselves "principal": the first-turn brief and the
+  keepalive message say "peko", and the journal's first line reads "created
+  as peko". Pekos set up before this keep the description they wrote.
+- A local peko's address shows as `peko:local:<id>` everywhere (log rows,
+  members, peek, permissions, grant and revoke messages); a bare local
+  route printed `peko:<id>` before.
+- `peko diff` reads the baseline the daemon writes (`{name: {principal,
+  hooks, mcp}}`) and reports drift again; it always said "no baseline".
+- User-facing errors that still said principal (a missing preferred model,
+  a missing root role, the policy reviewer's refusal) say peko.
 
 ### Change: everything you see says peko (2026-11-05)
 
@@ -669,7 +681,6 @@ there). `~/…` paths expand to the home directory. The runtime prompt no
 longer warns that the default directory can differ.
 `peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
 printed as `2026-10-30 T04:06:44.511473`).
-
 
 ### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
 
@@ -2841,7 +2852,6 @@ falsely held 13 correct owner facts.
   runtime; scopes workspace hooks to their owning principal.
 - Migrated singleton-dependent tests to explicitly constructed runtimes.
 
-
 #### Pure workspace tooling: ownership and audit (ADR-066 P2, 2026-10-01)
 
 - Deleted capability gates for tool visibility/execution, roles, skills,
@@ -2854,7 +2864,6 @@ falsely held 13 correct owner facts.
 - Moved async execution and session inbox to `async_exec`. Deleted the inert
   extension store, discovery/storage, adapter trait, configuration services,
   and tool execution service; re-homed live principal tooling and catalog glue.
-
 
 #### Iteration cap removed from the agentic loop (2026-09-30)
 
@@ -3122,7 +3131,6 @@ non-goal — async tasks are ephemeral, unlike persisted cron jobs.
   and `set_page_limit`. The `pruned_pages` counter is persisted by the
   caller's own `MetadataController` (each controller instance carries
   an in-memory index view; see `Session::prune_overflow`).
-
 
 #### Session archive flag retired + Agent `branch` overwrite reseeds in place (2026-09-26)
 

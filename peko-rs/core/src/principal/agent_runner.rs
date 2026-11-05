@@ -72,8 +72,8 @@ async fn validate_principal_hint(
         return principal_hint;
     }
     tracing::warn!(
-        "principal prefers model '{id}' but it is not in the catalog. \
-         Re-add it with `peko model add ...` or clear the principal's \
+        "peko prefers model '{id}' but it is not in the catalog. \
+         Re-add it with `peko model add ...` or clear the peko's \
          `preferred_model_id` in peko.toml."
     );
     None

@@ -131,7 +131,7 @@ pub fn seed_journal_birth_entry(
     let time = now.format("%Y-%m-%d %H:%M UTC");
     let body = format!(
         "# {date}\n\n\
-         - Born: provisioned as principal `{principal_name}` at {time}. \
+         - Born: created as peko `{principal_name}` at {time}. \
          This journal is append-only — one file per day, newest entries \
          at the end; never rewrite past entries.\n"
     );
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(rel, format!("kb/journal/{}.md", now.format("%Y-%m-%d")));
 
         let body = std::fs::read_to_string(ws.path().join(&rel)).unwrap();
-        assert!(body.contains("Born: provisioned as principal `nova`"));
+        assert!(body.contains("Born: created as peko `nova`"));
         assert!(body.contains("append-only"));
 
         // Idempotent: the day's file already exists → untouched.

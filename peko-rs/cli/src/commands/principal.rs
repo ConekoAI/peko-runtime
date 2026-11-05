@@ -397,13 +397,14 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     let baseline_path = paths.principal_hashes_file();
     let principals_root = paths.principals_root_dir();
 
-    // Baseline: `{name: hex_sha256}`. Missing file = empty map
-    // (first boot). Malformed JSON = also empty map + warning —
-    // we don't want a corrupted audit artifact to brick the diff
-    // command.
+    // Baseline: `{name: {principal: hex_sha256, hooks, mcp}}`, as the
+    // daemon writes it (an older shape was `{name: hex_sha256}`; both
+    // read). Missing file = empty map (first boot). Malformed JSON = also
+    // empty map + warning — we don't want a corrupted audit artifact to
+    // brick the diff command.
     let baseline: BTreeMap<String, String> = match std::fs::read(&baseline_path) {
         Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice(&bytes) {
-            Ok(b) => b,
+            Ok(b) => definition_hashes(b),
             Err(e) => {
                 eprintln!(
                     "(warning: baseline at {} was malformed — {e}; treating as empty)",
@@ -545,6 +546,28 @@ async fn show_principal_drift(name: Option<&str>, paths: &GlobalPaths, json: boo
     println!("\nRun `peko audit tail --since 1d` for the daemon's startup-time drift event(s).");
 
     Ok(())
+}
+
+/// The `peko.toml` hash per peko from the daemon's drift baseline: each
+/// entry is `{"principal": "<sha256>", ...}`, or a bare hash in the older
+/// shape. Entries of any other shape are skipped.
+fn definition_hashes(
+    baseline: std::collections::BTreeMap<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, String> {
+    baseline
+        .into_iter()
+        .filter_map(|(name, entry)| {
+            let hash = match entry {
+                serde_json::Value::String(hash) => hash,
+                serde_json::Value::Object(mut fields) => match fields.remove("principal")? {
+                    serde_json::Value::String(hash) => hash,
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some((name, hash))
+        })
+        .collect()
 }
 
 /// Load a `--seed` file (`peko.toml` plus an optional `persona`), so
@@ -1516,7 +1539,12 @@ async fn grant_permission(name: &str, subject_str: &str, permission_str: &str) -
             permission,
             ..
         } => {
-            println!("Granted {:?} on '{}' to {}", permission, name, subject);
+            println!(
+                "Granted {:?} on '{}' to {}",
+                permission,
+                name,
+                super::shown_address(&subject.to_string())
+            );
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -1544,7 +1572,12 @@ async fn revoke_permission(name: &str, subject_str: &str, permission_str: &str) 
             permission,
             ..
         } => {
-            println!("Revoked {:?} on '{}' from {}", permission, name, subject);
+            println!(
+                "Revoked {:?} on '{}' from {}",
+                permission,
+                name,
+                super::shown_address(&subject.to_string())
+            );
             Ok(())
         }
         ResponsePacket::Error { message, .. } => {
@@ -1821,6 +1854,18 @@ fn render_remove_principal_json(name: &str) -> serde_json::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diff_reads_the_daemons_baseline_entries() {
+        let baseline: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"ada": {"principal": "aa", "hooks": {}, "mcp": {}}, "bo": "bb", "cy": 3}"#,
+        )
+        .unwrap();
+        let hashes = super::definition_hashes(baseline);
+        assert_eq!(hashes.get("ada").map(String::as_str), Some("aa"));
+        assert_eq!(hashes.get("bo").map(String::as_str), Some("bb"));
+        assert!(!hashes.contains_key("cy"));
+    }
+
     use super::*;
     use crate::commands::{from_cli, Cli, Commands};
     use clap::Parser;
