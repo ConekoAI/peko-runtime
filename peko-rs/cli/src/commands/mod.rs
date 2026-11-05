@@ -247,6 +247,11 @@ pub(crate) enum Recipient {
 /// Every other text passes through unchanged; `--json` output keeps the
 /// wire form. Both spellings are accepted wherever an address is typed.
 pub(crate) fn shown_address(address: &str) -> String {
+    // The local user is stored as `user:local:local`; people know it as
+    // `user:local`.
+    if address == "user:local:local" {
+        return "user:local".to_string();
+    }
     match address.strip_prefix("principal:") {
         // A local route is written bare (`principal:prin_x`); show its scope
         // as `peko show` does.
@@ -346,6 +351,7 @@ mod tests {
         );
         assert_eq!(super::shown_address("user:hub:abc"), "user:hub:abc");
         assert_eq!(super::shown_address("public"), "public");
+        assert_eq!(super::shown_address("user:local:local"), "user:local");
     }
 
     use super::{parse_recipient, Recipient};

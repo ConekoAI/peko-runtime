@@ -389,7 +389,11 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     })
                 );
             } else {
-                println!("invited {} to {}", invitee_id, ch);
+                println!(
+                    "invited {} to {}",
+                    super::shown_address(&invitee_id.to_string()),
+                    ch
+                );
             }
             Ok(())
         }
@@ -561,29 +565,37 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
         ChannelCommands::Show { channel, .. } => {
-            let packet = RequestPacket::ChannelMembers {
-                request_id: 0,
-                channel: channel.clone(),
-            };
-            let members =
-                run_daemon_or(paths, packet, "channel_show_failed", move |port, _paths| {
-                    Box::pin(async move {
-                        let router = ChannelCliRouter::new(port);
-                        let ch = parse_channel_id(&channel)?;
-                        let resp = router.handle_show(&ch).await?;
-                        Ok(resp.members)
-                    })
-                })
-                .await?;
+            // The daemon knows the group's name, kind, roster, and each
+            // local peko's wake setting; without one, read the roster
+            // from disk.
+            if let Ok(client) = DaemonClient::connect().await {
+                let packet = RequestPacket::ChannelInfo {
+                    request_id: 0,
+                    channel: channel.clone(),
+                };
+                let resp = client
+                    .request_response(packet)
+                    .await
+                    .context("channel_show_failed")?;
+                return print_channel_info(resp, json);
+            }
+            let port: Arc<dyn peko_channel::ChannelPort> =
+                Arc::new(ChannelStore::new(ChannelConfig {
+                    runtime_dir: paths.runtime_dir(),
+                    shared_dir: Some(paths.principals_root_dir()),
+                }));
+            let ch = parse_channel_id(&channel)?;
+            let membership = ChannelCliRouter::new(port)
+                .handle_show(&ch)
+                .await
+                .context("channel_show_failed")?;
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&members).context("serialize members")?
-                );
+                println!("{}", serde_json::to_string_pretty(&membership)?);
             } else {
-                println!("{} member(s):", members.len());
-                for m in &members {
-                    println!("  {}", super::shown_address(&m.to_string()));
+                println!("{} ({})", membership.name, membership.channel);
+                println!("{} member(s):", membership.members.len());
+                for m in &membership.members {
+                    println!("  {}", super::shown_address(m));
                 }
             }
             Ok(())
@@ -591,6 +603,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
         ChannelCommands::Leave {
             channel, principal, ..
         } => {
+            let name = principal.clone();
             let packet = RequestPacket::ChannelLeave {
                 request_id: 0,
                 channel: channel.clone(),
@@ -619,7 +632,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     })
                 );
             } else {
-                println!("{principal_id} left {ch}");
+                println!("{name} left {ch}");
             }
             Ok(())
         }
@@ -1114,6 +1127,59 @@ where
         shared_dir: Some(paths.principals_root_dir()),
     }));
     local(port, paths).await.context(err_label)
+}
+
+/// Print a `ChannelInfo` reply for `peko channel show`.
+fn print_channel_info(resp: ResponsePacket, json: bool) -> Result<()> {
+    match resp {
+        ResponsePacket::ChannelInfoResult {
+            channel,
+            kind,
+            name,
+            members,
+            pekos,
+            ..
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "channel": channel,
+                        "kind": kind,
+                        "name": name,
+                        "members": members,
+                        "pekos": pekos,
+                    }))?
+                );
+                return Ok(());
+            }
+            let kind = match kind {
+                peko_protocol::channel::ConversationKind::Dm => "DM",
+                peko_protocol::channel::ConversationKind::Group => "group",
+            };
+            println!("{name} ({kind}, {channel})");
+            println!("{} member(s):", members.len());
+            for m in &members {
+                println!("  {}", super::shown_address(&m.to_string()));
+            }
+            for peko in &pekos {
+                let wake = match peko.wake {
+                    peko_channel::WakePolicy::Human => "wakes on every post from a person",
+                    peko_channel::WakePolicy::Mention => "wakes when @mentioned",
+                    peko_channel::WakePolicy::Off => "does not wake",
+                };
+                println!("  {}: {wake}", peko.name);
+            }
+            Ok(())
+        }
+        ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("channel_show_failed: {message}")
+        }
+        other => anyhow::bail!(
+            "channel_show_failed: unexpected reply {}",
+            other.variant_name()
+        ),
+    }
 }
 
 /// Extract each reply's payload into the local router's return shape. The

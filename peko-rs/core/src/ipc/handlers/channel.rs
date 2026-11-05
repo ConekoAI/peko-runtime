@@ -1074,6 +1074,22 @@ impl RequestHandler for ChannelHandler {
                 };
                 match self.router().handle_create(&creator, &name, id).await {
                     Ok(resp) => {
+                        // The person creating the group joins it. A group
+                        // holding only its peko is one its owner can
+                        // neither read nor post in; the desktop invited
+                        // them afterwards, the CLI never did. A failure
+                        // here leaves the group as created and is logged.
+                        let person = caller.attribution_subject();
+                        if let Err(e) = self
+                            .router()
+                            .handle_invite(&resp.channel, &creator, &person)
+                            .await
+                        {
+                            tracing::warn!(
+                                "channel create: could not add {person} to {}: {e}",
+                                resp.channel
+                            );
+                        }
                         let response = ResponsePacket::ChannelCreated {
                             request_id,
                             channel: resp.channel.clone(),
@@ -1131,9 +1147,7 @@ impl RequestHandler for ChannelHandler {
                         None => {
                             let response = ResponsePacket::Error {
                                 request_id,
-                                message: format!(
-                                    "Invitee principal '{invitee_name}' is not loaded"
-                                ),
+                                message: format!("Invitee peko '{invitee_name}' is not loaded"),
                             };
                             send_response(sink, response).await?;
                             return Ok(());
@@ -3866,6 +3880,43 @@ mod wake_tests {
         fx.port.leave(&fx.group, &fx.bob.id).await.unwrap();
         let message = error_message(fx.set_wake(&fx.group, "bob", "off").await);
         assert!(message.contains("not a member"), "{message}");
+    }
+
+    /// The person who creates a group from the CLI or desktop is in it:
+    /// they can read it straight away, and a second invite (what the
+    /// desktop used to send) is harmless.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_person_who_creates_a_group_is_in_it() {
+        let fx = Fixture::new().await;
+        let local = CallerContext::local();
+        let request = RequestPacket::ChannelCreate {
+            request_id: 1,
+            creator_name: "alice".into(),
+            name: "garden".into(),
+            id: None,
+        };
+        let ResponsePacket::ChannelCreated { channel, .. } = fx.send(request, &local).await else {
+            panic!("expected ChannelCreated");
+        };
+        let members = fx.port.list_members(&channel).await.unwrap();
+        assert!(
+            members.contains(&ActorRef::from(&fx.alice.id)),
+            "{members:?}"
+        );
+        assert!(
+            members.contains(&local.attribution_subject()),
+            "{members:?}"
+        );
+        assert!(matches!(
+            fx.info(&channel, &local).await,
+            ResponsePacket::ChannelInfoResult { .. }
+        ));
+
+        fx.port
+            .invite(&channel, &fx.alice.id, &local.attribution_subject())
+            .await
+            .unwrap();
+        assert_eq!(fx.port.list_members(&channel).await.unwrap().len(), 2);
     }
 
     /// A person leaves a group themself: no peko named, no operator
