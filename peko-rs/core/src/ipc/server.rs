@@ -194,6 +194,26 @@ pub fn bump_recv_buffer<S: AsRawFd>(socket: &S) -> std::io::Result<()> {
     }
 }
 
+/// Which rate-limit class a request's credential is charged to:
+/// `Some(true)` for a PekoHub JWT, `Some(false)` for an API key, `None`
+/// for no credential — never limited.
+///
+/// A request without a credential is only accepted from a local peer
+/// (`resolve_caller`), and a local caller is the runtime's own user with
+/// owner trust. Limiting it protects nothing and breaks the local
+/// clients: the desktop polls every peko (each call preceded by a status
+/// probe) and drained the shared `local` bucket, so the CLI's connect
+/// ping got "Rate limit exceeded" and reported the daemon as not
+/// running.
+fn rate_limit_class(credential: &super::packet::AuthCredential) -> Option<bool> {
+    use super::packet::AuthCredential;
+    match credential {
+        AuthCredential::None => None,
+        AuthCredential::Jwt(_) => Some(true),
+        AuthCredential::ApiKey(_) => Some(false),
+    }
+}
+
 /// ADR-058 D6 (Linux): enable `SO_PASSCRED` so every received datagram
 /// carries the sender's `SCM_CREDENTIALS` (uid/gid/pid). Combined with
 /// the `0700` run dir + `0600` socket mode, this lets the recv loop
@@ -831,9 +851,11 @@ impl IpcServer {
                                         }
                                     };
 
-                                    // Check rate limit
-                                    if let Some(rate_limiter) = self.app_state.rate_limiter() {
-                                        let is_jwt = matches!(envelope.auth.credential, super::packet::AuthCredential::Jwt(_));
+                                    // Check rate limit (remote credentials only)
+                                    if let (Some(rate_limiter), Some(is_jwt)) = (
+                                        self.app_state.rate_limiter(),
+                                        rate_limit_class(&envelope.auth.credential),
+                                    ) {
                                         if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
                                             warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
                                             let response = ResponsePacket::Error {
@@ -1038,12 +1060,11 @@ impl IpcServer {
             }
         };
 
-        // Rate limit
-        if let Some(rate_limiter) = state.rate_limiter() {
-            let is_jwt = matches!(
-                envelope.auth.credential,
-                super::packet::AuthCredential::Jwt(_)
-            );
+        // Rate limit (remote credentials only)
+        if let (Some(rate_limiter), Some(is_jwt)) = (
+            state.rate_limiter(),
+            rate_limit_class(&envelope.auth.credential),
+        ) {
             if !rate_limiter.check(&caller.rate_limit_bucket, is_jwt).await {
                 warn!("Rate limit exceeded for {}", caller.rate_limit_bucket);
                 let response = ResponsePacket::Error {
@@ -1500,6 +1521,28 @@ mod pipe_bind_tests {
         assert!(
             matches!(super::pipe_bind_os_error(&err), Some(5 | 231)),
             "got {err:#}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::rate_limit_class;
+    use crate::ipc::packet::AuthCredential;
+
+    /// The runtime's own user (no credential, local peer) is never
+    /// charged: the desktop's polling used to drain the shared `local`
+    /// bucket and lock the CLI out ("Daemon is not running").
+    #[test]
+    fn only_remote_credentials_are_rate_limited() {
+        assert_eq!(rate_limit_class(&AuthCredential::None), None);
+        assert_eq!(
+            rate_limit_class(&AuthCredential::Jwt("t".into())),
+            Some(true)
+        );
+        assert_eq!(
+            rate_limit_class(&AuthCredential::ApiKey("k".into())),
+            Some(false)
         );
     }
 }
