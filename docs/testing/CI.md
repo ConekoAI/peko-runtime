@@ -18,6 +18,10 @@ Three Linux jobs run in parallel: library tests; daemon shutdown tests and
 shared fixtures, tool sources, Docker assets and workflow/Makefile changes
 trigger that job; schedule and manual dispatch run every tier.
 
+The Windows library and native jobs run on the same trigger as their Linux
+counterparts and are blocking (Windows is in MVP scope). No title, branch or
+commit tag is needed or read.
+
 Library tests build `argon2` and `blake2` optimized even in the dev/test
 profile (root `Cargo.toml`). Every test vault and identity key runs an
 Argon2id derivation (64 MB, three passes); unoptimized, those derivations
