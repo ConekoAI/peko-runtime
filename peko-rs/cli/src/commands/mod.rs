@@ -248,7 +248,12 @@ pub(crate) enum Recipient {
 /// wire form. Both spellings are accepted wherever an address is typed.
 pub(crate) fn shown_address(address: &str) -> String {
     match address.strip_prefix("principal:") {
-        Some(rest) => format!("peko:{rest}"),
+        // A local route is written bare (`principal:prin_x`); show its scope
+        // as `peko show` does.
+        Some(rest) if rest.starts_with("local:") || rest.starts_with("hub:") => {
+            format!("peko:{rest}")
+        }
+        Some(rest) => format!("peko:local:{rest}"),
         None => address.to_string(),
     }
 }
@@ -335,6 +340,10 @@ mod tests {
             "peko:local:prin_x"
         );
         assert_eq!(super::shown_address("principal:hub:abc"), "peko:hub:abc");
+        assert_eq!(
+            super::shown_address("principal:prin_x"),
+            "peko:local:prin_x"
+        );
         assert_eq!(super::shown_address("user:hub:abc"), "user:hub:abc");
         assert_eq!(super::shown_address("public"), "public");
     }

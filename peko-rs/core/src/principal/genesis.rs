@@ -166,9 +166,9 @@ pub fn genesis_brief(config: &PrincipalConfig) -> String {
     let mut brief = String::new();
     brief.push_str(
         "[genesis] You have just come into existence. \
-This is your first self-turn — the trunk of a new principal.\n\n",
+This is your first self-turn as a new peko, in your main session.\n\n",
     );
-    brief.push_str(&format!("Principal: {display} (`{}`)\n", config.name));
+    brief.push_str(&format!("Peko: {display} (`{}`)\n", config.name));
     brief.push_str(&format!("Description: {description}\n"));
     if !config.intent.goals.is_empty() {
         brief.push_str("Goals:\n");
@@ -180,7 +180,7 @@ This is your first self-turn — the trunk of a new principal.\n\n",
         "\nYour definition lives in `peko.toml` in your workspace. Who you \
 are — name, voice, style, values, and the rules every agent you run keeps — \
 belongs there (`[identity]`, `[intent]`) and in `kb/CONVENTIONS.md`, never in \
-a role. Roles in `roles/` describe jobs: `root` is this trunk's supervision, \
+a role. Roles in `roles/` describe jobs: `root` is the supervision you do here, \
 `conversation` is how you talk in DMs and groups, and you or your owner may \
 add roles for specific work (a coder, a researcher) and name one for a \
 channel with `Channel` action `role`. Scratch and removal staging sessions `/tmp` \
@@ -200,7 +200,7 @@ On this turn:\n\
 1. Read your own definition (`peko.toml`). If `[identity]` or \
 `[intent]` are empty placeholders, adopt a working self-description \
 and write it back — your creator will refine it later. Leave `boot_state` \
-unchanged: it is runtime-owned, and the runtime marks this principal \
+unchanged: it is runtime-owned, and the runtime marks this peko \
 `organized` after a successful genesis turn. Do not invent lifecycle states.\n\
 2. Survey your workspace (`roles/`, `skills/`, `tools/`, `kb/` if present) \
 so you know what you can do and what you already know.\n\
@@ -219,7 +219,7 @@ do not start the work this turn. Skip this if you have no goals yet.\n\
 turns each day's sessions into your `kb/` and reflects on how you worked. \
 Both are yours, and their defaults are deliberate: keep them unless your \
 owner asks for something else. A quiet keepalive tick costs nothing, so a \
-slower cadence only delays your answer to other principals. The `memory` \
+slower cadence only delays your answer to other pekos. The `memory` \
 job waits for a quiet stretch after its 24-hour interval, which lands in \
 your owner's night without knowing their timezone; set a clock time (`cron` \
 with `timezone`) only once your owner has told you their timezone, not \
@@ -245,8 +245,8 @@ pub fn keepalive_tick_message(config: &PrincipalConfig) -> String {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(&config.name);
     format!(
-        "[keepalive] Supervision tick for `{display}`. You are the trunk of this \
-principal: review your session tree (`session list`), tend your memory \
+        "[keepalive] Supervision tick for `{display}`. You are this peko's \
+supervisor, in its main session: review your session tree (`session list`), tend your memory \
 and workspace, check channels (`channel read`), and continue or adjust \
 your standing work. A tick runs only when something waits on you (posts, \
 a plan that changed since your last tick, a check-in that came due, a failed \

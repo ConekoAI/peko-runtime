@@ -846,7 +846,10 @@ mod tests {
         let wire: ActorRef = "principal:local:prin_x".parse().unwrap();
         assert_eq!(typed, wire);
         assert_eq!(typed.to_string(), wire.to_string());
-        assert!(typed.to_string().starts_with("principal:"), "display keeps the wire form");
+        assert!(
+            typed.to_string().starts_with("principal:"),
+            "display keeps the wire form"
+        );
         assert_eq!(
             ActorRef::parse_scoped("peko:hub:abc").unwrap(),
             "principal:hub:abc".parse::<ActorRef>().unwrap()
