@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: groups you start from the CLI are yours to read; `peko channel show` works (2026-11-05)
+
+- A group created over IPC (`peko channel create`, the desktop) now has
+  the person who created it as a member. Before, only the creating peko
+  was in it, so its owner could neither read nor post (`members`, `peek`
+  and `show` refused); the desktop worked around it with a second invite,
+  which stays harmless.
+- `peko channel show` decoded the daemon's reply as the wrong type and
+  always failed. It now shows the group's name, kind, members, and each
+  local peko's wake setting (`ChannelInfo`), or the on-disk roster without
+  a daemon.
+- CLI confirmations name actors as people know them: `invited
+  peko:local:<id>`, `bo left <group>`, and `user:local`.
+
 ### Fix: refusals a peko quotes say peko (2026-11-05)
 
 - The trust floor's refusal messages say "another peko" and "this peko's
