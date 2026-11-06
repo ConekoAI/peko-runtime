@@ -464,11 +464,10 @@ Make one sessionless completion or structured judgment call.
 | `prompt` | string | no | — |
 | `system` | string | no | — |
 | `max_tokens` | integer | no | — |
-| `temperature` | number | no | — |
 | `state` | string \| object | no | — |
 | `questions` | object | no | nonempty object |
 
-Exactly one mode is required: prompt for completion, or state plus a nonempty questions map for judgment. system/max_tokens/temperature are completion-only. model defaults to the principal’s preferred model. Judgment requires decisions:true; question specs are passed through and support boolean, choice (options), and score (min/max). Calls are attributed to the principal and metered.
+Exactly one mode is required: prompt for completion, or state plus a nonempty questions map for judgment. system/max_tokens are completion-only; no sampling settings are taken (models use their own defaults). model defaults to the principal’s preferred model. Judgment requires decisions:true; question specs are passed through and support boolean, choice (options), and score (min/max). Calls are attributed to the principal and metered.
 
 ### Workflow
 

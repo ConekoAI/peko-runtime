@@ -505,6 +505,10 @@ impl ChannelHandler {
                         dms: port.person_dm_summaries(&account?).await,
                     })
                 }
+                RequestPacket::ChannelPekoDms { .. } => Ok(ResponsePacket::ChannelPekoDmsResult {
+                    request_id,
+                    dms: port.peko_dm_summaries(&account?).await,
+                }),
                 RequestPacket::ChannelBlocked { .. } => {
                     let (people, names) = port.blocked_people_named(&account?).await?;
                     Ok(ResponsePacket::ChannelBlockedPeople {
@@ -969,6 +973,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelOpenPersonDm { .. }
                 | RequestPacket::ChannelDmRequests { .. }
                 | RequestPacket::ChannelPersonDms { .. }
+                | RequestPacket::ChannelPekoDms { .. }
                 | RequestPacket::ChannelDmRequestAnswer { .. }
                 | RequestPacket::ChannelBlockPerson { .. }
                 | RequestPacket::ChannelBlocked { .. }
@@ -1378,12 +1383,23 @@ impl RequestHandler for ChannelHandler {
                             .into_iter()
                             .map(|ev| with_received_paths(files_dir.as_deref(), ev))
                             .collect();
+                        let older_elsewhere = match self.host.tunnel_channel_port() {
+                            Some(tunnel) => {
+                                let store = tunnel.local();
+                                store.remote_dm_account(&ch).await.ok().flatten().is_some()
+                                    && store.conversation_kind(&ch).await.ok()
+                                        == Some(peko_channel::ConversationKind::Dm)
+                                    && !store.history_complete(&ch).await.unwrap_or(false)
+                            }
+                            None => false,
+                        };
                         let response = ResponsePacket::ChannelPeekResult {
                             request_id,
                             channel: ch,
                             events,
                             event_ids,
                             has_more,
+                            older_elsewhere,
                             resume_before,
                         };
                         send_response(sink, response).await?;
@@ -1675,6 +1691,7 @@ impl RequestHandler for ChannelHandler {
             request @ (RequestPacket::ChannelOpenPersonDm { .. }
             | RequestPacket::ChannelDmRequests { .. }
             | RequestPacket::ChannelPersonDms { .. }
+            | RequestPacket::ChannelPekoDms { .. }
             | RequestPacket::ChannelDmRequestAnswer { .. }
             | RequestPacket::ChannelBlockPerson { .. }
             | RequestPacket::ChannelBlocked { .. }) => {

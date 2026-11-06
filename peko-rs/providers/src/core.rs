@@ -308,28 +308,16 @@ impl Provider {
     }
 
     /// Simple chat interface
-    pub async fn chat(
-        &self,
-        message: &str,
-        model: &str,
-        temperature: f64,
-    ) -> anyhow::Result<String> {
-        self.chat_with_system(None, message, model, temperature)
-            .await
+    pub async fn chat(&self, message: &str, model: &str) -> anyhow::Result<String> {
+        self.chat_with_system(None, message, model).await
     }
 
     /// Like [`chat`] but returns the full [`ChatResponse`] including
     /// token usage. Used by internal callers that need to account for
     /// the LLM call's cost (e.g. the background compactor, which would
     /// otherwise have its summarization LLM call drop on the floor).
-    pub async fn chat_response(
-        &self,
-        message: &str,
-        model: &str,
-        temperature: f64,
-    ) -> anyhow::Result<ChatResponse> {
-        self.chat_response_with_system(None, message, model, temperature)
-            .await
+    pub async fn chat_response(&self, message: &str, model: &str) -> anyhow::Result<ChatResponse> {
+        self.chat_response_with_system(None, message, model).await
     }
 
     /// Warm up the HTTP connection pool
@@ -343,10 +331,9 @@ impl Provider {
         system_prompt: Option<&str>,
         message: &str,
         _model: &str,
-        temperature: f64,
     ) -> anyhow::Result<String> {
         let parsed = self
-            .chat_response_with_system(system_prompt, message, _model, temperature)
+            .chat_response_with_system(system_prompt, message, _model)
             .await?;
 
         // Extract text from content
@@ -370,7 +357,6 @@ impl Provider {
         system_prompt: Option<&str>,
         message: &str,
         _model: &str,
-        temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
         self.with_auth_rotation(|provider| {
             let provider = provider.clone();
@@ -384,7 +370,6 @@ impl Provider {
                 let (cache_retention, prompt_cache_key) =
                     project_cache_options(&provider.adapter, &provider.options);
                 let options = ChatOptions {
-                    temperature: Some(temperature as f32),
                     cache_retention,
                     prompt_cache_key,
                     ..Default::default()
@@ -416,10 +401,9 @@ impl Provider {
     /// surface at all (an empty `&[]` would still serialize
     /// `"tools": []` + `tool_choice`). Unlike
     /// [`chat_response_with_system`](Self::chat_response_with_system),
-    /// the caller controls the full options (`max_tokens`, …) instead
-    /// of just a temperature. The caller's `cache_retention` /
-    /// `prompt_cache_key` are overridden by the runtime-options
-    /// projection, same as the sibling chat methods.
+    /// the caller controls the full options (`max_tokens`, …). The
+    /// caller's `cache_retention` / `prompt_cache_key` are overridden by
+    /// the runtime-options projection, same as the sibling chat methods.
     ///
     /// No session persistence, no streaming, no tool-calling loop —
     /// one request, one response. This is the completion-mode engine

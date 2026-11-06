@@ -45,7 +45,7 @@ pub struct RecordedRequest {
     pub messages: Vec<LlmMessage>,
     pub tools: Vec<ToolDefinition>,
     pub stream: bool,
-    /// The options the caller passed (temperature, max_tokens, ...).
+    /// The options the caller passed (max_tokens, thinking, ...).
     pub options: ChatOptions,
 }
 

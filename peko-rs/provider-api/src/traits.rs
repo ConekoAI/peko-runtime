@@ -425,8 +425,6 @@ impl ThinkingKeep {
 /// Options for chat completion
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
-    /// Temperature (0.0 - 2.0)
-    pub temperature: Option<f32>,
     /// Maximum tokens to generate
     pub max_tokens: Option<u32>,
     /// API key (optional - uses env var if not provided)

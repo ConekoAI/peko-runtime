@@ -383,6 +383,12 @@ pub struct MetaJson {
     /// ADR-092 D5: the group's PekoHub registration. Kept at the home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<HubGroup>,
+    /// ADR-095 D1: on the person's side of a DM with a remote peko, the
+    /// copy holds the conversation back to its first post (backfill
+    /// reached the host's start). Until then older posts may still be
+    /// only elsewhere.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_complete: bool,
 }
 
 /// A group as PekoHub knows it (ADR-092 D5), kept at its home.
@@ -559,6 +565,8 @@ struct MetaJsonOnDisk {
     history: Option<HistoryVisibility>,
     #[serde(default)]
     hub: Option<HubGroup>,
+    #[serde(default)]
+    history_complete: bool,
 }
 
 #[derive(Deserialize)]
@@ -601,6 +609,7 @@ impl From<MetaJsonOnDisk> for MetaJson {
             admins: raw.admins,
             history: raw.history,
             hub: raw.hub,
+            history_complete: raw.history_complete,
         }
     }
 }
@@ -959,6 +968,7 @@ impl ChannelStore {
             admins: Vec::new(),
             history: None,
             hub: None,
+            history_complete: false,
         }
         .save(&dir)
         .await?;
@@ -1511,6 +1521,7 @@ impl ChannelStore {
             admins: Vec::new(),
             history: None,
             hub: None,
+            history_complete: false,
         }
         .save(&chan_dir)
         .await?;
@@ -1532,6 +1543,29 @@ impl ChannelStore {
         let tier = self.resolve_tier(channel).await?;
         let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
         Ok(meta.account)
+    }
+
+    /// Whether this copy of a person's DM with a remote peko holds the
+    /// conversation back to its first post (ADR-095 D1).
+    pub async fn history_complete(&self, channel: &ChannelId) -> Result<bool> {
+        let tier = self.resolve_tier(channel).await?;
+        let meta = MetaJson::load(&self.channel_dir_for_tier(tier, channel), channel).await?;
+        Ok(meta.history_complete)
+    }
+
+    /// Record that this copy reached the conversation's first post: the
+    /// host had nothing older (ADR-095 D1). Posts are append-only, so it
+    /// stays complete.
+    pub async fn mark_history_complete(&self, channel: &ChannelId) -> Result<()> {
+        let tier = self.resolve_tier(channel).await?;
+        let dir = self.channel_dir_for_tier(tier, channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if !meta.history_complete {
+            meta.history_complete = true;
+            meta.save(&dir).await?;
+        }
+        Ok(())
     }
 
     /// Append `events` from the host's record of this DM (ADR-091 D1):
@@ -3510,6 +3544,7 @@ impl ChannelStore {
             admins: Vec::new(),
             history: None,
             hub: None,
+            history_complete: false,
         };
         meta.save(&chan_dir).await?;
 
@@ -4217,6 +4252,7 @@ impl ChannelPort for ChannelStore {
             admins: Vec::new(),
             history: None,
             hub: None,
+            history_complete: false,
         };
         meta.save(&chan_dir).await?;
 
@@ -5760,6 +5796,24 @@ mod tests {
         assert!(refused.is_err());
     }
 
+    /// ADR-095 D1: a person's copy is incomplete until backfill reaches
+    /// the first post; marking it sticks, and a `meta.json` written
+    /// before the flag existed reads as incomplete.
+    #[tokio::test]
+    async fn a_dm_copy_remembers_reaching_the_first_post() {
+        let store = ChannelStore::new(tmp_cfg("dm-complete"));
+        let dm = remote_dm(&store, "acct-1").await;
+        assert!(!store.history_complete(&dm).await.unwrap());
+        store.mark_history_complete(&dm).await.unwrap();
+        store.mark_history_complete(&dm).await.unwrap();
+        assert!(store.history_complete(&dm).await.unwrap());
+        let meta = store.cfg.channel_dir(&dm).join(META_FILE);
+        let raw = std::fs::read_to_string(&meta).unwrap();
+        assert!(raw.contains("\"history_complete\": true"), "{raw}");
+        std::fs::write(&meta, raw.replace(",\n  \"history_complete\": true", "")).unwrap();
+        assert!(!store.history_complete(&dm).await.unwrap());
+    }
+
     /// ADR-091 D1: synced posts merge by `msg_id`, oldest first, once.
     #[tokio::test]
     async fn synced_posts_merge_by_id_in_time_order() {
@@ -6309,6 +6363,7 @@ mod tests {
             admins: Vec::new(),
             history: None,
             hub: None,
+            history_complete: false,
         };
         let raw = serde_json::to_string(&m).unwrap();
         assert!(raw.contains(r#""kind":"group""#), "{raw}");
