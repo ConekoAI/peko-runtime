@@ -297,12 +297,19 @@ async fn apply_inbound_event(host: Arc<dyn TunnelHost>, inbound: InboundEvent) {
         text,
         parent: None,
         attachments,
+        model,
         ..
     } = &event
     {
         if let Ok(human @ (ActorRef::User(_) | ActorRef::Visitor(_))) = author.parse::<ActorRef>() {
-            host.human_dm_post(channel.clone(), human, text.clone(), attachments.clone())
-                .await;
+            host.human_dm_post(
+                channel.clone(),
+                human,
+                text.clone(),
+                attachments.clone(),
+                model.clone(),
+            )
+            .await;
         }
     }
     debug!(
@@ -1067,6 +1074,61 @@ impl TunnelDispatcher {
                         source_principal_did,
                         channel_id,
                         name,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelPekoModelsRequest {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                principal_did,
+                signature,
+            } => {
+                // ADR-097 D1: the models a peko's owner may pick, only to
+                // its owner; anyone else gets none.
+                let port = self.host.tunnel_channel_port();
+                let envelope = crate::tunnel::PekoModelsRequestPayload {
+                    v: crate::tunnel::PEKO_MODELS_REQUEST_VERSION.into(),
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    principal_did,
+                    iat: 0,
+                    exp: 0,
+                };
+                if let Some(request) = port
+                    .verified_peko_models_request(envelope, &signature)
+                    .await
+                {
+                    let models = self
+                        .host
+                        .peko_models_for_owner(
+                            &request.principal_did,
+                            &request.source_principal_did,
+                        )
+                        .await;
+                    port.answer_peko_models(&handle, &request, models).await;
+                }
+            }
+            TunnelMessage::TunnelPekoModels {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                principal_did,
+                models,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_peko_models(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        principal_did,
+                        models,
                         signature,
                     )
                     .await;
@@ -4934,6 +4996,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -4992,6 +5055,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -5046,6 +5110,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
 
         let result = dispatcher
@@ -5106,6 +5171,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5254,6 +5320,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         deliver("req-1", post.clone()).await.unwrap();
         deliver("req-1", post).await.unwrap();
@@ -5345,6 +5412,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5442,6 +5510,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {
@@ -5773,6 +5842,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             };
             let bytes = serde_json::to_vec(&event).unwrap();
             let fields = crate::tunnel::ChannelSignedFields {
@@ -6123,7 +6193,9 @@ mod tests {
                 | TunnelMessage::TunnelAccountDmsRequest { .. }
                 | TunnelMessage::TunnelAccountDms { .. }
                 | TunnelMessage::TunnelPersonDmInvite { .. }
-                | TunnelMessage::TunnelDmRoute { .. }) => {
+                | TunnelMessage::TunnelDmRoute { .. }
+                | TunnelMessage::TunnelPekoModelsRequest { .. }
+                | TunnelMessage::TunnelPekoModels { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -6360,6 +6432,7 @@ mod tests {
                 text: "hello from my desktop".into(),
                 parent: None,
                 attachments: Vec::new(),
+                model: None,
             })
             .await;
         assert!(
@@ -6413,6 +6486,7 @@ mod tests {
                 text: "what is this?".into(),
                 parent: None,
                 attachments: vec![photo.display().to_string()],
+                model: None,
             })
             .await;
         assert!(
@@ -6797,6 +6871,7 @@ mod tests {
             text: "hello from my desktop".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         })
         .await;
         relay(&mut a, &mut b).await;
@@ -7308,6 +7383,7 @@ mod tests {
             text: "from my laptop".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         })
         .await;
         route(&mut [&mut h, &mut p, &mut p2]).await;
@@ -7536,6 +7612,7 @@ mod tests {
                 text: "chapter 3 was wild".into(),
                 parent: None,
                 attachments: Vec::new(),
+                model: None,
             })
             .await;
         assert!(
@@ -7918,6 +7995,14 @@ mod tests {
                     | TunnelMessage::TunnelDmRoute {
                         recipient_runtime_id,
                         ..
+                    }
+                    | TunnelMessage::TunnelPekoModelsRequest {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelPekoModels {
+                        recipient_runtime_id,
+                        ..
                     } => runtimes
                         .iter()
                         .position(|r| &r.app.runtime_did() == recipient_runtime_id)
@@ -8003,6 +8088,7 @@ mod tests {
             text: text.into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
         let texts = |port: Arc<crate::tunnel::TunnelChannelPort>,
                      channel: peko_channel::ChannelId| async move {
@@ -8752,6 +8838,7 @@ mod tests {
             text: "from my desktop".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         })
         .await;
         relay(&mut l2, &mut l1).await;
@@ -8790,6 +8877,213 @@ mod tests {
             texts(l1_port.peek(&before, &Checkpoint::zero()).await.unwrap()),
             ["from my laptop", "from my desktop"]
         );
+    }
+
+    /// ADR-097: alice's second computer lists the models her peko's host
+    /// can answer her with (its enabled ones; nobody else gets any), and a
+    /// post asking for one carries it to the host, which applies it only
+    /// for the owner and only for a model enabled there.
+    #[tokio::test]
+    async fn your_peko_elsewhere_offers_you_its_hosts_models() {
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_channel::{ChannelPort, Checkpoint};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let alice = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut host = DmRuntime::new(Arc::clone(&directory)).await;
+        let peko = create_test_principal(
+            &host.app,
+            "peko",
+            alice.clone(),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let host_port = host.app.tunnel_channel_port();
+        host_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("peko"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        directory.register_hub_id(
+            &hub_id,
+            AgentResolution {
+                runtime_id: host.app.runtime_did(),
+                instance_id: "instance".into(),
+                name: Some("peko".into()),
+                hub_id: hub_id.clone(),
+                local_id: peko.id.0.clone(),
+                identity_key: peko_key.clone(),
+                agent_did: peko_did.clone(),
+                owner_principal: alice.clone(),
+                exposure: ResolvedExposure::Private,
+            },
+        );
+        host_port
+            .local()
+            .link_local_user(&host.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let resolver = host.app.principal_manager().llm_resolver().unwrap();
+        let catalog = resolver.catalog();
+        let mut work = peko_providers::catalog::ModelConfig::new(
+            "work-model",
+            peko_providers::catalog::ApiFormat::OpenaiCompletions,
+            "http://127.0.0.1:9",
+            "gpt-work",
+        );
+        work.display_name = "Work model".into();
+        catalog.upsert(work).await.unwrap();
+        let mut off = peko_providers::catalog::ModelConfig::new(
+            "off-model",
+            peko_providers::catalog::ApiFormat::OpenaiCompletions,
+            "http://127.0.0.1:9",
+            "gpt-off",
+        );
+        off.enabled = false;
+        catalog.upsert(off).await.unwrap();
+
+        let mut desk = DmRuntime::new(Arc::clone(&directory)).await;
+        let desk_port = desk.app.tunnel_channel_port();
+        desk_port
+            .local()
+            .link_local_user(&desk.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = desk
+            .ipc(RequestPacket::ChannelOpenRemoteDm {
+                request_id: 1,
+                hub_id: hub_id.clone(),
+                token: None,
+            })
+            .await
+        else {
+            panic!("the desk opens the DM");
+        };
+        relay(&mut desk, &mut host).await;
+
+        // The host's enabled models, by id and name only.
+        let asking = {
+            let port = Arc::clone(&desk_port);
+            let channel = channel.clone();
+            tokio::spawn(async move { port.peko_models(&channel).await })
+        };
+        relay_until(&mut desk, &mut host, || async { asking.is_finished() }).await;
+        let models = asking.await.unwrap().unwrap();
+        assert_eq!(
+            models,
+            [crate::tunnel::PekoModel {
+                id: "work-model".into(),
+                display_name: "Work model".into(),
+            }]
+        );
+        // Only to the peko's owner.
+        let stranger = format!("user:hub:{}", uuid::Uuid::new_v4());
+        assert!(host.app.owner_models(&peko_did, &stranger).await.is_empty());
+        assert!(host
+            .app
+            .owner_models("did:key:z6MkNotHostedHere", &format!("user:hub:{account}"))
+            .await
+            .is_empty());
+        // An answer nobody asked for is dropped.
+        let late = {
+            let port = Arc::clone(&desk_port);
+            let channel = channel.clone();
+            tokio::spawn(async move { port.peko_models(&channel).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let request = desk.sent();
+        let Some(TunnelMessage::TunnelPekoModelsRequest { request_id, .. }) = request.first()
+        else {
+            panic!("the desk asks again: {request:?}");
+        };
+        desk.receive(TunnelMessage::TunnelPekoModels {
+            request_id: request_id.clone(),
+            source_runtime_id: host.app.runtime_did(),
+            recipient_runtime_id: desk.app.runtime_did(),
+            principal_did: peko_did.clone(),
+            models: vec![crate::tunnel::PekoModel {
+                id: "forged".into(),
+                display_name: "Forged".into(),
+            }],
+            signature: "not-a-signature".into(),
+        })
+        .await;
+        for message in request {
+            host.receive(message).await;
+        }
+        relay_until(&mut desk, &mut host, || async { late.is_finished() }).await;
+        assert_eq!(late.await.unwrap().unwrap()[0].id, "work-model");
+        // A stranger's runtime (another account) cannot ask for this DM.
+        let other = DmRuntime::new(Arc::clone(&directory)).await;
+        let other_port = other.app.tunnel_channel_port();
+        other_port
+            .local()
+            .link_local_user(&other.app.runtime_did(), &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(other_port.peko_models(&channel).await.is_err());
+
+        // A post asking for a model carries it to the host.
+        desk.ipc(RequestPacket::ChannelPost {
+            request_id: 2,
+            channel: channel.as_str().into(),
+            sender_name: None,
+            text: "use the work model".into(),
+            parent: None,
+            attachments: Vec::new(),
+            model: Some("work-model".into()),
+        })
+        .await;
+        let sent = desk.sent();
+        for message in sent {
+            host.receive(message).await;
+        }
+        let on_host = host_port.peek(&channel, &Checkpoint::zero()).await.unwrap();
+        assert!(
+            on_host.iter().any(|ev| matches!(ev,
+                peko_channel::ChannelEvent::Posted { text, model, .. }
+                    if text == "use the work model" && model.as_deref() == Some("work-model"))),
+            "{on_host:?}"
+        );
+        // The host applies it only for the owner, and only an enabled model.
+        let manager = host.app.principal_manager();
+        let owner = peko_tools_core::ActingFor::runtime();
+        let untrusted = peko_tools_core::ActingFor::unattributed();
+        assert_eq!(
+            manager.owner_model(&owner, Some("work-model".into())).await,
+            Some("work-model".into())
+        );
+        assert_eq!(
+            manager
+                .owner_model(&untrusted, Some("work-model".into()))
+                .await,
+            None
+        );
+        assert_eq!(
+            manager.owner_model(&owner, Some("off-model".into())).await,
+            None
+        );
+        assert_eq!(
+            manager.owner_model(&owner, Some("missing".into())).await,
+            None
+        );
+        assert_eq!(manager.owner_model(&owner, None).await, None);
     }
 
     /// ADR-095 D2–D3: a DM between pekos on two runtimes has no host. A

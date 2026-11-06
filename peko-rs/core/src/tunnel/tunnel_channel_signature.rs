@@ -1262,3 +1262,84 @@ pub fn verify_dm_route(runtime_key: &VerifyingKey, compact: &str) -> Result<DmRo
     check_freshness(payload.iat, payload.exp)?;
     Ok(payload)
 }
+
+/// Version tag of [`PekoModelsRequestPayload`] (ADR-097 D1).
+pub const PEKO_MODELS_REQUEST_VERSION: &str = "peko-peko-models-request/1";
+/// Version tag of [`PekoModelsPayload`] (ADR-097 D1).
+pub const PEKO_MODELS_VERSION: &str = "peko-peko-models/1";
+
+/// The signed payload of a `TunnelPekoModelsRequest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoModelsRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    /// `user:hub:<account>`: the person asking.
+    pub source_principal_did: String,
+    /// The peko's signing DID.
+    pub principal_did: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelPekoModels`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoModelsPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub principal_did: String,
+    /// base64url-no-pad of the serialized model list.
+    pub models_b64u: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+impl PekoModelsPayload {
+    /// The serialized model list this payload signs.
+    #[must_use]
+    pub fn models_b64u_of(models_bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(models_bytes)
+    }
+}
+
+/// Verify a peko-models request: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_models_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoModelsRequestPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: PekoModelsRequestPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("peko models request payload is not valid JSON: {e}"))?;
+    if payload.v != PEKO_MODELS_REQUEST_VERSION {
+        return Err(anyhow!(
+            "peko models request version must be {PEKO_MODELS_REQUEST_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}
+
+/// Verify a peko-models answer: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_models(runtime_key: &VerifyingKey, compact: &str) -> Result<PekoModelsPayload> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: PekoModelsPayload = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("peko models payload is not valid JSON: {e}"))?;
+    if payload.v != PEKO_MODELS_VERSION {
+        return Err(anyhow!(
+            "peko models version must be {PEKO_MODELS_VERSION:?}"
+        ));
+    }
+    check_freshness(payload.iat, payload.exp)?;
+    Ok(payload)
+}

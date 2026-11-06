@@ -694,6 +694,8 @@ impl TunnelClient {
             | TunnelMessage::TunnelAccountDms { .. }
             | TunnelMessage::TunnelPersonDmInvite { .. }
             | TunnelMessage::TunnelDmRoute { .. }
+            | TunnelMessage::TunnelPekoModelsRequest { .. }
+            | TunnelMessage::TunnelPekoModels { .. }
             | TunnelMessage::GroupRegistered { .. }
             | TunnelMessage::GroupRegisterRejected { .. }
             | TunnelMessage::AccountGroups { .. }

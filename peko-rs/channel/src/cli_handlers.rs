@@ -116,12 +116,12 @@ impl ChannelCliRouter {
         text: &str,
         parent: Option<String>,
     ) -> Result<PostResponse> {
-        self.handle_post_attached(channel, sender, text, parent, Vec::new())
+        self.handle_post_attached(channel, sender, text, parent, Vec::new(), None)
             .await
     }
 
     /// [`Self::handle_post`] with files already in the channel's file
-    /// store (ADR-094).
+    /// store (ADR-094) and the model the author asks for (ADR-097).
     pub async fn handle_post_attached(
         &self,
         channel: &ChannelId,
@@ -129,12 +129,14 @@ impl ChannelCliRouter {
         text: &str,
         parent: Option<String>,
         attachments: Vec<peko_protocol::channel::Attachment>,
+        model: Option<String>,
     ) -> Result<PostResponse> {
         let msg = match parent {
             Some(p) => PostMsg::reply(p, text),
             None => PostMsg::root(text),
         }
-        .with_attachments(attachments);
+        .with_attachments(attachments)
+        .with_model(model);
         let task_id = self.port.post(channel, sender, msg).await?;
         Ok(PostResponse {
             channel: channel.clone(),

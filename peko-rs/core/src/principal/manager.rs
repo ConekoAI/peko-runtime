@@ -1714,6 +1714,7 @@ impl PrincipalManager {
         channel: &peko_channel::ChannelId,
         message: &str,
         files: &[peko_protocol::channel::Attachment],
+        model: Option<String>,
     ) -> anyhow::Result<()> {
         let principal = self
             .get(principal_id.clone())
@@ -1802,6 +1803,7 @@ impl PrincipalManager {
                 peko_tools_core::Origin::Ingress { channel: None },
             )
             .await;
+        let model = self.owner_model(&acting_for, model).await;
         let text = crate::principal::attachments::turn_text(
             message,
             &principal.workspace_path,
@@ -1815,7 +1817,7 @@ impl PrincipalManager {
                 media,
                 Arc::new(|_| {}),
                 None,
-                None,
+                model,
                 acting_for,
             )
             .await?;
@@ -1823,6 +1825,31 @@ impl PrincipalManager {
         self.record_peer_recall(&principal, author, &child_id, &outcome.final_text)
             .await;
         Ok(())
+    }
+
+    /// The model a remote post asked for, when its turn may use it
+    /// (ADR-097 D2): only a turn acting for the peko's owner, and only a
+    /// model enabled here. Anything else answers with the peko's own
+    /// model.
+    pub(crate) async fn owner_model(
+        &self,
+        acting_for: &peko_tools_core::ActingFor,
+        model: Option<String>,
+    ) -> Option<String> {
+        let model = model?;
+        if !acting_for.is_owner() {
+            tracing::debug!(%model, "a post's model ignored: not the owner's");
+            return None;
+        }
+        let enabled = match self.llm_resolver() {
+            Some(resolver) => resolver.catalog().get_enabled(&model).await.is_some(),
+            None => false,
+        };
+        if !enabled {
+            tracing::debug!(%model, "a post's model ignored: not an enabled model here");
+            return None;
+        }
+        Some(model)
     }
 
     /// Principal-self entry point (Phase 3, 2026-08-15): a turn fired

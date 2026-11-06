@@ -2218,6 +2218,14 @@ impl crate::tunnel::TunnelHost for AppState {
         Ok(())
     }
 
+    async fn peko_models_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Vec<crate::tunnel::PekoModel> {
+        self.owner_models(principal_did, person).await
+    }
+
     /// ADR-090 D5: start the turn of each peko bound to DM `channel` for a
     /// person's post that arrived over the tunnel. The turn runs in the
     /// background; the dispatcher does not wait for it.
@@ -2227,18 +2235,27 @@ impl crate::tunnel::TunnelHost for AppState {
         author: ActorRef,
         text: String,
         attachments: Vec<peko_protocol::channel::Attachment>,
+        model: Option<String>,
     ) {
         for principal in self.human_dm_recipients(&channel).await {
             let manager = Arc::clone(&self.principal_manager);
-            let (channel, author, text, attachments) = (
+            let (channel, author, text, attachments, model) = (
                 channel.clone(),
                 author.clone(),
                 text.clone(),
                 attachments.clone(),
+                model.clone(),
             );
             tokio::spawn(async move {
                 if let Err(e) = manager
-                    .receive_channel_dm_post(&principal, &author, &channel, &text, &attachments)
+                    .receive_channel_dm_post(
+                        &principal,
+                        &author,
+                        &channel,
+                        &text,
+                        &attachments,
+                        model,
+                    )
                     .await
                 {
                     tracing::warn!(%channel, "remote DM post turn failed: {e:#}");
@@ -2249,6 +2266,42 @@ impl crate::tunnel::TunnelHost for AppState {
 }
 
 impl AppState {
+    /// ADR-097 D1: see [`crate::tunnel::TunnelHost::peko_models_for_owner`].
+    pub(crate) async fn owner_models(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Vec<crate::tunnel::PekoModel> {
+        use peko_subject::ActorKeys as _;
+        let Ok(person) = person.parse::<ActorRef>() else {
+            return Vec::new();
+        };
+        let Some(principal) = self.principal_manager.find_by_did(principal_did).await else {
+            return Vec::new();
+        };
+        let owner = principal.config.read().await.owner.clone();
+        let port: &dyn peko_channel::ChannelPort = self.tunnel_channel_port.as_ref();
+        if !peko_channel::PortKeys(port).same_actor(&owner, &person) {
+            tracing::debug!(%principal_did, "peko models refused: not the peko's owner");
+            return Vec::new();
+        }
+        self.resolver
+            .catalog()
+            .list_all()
+            .await
+            .into_iter()
+            .filter(|m| m.enabled)
+            .map(|m| crate::tunnel::PekoModel {
+                display_name: if m.display_name.is_empty() {
+                    m.id.clone()
+                } else {
+                    m.display_name.clone()
+                },
+                id: m.id,
+            })
+            .collect()
+    }
+
     /// The pekos hosted here that are bound to DM `channel` (ADR-090 D5):
     /// who a person's post there wakes. Empty for a group.
     pub(crate) async fn human_dm_recipients(

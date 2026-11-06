@@ -662,6 +662,36 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-097 D1: the person (`source_principal_did`, `user:hub:<id>`)
+    /// asks the runtime hosting the peko whose signing DID is
+    /// `principal_did` which models it may answer them with. PekoHub
+    /// relays it only from a runtime registered to that account, to
+    /// another runtime registered to it. `signature` covers every other
+    /// field (`PekoModelsRequestPayload`).
+    #[serde(rename = "tunnel_peko_models_request", rename_all = "camelCase")]
+    TunnelPekoModelsRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        principal_did: String,
+        signature: String,
+    },
+
+    /// ADR-097 D1: the host's answer — its enabled models, when the asker
+    /// is the peko's owner; otherwise none. PekoHub relays it only between
+    /// two runtimes registered to the same account. `signature` covers
+    /// every other field (`PekoModelsPayload`).
+    #[serde(rename = "tunnel_peko_models", rename_all = "camelCase")]
+    TunnelPekoModels {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        principal_did: String,
+        models: Vec<PekoModel>,
+        signature: String,
+    },
+
     /// ADR-092 D2: a group's home invites a person by Hub account.
     /// PekoHub delivers it to every runtime registered to
     /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending
@@ -798,6 +828,15 @@ pub struct AccountDm {
     pub peer_runtime_id: String,
     /// `public` or `private`.
     pub peer_exposure: String,
+}
+
+/// A model a peko's host can answer with (ADR-097 D1): its configured id
+/// and name only — no endpoint, wire id, headers, or credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PekoModel {
+    pub id: String,
+    pub display_name: String,
 }
 
 /// A runtime that carries one person's side of a DM between two people
@@ -1445,6 +1484,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

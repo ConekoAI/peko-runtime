@@ -245,6 +245,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         })
         .unwrap()
     }

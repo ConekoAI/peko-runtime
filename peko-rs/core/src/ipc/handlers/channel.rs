@@ -899,6 +899,45 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelPekoModels` (ADR-097 D1): the host's models for the owner.
+    async fn channel_peko_models(
+        &self,
+        request_id: u64,
+        channel: &str,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user picks a peko's model".to_string(),
+            )
+            .await;
+        }
+        let Some(channel) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".to_string(),
+            )
+            .await;
+        };
+        match port.peko_models(&channel).await {
+            Ok(models) => {
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelPekoModelsResult { request_id, models },
+                )
+                .await
+            }
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     /// The principal hosted here under `local_id`, if any.
     async fn hosted_principal(&self, local_id: &str) -> Option<Arc<crate::principal::Principal>> {
         self.host
@@ -978,6 +1017,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelBlockPerson { .. }
                 | RequestPacket::ChannelBlocked { .. }
                 | RequestPacket::ChannelHistoryOlder { .. }
+                | RequestPacket::ChannelPekoModels { .. }
                 | RequestPacket::ChannelInvitations { .. }
                 | RequestPacket::ChannelPersonGroups { .. }
                 | RequestPacket::ChannelInvitationAnswer { .. }
@@ -1023,7 +1063,8 @@ impl RequestHandler for ChannelHandler {
         if let RequestPacket::ChannelPost { channel, .. }
         | RequestPacket::ChannelPeek { channel, .. }
         | RequestPacket::ChannelEventsWatch { channel, .. }
-        | RequestPacket::ChannelHistoryOlder { channel, .. } = &request
+        | RequestPacket::ChannelHistoryOlder { channel, .. }
+        | RequestPacket::ChannelPekoModels { channel, .. } = &request
         {
             if let (Some(port), Some(id)) =
                 (self.host.tunnel_channel_port(), ChannelId::parse(channel))
@@ -1210,6 +1251,7 @@ impl RequestHandler for ChannelHandler {
                 text,
                 parent,
                 attachments,
+                model,
             } => {
                 // ADR-057: user identities are never declared on the
                 // wire. The sender is either the caller's own derived
@@ -1284,9 +1326,19 @@ impl RequestHandler for ChannelHandler {
                         }
                     }
                 };
+                // ADR-097 D2: only the runtime's operator picks a model.
+                let model = model.filter(|m| !m.trim().is_empty());
+                if model.is_some() && !caller.is_local() {
+                    return error_reply(
+                        sink,
+                        request_id,
+                        "[forbidden] only the local user may pick a model for a message".into(),
+                    )
+                    .await;
+                }
                 match self
                     .router()
-                    .handle_post_attached(&ch, &sender, &text, parent, files)
+                    .handle_post_attached(&ch, &sender, &text, parent, files, model)
                     .await
                 {
                     Ok(resp) => {
@@ -1696,6 +1748,14 @@ impl RequestHandler for ChannelHandler {
             | RequestPacket::ChannelBlockPerson { .. }
             | RequestPacket::ChannelBlocked { .. }) => {
                 self.channel_person_dm(request, caller, sink).await?
+            }
+
+            RequestPacket::ChannelPekoModels {
+                request_id,
+                channel,
+            } => {
+                self.channel_peko_models(request_id, &channel, caller, sink)
+                    .await?;
             }
 
             RequestPacket::ChannelHistoryOlder {
@@ -2501,6 +2561,62 @@ mod tests {
         }
     }
 
+    /// ADR-097: only the local user asks a peko's host for its models or
+    /// picks a model for a message.
+    #[tokio::test]
+    async fn only_the_local_user_picks_a_model() {
+        let (_tmp, host) = test_host();
+        let handler = ChannelHandler::new(host.clone());
+        let peer = PeerAddr::Ip("127.0.0.1:0".parse().unwrap());
+        let jwt = CallerContext::from_jwt("alice".to_string());
+        let dm = "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for (request, caller, expected) in [
+            (
+                RequestPacket::ChannelPekoModels {
+                    request_id: 9,
+                    channel: dm.into(),
+                },
+                jwt.clone(),
+                "[permission_denied]",
+            ),
+            (
+                RequestPacket::ChannelPekoModels {
+                    request_id: 9,
+                    channel: dm.into(),
+                },
+                test_caller(),
+                "no PekoHub connection",
+            ),
+            (
+                RequestPacket::ChannelPost {
+                    request_id: 9,
+                    channel: "chan_abcdefgh".into(),
+                    sender_name: None,
+                    text: "hi".into(),
+                    parent: None,
+                    attachments: Vec::new(),
+                    model: Some("work-model".into()),
+                },
+                jwt,
+                "[forbidden] only the local user may pick a model",
+            ),
+        ] {
+            let (captured, sink) = capture_sink();
+            handler
+                .handle(request, &caller, &sink, &peer)
+                .await
+                .unwrap();
+            let responses = captured.lock().unwrap().clone();
+            match responses.as_slice() {
+                [ResponsePacket::Error {
+                    request_id: 9,
+                    message,
+                }] => assert!(message.contains(expected), "{message}"),
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn open_remote_dm_packets_round_trip() {
         let request: RequestPacket = serde_json::from_value(serde_json::json!({
@@ -2552,6 +2668,7 @@ mod tests {
             text: "hello from alice".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2599,6 +2716,7 @@ mod tests {
             text: "impersonation".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2620,6 +2738,7 @@ mod tests {
             text: "hello from local".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2653,6 +2772,7 @@ mod tests {
             text: "must not land".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
         let (captured, sink) = capture_sink();
         handler
@@ -2700,6 +2820,7 @@ mod tests {
             text: "see attached".into(),
             parent: None,
             attachments: vec![file.display().to_string()],
+            model: None,
         };
         let peer = PeerAddr::Ip("127.0.0.1:0".parse().expect("loopback addr"));
 
@@ -3101,6 +3222,7 @@ mod tests {
             text: "hi".into(),
             parent: None,
             attachments: Vec::new(),
+            model: None,
         };
 
         // Member user posts as themselves (derived identity).
@@ -3201,6 +3323,7 @@ mod tests {
                     text: "hi".into(),
                     parent: None,
                     attachments: Vec::new(),
+                    model: None,
                 },
                 &apikey,
                 &sink,
@@ -3226,6 +3349,7 @@ mod tests {
                     text: "hi from the key".into(),
                     parent: None,
                     attachments: Vec::new(),
+                    model: None,
                 },
                 &apikey,
                 &sink,
@@ -3460,6 +3584,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");
