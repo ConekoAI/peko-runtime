@@ -171,6 +171,7 @@ async fn post_to_group(
         text: message.to_string(),
         parent: None,
         attachments,
+        model: None,
     };
     if let Ok(client) = DaemonClient::connect().await {
         if let Ok(resp) = client.request_response(packet).await {

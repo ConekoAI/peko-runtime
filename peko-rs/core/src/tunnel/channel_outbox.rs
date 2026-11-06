@@ -535,6 +535,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             },
             source: "prin_a".into(),
         }

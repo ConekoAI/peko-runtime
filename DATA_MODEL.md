@@ -2311,6 +2311,39 @@ Suggested replies for a conversation's reply are staged in memory by the
 `Suggest` tool (per channel and principal, never persisted) and consumed by
 the reply post.
 
+### 5¾.2⅞⁻ `posted` event `model` and a peko's models from its host (2026-11-06, ADR-097)
+
+A post may ask the receiving peko to answer it with one of its host's
+configured models:
+
+```json
+"model": "work-model"
+```
+
+A configured model id of the host's catalog. IPC `channel_post` carries it as
+`model` (local callers only). The peko's host applies it to the one turn the
+post starts only when that turn acts for the peko's owner and the model is
+enabled there; otherwise, and for a post that steers a running turn, the peko
+answers with its own model. Absent when unset (serde `default` +
+`skip_serializing_if`); it rides the signed event bytes and stays in the
+record. Nothing else reads it.
+
+The owner's other computer reads the host's models through PekoHub:
+
+```json
+{"type":"tunnel_peko_models_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","sourcePrincipalDid":"user:hub:<account>","principalDid":"did:key:<peko>","signature":"<JWS>"}
+{"type":"tunnel_peko_models","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","principalDid":"did:key:<peko>","models":[{"id":"work-model","displayName":"Work model"}],"signature":"<JWS>"}
+```
+
+Signed payloads: `peko-peko-models-request/1` (every request field but the
+signature) and `peko-peko-models/1` (… with `modelsB64u`, the serialized
+list). `models` is the host's enabled catalog entries, id and display name
+only, when `sourcePrincipalDid` owns the peko; empty otherwise. PekoHub relays
+both only between two runtimes of the same account. IPC:
+`channel_peko_models { channel }` → `channel_peko_models_result { models }`
+(local callers; `channel` is the account's DM with a peko on another runtime;
+an unanswered request fails after 15 s).
+
 ### 5¾.2¾ A conversation's last failed run (2026-10-31, ADR-089 D5)
 
 A failed run writes nothing into the DM channel (the retired

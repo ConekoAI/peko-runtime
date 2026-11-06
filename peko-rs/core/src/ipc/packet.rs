@@ -825,6 +825,12 @@ pub enum RequestPacket {
         /// 10 MB a file and 25 MB a message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
+        /// ADR-097 D2: a configured model of the peko's host to answer
+        /// this post with, recorded on the post (`Posted.model`). Only the
+        /// local user may set it; the host honours it only for the peko's
+        /// owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
 
     /// List events for `channel` since `since` (None = from start).
@@ -996,6 +1002,13 @@ pub enum RequestPacket {
         before: String,
     },
 
+    /// The models the peko in `channel` — this account's DM with one of
+    /// its pekos on another runtime — can answer its owner with, from the
+    /// peko's host (ADR-097 D1). Local callers only; answered with
+    /// `ChannelPekoModelsResult`.
+    #[serde(rename = "channel_peko_models")]
+    ChannelPekoModels { request_id: u64, channel: String },
+
     /// The groups inviting this runtime's person (ADR-092 D2), newest
     /// first. Local callers only; answered with `ChannelInvitationsResult`.
     #[serde(rename = "channel_invitations")]
@@ -1147,6 +1160,7 @@ impl RequestPacket {
             | Self::ChannelBlockPerson { request_id, .. }
             | Self::ChannelBlocked { request_id }
             | Self::ChannelHistoryOlder { request_id, .. }
+            | Self::ChannelPekoModels { request_id, .. }
             | Self::ChannelInvitations { request_id }
             | Self::ChannelPersonGroups { request_id }
             | Self::ChannelInvitationAnswer { request_id, .. }
@@ -1603,6 +1617,15 @@ pub enum ResponsePacket {
     ChannelInvitationsResult {
         request_id: u64,
         invitations: Vec<peko_channel::GroupInvitation>,
+    },
+
+    /// Response to `ChannelPekoModels` (ADR-097 D1): the host's enabled
+    /// models, by configured id and name; empty when the host offers none
+    /// to this person.
+    #[serde(rename = "channel_peko_models_result")]
+    ChannelPekoModelsResult {
+        request_id: u64,
+        models: Vec<crate::tunnel::PekoModel>,
     },
 
     /// Response to `ChannelHistoryOlder` (ADR-091 D4): posts, oldest
@@ -2969,6 +2992,7 @@ impl ResponsePacket {
             | Self::ChannelPersonDmsResult { request_id, .. }
             | Self::ChannelBlockedPeople { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
+            | Self::ChannelPekoModelsResult { request_id, .. }
             | Self::ChannelInvitationsResult { request_id, .. }
             | Self::ChannelPersonGroupsResult { request_id, .. }
             | Self::ChannelGroupJoined { request_id, .. }
@@ -3067,6 +3091,7 @@ impl ResponsePacket {
             Self::ChannelPersonDmsResult { .. } => "ChannelPersonDmsResult",
             Self::ChannelBlockedPeople { .. } => "ChannelBlockedPeople",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
+            Self::ChannelPekoModelsResult { .. } => "ChannelPekoModelsResult",
             Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",
             Self::ChannelPersonGroupsResult { .. } => "ChannelPersonGroupsResult",
             Self::ChannelGroupJoined { .. } => "ChannelGroupJoined",

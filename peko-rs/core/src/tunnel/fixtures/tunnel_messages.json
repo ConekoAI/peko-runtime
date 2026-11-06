@@ -210,7 +210,8 @@
       "options": [
         "Yes",
         "Not yet"
-      ]
+      ],
+      "model": "work-model"
     },
     "signature": "runtime-signature",
     "authorSignature": "author-signature"
@@ -328,7 +329,8 @@
         "options": [
           "Yes",
           "Not yet"
-        ]
+        ],
+        "model": "work-model"
       }
     ],
     "hasMore": true,
@@ -421,6 +423,29 @@
       {
         "runtimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
         "person": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb"
+      }
+    ],
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_peko_models_request",
+    "requestId": "models-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "principalDid": "did:key:z6MkPrincipal",
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_peko_models",
+    "requestId": "models-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "principalDid": "did:key:z6MkPrincipal",
+    "models": [
+      {
+        "id": "work-model",
+        "displayName": "Work model"
       }
     ],
     "signature": "runtime-signature"

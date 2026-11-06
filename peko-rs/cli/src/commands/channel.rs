@@ -430,6 +430,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                 text: text.clone(),
                 parent: parent.clone(),
                 attachments: Vec::new(),
+                model: None,
             };
             let task_id =
                 run_daemon_or(paths, packet, "channel_post_failed", move |port, paths| {
@@ -732,6 +733,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                         text,
                         parent: None,
                         attachments,
+                        model: None,
                     })
                     .await?;
                     true
