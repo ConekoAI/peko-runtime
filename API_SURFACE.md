@@ -1283,6 +1283,8 @@ Wire shapes documented in `DATA_MODEL.md` §13¾. New/changed public items:
 | `LlmResolver::resolve_api_key` | `peko_providers::resolver` | ✅ Visibility (was private) | Credential resolution for judgment mode — same chain `build_provider` uses |
 | `Provider::chat_response_with_options` | `peko_providers::core` | ✅ New | One-shot chat completion with caller-owned `ChatOptions` and `tools: None` on the wire |
 | `compute_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ Visibility (was private) | Shared PricingHint → USD formula for the tool's post-call charge |
+| `compute_usage_cost_usd` | `peko_engine::stacked_metered_provider` (re-exported `peko_engine`) | ✅ New (2026-11-06) | Cost of a finished call from its `TokenUsage`: uncached input, cache reads, cache writes, output at their own rates; `compute_cost_usd` stays for projections |
+| `PricingHint.cache_read_per_million` / `cache_write_per_million` | `peko_providers::spec` | ✅ New (2026-11-06) | Optional cache prices; unset falls back to `input_per_million`. Mirrored on IPC `ModelPricingHint` and the `ModelList` projection |
 | `ToolRuntime::execute_tool_full_with_workspace` | `engine::tool_runtime` | ✅ Extended | Gains `principal_id` / `principal_name` params so `ExecuteTool` carries server-resolved attribution into the funnel |
 
 ### ADR-061 phase 2b — `Workflow` runner + run tokens (2026-09-23)

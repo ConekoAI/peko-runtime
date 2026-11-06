@@ -86,31 +86,31 @@ pub enum ContentBlock {
 }
 
 impl TokenUsage {
-    /// Accumulate `other` into `self`, folding cache reads/writes
-    /// into the canonical `input` bucket and reasoning tokens into
-    /// `output`. Preserves the raw cache/reasoning sub-fields so the
-    /// audit trail in the JSONL session file retains the breakdown.
-    ///
-    /// This mirrors the folding rule used by the engine loop's
-    /// `iteration_usage` accumulator (`engine/agentic_loop.rs`) — a
-    /// single source of truth for "what counts toward a 1M input
-    /// tokens/day quota".
+    /// Add `other` into `self`, field by field. `input` / `output`
+    /// already include the cache and reasoning sub-fields (see the
+    /// struct docs), so nothing is folded across buckets; sub-fields
+    /// stay `None` until some call reports a nonzero count.
     pub fn accumulate(&mut self, other: &TokenUsage) {
-        let cache_creation = other.cache_creation_input_tokens.unwrap_or(0);
-        let cache_read = other.cache_read_input_tokens.unwrap_or(0);
-        let reasoning = other.reasoning_output_tokens.unwrap_or(0);
-        self.input += other.input + cache_creation + cache_read;
-        self.output += other.output + reasoning;
-        self.total += other.total + cache_creation + cache_read + reasoning;
-        if cache_creation > 0 {
-            *self.cache_creation_input_tokens.get_or_insert(0) += cache_creation;
+        fn add(slot: &mut Option<u64>, value: Option<u64>) {
+            if let Some(v) = value.filter(|v| *v > 0) {
+                *slot.get_or_insert(0) += v;
+            }
         }
-        if cache_read > 0 {
-            *self.cache_read_input_tokens.get_or_insert(0) += cache_read;
-        }
-        if reasoning > 0 {
-            *self.reasoning_output_tokens.get_or_insert(0) += reasoning;
-        }
+        self.input += other.input;
+        self.output += other.output;
+        self.total += other.total;
+        add(
+            &mut self.cache_creation_input_tokens,
+            other.cache_creation_input_tokens,
+        );
+        add(
+            &mut self.cache_read_input_tokens,
+            other.cache_read_input_tokens,
+        );
+        add(
+            &mut self.reasoning_output_tokens,
+            other.reasoning_output_tokens,
+        );
     }
 }
 
@@ -178,23 +178,30 @@ pub enum MessageRole {
 
 /// Token usage statistics
 ///
-/// `input` and `output` are the canonical wire-reported counts
-/// (`input_tokens` / `output_tokens` on Anthropic, `prompt_tokens` /
-/// `completion_tokens` on OpenAI). `total` is the provider's wire
-/// `total_tokens` field when present (OpenAI), or `input + output` when
-/// the provider does not report a separate total (Anthropic).
+/// `input` is every input token of the call and `output` every output
+/// token (reasoning / thinking included) — the meaning OpenAI's
+/// `prompt_tokens` / `completion_tokens` have. The Anthropic adapter
+/// adds `cache_read_input_tokens` and `cache_creation_input_tokens`
+/// to the wire `input_tokens`, which counts only the uncached part.
+/// `total` is the provider's wire `total_tokens` field when present
+/// (OpenAI), or `input + output` otherwise.
 ///
-/// The three cache/reasoning sub-fields are populated only by adapters
-/// that have the corresponding wire fields. They are folded into the
-/// canonical `input` / `output` fields by the engine loop accumulator
-/// for downstream quota accounting, but preserved verbatim here so the
-/// session JSONL retains the raw breakdown for audit.
+/// The three cache/reasoning sub-fields are subsets of `input` /
+/// `output`, populated only by adapters that have the corresponding
+/// wire fields. They price the call (cache reads and writes have their
+/// own rates) and give the cache hit rate; they are never added to
+/// `input` / `output` again.
 ///
 /// `#[serde(default)]` on each sub-field keeps old JSONL files
 /// (pre-F17) loadable — missing fields deserialize as `None`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
-    /// Wire-reported prompt / input tokens (uncached, non-reasoning).
+    /// Every input token of the call, cache reads and cache writes
+    /// included. Adapters normalize to this meaning (Anthropic reports
+    /// the uncached part alone, so its adapter adds the cache fields
+    /// back in). `cache_read_input_tokens` and
+    /// `cache_creation_input_tokens` are subsets of it; the uncached
+    /// part is `input - cache_read - cache_creation`.
     pub input: u64,
     /// Wire-reported completion / output tokens (including reasoning /
     /// thinking tokens, which Anthropic folds into `output_tokens`).
@@ -203,13 +210,14 @@ pub struct TokenUsage {
     /// otherwise the loop sets this to `input + output` after
     /// accumulation.
     pub total: u64,
-    /// Anthropic `cache_creation_input_tokens`. Tokens billed at the
-    /// cache-write rate for newly cached prompt prefixes.
+    /// Anthropic `cache_creation_input_tokens` / OpenAI Responses
+    /// `input_tokens_details.cache_write_tokens`. Part of `input` billed
+    /// at the cache-write rate for newly cached prompt prefixes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
     /// Anthropic `cache_read_input_tokens` / OpenAI
-    /// `prompt_tokens_details.cached_tokens`. Tokens billed at the
-    /// cache-read rate (typically ~10% of input).
+    /// `prompt_tokens_details.cached_tokens`. Part of `input` billed at
+    /// the cache-read rate (typically 10–50% of the input rate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
     /// OpenAI `completion_tokens_details.reasoning_tokens`. Subset of
@@ -375,46 +383,38 @@ pub fn extract_dimensions_from_base64(bytes: &[u8], mime_type: &str) -> Option<I
 mod tests {
     use super::*;
 
-    /// `TokenUsage::accumulate` folds cache reads + writes into the
-    /// canonical `input` bucket and reasoning into `output`, while
-    /// preserving the raw sub-fields for audit. Single source of truth
-    /// for "what counts toward a quota limit" — used by both the
-    /// engine loop accumulator and the compactor's multi-call rollup.
+    /// `TokenUsage::accumulate` sums field by field. `input` / `output`
+    /// already include cache and reasoning tokens, so they are not
+    /// added a second time; the sub-fields sum on their own.
     #[test]
-    fn test_token_usage_accumulate_folds_cache_and_reasoning() {
+    fn test_token_usage_accumulate_sums_without_refolding() {
         let mut total = TokenUsage::default();
         let iter1 = TokenUsage {
-            input: 100,
+            input: 100 + 1024 + 4096,
             output: 50,
-            total: 150,
+            total: 100 + 1024 + 4096 + 50,
             cache_creation_input_tokens: Some(1024),
             cache_read_input_tokens: Some(4096),
             reasoning_output_tokens: Some(20),
         };
         total.accumulate(&iter1);
-        // input folds cache_creation + cache_read in
-        assert_eq!(total.input, 100 + 1024 + 4096);
-        // output folds reasoning in
-        assert_eq!(total.output, 50 + 20);
-        // total adds the same fold
-        assert_eq!(total.total, 150 + 1024 + 4096 + 20);
-        // raw sub-fields preserved for audit
-        assert_eq!(total.cache_creation_input_tokens, Some(1024));
-        assert_eq!(total.cache_read_input_tokens, Some(4096));
-        assert_eq!(total.reasoning_output_tokens, Some(20));
+        assert_eq!(total, iter1);
 
         let iter2 = TokenUsage {
-            input: 50,
+            input: 50 + 2048,
             output: 30,
-            total: 80,
+            total: 50 + 2048 + 30,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(2048),
             reasoning_output_tokens: None,
         };
         total.accumulate(&iter2);
         assert_eq!(total.input, (100 + 1024 + 4096) + (50 + 2048));
-        assert_eq!(total.output, (50 + 20) + 30);
+        assert_eq!(total.output, 50 + 30);
+        assert_eq!(total.total, iter1.total + iter2.total);
+        assert_eq!(total.cache_creation_input_tokens, Some(1024));
         assert_eq!(total.cache_read_input_tokens, Some(4096 + 2048));
+        assert_eq!(total.reasoning_output_tokens, Some(20));
     }
 
     /// Accumulating zero usage (e.g. an empty stream) leaves the

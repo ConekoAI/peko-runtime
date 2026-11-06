@@ -278,6 +278,8 @@ fn spec_to_json(s: &peko_providers::spec::ModelSpec) -> Value {
         "pricing": s.pricing.as_ref().map(|p| json!({
             "input_per_million": p.input_per_million,
             "output_per_million": p.output_per_million,
+            "cache_read_per_million": p.cache_read_per_million,
+            "cache_write_per_million": p.cache_write_per_million,
         })),
     })
 }
@@ -349,6 +351,7 @@ mod tests {
             pricing: Some(PricingHint {
                 input_per_million: Some(3.0),
                 output_per_million: Some(15.0),
+                ..Default::default()
             }),
         }
     }
@@ -482,6 +485,7 @@ mod tests {
             pricing: Some(PricingHint {
                 input_per_million: Some(1.0),
                 output_per_million: None,
+                ..Default::default()
             }),
             ..text_only_spec()
         };

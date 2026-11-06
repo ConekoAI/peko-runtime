@@ -45,8 +45,9 @@
 //! Each meter sees the same usage
 //! event with its USD cost folded in; if any meter rejects
 //! (exhausted), the error is folded into the stream. The cost is
-//! computed from the inner provider's `ModelSpec::pricing`
-//! (`input_per_million * input_tokens / 1e6 + output_per_million * output_tokens / 1e6`).
+//! computed from the inner provider's `ModelSpec::pricing` by
+//! [`compute_usage_cost_usd`]: uncached input, cache reads, cache
+//! writes, and output, each at its own rate.
 //! When the inner provider has no pricing hint (local / unpriced
 //! model), cost is `0.0` and the cycle-budget check degenerates
 //! to a no-op for that dimension — the same fallback the
@@ -167,7 +168,7 @@ impl StackedMeteredProvider {
             .chat_with_tools(model_id, messages, tools, options)
             .await?;
         let pricing = self.inner.spec().and_then(|s| s.pricing);
-        let cost_usd = compute_cost_usd(pricing, response.usage.input, response.usage.output);
+        let cost_usd = compute_usage_cost_usd(pricing, &response.usage);
         self.charge_stack(&response.usage, cost_usd).await;
         Ok(response)
     }
@@ -181,8 +182,7 @@ impl StackedMeteredProvider {
     /// stack and trip immediately.
     ///
     /// Phase 3 — cost is computed from the inner provider's
-    /// `ModelSpec::pricing` (`input_per_million * input / 1e6 +
-    /// output_per_million * output / 1e6`) and folded into each
+    /// `ModelSpec::pricing` ([`compute_usage_cost_usd`]) and folded into each
     /// meter via `charge_with_cost` before forwarding the event. When the inner provider
     /// has no `PricingHint` (local / unpriced model), the cost
     /// is `0.0` and the cycle-budget check degenerates to a
@@ -224,7 +224,7 @@ impl StackedMeteredProvider {
                             cache_read_input_tokens: Some(cache_read_input_tokens),
                             reasoning_output_tokens: Some(reasoning_output_tokens),
                         };
-                        let cost_usd = compute_cost_usd(pricing, input, output);
+                        let cost_usd = compute_usage_cost_usd(pricing, &usage);
                         // Charge innermost-first so a peer trip fires
                         // before a principal trip. We `rev()` over the
                         // captured stack (which is outer-first per
@@ -303,17 +303,16 @@ fn note_crossed(err: &peko_quota::QuotaError) {
     tracing::info!("this call crossed a limit ({err}); the next call is refused until it resets");
 }
 
-/// Phase 3 — compute USD cost for an LLM call given the inner
-/// provider's pricing hint. Returns `0.0` when the provider
+/// Phase 3 — USD cost of `input_tokens` + `output_tokens` at the
+/// plain input / output rates. Returns `0.0` when the provider
 /// carries no `PricingHint` (local / unpriced model), so the
 /// cycle-budget check degenerates to a no-op for that dimension.
 ///
-/// Cache and reasoning tokens are folded into `input` and
-/// `output` by the caller (`TokenUsage::accumulate`) before this
-/// is invoked, so we treat the `input` field as the canonical
-/// "all-billed-input-tokens" number and skip a separate
-/// cache/reasoning rate. Same assumption the meter already makes
-/// for `input_tokens` vs `output_tokens` accounting.
+/// For **projections** (spawn-time pre-flight, MCP sampling bounds,
+/// the policy gate's estimate), where no cache split is known yet and
+/// pricing every token as uncached input is the conservative bound.
+/// A finished call's charge goes through [`compute_usage_cost_usd`],
+/// which prices cache reads and writes at their own rates.
 ///
 /// `pub` since ADR-061 phase 2a: the `ModelCall` built-in charges
 /// the calling principal's meter directly (no `QuotaScope` wrapper)
@@ -323,16 +322,45 @@ pub fn compute_cost_usd(
     input_tokens: u64,
     output_tokens: u64,
 ) -> f64 {
+    compute_usage_cost_usd(
+        pricing,
+        &TokenUsage {
+            input: input_tokens,
+            output: output_tokens,
+            ..TokenUsage::default()
+        },
+    )
+}
+
+/// USD cost of one finished call from its reported usage.
+///
+/// `usage.input` is every input token (cache-inclusive, see
+/// [`TokenUsage::input`]); it splits into the uncached rest, cache
+/// reads, and cache writes, each at its own rate. A cache rate the
+/// pricing hint leaves out falls back to `input_per_million` — the
+/// conservative choice for cache reads (they are cheaper on every
+/// provider), and for cache writes it undercounts only Anthropic's
+/// 25% / 100% write premium. Reasoning tokens are already inside
+/// `output` and bill at the output rate.
+pub fn compute_usage_cost_usd(
+    pricing: Option<peko_providers::spec::PricingHint>,
+    usage: &TokenUsage,
+) -> f64 {
     let Some(p) = pricing else {
         return 0.0;
     };
-    let input_cost = p
-        .input_per_million
-        .map_or(0.0, |rate| rate * input_tokens as f64 / 1_000_000.0);
-    let output_cost = p
-        .output_per_million
-        .map_or(0.0, |rate| rate * output_tokens as f64 / 1_000_000.0);
-    input_cost + output_cost
+    let per_token = |rate: Option<f64>, tokens: u64| rate.map_or(0.0, |r| r * tokens as f64 / 1e6);
+    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+    let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
+    let uncached = usage
+        .input
+        .saturating_sub(cache_read.saturating_add(cache_write));
+    let read_rate = p.cache_read_per_million.or(p.input_per_million);
+    let write_rate = p.cache_write_per_million.or(p.input_per_million);
+    per_token(p.input_per_million, uncached)
+        + per_token(read_rate, cache_read)
+        + per_token(write_rate, cache_write)
+        + per_token(p.output_per_million, usage.output)
 }
 
 #[cfg(test)]
@@ -514,6 +542,7 @@ mod tests {
         PricingHint {
             input_per_million: Some(input),
             output_per_million: Some(output),
+            ..Default::default()
         }
     }
 
@@ -531,10 +560,66 @@ mod tests {
         let partial = PricingHint {
             input_per_million: Some(1.0),
             output_per_million: None,
+            ..Default::default()
         };
         let cost = compute_cost_usd(Some(partial), 500_000, 1_000_000);
         // 1.0 * 500_000 / 1e6 = 0.50, output side is None → 0.0.
         assert!((cost - 0.5).abs() < 1e-9, "got {cost}");
+    }
+
+    /// A finished call prices its uncached input, cache reads, cache
+    /// writes, and output each at its own rate. 100K input of which
+    /// 80K were cache reads and 10K cache writes, 1K output, at
+    /// $3 in / $0.30 read / $3.75 write / $15 out:
+    /// 10K × 3 + 80K × 0.30 + 10K × 3.75 + 1K × 15 (per 1M)
+    /// = 0.03 + 0.024 + 0.0375 + 0.015 = $0.1065.
+    #[test]
+    fn compute_usage_cost_usd_prices_cache_reads_and_writes() {
+        let p = PricingHint {
+            cache_read_per_million: Some(0.30),
+            cache_write_per_million: Some(3.75),
+            ..pricing(3.0, 15.0)
+        };
+        let usage = TokenUsage {
+            input: 100_000,
+            output: 1_000,
+            total: 101_000,
+            cache_read_input_tokens: Some(80_000),
+            cache_creation_input_tokens: Some(10_000),
+            reasoning_output_tokens: None,
+        };
+        let cost = compute_usage_cost_usd(Some(p), &usage);
+        assert!((cost - 0.1065).abs() < 1e-9, "got {cost}");
+    }
+
+    /// Without cache rates, cache tokens bill at the input rate — the
+    /// same as `compute_cost_usd` over the full input.
+    #[test]
+    fn compute_usage_cost_usd_falls_back_to_input_rate() {
+        let usage = TokenUsage {
+            input: 100_000,
+            output: 1_000,
+            cache_read_input_tokens: Some(80_000),
+            cache_creation_input_tokens: Some(10_000),
+            ..TokenUsage::default()
+        };
+        let p = Some(pricing(3.0, 15.0));
+        let with_split = compute_usage_cost_usd(p, &usage);
+        let flat = compute_cost_usd(p, 100_000, 1_000);
+        assert!((with_split - flat).abs() < 1e-12, "{with_split} vs {flat}");
+    }
+
+    /// Reasoning tokens are part of `output`; they are not charged a
+    /// second time.
+    #[test]
+    fn compute_usage_cost_usd_does_not_add_reasoning_again() {
+        let usage = TokenUsage {
+            output: 1_000_000,
+            reasoning_output_tokens: Some(400_000),
+            ..TokenUsage::default()
+        };
+        let cost = compute_usage_cost_usd(Some(pricing(0.0, 10.0)), &usage);
+        assert!((cost - 10.0).abs() < 1e-9, "got {cost}");
     }
 
     #[test]

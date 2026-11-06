@@ -618,11 +618,8 @@ impl Compactor {
 
         // Accumulate summarization LLM call usage across normal and
         // split-turn paths so the result carries the total cost of
-        // this compaction run. `TokenUsage::accumulate` folds cache
-        // into input and reasoning into output — same rule the engine
-        // loop uses for `iteration_usage`, so downstream quota
-        // accounting sees a consistent number regardless of where the
-        // tokens came from.
+        // this compaction run (`TokenUsage::accumulate` sums field by
+        // field; `input` is already cache-inclusive).
         let mut compaction_usage = peko_providers::TokenUsage::default();
 
         // Generate LLM summary (cumulative if previous exists)

@@ -1668,28 +1668,18 @@ impl AgenticLoop {
                                         cache_read_input_tokens,
                                         reasoning_output_tokens,
                                     } => {
-                                        // Fold cache and reasoning into
-                                        // the canonical input/output
-                                        // buckets for downstream quota
-                                        // accounting. The provider-billed
-                                        // totals are what matter for
-                                        // cost control — a "1M input
-                                        // tokens/day" quota should
-                                        // include cache reads.
-                                        iteration_usage.input += input
-                                            + cache_creation_input_tokens
-                                            + cache_read_input_tokens;
-                                        iteration_usage.output += output + reasoning_output_tokens;
-                                        iteration_usage.total += total
-                                            + cache_creation_input_tokens
-                                            + cache_read_input_tokens
-                                            + reasoning_output_tokens;
-                                        // Preserve the raw breakdown in
-                                        // the session JSONL for audit
-                                        // (the wire `input` / `output`
-                                        // are the uncached, non-reasoning
-                                        // counts — cache and reasoning
-                                        // land in the dedicated fields).
+                                        // `input` already counts every
+                                        // input token (cache reads and
+                                        // writes included) and `output`
+                                        // already includes reasoning —
+                                        // the adapters normalize both
+                                        // (`StreamEvent::Usage`). The
+                                        // dedicated fields carry the
+                                        // breakdown for the session
+                                        // JSONL and the cache hit rate.
+                                        iteration_usage.input += input;
+                                        iteration_usage.output += output;
+                                        iteration_usage.total += total;
                                         if cache_creation_input_tokens > 0 {
                                             *iteration_usage
                                                 .cache_creation_input_tokens

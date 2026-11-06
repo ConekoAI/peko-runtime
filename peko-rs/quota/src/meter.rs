@@ -204,9 +204,9 @@ impl QuotaMeter {
         }
     }
 
-    /// Charge a `TokenUsage` to the meter. Folds cache reads/writes
-    /// into `input` and reasoning into `output` via
-    /// [`TokenUsage::accumulate`], increments `request_count` by
+    /// Charge a `TokenUsage` to the meter. `input` / `output` are
+    /// cache- and reasoning-inclusive already ([`TokenUsage::input`]),
+    /// so they are added as they are; increments `request_count` by
     /// one, advances the window if needed, and returns the first
     /// limit crossed (if any). Persists even when consumed usage crosses a limit.
     pub async fn charge(&self, usage: &TokenUsage) -> Result<(), QuotaError> {
@@ -295,9 +295,9 @@ impl QuotaMeter {
     /// per-spawn ceiling (`cost_per_call_max`) is enforced at
     /// the spawn site, not here.
     ///
-    /// Cost is computed by the caller via
-    /// `cost = input_per_million * input_tokens / 1e6 + output_per_million * output_tokens / 1e6`.
-    /// The meter only folds the resulting scalar.
+    /// Cost is computed by the caller (`peko_engine::compute_usage_cost_usd`:
+    /// uncached input, cache reads, cache writes, and output at their own
+    /// rates). The meter only folds the resulting scalar.
     pub fn try_charge_with_cost(
         &self,
         usage: &TokenUsage,
@@ -893,19 +893,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn charge_folds_cache_and_reasoning_via_accumulate() {
-        // The meter trusts the caller to have already pre-folded
-        // cache reads/writes and reasoning into `input` / `output`
-        // via `TokenUsage::accumulate`. We test that pre-folded
-        // usage trips the input_tokens limit correctly.
+    async fn charge_counts_cache_inclusive_input() {
+        // `input` / `output` already include cache reads/writes and
+        // reasoning (adapters normalize them). Such usage trips the
+        // input_tokens limit on its full input count.
         let meter =
             QuotaMeter::load_or_init(cfg(Some(100), None, None), None, ts(2026, 7, 12, 14, 0, 0))
                 .await
                 .unwrap();
         let u = TokenUsage {
-            // Simulates a caller who has already run
-            // `accumulate()`: 60 non-cached input + 20 cache
-            // creation + 30 cache read = 110 input.
+            // 60 non-cached input + 20 cache creation + 30 cache
+            // read = 110 input.
             input: 110,
             output: 0,
             total: 110,

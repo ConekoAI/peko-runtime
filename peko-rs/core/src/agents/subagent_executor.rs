@@ -3297,6 +3297,7 @@ mod tests {
             pricing: Some(peko_providers::spec::PricingHint {
                 input_per_million: Some(15.0),
                 output_per_million: Some(75.0),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -3332,6 +3333,7 @@ mod tests {
             pricing: Some(peko_providers::spec::PricingHint {
                 input_per_million: Some(1.0),
                 output_per_million: Some(5.0),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -3357,6 +3359,7 @@ mod tests {
             pricing: Some(peko_providers::spec::PricingHint {
                 input_per_million: Some(15.0),
                 output_per_million: Some(75.0),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -3386,6 +3389,7 @@ mod tests {
             pricing: Some(peko_providers::spec::PricingHint {
                 input_per_million: Some(15.0),
                 output_per_million: Some(75.0),
+                ..Default::default()
             }),
             ..Default::default()
         };

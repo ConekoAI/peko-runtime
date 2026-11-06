@@ -129,7 +129,11 @@ pub enum StreamEvent {
     },
     /// Token usage information (typically sent at end of stream)
     Usage {
-        /// Input tokens (uncached, non-reasoning)
+        /// Every input token of the call, cache reads and cache writes
+        /// included (OpenAI `prompt_tokens` / `input_tokens`; Anthropic
+        /// `input_tokens + cache_read + cache_creation`). Adapters
+        /// normalize to this meaning; the cache fields below are
+        /// subsets of it.
         input: u64,
         /// Output tokens (includes reasoning/thinking tokens, which the
         /// provider already folds into `completion_tokens` /
@@ -138,9 +142,11 @@ pub enum StreamEvent {
         /// Total tokens (wire-reported `total_tokens` when present;
         /// otherwise `input + output`)
         total: u64,
-        /// Tokens billed at cache-write rate (Anthropic only)
+        /// Part of `input` billed at the cache-write rate (Anthropic,
+        /// OpenAI Responses)
         cache_creation_input_tokens: u64,
-        /// Tokens billed at cache-read rate (Anthropic + OpenAI)
+        /// Part of `input` served from the prompt cache, billed at the
+        /// cache-read rate (Anthropic + OpenAI)
         cache_read_input_tokens: u64,
         /// Reasoning tokens within `output` (OpenAI o-series)
         reasoning_output_tokens: u64,

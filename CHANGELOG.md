@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: spend counts the prompt cache, and input tokens mean the same thing for every model (2026-11-06)
+
+- `TokenUsage::input` and `StreamEvent::Usage::input` are every input token,
+  cache reads and writes included, for every adapter. Anthropic's
+  `input_tokens` counts only the uncached part, so its adapter now adds the
+  cache fields; before, the meter and the input-token limit missed nearly all
+  of a cached Claude conversation's input.
+- The engine loop and `TokenUsage::accumulate` no longer add the cache and
+  reasoning counts to `input` / `output` a second time. Session records
+  counted OpenAI cached tokens twice and every model's reasoning twice.
+- Spend prices cache reads and cache writes at their own rates
+  (`compute_usage_cost_usd`). `PricingHint` gains optional
+  `cache_read_per_million` / `cache_write_per_million`; unset, they fall back
+  to the input price. Before, Claude spend left cache tokens out entirely
+  (far too low) and OpenAI spend billed cached tokens at the full rate.
+- The OpenAI chat adapter reads Kimi's `prompt_tokens_details.cache_write_tokens`
+  and a top-level `cached_tokens`.
+- The session cache hit rate and `peko quota status` no longer guess which
+  convention a record uses; `peko model show` lists cache prices when set.
+
 ### Fix: Claude models answer again — no sampling settings, and a pasted `/v1` is harmless (2026-11-06)
 
 - The runtime no longer sends `temperature` to any model. Agent turns sent

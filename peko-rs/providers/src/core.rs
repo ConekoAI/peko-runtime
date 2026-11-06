@@ -835,7 +835,7 @@ mod tests {
             );
             assert!(
                 matches!(next(stream).await, StreamEvent::Usage { input: got_input,
-                cache_read_input_tokens: cache, output:3, .. } if got_input == input && cache == input*10)
+                cache_read_input_tokens: cache, output:3, .. } if got_input == input + input*10 && cache == input*10)
             );
             assert!(matches!(next(stream).await, StreamEvent::Done { .. }));
             if id == "a-call" {

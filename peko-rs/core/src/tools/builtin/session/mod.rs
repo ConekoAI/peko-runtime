@@ -208,21 +208,11 @@ pub struct UsageStats {
     #[serde(default)]
     pub cache_creation_total: u64,
     /// Fraction of input tokens served from cache in the cache
-    /// window: `cache_read_total / (cache_read_total +
-    /// cache_creation_total + uncached input)`. `None` when the
+    /// window: `cache_read_total / input`, where `input` is the
+    /// window's cache-inclusive input total. `None` when the
     /// denominator is 0 (no assistant turn in the window reported
     /// usage).
     ///
-    /// NOTE: `TokenUsage::input` semantics are adapter-dependent —
-    /// Anthropic-style adapters report uncached input only, while
-    /// OpenAI-style adapters include cached tokens in `input`. The
-    /// runtime disambiguates per turn (`input >= read + creation` ⇒
-    /// cache-inclusive, otherwise cache-exclusive), so the rate is a
-    /// "fraction of input tokens served from cache in this window"
-    /// under either convention; the rare Anthropic turn whose
-    /// uncached input alone exceeds the cached total is
-    /// indistinguishable from an OpenAI turn and makes the rate an
-    /// approximation.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cache_hit_rate: Option<f64>,
 }

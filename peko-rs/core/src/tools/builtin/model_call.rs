@@ -30,7 +30,7 @@
 //!   `PricingHint` before any traffic,
 //! - charges the principal's `QuotaMeter` **after** the call from
 //!   provider-reported usage — never from request params — folding USD
-//!   cost via [`compute_cost_usd`] so `budget_per_cycle` applies.
+//!   cost via [`compute_usage_cost_usd`] so `budget_per_cycle` applies.
 //!
 //! Charging is a direct `QuotaMeter::charge_with_cost`, not a
 //! `QuotaScope` + `StackedMeteredProvider` wrap: inside an agentic turn
@@ -54,7 +54,7 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use serde_json::{json, Value};
 
-use peko_engine::compute_cost_usd;
+use peko_engine::compute_usage_cost_usd;
 use peko_message::{ContentBlock, TokenUsage};
 use peko_provider_api::ChatOptions;
 use peko_providers::catalog::ModelConfig;
@@ -527,11 +527,7 @@ pub(crate) fn refuse_if_exhausted(meter: &QuotaMeter) -> anyhow::Result<()> {
 /// limit is made and paid for, so it is recorded and its result kept;
 /// the next call is refused before it is made ([`refuse_if_exhausted`]).
 async fn charge_meter(meter: &QuotaMeter, config: &ModelConfig, usage: &TokenUsage) {
-    let cost = compute_cost_usd(
-        config.spec.and_then(|s| s.pricing),
-        usage.input,
-        usage.output,
-    );
+    let cost = compute_usage_cost_usd(config.spec.and_then(|s| s.pricing), usage);
     if let Err(e) = meter.charge_with_cost(usage, cost).await {
         tracing::info!("ModelCall crossed a limit ({e}); the next call is refused until it resets");
     }
@@ -783,6 +779,7 @@ mod tests {
                 pricing: Some(PricingHint {
                     input_per_million: Some(2.0),
                     output_per_million: None,
+                    ..Default::default()
                 }),
                 ..ModelSpec::default()
             }),
@@ -953,6 +950,7 @@ mod tests {
             pricing: Some(PricingHint {
                 input_per_million: Some(100.0),
                 output_per_million: Some(100.0),
+                ..Default::default()
             }),
             ..ModelSpec::default()
         });
@@ -1289,6 +1287,7 @@ mod tests {
         let pricing = PricingHint {
             input_per_million: Some(100.0),
             output_per_million: Some(100.0),
+            ..Default::default()
         };
         let mut entry = resolver.catalog().get("mock").await.expect("mock entry");
         entry.spec = Some(ModelSpec {
