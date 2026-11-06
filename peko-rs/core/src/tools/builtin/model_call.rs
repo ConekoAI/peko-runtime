@@ -3,7 +3,7 @@
 //!
 //! Two modes (exactly one per call):
 //!
-//! - **Completion** (`{model?, prompt, system?, max_tokens?, temperature?}`):
+//! - **Completion** (`{model?, prompt, system?, max_tokens?}`):
 //!   a single non-streaming chat completion built with `tools: None`,
 //!   returning `{text, model, usage}`.
 //! - **Judgment** (`{model?, state, questions}`): POSTs
@@ -167,7 +167,6 @@ impl ModelCallTool {
         prompt: &str,
         system: Option<&str>,
         max_tokens: Option<u32>,
-        temperature: Option<f64>,
     ) -> anyhow::Result<Value> {
         // Pre-flight: same `cost_per_call_max` gate subagent spawns get,
         // against the conservative 4K-in + 1K-out projection.
@@ -183,7 +182,6 @@ impl ModelCallTool {
                 )
             })?;
         let options = ChatOptions {
-            temperature: temperature.map(|t| t as f32),
             max_tokens,
             ..Default::default()
         };
@@ -331,7 +329,7 @@ impl Tool for ModelCallTool {
     fn description(&self) -> String {
         "One-shot LLM call with no session, no tool loop, and no streaming. \
          Two modes (exactly one per call): completion (`prompt`, optional \
-         `system` / `max_tokens` / `temperature`) returns `{text, model, usage}`; \
+         `system` / `max_tokens`) returns `{text, model, usage}`; \
          judgment (`state` + `questions`) POSTs to a judgment-class model's \
          decision API and returns typed answers with probabilities. \
          Judgment mode requires a catalog entry whose spec declares \
@@ -363,10 +361,6 @@ impl Tool for ModelCallTool {
                     "type": "integer",
                     "description": "Completion mode only: maximum output tokens."
                 },
-                "temperature": {
-                    "type": "number",
-                    "description": "Completion mode only: sampling temperature."
-                },
                 "state": {
                     "type": ["string", "object"],
                     "description": "Judgment mode: unstructured state (string or object) for the judgment model to evaluate. Requires `questions`; only valid against models whose spec declares `decisions: true`."
@@ -387,7 +381,7 @@ impl Tool for ModelCallTool {
                     "required": ["state", "questions"],
                     "not": {"anyOf": [
                         {"required": ["prompt"]}, {"required": ["system"]},
-                        {"required": ["max_tokens"]}, {"required": ["temperature"]}
+                        {"required": ["max_tokens"]}
                     ]}
                 }
             ]
@@ -425,7 +419,6 @@ impl Tool for ModelCallTool {
         let prompt = params.get("prompt").and_then(Value::as_str);
         let system = params.get("system").and_then(Value::as_str);
         let max_tokens = params.get("max_tokens").and_then(Value::as_u64);
-        let temperature = params.get("temperature").and_then(Value::as_f64);
         let state = params.get("state").cloned();
         let questions = params.get("questions").cloned();
 
@@ -443,9 +436,9 @@ impl Tool for ModelCallTool {
             _ => {}
         }
         if judgment_mode {
-            if system.is_some() || max_tokens.is_some() || temperature.is_some() {
+            if system.is_some() || max_tokens.is_some() {
                 bail!(
-                    "ModelCall: `system`, `max_tokens`, and `temperature` only apply to \
+                    "ModelCall: `system` and `max_tokens` only apply to \
                      completion mode (`prompt`); judgment mode takes `state` + `questions`"
                 );
             }
@@ -477,7 +470,6 @@ impl Tool for ModelCallTool {
                 prompt.unwrap_or_default(),
                 system,
                 max_tokens,
-                temperature,
             )
             .await?
         } else {
@@ -849,7 +841,7 @@ mod tests {
         let tool = ModelCallTool::new(Arc::downgrade(&manager));
         let out = tool
             .execute_with_context(
-                json!({"prompt": "Say hi", "system": "Be brief.", "temperature": 0.25, "max_tokens": 64}),
+                json!({"prompt": "Say hi", "system": "Be brief.", "max_tokens": 64}),
                 &ctx_for("caller"),
             )
             .await
@@ -867,7 +859,6 @@ mod tests {
         assert_eq!(recorded[0].messages.len(), 2);
         assert!(matches!(recorded[0].messages[0].role, MessageRole::System));
         assert!(matches!(recorded[0].messages[1].role, MessageRole::User));
-        assert_eq!(recorded[0].options.temperature, Some(0.25));
         assert_eq!(recorded[0].options.max_tokens, Some(64));
 
         // The calling principal's meter was charged server-side.
@@ -1264,11 +1255,7 @@ mod tests {
     #[tokio::test]
     async fn judgment_rejects_completion_only_params() {
         let tool = ModelCallTool::new(Weak::new());
-        for (param, value) in [
-            ("temperature", json!(0.5)),
-            ("max_tokens", json!(10)),
-            ("system", json!("be terse")),
-        ] {
+        for (param, value) in [("max_tokens", json!(10)), ("system", json!("be terse"))] {
             let mut params = json!({"state": "x", "questions": {"q": {"type": "boolean"}}});
             params[param] = value;
             let err = tool
@@ -1428,12 +1415,15 @@ mod tests {
             "prompt",
             "system",
             "max_tokens",
-            "temperature",
             "state",
             "questions",
         ] {
             assert!(props.contains_key(key), "schema missing {key}");
         }
+        assert!(
+            !props.contains_key("temperature"),
+            "sampling settings are left to the model"
+        );
         assert_eq!(schema["additionalProperties"], json!(false));
     }
 

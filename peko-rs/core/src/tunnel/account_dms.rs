@@ -161,6 +161,40 @@ impl TunnelChannelPort {
         });
     }
 
+    /// The person's DMs with pekos on other runtimes held here (opened
+    /// here, or followed from their other computers, D5), for the app's
+    /// chat list.
+    pub async fn peko_dm_summaries(&self, account: &str) -> Vec<crate::ipc::packet::PekoDmSummary> {
+        let mut out = Vec::new();
+        for channel in self.local.remote_dms(account).await.unwrap_or_default() {
+            let Some(row) = self
+                .local
+                .list_remote_members(&channel)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|m| m.principal_id.starts_with("did:key:"))
+            else {
+                continue;
+            };
+            let peer = self
+                .local
+                .actor_info(&ActorRef::Principal(row.principal_id.clone().into()))
+                .await;
+            let Some(hub_id) = peer.hub_id.clone() else {
+                continue;
+            };
+            out.push(crate::ipc::packet::PekoDmSummary {
+                channel,
+                peer: format!("principal:hub:{hub_id}"),
+                hub_id,
+                name: peer.name.clone(),
+                runtime: row.runtime_id.clone(),
+            });
+        }
+        out
+    }
+
     /// The person's DMs held here, as another of their runtimes needs them.
     async fn account_dm_list(
         &self,

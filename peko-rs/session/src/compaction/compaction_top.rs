@@ -535,7 +535,6 @@ impl Compactor {
                 &[],
                 &peko_providers::ChatOptions {
                     max_tokens: Some(peko_providers::DEFAULT_MAX_OUTPUT_TOKENS),
-                    temperature: Some(0.3),
                     ..Default::default()
                 },
             )

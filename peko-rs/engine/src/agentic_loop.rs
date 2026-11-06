@@ -1385,7 +1385,6 @@ impl AgenticLoop {
             // any cache wiring on the wire.
             let supports_cache = provider.supports_prompt_cache_control();
             let options = ChatOptions {
-                temperature: Some(0.7),
                 max_tokens: Some(DEFAULT_MAX_OUTPUT_TOKENS),
                 cache_retention: if supports_cache {
                     CacheRetention::Default

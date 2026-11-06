@@ -2454,7 +2454,12 @@ other member, and the same member from another of its routes:
   runtime recorded as its route.
 - Pages and catch-up cursors follow `at`, not line order.
 - A person's copy fills back to the first post and stores it; a peko's copy
-  catches up forward only.
+  catches up forward only. Once the host answers that it has nothing older,
+  the copy's `meta.json` records `"history_complete": true` and backfill
+  stops; `channel_peek_result` then says `"older_elsewhere": false` (true
+  while a person's copy of a DM with a remote peko may still lack older
+  posts, false for every other channel), so an app stops offering to load
+  earlier messages from the peko's copy.
 - While a runtime is registered, its person's DMs are keyed by
   `user:hub:<account>` (`ActorInfo::dm_key`); registering moves existing
   DMs to that id, and unregistering moves them back. Each move records
@@ -2471,6 +2476,11 @@ two runtimes of the same account:
 {"type":"tunnel_account_dms_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","signature":"<JWS>"}
 {"type":"tunnel_account_dms","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","dms":[{"channelId":"dm_…","peerHubId":"<UUID>","peerSigningDid":"did:key:…","peerIdentityKey":"…","peerName":"peko","peerRuntimeId":"did:key:…","peerExposure":"private"}],"signature":"<JWS>"}
 ```
+
+The app lists the person's DMs with pekos on other runtimes (opened here or
+learned this way) with IPC `channel_peko_dms` (local callers only) →
+`channel_peko_dms_result {dms: [{channel, peer: "principal:hub:<UUID>", hub_id,
+name?, runtime}]}`.
 
 Signed payloads: `peko-account-dms-request/1` (`requestId`, `sourceRuntimeId`,
 `recipientAccount`) and `peko-account-dms/1` (… `recipientRuntimeId`,
@@ -3275,8 +3285,10 @@ provider-reported usage after the call.
 - **Completion** — `prompt` present. One non-streaming chat completion with
   `tools: None`.
 - **Judgment** — `state` + `questions` present. POSTs to the resolved entry's
-  decision API (below). `system` / `max_tokens` / `temperature` are rejected in
-  this mode.
+  decision API (below). `system` / `max_tokens` are rejected in this mode.
+
+No sampling settings (`temperature`, `top_p`, `top_k`) reach any model: the
+runtime sends none, in either mode or in any other call.
 
 ```json
 {
@@ -3284,7 +3296,6 @@ provider-reported usage after the call.
   "prompt":      "string?  (completion mode)",
   "system":      "string?  (completion mode)",
   "max_tokens":  "integer? (completion mode)",
-  "temperature": "number?  (completion mode)",
   "state":       "string | object?  (judgment mode)",
   "questions":   "object?  (judgment mode — map of question key → spec)"
 }

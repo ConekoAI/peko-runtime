@@ -354,10 +354,6 @@ impl super::ApiAdapter for OpenAiAdapter {
             "stream": stream,
         });
 
-        if let Some(temp) = options.temperature {
-            body["temperature"] = json!(temp);
-        }
-
         if let Some(max_tokens) = options.max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }

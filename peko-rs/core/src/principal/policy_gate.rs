@@ -198,7 +198,6 @@ impl PrincipalPolicyGate {
         crate::tools::builtin::model_call::refuse_if_exhausted(&principal.quota_meter)?;
         let provider = resolver.build_provider(&choice.config).await?;
         let options = peko_provider_api::ChatOptions {
-            temperature: Some(0.0),
             max_tokens: Some(max_tokens),
             ..Default::default()
         };

@@ -113,7 +113,6 @@ async fn stream_terminates_on_done_even_if_connection_stays_open() {
     let provider = Provider::new(adapter, "test-key", options).expect("provider");
 
     let options = ChatOptions {
-        temperature: Some(0.0),
         ..Default::default()
     };
     let messages = vec![LlmMessage::user("hi")];
@@ -223,7 +222,6 @@ async fn stream_terminates_on_message_stop_even_if_connection_stays_open() {
     let provider = Provider::new(adapter, "test-key", options).expect("provider");
 
     let options = ChatOptions {
-        temperature: Some(0.0),
         ..Default::default()
     };
     let messages = vec![LlmMessage::user("hi")];

@@ -8507,6 +8507,21 @@ mod tests {
             total,
             "the whole conversation, older pages stored"
         );
+        // It reached the first post: nothing older is left elsewhere, so
+        // the app stops offering to load earlier messages.
+        let mut complete = false;
+        for _ in 0..100 {
+            complete = desktop_port
+                .local()
+                .history_complete(&channel)
+                .await
+                .unwrap();
+            if complete {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(complete, "the copy is marked complete");
         assert_eq!(
             desktop_port
                 .local()
@@ -8642,6 +8657,18 @@ mod tests {
             texts.into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
             ["said before"]
         );
+        // The app lists it among the person's DMs with pekos elsewhere.
+        let ResponsePacket::ChannelPekoDmsResult { dms, .. } = desktop
+            .ipc(RequestPacket::ChannelPekoDms { request_id: 9 })
+            .await
+        else {
+            panic!("peko DMs");
+        };
+        assert_eq!(dms.len(), 1);
+        assert_eq!(dms[0].channel, channel);
+        assert_eq!(dms[0].peer, format!("principal:hub:{}", dms[0].hub_id));
+        assert_eq!(dms[0].name.as_deref(), Some("peko"));
+        assert_eq!(dms[0].runtime, host.app.runtime_did());
     }
 
     /// ADR-095 D7 (F7): alice talks to her peko on its host, L1, then from

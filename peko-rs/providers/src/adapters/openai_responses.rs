@@ -367,10 +367,6 @@ impl super::ApiAdapter for OpenAiResponsesAdapter {
             "stream": stream,
         });
 
-        if let Some(temp) = options.temperature {
-            body["temperature"] = json!(temp);
-        }
-
         if let Some(max_tokens) = options.max_tokens {
             body["max_output_tokens"] = json!(max_tokens);
         }
@@ -2173,7 +2169,6 @@ mod tests {
 
     fn options_default() -> ChatOptions {
         ChatOptions {
-            temperature: None,
             max_tokens: None,
             api_key: None,
             headers: Default::default(),

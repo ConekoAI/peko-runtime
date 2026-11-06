@@ -272,6 +272,9 @@ impl TunnelChannelPort {
         // copy are in arrival order, not the order the posts were made.
         let mut after = self.local.newest_msg_id(channel).await?;
         let mut added = 0;
+        // The newest page answered a fresh copy with nothing older: the
+        // whole conversation is here.
+        let mut whole = false;
         for _ in 0..CATCH_UP_PAGES {
             let (answer, host) = self.ask_history(channel, None, after.as_deref()).await?;
             let page = self.await_history(answer).await?;
@@ -280,6 +283,7 @@ impl TunnelChannelPort {
                 _ => None,
             });
             let has_more = page.has_more;
+            whole |= after.is_none() && !has_more;
             added += self.apply_page(channel, page, host).await?;
             // The newest page answers a fresh copy; after a cursor, keep
             // reading forward.
@@ -293,7 +297,7 @@ impl TunnelChannelPort {
         // catches up forward (D3), and groups scroll back unstored.
         let person_dm = self.local.remote_dm_account(channel).await?.is_some()
             && self.local.conversation_kind(channel).await? == peko_channel::ConversationKind::Dm;
-        if person_dm {
+        if person_dm && !self.local.history_complete(channel).await? {
             for _ in 0..CATCH_UP_PAGES {
                 let Some(before) = self.local.oldest_msg_id(channel).await? else {
                     break;
@@ -303,9 +307,19 @@ impl TunnelChannelPort {
                 let has_more = page.has_more;
                 let new = self.apply_page(channel, page, host).await?;
                 added += new;
-                if !has_more || new == 0 {
+                if !has_more {
+                    // The host has nothing older: the copy starts where
+                    // the conversation does. The app stops offering to
+                    // load earlier messages.
+                    whole = true;
                     break;
                 }
+                if new == 0 {
+                    break;
+                }
+            }
+            if whole {
+                self.local.mark_history_complete(channel).await?;
             }
         }
         Ok(added)

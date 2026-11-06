@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: Claude models answer again — no sampling settings, and a pasted `/v1` is harmless (2026-11-06)
+
+- The runtime no longer sends `temperature` to any model. Agent turns sent
+  0.7, compaction 0.3, and the policy reviewer 0.0; Claude models from 4.7 on
+  (Claude Haiku 5.5 among them) refuse sampling settings with a 400
+  ("`temperature` is deprecated for this model"), as do OpenAI reasoning
+  models for anything but the default. `ChatOptions::temperature` and the
+  `temperature` parameter of the `chat*` helpers on `Provider` are gone, and
+  `ModelCall` no longer takes `temperature`; models use their own defaults.
+- An Anthropic Messages base URL that ends in `/v1` or `/v1/messages`
+  (as copied from Anthropic's docs) is cut back to its root. The adapter
+  adds `/v1/messages` itself, so calls, the endpoint test, and the model
+  list went to `/v1/v1/...` and came back 404.
+- Adaptive thinking is chosen by the Claude model's version (4.6 and later)
+  instead of a fixed family list, which missed Claude Haiku 5.5, the Opus 5
+  line, and Sonnet 4.6 and sent them `budget_tokens`, which they refuse.
+
+### Feature: the app lists your DMs with pekos elsewhere and knows when a copy is whole (2026-11-06)
+
+- New IPC `channel_peko_dms` (local callers only) lists this runtime's
+  person's DMs with pekos on other runtimes — opened here, or followed from
+  their other computers (ADR-095 D5) — with each peko's Hub ID, name, and
+  runtime. The desktop lists those pekos in Chats like its own.
+- A person's copy of a DM with a remote peko records when its backfill
+  reaches the first post (`meta.json` `history_complete`) and stops asking
+  for older pages. `channel_peek_result` adds `older_elsewhere` (true only
+  while such a copy may still lack older posts), so the desktop no longer
+  offers "Load earlier messages" above a complete conversation.
 ### Feature: pick the model for a message to your peko on another computer (2026-11-06, ADR-097)
 
 - A chat with one of your pekos hosted on your other computer now offers the

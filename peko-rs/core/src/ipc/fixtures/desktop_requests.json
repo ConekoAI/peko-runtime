@@ -67,6 +67,7 @@
   {"type": "approval_decide", "protocol_version": 1, "request_id": 51, "name": "alice", "id": "apr_0123456789ab", "approve": true, "always": false},
   {"type": "channel_open_person_dm", "protocol_version": 1, "request_id": 1, "account": "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d", "name": "bob"},
   {"type": "channel_person_dms", "protocol_version": 1, "request_id": 1},
+  {"type": "channel_peko_dms", "protocol_version": 1, "request_id": 1},
   {"type": "channel_dm_requests", "protocol_version": 1, "request_id": 1},
   {"type": "channel_dm_request_answer", "protocol_version": 1, "request_id": 1, "channel": "dm_0000000000000000000000000000000000000000000000000000000000000000", "answer": "accept"},
   {"type": "channel_block_person", "protocol_version": 1, "request_id": 1, "account": "0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d", "blocked": true},

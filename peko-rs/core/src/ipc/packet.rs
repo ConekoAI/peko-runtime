@@ -960,6 +960,13 @@ pub enum RequestPacket {
     #[serde(rename = "channel_person_dms")]
     ChannelPersonDms { request_id: u64 },
 
+    /// This runtime's person's DMs with pekos on other runtimes, the ones
+    /// opened here and the ones that followed them from their other
+    /// computers (ADR-090, ADR-095 D5). Local callers only; answered with
+    /// `channel_peko_dms_result`.
+    #[serde(rename = "channel_peko_dms")]
+    ChannelPekoDms { request_id: u64 },
+
     /// The people asking this runtime's person to DM (ADR-095 D6), newest
     /// first. Local callers only; answered with `channel_dm_requests_result`.
     #[serde(rename = "channel_dm_requests")]
@@ -1156,6 +1163,7 @@ impl RequestPacket {
             | Self::ChannelOpenPersonDm { request_id, .. }
             | Self::ChannelDmRequests { request_id }
             | Self::ChannelPersonDms { request_id }
+            | Self::ChannelPekoDms { request_id }
             | Self::ChannelDmRequestAnswer { request_id, .. }
             | Self::ChannelBlockPerson { request_id, .. }
             | Self::ChannelBlocked { request_id }
@@ -1367,6 +1375,23 @@ pub struct PersonGroup {
     pub home: Option<String>,
 }
 
+/// One of this runtime's person's DMs with a peko on another runtime
+/// (ADR-090, ADR-095 D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoDmSummary {
+    /// The DM (`dm_<sha256>`) on this runtime.
+    pub channel: peko_protocol::channel::ChannelId,
+    /// The peko, `principal:hub:<UUID>`.
+    pub peer: String,
+    /// Its PekoHub ID.
+    pub hub_id: String,
+    /// What it is called, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The runtime it lives on (its DID).
+    pub runtime: String,
+}
+
 /// One of this runtime's person's DMs with another person (ADR-095 D6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonDmSummary {
@@ -1490,6 +1515,13 @@ pub enum ResponsePacket {
         /// the first returned one (page further back with `before`).
         #[serde(default)]
         has_more: bool,
+        /// ADR-095 D1: this computer's copy of the person's DM with a
+        /// remote peko doesn't reach the conversation's first post yet,
+        /// so older posts may be read from the peko's copy
+        /// (`channel_history_older`). False for every other channel and
+        /// once the copy is complete.
+        #[serde(default)]
+        older_elsewhere: bool,
         /// Search mode only: the oldest line the scan examined. Pass
         /// back as `before` to continue searching older history.
         /// `None` when the scan reached the top of the log.
@@ -1672,6 +1704,13 @@ pub enum ResponsePacket {
     ChannelPersonDmsResult {
         request_id: u64,
         dms: Vec<PersonDmSummary>,
+    },
+
+    /// Response to `ChannelPekoDms`.
+    #[serde(rename = "channel_peko_dms_result")]
+    ChannelPekoDmsResult {
+        request_id: u64,
+        dms: Vec<PekoDmSummary>,
     },
 
     /// Response to `ChannelDmRequests` (ADR-095 D6).
@@ -2990,6 +3029,7 @@ impl ResponsePacket {
             | Self::ChannelPersonDmOpened { request_id, .. }
             | Self::ChannelDmRequestsResult { request_id, .. }
             | Self::ChannelPersonDmsResult { request_id, .. }
+            | Self::ChannelPekoDmsResult { request_id, .. }
             | Self::ChannelBlockedPeople { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelPekoModelsResult { request_id, .. }
@@ -3089,6 +3129,7 @@ impl ResponsePacket {
             Self::ChannelPersonDmOpened { .. } => "ChannelPersonDmOpened",
             Self::ChannelDmRequestsResult { .. } => "ChannelDmRequestsResult",
             Self::ChannelPersonDmsResult { .. } => "ChannelPersonDmsResult",
+            Self::ChannelPekoDmsResult { .. } => "ChannelPekoDmsResult",
             Self::ChannelBlockedPeople { .. } => "ChannelBlockedPeople",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelPekoModelsResult { .. } => "ChannelPekoModelsResult",

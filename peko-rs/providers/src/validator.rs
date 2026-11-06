@@ -283,13 +283,14 @@ fn client_for(
         (None, true) => return Err(format!("No key stored for '{}'", config.id)),
     };
 
-    HttpClient::with_headers(config.base_url.clone(), auth, timeout_secs, extra_headers)
+    // The adapter's URL, not the raw config: it is the one real calls
+    // dial (the Anthropic adapter cuts a pasted `/v1` back to the root).
+    HttpClient::with_headers(adapter.base_url(), auth, timeout_secs, extra_headers)
         .map_err(|e| format!("Failed to construct HTTP client: {e}"))
 }
 
-/// Build an `AnyAdapter` purely so we can call its `auth_config` /
-/// `extra_headers`. The adapter's `base_url` is unused — the
-/// `HttpClient` we build carries the real base URL. Mirrors the
+/// Build an `AnyAdapter` for its `auth_config` / `extra_headers` and its
+/// normalized `base_url`, which the ping's `HttpClient` dials. Mirrors the
 /// construction in
 /// [`crate::factory::create_provider_for_model`].
 fn build_adapter(config: &ModelConfig) -> AnyAdapter {
@@ -688,6 +689,33 @@ mod tests {
         let req = rx.await.unwrap().to_ascii_lowercase();
         assert!(req.starts_with("get /v1/models?limit=1000 "), "{req}");
         assert!(req.contains("x-api-key: sk-ant-test"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_base_url_ending_in_v1_is_not_doubled() {
+        let (tx, rx) = oneshot::channel::<String>();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let base = spawn_once(move |req| {
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(req.to_string());
+            }
+            ok_response(r#"{"data":[{"id":"claude-haiku-5-5","type":"model"}],"has_more":false}"#)
+        })
+        .await;
+        let entry = make_entry(
+            "x",
+            ApiFormat::AnthropicMessages,
+            format!("{base}/v1/"),
+            "",
+            true,
+        );
+        let key = SecretString::from("sk-ant-test".to_string());
+        let ids = Validator::list_models_within(&entry, Some(&key), 5)
+            .await
+            .unwrap();
+        assert_eq!(ids, vec!["claude-haiku-5-5".to_string()]);
+        let req = rx.await.unwrap().to_ascii_lowercase();
+        assert!(req.starts_with("get /v1/models?limit=1000 "), "{req}");
     }
 
     #[tokio::test]

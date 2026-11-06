@@ -59,10 +59,15 @@ impl AnthropicAdapter {
         }
     }
 
-    /// Create with custom base URL (for Kimi Code and other Anthropic-compatible providers)
+    /// Create with custom base URL (for Kimi Code and other Anthropic-compatible providers).
+    ///
+    /// The adapter appends `/v1/messages` itself, so a base URL copied
+    /// from Anthropic's docs (`https://api.anthropic.com/v1`, or the full
+    /// `.../v1/messages`) is cut back to its root; otherwise every call
+    /// would go to `/v1/v1/messages` and come back 404.
     #[must_use]
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.base_url = normalize_base_url(&base_url.into());
         self
     }
 
@@ -80,45 +85,49 @@ impl Default for AnthropicAdapter {
     }
 }
 
-/// F25: detect model ids that support Anthropic's *adaptive* thinking
-/// mode (`thinking: {type: "adaptive"}` + `output_config: {effort}`).
-///
-/// Adaptive mode is opt-in on the following Claude-family model ids:
-/// - `claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-4-8`, ... (4-6+)
-/// - `claude-sonnet-5`, `claude-sonnet-5-0`, ...
-/// - `claude-fable-5`, `claude-fable-5-1`, ...
-/// - `claude-mythos-5`, ...
-///
-/// Older models (Opus 4-1..4-5, Sonnet 4-5/4-7, Haiku) fall back to
-/// the legacy `budget_tokens` mode. The detection is a pure prefix
-/// check on the model id; it runs once per request (no caching) so a
-/// misfire on a future model id is harmless — it just drops to
-/// budget mode, which the server accepts on all thinking-capable
-/// Claude models.
-///
-/// Mirrors codex-rs's `is_adaptive_thinking_model` heuristic at
-/// `codex-api/src/provider.rs:341-358`.
+/// An Anthropic Messages base URL without trailing slashes and without a
+/// trailing `/v1` or `/v1/messages` — the parts the adapter adds itself.
+fn normalize_base_url(url: &str) -> String {
+    let mut url = url.trim().trim_end_matches('/');
+    for suffix in ["/messages", "/v1"] {
+        if let Some(rest) = url.strip_suffix(suffix) {
+            url = rest.trim_end_matches('/');
+        }
+    }
+    url.to_string()
+}
+
+/// The `(major, minor)` generation of a current-style Claude model id
+/// (`claude-<family>-<major>[-<minor>][-<date>]`, e.g. `claude-opus-4-6`
+/// → `(4, 6)`, `claude-sonnet-5` → `(5, 0)`). A date suffix is not a
+/// minor version (`claude-opus-4-20250514` → `(4, 0)`). `None` for
+/// non-Claude ids (GLM, MiniMax, ... behind the Anthropic format) and
+/// for the old `claude-3-5-sonnet-...` naming.
+fn claude_generation(model_id: &str) -> Option<(u32, u32)> {
+    let mut parts = model_id.strip_prefix("claude-")?.split('-');
+    let family = parts.next()?;
+    if family.is_empty() || family.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts
+        .next()
+        .filter(|s| s.len() <= 2)
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+/// F25: model ids that take Anthropic's *adaptive* thinking mode
+/// (`thinking: {type: "adaptive"}` + `output_config: {effort}`): every
+/// Claude model from 4.6 on (Opus/Sonnet 4.6, Opus 4.7/4.8, and every
+/// 5-series model — Opus, Sonnet, Haiku, Fable, Mythos). From 4.7 on the
+/// legacy `budget_tokens` mode is refused with a 400, so a newer id
+/// must never fall back to it. Older models (Opus 4.1–4.5, Sonnet 4.5,
+/// Haiku 4.5, the 3.x line) and non-Claude ids keep `budget_tokens`.
 #[must_use]
 pub fn is_adaptive_thinking_model(model_id: &str) -> bool {
-    let prefix = model_id.split('-').take(3).collect::<Vec<_>>().join("-");
-    // `claude-opus-4-6` → `claude-opus-4`
-    // `claude-sonnet-5` → `claude-sonnet-5`
-    // `claude-fable-5` → `claude-fable-5`
-    match prefix.as_str() {
-        "claude-opus-4" => {
-            // Only Opus 4-6+ (model-ids like `claude-opus-4-6-...`).
-            // The 4th segment is the minor version; >= 6 is adaptive.
-            let minor = model_id
-                .split('-')
-                .nth(3)
-                .and_then(|s| s.split('.').next())
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            minor >= 6
-        }
-        "claude-sonnet-5" | "claude-fable-5" | "claude-mythos-5" => true,
-        _ => false,
-    }
+    claude_generation(model_id).is_some_and(|v| v >= (4, 6))
 }
 
 impl AnthropicAdapter {
@@ -437,10 +446,6 @@ impl super::ApiAdapter for AnthropicAdapter {
                 cache_control: CacheControl::for_retention(options.cache_retention),
             }];
             body["system"] = json!(system_block);
-        }
-
-        if let Some(temp) = options.temperature {
-            body["temperature"] = json!(temp);
         }
 
         let cache_marker = CacheControl::for_retention(options.cache_retention);
@@ -1161,6 +1166,31 @@ mod tests {
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.name(), "anthropic");
         assert_eq!(adapter.base_url(), "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn base_url_drops_the_path_the_adapter_appends() {
+        for (given, expected) in [
+            ("https://api.anthropic.com", "https://api.anthropic.com"),
+            ("https://api.anthropic.com/", "https://api.anthropic.com"),
+            ("https://api.anthropic.com/v1", "https://api.anthropic.com"),
+            ("https://api.anthropic.com/v1/", "https://api.anthropic.com"),
+            (
+                "https://api.anthropic.com/v1/messages",
+                "https://api.anthropic.com",
+            ),
+            (
+                " https://open.bigmodel.cn/api/anthropic ",
+                "https://open.bigmodel.cn/api/anthropic",
+            ),
+            (
+                "https://api.minimaxi.com/anthropic/v1",
+                "https://api.minimaxi.com/anthropic",
+            ),
+        ] {
+            let adapter = AnthropicAdapter::new().with_base_url(given);
+            assert_eq!(adapter.base_url(), expected, "{given}");
+        }
     }
 
     #[test]
@@ -2018,6 +2048,12 @@ mod tests {
         assert!(is_adaptive_thinking_model("claude-sonnet-5-0"));
         assert!(is_adaptive_thinking_model("claude-fable-5"));
         assert!(is_adaptive_thinking_model("claude-mythos-5"));
+        assert!(is_adaptive_thinking_model("claude-sonnet-4-6"));
+        assert!(is_adaptive_thinking_model("claude-opus-5"));
+        assert!(is_adaptive_thinking_model("claude-opus-5-5"));
+        assert!(is_adaptive_thinking_model("claude-sonnet-5-5"));
+        assert!(is_adaptive_thinking_model("claude-haiku-5-5"));
+        assert!(is_adaptive_thinking_model("claude-fable-5-1"));
 
         // Budget (older Claude families)
         assert!(!is_adaptive_thinking_model("claude-opus-4-5"));
@@ -2027,8 +2063,11 @@ mod tests {
         assert!(!is_adaptive_thinking_model("claude-3-5-sonnet-20240620"));
         assert!(!is_adaptive_thinking_model("claude-haiku-4-5"));
 
+        assert!(!is_adaptive_thinking_model("claude-opus-4-20250514"));
+
         // Unknown family
         assert!(!is_adaptive_thinking_model("gpt-5"));
+        assert!(!is_adaptive_thinking_model("GLM-5.3-Flash"));
         assert!(!is_adaptive_thinking_model(""));
     }
 
