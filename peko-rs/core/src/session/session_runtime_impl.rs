@@ -325,28 +325,16 @@ fn last_assistant_turn_usage(events: &[peko_session::SessionEvent]) -> Option<To
     })
 }
 
-/// Derive the uncached portion of one turn's reported input.
-///
-/// `TokenUsage::input` semantics are adapter-dependent — OpenAI-style
-/// adapters include cached tokens in `input`, Anthropic-style adapters
-/// report uncached input only. Per turn we disambiguate by comparison:
-/// when `input >= cache_read + cache_creation` the turn is treated as
-/// cache-inclusive (uncached = `input - read - creation`); otherwise
-/// it must be cache-exclusive (uncached = `input`). The rare
-/// Anthropic turn whose uncached input alone exceeds the cached total
-/// is indistinguishable from an OpenAI turn and resolves as
-/// cache-inclusive — the window rate stays an approximation in that
-/// case, which the field docs call out.
+/// The uncached portion of one turn's input. `TokenUsage::input` is
+/// cache-inclusive for every adapter, so this is what remains after
+/// the cache reads and writes. Saturates for records that report a
+/// cache split larger than `input` (malformed provider usage).
 fn uncached_input(usage: &TokenUsage) -> u64 {
     let cached = usage
         .cache_read_input_tokens
         .unwrap_or(0)
         .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-    if usage.input >= cached {
-        usage.input - cached
-    } else {
-        usage.input
-    }
+    usage.input.saturating_sub(cached)
 }
 
 /// Aggregate cache + input usage over the session's current **cache
@@ -356,9 +344,7 @@ fn uncached_input(usage: &TokenUsage) -> u64 {
 /// detects), or since session start when the session was never
 /// compacted.
 ///
-/// Returns `(cache_read_total, cache_creation_total, uncached_input)`
-/// — see [`uncached_input`] for the adapter-dependent derivation of
-/// the third component.
+/// Returns `(cache_read_total, cache_creation_total, uncached_input)`.
 fn cache_window_totals(events: &[peko_session::SessionEvent]) -> (u64, u64, u64) {
     let mut read = 0u64;
     let mut creation = 0u64;
@@ -2650,20 +2636,19 @@ mod tests {
     }
 
     #[test]
-    fn cache_hit_rate_handles_both_adapter_conventions() {
-        // OpenAI-style: `input` includes cached tokens.
-        // read=60, creation=20, input=100 → uncached=20, rate=60/100.
+    fn cache_hit_rate_reads_cache_inclusive_input() {
+        // `input` includes the cache split (every adapter normalizes
+        // to it). read=60, creation=20, input=100 → uncached=20,
+        // rate=60/100.
         let (read, creation, uncached) =
             cache_window_totals(&[assistant_event(usage(100, 60, 20))]);
         assert_eq!((read, creation, uncached), (60, 20, 20));
         assert_eq!(cache_hit_rate(read, creation, uncached), Some(0.6));
 
-        // Anthropic-style: `input` excludes cached tokens (input <
-        // read + creation ⇒ the whole `input` is uncached).
-        // read=60, creation=20, input=20 → uncached=20, rate=60/100.
+        // A malformed record whose split exceeds `input` saturates
+        // the uncached part at 0 instead of underflowing.
         let (read, creation, uncached) = cache_window_totals(&[assistant_event(usage(20, 60, 20))]);
-        assert_eq!((read, creation, uncached), (60, 20, 20));
-        assert_eq!(cache_hit_rate(read, creation, uncached), Some(0.6));
+        assert_eq!((read, creation, uncached), (60, 20, 0));
 
         // Denominator 0 → None (no usage reported in the window).
         assert_eq!(cache_hit_rate(0, 0, 0), None);

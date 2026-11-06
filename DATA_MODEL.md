@@ -574,6 +574,16 @@ The API formats are `openai_completions`, `openai_responses`, and
 `anthropic_messages`. Credentials live in the vault; the catalog stores only
 references. Optional `context_window`, `max_output_tokens`, `headers`, `spec`
 (capabilities/pricing), `compat` (adapter hints), and `note` are user supplied.
+`spec.pricing` holds USD per 1M tokens: `input_per_million`,
+`output_per_million`, and optionally `cache_read_per_million` /
+`cache_write_per_million` (unset = the input price).
+
+Every recorded `TokenUsage` (session JSONL `usage`, quota state) counts
+`input` cache-inclusive: `cache_read_input_tokens` and
+`cache_creation_input_tokens` are parts of it, and `output` already includes
+`reasoning_output_tokens`. Records written before 2026-11-06 by OpenAI-format
+models counted their cached tokens twice in `input` and every model's
+reasoning twice in `output`.
 An absent `spec` means unknown capabilities and leaves the engine spec gate
 inactive; an explicit `spec` enforces declared capabilities. New entries have
 no `template_id`. Legacy entries retain that field and all copied settings so

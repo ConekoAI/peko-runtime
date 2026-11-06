@@ -638,18 +638,29 @@ impl super::ApiAdapter for AnthropicAdapter {
             content,
             tool_calls,
             stop_reason,
-            usage: TokenUsage {
-                input: u64::from(result.usage.input_tokens),
-                output: u64::from(result.usage.output_tokens),
-                total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
-                cache_creation_input_tokens: result
-                    .usage
-                    .cache_creation_input_tokens
-                    .map(u64::from),
-                cache_read_input_tokens: result.usage.cache_read_input_tokens.map(u64::from),
-                // Anthropic folds thinking/reasoning into output_tokens already;
-                // no separate `reasoning_output_tokens` from the wire.
-                reasoning_output_tokens: None,
+            usage: {
+                // Anthropic's `input_tokens` counts only the uncached
+                // part of the prompt; `TokenUsage::input` is every
+                // input token, so fold the cache read and write in.
+                let input = cache_inclusive_input(
+                    result.usage.input_tokens,
+                    result.usage.cache_read_input_tokens,
+                    result.usage.cache_creation_input_tokens,
+                );
+                let output = u64::from(result.usage.output_tokens);
+                TokenUsage {
+                    input,
+                    output,
+                    total: input + output,
+                    cache_creation_input_tokens: result
+                        .usage
+                        .cache_creation_input_tokens
+                        .map(u64::from),
+                    cache_read_input_tokens: result.usage.cache_read_input_tokens.map(u64::from),
+                    // Anthropic folds thinking/reasoning into output_tokens already;
+                    // no separate `reasoning_output_tokens` from the wire.
+                    reasoning_output_tokens: None,
+                }
             },
             provider: self.name().to_string(),
             model: model_id.to_string(),
@@ -815,10 +826,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                     // `message_start.message.usage`. Prefer the
                     // delta's value when present; fall back to the
                     // start-of-stream value otherwise.
-                    let input: u64 = delta_usage
-                        .input_tokens
-                        .map(u64::from)
-                        .unwrap_or_else(|| u64::from(start_input));
+                    let uncached_input = delta_usage.input_tokens.unwrap_or(start_input);
                     // Delta may refresh cache fields; prefer delta values
                     // when present, fall back to `message_start`.
                     let cache_creation = delta_usage
@@ -826,6 +834,13 @@ impl super::ApiAdapter for AnthropicAdapter {
                         .unwrap_or(cache_creation);
                     let cache_read = delta_usage.cache_read_input_tokens.unwrap_or(cache_read);
                     let output = delta_usage.output_tokens;
+                    // `input` on the stream event is every input token
+                    // (the wire's `input_tokens` excludes the cache).
+                    let input = cache_inclusive_input(
+                        uncached_input,
+                        Some(cache_read),
+                        Some(cache_creation),
+                    );
                     return Ok(Some(StreamEvent::Usage {
                         input,
                         output: u64::from(output),
@@ -1028,6 +1043,21 @@ enum AnthropicResponseBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+}
+
+/// Every input token of one Anthropic call. The wire's `input_tokens`
+/// counts only the part after the last cache breakpoint; cache reads
+/// and cache writes are reported beside it. `TokenUsage::input` (and
+/// `StreamEvent::Usage::input`) is the cache-inclusive total, the same
+/// meaning OpenAI's `prompt_tokens` / `input_tokens` already have.
+fn cache_inclusive_input(
+    uncached: u32,
+    cache_read: Option<u32>,
+    cache_creation: Option<u32>,
+) -> u64 {
+    u64::from(uncached)
+        + u64::from(cache_read.unwrap_or(0))
+        + u64::from(cache_creation.unwrap_or(0))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1465,7 +1495,7 @@ mod tests {
             assert!(
                 matches!(usage, Some(StreamEvent::Usage { input: actual_input,
                 cache_read_input_tokens: actual_cache, output:3, .. })
-                if actual_input == input && actual_cache == cache)
+                if actual_input == input + cache && actual_cache == cache)
             );
             assert_eq!(adapter.base_url(), "https://example.invalid/anthropic");
             assert!(adapter
@@ -1565,11 +1595,13 @@ mod tests {
                 // start (which was 0). Before the fix this asserted
                 // 0 and the meter never charged.
                 assert_eq!(
-                    input, 36,
-                    "input_tokens must come from message_delta when present, not message_start"
+                    input,
+                    36 + 128,
+                    "input_tokens must come from message_delta when present, not message_start \
+                     (plus the delta's cache read)"
                 );
                 assert_eq!(output, 11);
-                assert_eq!(total, 47);
+                assert_eq!(total, 36 + 128 + 11);
                 assert_eq!(cache_creation_input_tokens, 0);
                 assert_eq!(cache_read_input_tokens, 128);
             }
@@ -1602,7 +1634,11 @@ mod tests {
                 cache_read_input_tokens,
                 ..
             }) => {
-                assert_eq!(input, 128, "fallback must use message_start input");
+                assert_eq!(
+                    input,
+                    128 + 64 + 256,
+                    "fallback must use message_start input (plus its cache split)"
+                );
                 assert_eq!(output, 7);
                 assert_eq!(cache_creation_input_tokens, 64);
                 assert_eq!(cache_read_input_tokens, 256);
@@ -1647,7 +1683,8 @@ mod tests {
                 cache_read_input_tokens,
                 ..
             }) => {
-                assert_eq!(input, 100);
+                // Cache-inclusive: 100 uncached + 1024 written + 4096 read.
+                assert_eq!(input, 100 + 1024 + 4096);
                 assert_eq!(output, 50);
                 assert_eq!(cache_creation_input_tokens, 1024);
                 assert_eq!(cache_read_input_tokens, 4096);
@@ -1693,7 +1730,9 @@ mod tests {
             }
         });
         let parsed = adapter.parse_response("claude-3-sonnet", response).unwrap();
-        assert_eq!(parsed.usage.input, 50);
+        // Cache-inclusive: 50 uncached + 500 written + 2000 read.
+        assert_eq!(parsed.usage.input, 50 + 500 + 2000);
+        assert_eq!(parsed.usage.total, 50 + 500 + 2000 + 20);
         assert_eq!(parsed.usage.output, 20);
         assert_eq!(parsed.usage.cache_creation_input_tokens, Some(500));
         assert_eq!(parsed.usage.cache_read_input_tokens, Some(2000));

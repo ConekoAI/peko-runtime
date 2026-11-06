@@ -807,6 +807,10 @@ impl ModelSpecWire {
 struct PricingHintWire {
     input_per_million: Option<f64>,
     output_per_million: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_read_per_million: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_write_per_million: Option<f64>,
 }
 
 impl PricingHintWire {
@@ -814,6 +818,8 @@ impl PricingHintWire {
         Self {
             input_per_million: p.input_per_million,
             output_per_million: p.output_per_million,
+            cache_read_per_million: p.cache_read_per_million,
+            cache_write_per_million: p.cache_write_per_million,
         }
     }
 }
@@ -908,15 +914,19 @@ fn print_detail(e: &ModelConfig) {
             println!("      json_mode:      {}", s.json_mode);
             println!("      decisions:      {}", s.decisions);
             if let Some(p) = s.pricing {
+                let rate = |v: Option<f64>| v.map_or_else(|| "—".to_string(), |v| format!("{v}"));
                 println!(
                     "      pricing:        in ${}/Mtok, out ${}/Mtok",
-                    p.input_per_million
-                        .map(|v| format!("{v}"))
-                        .unwrap_or_else(|| "—".to_string()),
-                    p.output_per_million
-                        .map(|v| format!("{v}"))
-                        .unwrap_or_else(|| "—".to_string()),
+                    rate(p.input_per_million),
+                    rate(p.output_per_million),
                 );
+                if p.cache_read_per_million.is_some() || p.cache_write_per_million.is_some() {
+                    println!(
+                        "      cache pricing:  read ${}/Mtok, write ${}/Mtok",
+                        rate(p.cache_read_per_million.or(p.input_per_million)),
+                        rate(p.cache_write_per_million.or(p.input_per_million)),
+                    );
+                }
             }
         }
         None => {

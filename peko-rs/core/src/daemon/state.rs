@@ -2775,6 +2775,8 @@ fn model_spec_to_wire(spec: peko_providers::spec::ModelSpec) -> crate::ipc::pack
         pricing: spec.pricing.map(|p| ModelPricingHint {
             input_per_million: p.input_per_million,
             output_per_million: p.output_per_million,
+            cache_read_per_million: p.cache_read_per_million,
+            cache_write_per_million: p.cache_write_per_million,
         }),
     }
 }
@@ -2803,6 +2805,8 @@ fn model_spec_from_wire(spec: crate::ipc::packet::ModelSpec) -> peko_providers::
         pricing: spec.pricing.map(|p| PricingHint {
             input_per_million: p.input_per_million,
             output_per_million: p.output_per_million,
+            cache_read_per_million: p.cache_read_per_million,
+            cache_write_per_million: p.cache_write_per_million,
         }),
     }
 }

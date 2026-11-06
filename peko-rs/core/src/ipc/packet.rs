@@ -2587,6 +2587,12 @@ pub struct ModelPricingHint {
     pub input_per_million: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_million: Option<f64>,
+    /// USD per 1M cached input tokens read; `None` = input rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_per_million: Option<f64>,
+    /// USD per 1M input tokens written to the cache; `None` = input rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_million: Option<f64>,
 }
 
 /// Legacy preset wire row, retained for decoding older IPC responses.

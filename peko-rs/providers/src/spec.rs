@@ -77,6 +77,16 @@ pub struct PricingHint {
     /// USD per 1M output tokens. `None` = not advertised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_million: Option<f64>,
+    /// USD per 1M input tokens served from the prompt cache
+    /// (Anthropic `cache_read_input_tokens`, OpenAI `cached_tokens`).
+    /// `None` = bill them at `input_per_million`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_per_million: Option<f64>,
+    /// USD per 1M input tokens written to the prompt cache (Anthropic
+    /// `cache_creation_input_tokens`). `None` = bill them at
+    /// `input_per_million`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_million: Option<f64>,
 }
 
 /// Declarative model capability descriptor.
@@ -248,6 +258,7 @@ mod tests {
             pricing: Some(PricingHint {
                 input_per_million: Some(3.0),
                 output_per_million: Some(15.0),
+                ..Default::default()
             }),
             ..ModelSpec::default()
         };

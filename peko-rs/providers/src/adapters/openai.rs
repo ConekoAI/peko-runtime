@@ -72,12 +72,8 @@ impl OpenAiAdapter {
                 input: u64::from(usage.prompt_tokens),
                 output: u64::from(usage.completion_tokens),
                 total: u64::from(usage.total_tokens),
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .map_or(0, u64::from),
+                cache_creation_input_tokens: usage.cache_write_tokens().map_or(0, u64::from),
+                cache_read_input_tokens: usage.cache_read_tokens().map_or(0, u64::from),
                 reasoning_output_tokens: usage
                     .completion_tokens_details
                     .as_ref()
@@ -533,15 +529,10 @@ impl super::ApiAdapter for OpenAiAdapter {
                 input: u64::from(completion.usage.prompt_tokens),
                 output: u64::from(completion.usage.completion_tokens),
                 total: u64::from(completion.usage.total_tokens),
-                // OpenAI does not have cache_creation; only cache reads
-                // via `prompt_tokens_details.cached_tokens`.
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: completion
-                    .usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-                    .map(u64::from),
+                // OpenAI reports only cache reads; Kimi also reports
+                // cache writes beside them (`cache_write_tokens`).
+                cache_creation_input_tokens: completion.usage.cache_write_tokens().map(u64::from),
+                cache_read_input_tokens: completion.usage.cache_read_tokens().map(u64::from),
                 reasoning_output_tokens: completion
                     .usage
                     .completion_tokens_details
@@ -670,12 +661,38 @@ struct OpenAiUsage {
     /// `completion_tokens` for o-series reasoning. Optional.
     #[serde(default)]
     completion_tokens_details: Option<OpenAiCompletionTokensDetails>,
+    /// Top-level cache-read count some OpenAI-compatible providers
+    /// list beside (or instead of) `prompt_tokens_details.cached_tokens`
+    /// (Kimi's schema). Read only when the nested field is absent.
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+}
+
+impl OpenAiUsage {
+    /// Prompt tokens served from the cache — part of `prompt_tokens`.
+    fn cache_read_tokens(&self) -> Option<u32> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .or(self.cached_tokens)
+    }
+
+    /// Prompt tokens written to the cache — part of `prompt_tokens`.
+    /// OpenAI does not report it; Kimi does.
+    fn cache_write_tokens(&self) -> Option<u32> {
+        self.prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cache_write_tokens)
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiPromptTokensDetails {
     #[serde(default)]
     cached_tokens: Option<u32>,
+    /// Kimi `prompt_tokens_details.cache_write_tokens`.
+    #[serde(default)]
+    cache_write_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1219,6 +1236,40 @@ mod tests {
         assert_eq!(parsed.usage.cache_creation_input_tokens, None);
         assert_eq!(parsed.usage.cache_read_input_tokens, Some(800));
         assert_eq!(parsed.usage.reasoning_output_tokens, Some(200));
+    }
+
+    /// Kimi reports cache writes beside cache reads in
+    /// `prompt_tokens_details`; a top-level `cached_tokens` is read
+    /// when the nested one is absent.
+    #[test]
+    fn test_parse_response_cache_write_and_top_level_cached() {
+        let adapter = OpenAiAdapter::new();
+        let parse = |usage: serde_json::Value| {
+            adapter
+                .parse_response(
+                    "kimi",
+                    serde_json::json!({
+                        "choices": [{"message": {"role": "assistant", "content": "ok"},
+                                     "finish_reason": "stop"}],
+                        "usage": usage
+                    }),
+                )
+                .unwrap()
+                .usage
+        };
+        let u = parse(serde_json::json!({
+            "prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010,
+            "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 300}
+        }));
+        assert_eq!(u.input, 1000);
+        assert_eq!(u.cache_read_input_tokens, Some(600));
+        assert_eq!(u.cache_creation_input_tokens, Some(300));
+        let u = parse(serde_json::json!({
+            "prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010,
+            "cached_tokens": 700
+        }));
+        assert_eq!(u.cache_read_input_tokens, Some(700));
+        assert_eq!(u.cache_creation_input_tokens, None);
     }
 
     // ---------- F23: prompt-cache wiring on the request body ----------

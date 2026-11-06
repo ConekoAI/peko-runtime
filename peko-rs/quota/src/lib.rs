@@ -17,11 +17,10 @@
 //! ## F17 hook points
 //!
 //! [`meter::QuotaMeter::charge`] takes a
-//! [`peko_message::TokenUsage`] and folds cache +
-//! reasoning into the canonical `input` / `output` buckets via
-//! [`peko_message::TokenUsage::accumulate`]. Callers
-//! should never re-implement that folding inline — `accumulate` is
-//! the single source of truth for "what counts toward quota".
+//! [`peko_message::TokenUsage`] whose `input` / `output` already
+//! include cache and reasoning tokens (adapters normalize them), so
+//! the input limit counts every input token the model read. The cache
+//! split is kept beside it for the hit rate.
 //!
 //! ## Aggregation (B5f)
 //!
