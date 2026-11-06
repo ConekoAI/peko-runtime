@@ -80,6 +80,9 @@ mod account_dms;
 
 #[path = "person_dm.rs"]
 mod person_dm;
+
+#[path = "peko_models.rs"]
+mod peko_models;
 pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
@@ -146,6 +149,8 @@ pub struct TunnelChannelPort {
     /// DM-list requests this runtime sent to its account's other
     /// runtimes, by id, with when (ADR-095 D5).
     account_dm_requests: account_dms::AccountDmRequests,
+    /// Model-list requests waiting for the peko's host (ADR-097 D1).
+    models_pending: Arc<std::sync::Mutex<HashMap<String, peko_models::PendingModels>>>,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -182,6 +187,7 @@ impl TunnelChannelPort {
             wanted_lock: Arc::default(),
             apply_locks: Arc::default(),
             account_dm_requests: Arc::default(),
+            models_pending: Arc::default(),
         }
     }
 
@@ -2001,6 +2007,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let line = port
             .append_remote_event(&channel, &remote_event)
@@ -2091,6 +2098,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let result = port.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -2142,6 +2150,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         port.append_remote_event(&channel, &remote_event)
             .await

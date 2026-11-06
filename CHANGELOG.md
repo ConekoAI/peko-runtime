@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: pick the model for a message to your peko on another computer (2026-11-06, ADR-097)
+
+- A chat with one of your pekos hosted on your other computer now offers the
+  same per-message model picker as a local one, listing that computer's
+  enabled models. New signed tunnel messages `tunnel_peko_models_request` /
+  `tunnel_peko_models` ask the peko's host; it answers only the peko's owner,
+  with model ids and names only. IPC `channel_peko_models { channel }`.
+- A post can carry `model` (`ChannelEvent::Posted::model`, IPC
+  `channel_post.model`, local user only). The host uses it for the turn that
+  post starts only when the turn acts for the peko's owner and the model is
+  enabled there; anything else answers with the peko's own model.
+
 ### Fix: cron recovery tests stop timing out on Windows; Windows CI runs on every PR (2026-11-05)
 
 - Two cron restart-recovery tests fired a `Bash` job (`echo cron-recovered`)

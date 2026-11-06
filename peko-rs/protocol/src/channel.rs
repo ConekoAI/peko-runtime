@@ -355,6 +355,13 @@ pub enum ChannelEvent {
         /// byte-identical to before.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         options: Vec<String>,
+        /// ADR-097 D2: a configured model id the author asks the
+        /// receiving peko to answer this one post with. Honoured only by
+        /// a peko's host for its owner, and only for a model enabled
+        /// there; everything else ignores it. Omitted when absent, so
+        /// lines without it are byte-identical to before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -594,6 +601,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -613,6 +621,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -636,6 +645,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -698,6 +708,7 @@ mod tests {
                     reply_to: None,
                     attachments: Vec::new(),
                     options: Vec::new(),
+                    model: None,
                 },
                 "posted",
             ),

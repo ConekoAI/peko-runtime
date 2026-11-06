@@ -5247,6 +5247,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &old)
@@ -5284,6 +5285,7 @@ mod tests {
                 reply_to: None,
                 attachments: Vec::new(),
                 options: Vec::new(),
+                model: None,
             };
             fx.store
                 .append_remote_event(&fx.channel, &mirrored)

@@ -3626,6 +3626,7 @@ impl ChannelStore {
             reply_to,
             attachments: msg.attachments,
             options,
+            model: msg.model,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
@@ -5032,6 +5033,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -5702,6 +5704,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         }
     }
 
@@ -6557,6 +6560,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -6625,6 +6629,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options,
+            model: None,
         };
         let flood: Vec<String> = (0..50).map(|i| format!("option {i}")).collect();
         store
@@ -6696,6 +6701,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -6715,6 +6721,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -6804,6 +6811,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -6833,6 +6841,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -7049,6 +7058,7 @@ mod tests {
             reply_to: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

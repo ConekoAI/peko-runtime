@@ -14,7 +14,7 @@
 use super::protocol::{
     AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, ExposureUpdatePayload,
     InstanceAnnouncePayload, InstanceDeregisterPayload, InstanceExposure, InstanceHeartbeatPayload,
-    InstanceStatus, InstanceType, StatusUpdatePayload, TunnelMessage,
+    InstanceStatus, InstanceType, PekoModel, StatusUpdatePayload, TunnelMessage,
 };
 use peko_protocol::channel::{
     Attachment, ChannelEvent, ChannelId, ConversationKind, InitialMember,
@@ -66,6 +66,8 @@ fn variant(message: &TunnelMessage) -> &'static str {
         TunnelMessage::TunnelAccountDms { .. } => "tunnel_account_dms",
         TunnelMessage::TunnelPersonDmInvite { .. } => "tunnel_person_dm_invite",
         TunnelMessage::TunnelDmRoute { .. } => "tunnel_dm_route",
+        TunnelMessage::TunnelPekoModelsRequest { .. } => "tunnel_peko_models_request",
+        TunnelMessage::TunnelPekoModels { .. } => "tunnel_peko_models",
         TunnelMessage::GroupRegister { .. } => "group_register",
         TunnelMessage::GroupRegistered { .. } => "group_registered",
         TunnelMessage::GroupRegisterRejected { .. } => "group_register_rejected",
@@ -116,6 +118,8 @@ const ALL_VARIANTS: &[&str] = &[
     "tunnel_account_dms",
     "tunnel_person_dm_invite",
     "tunnel_dm_route",
+    "tunnel_peko_models_request",
+    "tunnel_peko_models",
     "group_register",
     "group_registered",
     "group_register_rejected",
@@ -297,6 +301,7 @@ fn samples() -> Vec<TunnelMessage> {
                 sha256: None,
             }],
             options: vec!["Yes".into(), "Not yet".into()],
+            model: Some("work-model".into()),
         }),
         channel_envelope(ChannelEvent::MemberJoined {
             channel: channel.clone(),
@@ -368,6 +373,7 @@ fn samples() -> Vec<TunnelMessage> {
                     ),
                 }],
                 options: vec!["Yes".into(), "Not yet".into()],
+                model: Some("work-model".into()),
             }],
             has_more: true,
             signature: "runtime-signature".into(),
@@ -448,6 +454,25 @@ fn samples() -> Vec<TunnelMessage> {
             routes: vec![DmRoute {
                 runtime_id: RUNTIME_B.into(),
                 person: format!("user:hub:{HUB_ID}"),
+            }],
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelPekoModelsRequest {
+            request_id: "models-1".into(),
+            source_runtime_id: RUNTIME_B.into(),
+            recipient_runtime_id: RUNTIME_A.into(),
+            source_principal_did: format!("user:hub:{ACCOUNT}"),
+            principal_did: "did:key:z6MkPrincipal".into(),
+            signature: "runtime-signature".into(),
+        },
+        TunnelMessage::TunnelPekoModels {
+            request_id: "models-1".into(),
+            source_runtime_id: RUNTIME_A.into(),
+            recipient_runtime_id: RUNTIME_B.into(),
+            principal_did: "did:key:z6MkPrincipal".into(),
+            models: vec![PekoModel {
+                id: "work-model".into(),
+                display_name: "Work model".into(),
             }],
             signature: "runtime-signature".into(),
         },

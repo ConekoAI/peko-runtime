@@ -961,6 +961,7 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             reply_to,
             attachments,
             options,
+            model,
             ..
         } => ChannelEvent::Posted {
             channel,
@@ -979,6 +980,7 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
                 })
                 .collect(),
             options,
+            model,
         },
         other => other,
     }
@@ -1024,6 +1026,9 @@ pub struct PostMsg {
     /// Suggested replies (ADR-093); empty for most posts. The store
     /// refuses a post whose options break [`validate_options`].
     pub options: Vec<String>,
+    /// ADR-097 D2: the model the author asks the receiving peko to
+    /// answer with, for this post only. `None` for most posts.
+    pub model: Option<String>,
 }
 
 impl PostMsg {
@@ -1036,6 +1041,7 @@ impl PostMsg {
             msg_id: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         }
     }
 
@@ -1048,6 +1054,7 @@ impl PostMsg {
             msg_id: None,
             attachments: Vec::new(),
             options: Vec::new(),
+            model: None,
         }
     }
 
@@ -1072,6 +1079,13 @@ impl PostMsg {
     #[must_use]
     pub fn with_options(mut self, options: Vec<String>) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Ask the receiving peko to answer with `model` (ADR-097 D2).
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
         self
     }
 

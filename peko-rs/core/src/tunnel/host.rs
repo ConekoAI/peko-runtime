@@ -148,11 +148,26 @@ pub trait TunnelHost: Send + Sync {
     ///
     /// ADR-094: `attachments` are the post's files; those that arrived are
     /// in the channel's file store under their digest.
+    ///
+    /// ADR-097 D2: `model` is the model the post asks for; the turn uses
+    /// it only when it acts for the peko's owner and the model is enabled
+    /// here.
     async fn human_dm_post(
         &self,
         channel: peko_protocol::channel::ChannelId,
         author: peko_subject::ActorRef,
         text: String,
         attachments: Vec<peko_protocol::channel::Attachment>,
+        model: Option<String>,
     );
+
+    /// ADR-097 D1: the models `person` (`user:hub:<account>`) may pick for
+    /// the peko hosted here whose signing DID is `principal_did` — this
+    /// runtime's enabled models, when `person` is the peko's owner; none
+    /// otherwise (and none for a peko not hosted here).
+    async fn peko_models_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Vec<crate::tunnel::PekoModel>;
 }
