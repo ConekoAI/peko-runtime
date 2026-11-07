@@ -2430,7 +2430,15 @@ invitation and takes the home's roster as the answer.
 {"type":"tunnel_group_invitation","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","channelId":"chan_…","name":"book club","inviter":"principal:hub:<UUID>","initialMembers":[…],"signature":"<JWS>"}
 {"type":"tunnel_group_join","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"user:hub:<account>","channelId":"chan_…","accept":true,"signature":"<JWS>"}
 {"type":"tunnel_group_join_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"user:hub:<account>","channelId":"chan_…","invite":"<token>","signature":"<JWS>"}
+{"type":"tunnel_group_join_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:<home>","sourcePrincipalDid":"did:key:<peko>","sourceHubId":"<peko Hub ID>","channelId":"chan_…","invite":"<token>","signature":"<JWS>"}
 ```
+
+The second form is a peko asking for itself (ADR-098 D2); `sourceHubId` is in the
+signed payload. Its runtime keeps the request in
+`<runtime>/peko_join_requests/<principal>__<channel>.json`
+(`{channel, principal, home_runtime, requested_at}`) until the home's invitation
+for that channel from that runtime arrives (at most a week), and the outbox entry
+`group_join_request` carries `peko: <local id>`.
 
 Between a runtime and PekoHub (ADR-092 D4–D6), unsigned:
 
