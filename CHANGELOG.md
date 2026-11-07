@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: approve or deny your peko's waiting requests from any of your computers (ADR-099) (2026-11-07)
+
+- A peko's owner on another of their computers can list its approval
+  requests and approve or deny them there: the desktop's Approve / Always
+  allow / Deny now work for your pekos elsewhere, not only on the peko's
+  own computer (2026-11-07 field test).
+- Four runtime-signed tunnel messages between two runtimes of one account:
+  `tunnel_peko_approvals_request` / `tunnel_peko_approvals` (the waiting
+  requests, as `approval_list` shows them) and
+  `tunnel_peko_approval_decide` / `tunnel_peko_approval_decided` (the
+  decision and what the host did). The host answers or applies them only
+  for the peko's owner, through the same `decide_request` as
+  `approval_decide`; the audit record names the runtime the decision came
+  from (`via_runtime`).
+- IPC `channel_peko_approvals { channel }` and
+  `channel_peko_approval_decide { channel, id, approve, always }` (local
+  user only) on the owner's other computer.
+
 ### Fix: a computer is named after itself, not "peko-runtime" (2026-11-07)
 
 - A runtime takes its computer's name (`HostInfo::computer_name`: the macOS

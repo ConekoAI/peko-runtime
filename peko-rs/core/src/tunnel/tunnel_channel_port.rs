@@ -83,6 +83,9 @@ mod person_dm;
 
 #[path = "peko_models.rs"]
 mod peko_models;
+
+#[path = "remote_approvals.rs"]
+mod remote_approvals;
 pub use attachment_transfer::CHUNK_BYTES as ATTACHMENT_CHUNK_BYTES;
 pub use dm_history::{HistoryPage, HISTORY_PAGE_LIMIT};
 pub use group_hub::{INVITE_LINK_DAYS, INVITE_LINK_MAX_DAYS};
@@ -151,6 +154,9 @@ pub struct TunnelChannelPort {
     account_dm_requests: account_dms::AccountDmRequests,
     /// Model-list requests waiting for the peko's host (ADR-097 D1).
     models_pending: Arc<std::sync::Mutex<HashMap<String, peko_models::PendingModels>>>,
+    /// Approval list and decision requests waiting for the peko's host
+    /// (ADR-099).
+    approvals_pending: Arc<std::sync::Mutex<HashMap<String, remote_approvals::PendingApproval>>>,
 }
 
 /// How often pending envelopes are considered for a resend.
@@ -188,6 +194,7 @@ impl TunnelChannelPort {
             apply_locks: Arc::default(),
             account_dm_requests: Arc::default(),
             models_pending: Arc::default(),
+            approvals_pending: Arc::default(),
         }
     }
 

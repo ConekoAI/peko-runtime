@@ -46,7 +46,8 @@ pub use invite_token::{
 };
 pub use local_directory::LocalFirstAgentDirectory;
 pub use protocol::{
-    AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, PekoModel, TunnelMessage,
+    AccountDm, AccountGroup, AccountPersonDm, DmBlock, DmRoute, PekoApproval, PekoModel,
+    TunnelMessage,
 };
 pub use tunnel_channel_audit::{emit_forwarded_outbound, emit_received_inbound};
 pub use tunnel_channel_port::{
@@ -71,6 +72,12 @@ pub use tunnel_channel_signature::{
     verify_group_invitation, verify_group_join, verify_group_join_request, GroupInvitationPayload,
     GroupInviteToken, GroupJoinPayload, GroupJoinRequestPayload, GROUP_INVITATION_VERSION,
     GROUP_INVITE_TOKEN_VERSION, GROUP_JOIN_REQUEST_VERSION, GROUP_JOIN_VERSION,
+};
+pub use tunnel_channel_signature::{
+    verify_peko_approval_decide, verify_peko_approval_decided, verify_peko_approvals,
+    verify_peko_approvals_request, PekoApprovalDecidePayload, PekoApprovalDecidedPayload,
+    PekoApprovalsPayload, PekoApprovalsRequestPayload, PEKO_APPROVALS_REQUEST_VERSION,
+    PEKO_APPROVALS_VERSION, PEKO_APPROVAL_DECIDED_VERSION, PEKO_APPROVAL_DECIDE_VERSION,
 };
 pub use tunnel_channel_signature::{
     verify_peko_models, verify_peko_models_request, PekoModelsPayload, PekoModelsRequestPayload,

@@ -1016,6 +1016,27 @@ pub enum RequestPacket {
     #[serde(rename = "channel_peko_models")]
     ChannelPekoModels { request_id: u64, channel: String },
 
+    /// The approval requests waiting for you, the owner of the peko in
+    /// `channel` — this account's DM with one of its pekos on another
+    /// runtime — from the peko's host (ADR-099 D1). Local callers only;
+    /// answered with `ChannelPekoApprovalsResult`.
+    #[serde(rename = "channel_peko_approvals")]
+    ChannelPekoApprovals { request_id: u64, channel: String },
+
+    /// Your decision on approval request `id` of the peko in `channel`,
+    /// applied by its host as `approval_decide` (ADR-099 D2). The owner's
+    /// own action — the desktop's buttons — never a message. Local
+    /// callers only; answered with `ApprovalDecided`.
+    #[serde(rename = "channel_peko_approval_decide")]
+    ChannelPekoApprovalDecide {
+        request_id: u64,
+        channel: String,
+        id: String,
+        approve: bool,
+        #[serde(default)]
+        always: bool,
+    },
+
     /// The groups inviting this runtime's person (ADR-092 D2), newest
     /// first. Local callers only; answered with `ChannelInvitationsResult`.
     #[serde(rename = "channel_invitations")]
@@ -1176,6 +1197,8 @@ impl RequestPacket {
             | Self::ChannelBlocked { request_id }
             | Self::ChannelHistoryOlder { request_id, .. }
             | Self::ChannelPekoModels { request_id, .. }
+            | Self::ChannelPekoApprovals { request_id, .. }
+            | Self::ChannelPekoApprovalDecide { request_id, .. }
             | Self::ChannelInvitations { request_id }
             | Self::ChannelPersonGroups { request_id }
             | Self::ChannelInvitationAnswer { request_id, .. }
@@ -1675,6 +1698,15 @@ pub enum ResponsePacket {
     ChannelPekoModelsResult {
         request_id: u64,
         models: Vec<crate::tunnel::PekoModel>,
+    },
+
+    /// Response to `ChannelPekoApprovals` (ADR-099 D1): the requests
+    /// waiting on the peko's host, oldest first, as `approval_list`
+    /// reports them; empty when the host shows this person none.
+    #[serde(rename = "channel_peko_approvals_result")]
+    ChannelPekoApprovalsResult {
+        request_id: u64,
+        approvals: Vec<ApprovalInfo>,
     },
 
     /// Response to `ChannelHistoryOlder` (ADR-091 D4): posts, oldest
@@ -3080,6 +3112,7 @@ impl ResponsePacket {
             | Self::ChannelBlockedPeople { request_id, .. }
             | Self::ChannelHistoryPage { request_id, .. }
             | Self::ChannelPekoModelsResult { request_id, .. }
+            | Self::ChannelPekoApprovalsResult { request_id, .. }
             | Self::ChannelInvitationsResult { request_id, .. }
             | Self::ChannelPersonGroupsResult { request_id, .. }
             | Self::ChannelGroupJoined { request_id, .. }
@@ -3180,6 +3213,7 @@ impl ResponsePacket {
             Self::ChannelBlockedPeople { .. } => "ChannelBlockedPeople",
             Self::ChannelHistoryPage { .. } => "ChannelHistoryPage",
             Self::ChannelPekoModelsResult { .. } => "ChannelPekoModelsResult",
+            Self::ChannelPekoApprovalsResult { .. } => "ChannelPekoApprovalsResult",
             Self::ChannelInvitationsResult { .. } => "ChannelInvitationsResult",
             Self::ChannelPersonGroupsResult { .. } => "ChannelPersonGroupsResult",
             Self::ChannelGroupJoined { .. } => "ChannelGroupJoined",

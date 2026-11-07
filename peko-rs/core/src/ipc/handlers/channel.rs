@@ -1064,6 +1064,79 @@ impl ChannelHandler {
         }
     }
 
+    /// `ChannelPekoApprovals` / `ChannelPekoApprovalDecide` (ADR-099): the
+    /// owner lists or decides their remote peko's waiting requests.
+    async fn channel_peko_approvals(
+        &self,
+        request: RequestPacket,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        let request_id = request.request_id();
+        if !caller.is_local() {
+            return error_reply(
+                sink,
+                request_id,
+                "[permission_denied] only the local user decides a peko's approvals".to_string(),
+            )
+            .await;
+        }
+        let (RequestPacket::ChannelPekoApprovals { channel, .. }
+        | RequestPacket::ChannelPekoApprovalDecide { channel, .. }) = &request
+        else {
+            return Ok(());
+        };
+        let Some(channel) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        let Some(port) = self.host.tunnel_channel_port() else {
+            return error_reply(
+                sink,
+                request_id,
+                "This runtime has no PekoHub connection".to_string(),
+            )
+            .await;
+        };
+        let response = match request {
+            RequestPacket::ChannelPekoApprovalDecide {
+                id,
+                approve,
+                always,
+                ..
+            } => port
+                .decide_peko_approval(&channel, &id, approve, always)
+                .await
+                .map(|message| ResponsePacket::ApprovalDecided {
+                    request_id,
+                    id,
+                    approved: approve,
+                    message,
+                }),
+            _ => port.peko_approvals(&channel).await.map(|approvals| {
+                ResponsePacket::ChannelPekoApprovalsResult {
+                    request_id,
+                    approvals: approvals
+                        .into_iter()
+                        .map(|a| crate::ipc::packet::ApprovalInfo {
+                            id: a.id,
+                            actor: a.actor,
+                            actor_name: a.actor_name,
+                            trust: a.trust,
+                            summary: a.summary,
+                            reason: a.reason,
+                            created_at: a.created_at,
+                            expires_at: a.expires_at,
+                        })
+                        .collect(),
+                }
+            }),
+        };
+        match response {
+            Ok(response) => send_response(sink, response).await,
+            Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
+        }
+    }
+
     /// The principal hosted here under `local_id`, if any.
     async fn hosted_principal(&self, local_id: &str) -> Option<Arc<crate::principal::Principal>> {
         self.host
@@ -1144,6 +1217,8 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelBlocked { .. }
                 | RequestPacket::ChannelHistoryOlder { .. }
                 | RequestPacket::ChannelPekoModels { .. }
+                | RequestPacket::ChannelPekoApprovals { .. }
+                | RequestPacket::ChannelPekoApprovalDecide { .. }
                 | RequestPacket::ChannelInvitations { .. }
                 | RequestPacket::ChannelPersonGroups { .. }
                 | RequestPacket::ChannelInvitationAnswer { .. }
@@ -1190,7 +1265,9 @@ impl RequestHandler for ChannelHandler {
         | RequestPacket::ChannelPeek { channel, .. }
         | RequestPacket::ChannelEventsWatch { channel, .. }
         | RequestPacket::ChannelHistoryOlder { channel, .. }
-        | RequestPacket::ChannelPekoModels { channel, .. } = &request
+        | RequestPacket::ChannelPekoModels { channel, .. }
+        | RequestPacket::ChannelPekoApprovals { channel, .. }
+        | RequestPacket::ChannelPekoApprovalDecide { channel, .. } = &request
         {
             if let (Some(port), Some(id)) =
                 (self.host.tunnel_channel_port(), ChannelId::parse(channel))
@@ -1888,6 +1965,11 @@ impl RequestHandler for ChannelHandler {
             } => {
                 self.channel_peko_models(request_id, &channel, caller, sink)
                     .await?;
+            }
+
+            request @ (RequestPacket::ChannelPekoApprovals { .. }
+            | RequestPacket::ChannelPekoApprovalDecide { .. }) => {
+                self.channel_peko_approvals(request, caller, sink).await?;
             }
 
             RequestPacket::ChannelHistoryOlder {
@@ -2719,6 +2801,46 @@ mod tests {
                 RequestPacket::ChannelPekoModels {
                     request_id: 9,
                     channel: dm.into(),
+                },
+                test_caller(),
+                "no PekoHub connection",
+            ),
+            // ADR-099: and only the local user lists or decides its
+            // remote peko's approvals.
+            (
+                RequestPacket::ChannelPekoApprovals {
+                    request_id: 9,
+                    channel: dm.into(),
+                },
+                jwt.clone(),
+                "[permission_denied]",
+            ),
+            (
+                RequestPacket::ChannelPekoApprovalDecide {
+                    request_id: 9,
+                    channel: dm.into(),
+                    id: "apr_0123456789ab".into(),
+                    approve: true,
+                    always: false,
+                },
+                jwt.clone(),
+                "[permission_denied]",
+            ),
+            (
+                RequestPacket::ChannelPekoApprovals {
+                    request_id: 9,
+                    channel: dm.into(),
+                },
+                test_caller(),
+                "no PekoHub connection",
+            ),
+            (
+                RequestPacket::ChannelPekoApprovalDecide {
+                    request_id: 9,
+                    channel: dm.into(),
+                    id: "apr_0123456789ab".into(),
+                    approve: false,
+                    always: false,
                 },
                 test_caller(),
                 "no PekoHub connection",

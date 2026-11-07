@@ -54,6 +54,8 @@
   {"type": "channel_members", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh"},
   {"type": "channel_post", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "sender_name": null, "text": "hello", "parent": null, "attachments": ["/Users/me/photo.png"], "model": "work-model"},
   {"type": "channel_peko_models", "protocol_version": 1, "request_id": 1, "channel": "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+  {"type": "channel_peko_approvals", "protocol_version": 1, "request_id": 1, "channel": "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+  {"type": "channel_peko_approval_decide", "protocol_version": 1, "request_id": 1, "channel": "dm_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "id": "apr_0123456789ab", "approve": true, "always": false},
   {"type": "channel_create", "protocol_version": 1, "request_id": 1, "creator_name": "alice", "name": "team"},
   {"type": "channel_invite", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "inviter_name": "alice", "invitee_name": "bob"},
   {"type": "channel_leave", "protocol_version": 1, "request_id": 1, "channel": "chan_abcdefgh", "principal_name": "alice"},

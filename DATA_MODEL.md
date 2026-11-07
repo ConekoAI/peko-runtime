@@ -2369,6 +2369,30 @@ both only between two runtimes of the same account. IPC:
 (local callers; `channel` is the account's DM with a peko on another runtime;
 an unanswered request fails after 15 s).
 
+### 5¾.2⅞⁻ A peko's approval requests from its owner's other computer (2026-11-07, ADR-099)
+
+The owner's other computer lists and decides the peko's pending requests
+(`<peko local>/approvals/`) on its host, through PekoHub:
+
+```json
+{"type":"tunnel_peko_approvals_request","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","sourcePrincipalDid":"user:hub:<account>","principalDid":"did:key:<peko>","signature":"<JWS>"}
+{"type":"tunnel_peko_approvals","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","principalDid":"did:key:<peko>","approvals":[{"id":"apr_…","actor":"user:hub:…","actorName":"Noah","trust":"untrusted","summary":"`Read` (file_path=…)","reason":"…","createdAt":"<RFC 3339>","expiresAt":"<RFC 3339>"}],"signature":"<JWS>"}
+{"type":"tunnel_peko_approval_decide","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","sourcePrincipalDid":"user:hub:<account>","principalDid":"did:key:<peko>","approvalId":"apr_…","approve":true,"always":false,"signature":"<JWS>"}
+{"type":"tunnel_peko_approval_decided","requestId":"…","sourceRuntimeId":"did:key:…","recipientRuntimeId":"did:key:…","principalDid":"did:key:<peko>","approvalId":"apr_…","decided":true,"message":"Approved apr_… Running it …","signature":"<JWS>"}
+```
+
+Signed payloads: `peko-peko-approvals-request/1`, `peko-peko-approvals/1`
+(… with `approvalsB64u`, the serialized list), `peko-peko-approval-decide/1`
+and `peko-peko-approval-decided/1` — every field but the signature, plus
+`iat`/`exp` (five minutes). The host lists, and applies a decision, only
+when `sourcePrincipalDid` owns the peko (an empty list, or `decided: false`
+with the reason, otherwise). PekoHub relays all four only between two
+runtimes of the same account. IPC: `channel_peko_approvals { channel }` →
+`channel_peko_approvals_result { approvals }` (`approval_list`'s shape) and
+`channel_peko_approval_decide { channel, id, approve, always }` →
+`approval_decided { id, approved, message }` (local callers; an unanswered
+request fails after 15 s).
+
 ### 5¾.2¾ A conversation's last failed run (2026-10-31, ADR-089 D5)
 
 A failed run writes nothing into the DM channel (the retired

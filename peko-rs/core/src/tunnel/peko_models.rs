@@ -35,15 +35,27 @@ fn models_b64u(models: &[PekoModel]) -> String {
     PekoModelsPayload::models_b64u_of(&serde_json::to_vec(models).unwrap_or_default())
 }
 
+/// The account's own peko on another runtime that a DM here talks to.
+pub(super) struct OwnDmPeko {
+    pub ctx: std::sync::Arc<crate::tunnel::CrossRuntimeChannelCtx>,
+    /// This runtime's Hub account (`<account>`, no prefix).
+    pub account: String,
+    /// The peko's host.
+    pub runtime_id: String,
+    /// The peko's signing DID.
+    pub principal_did: String,
+    pub handle: TunnelHandle,
+}
+
 impl TunnelChannelPort {
-    /// The models the peko in `channel` — this account's DM with a peko on
-    /// another runtime — can answer its owner with, from its host.
+    /// The peko in `channel` — this account's DM with one of its pekos on
+    /// another runtime — with what it takes to ask its host something.
     ///
     /// # Errors
     ///
-    /// The channel is not this account's DM with a peko elsewhere, this
-    /// runtime has no PekoHub connection, or the host does not answer.
-    pub async fn peko_models(&self, channel: &ChannelId) -> anyhow::Result<Vec<PekoModel>> {
+    /// The channel is not this account's DM with a peko elsewhere, or this
+    /// runtime has no PekoHub connection.
+    pub(super) async fn own_dm_peko(&self, channel: &ChannelId) -> anyhow::Result<OwnDmPeko> {
         let ctx = self
             .ctx
             .read()
@@ -75,15 +87,39 @@ impl TunnelChannelPort {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Not connected to PekoHub"))?;
+        Ok(OwnDmPeko {
+            ctx,
+            account,
+            runtime_id: peko.runtime_id,
+            principal_did: peko.principal_id,
+            handle,
+        })
+    }
+
+    /// The models the peko in `channel` — this account's DM with a peko on
+    /// another runtime — can answer its owner with, from its host.
+    ///
+    /// # Errors
+    ///
+    /// The channel is not this account's DM with a peko elsewhere, this
+    /// runtime has no PekoHub connection, or the host does not answer.
+    pub async fn peko_models(&self, channel: &ChannelId) -> anyhow::Result<Vec<PekoModel>> {
+        let OwnDmPeko {
+            ctx,
+            account,
+            runtime_id,
+            principal_did,
+            handle,
+        } = self.own_dm_peko(channel).await?;
         let request_id = uuid::Uuid::new_v4().to_string();
         let iat = chrono::Utc::now().timestamp();
         let payload = PekoModelsRequestPayload {
             v: PEKO_MODELS_REQUEST_VERSION.into(),
             request_id: request_id.clone(),
             source_runtime_id: ctx.caller_runtime_id.clone(),
-            recipient_runtime_id: peko.runtime_id.clone(),
+            recipient_runtime_id: runtime_id.clone(),
             source_principal_did: format!("user:hub:{account}"),
-            principal_did: peko.principal_id.clone(),
+            principal_did: principal_did.clone(),
             iat,
             exp: iat + 300,
         };
@@ -92,8 +128,8 @@ impl TunnelChannelPort {
         self.models_pending.lock().expect("models pending").insert(
             request_id.clone(),
             PendingModels {
-                host: peko.runtime_id.clone(),
-                principal_did: peko.principal_id.clone(),
+                host: runtime_id.clone(),
+                principal_did: principal_did.clone(),
                 reply,
             },
         );

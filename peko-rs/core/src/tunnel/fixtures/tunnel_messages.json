@@ -451,6 +451,58 @@
     "signature": "runtime-signature"
   },
   {
+    "type": "tunnel_peko_approvals_request",
+    "requestId": "approvals-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "principalDid": "did:key:z6MkPrincipal",
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_peko_approvals",
+    "requestId": "approvals-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "principalDid": "did:key:z6MkPrincipal",
+    "approvals": [
+      {
+        "id": "apr_0123456789ab",
+        "actor": "user:hub:156f1a95-d977-4c4a-979e-8ed4848ae6eb",
+        "actorName": "Noah",
+        "trust": "untrusted",
+        "summary": "`Read` (file_path=finances/q3.md)",
+        "reason": "finances are private",
+        "createdAt": "2026-11-07T10:00:00+00:00",
+        "expiresAt": "2026-11-08T10:00:00+00:00"
+      }
+    ],
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_peko_approval_decide",
+    "requestId": "decide-1",
+    "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "recipientRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "sourcePrincipalDid": "user:hub:0b6c7a4e-1d2f-4a3b-8c9d-0e1f2a3b4c5d",
+    "principalDid": "did:key:z6MkPrincipal",
+    "approvalId": "apr_0123456789ab",
+    "approve": true,
+    "always": false,
+    "signature": "runtime-signature"
+  },
+  {
+    "type": "tunnel_peko_approval_decided",
+    "requestId": "decide-1",
+    "sourceRuntimeId": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    "recipientRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+    "principalDid": "did:key:z6MkPrincipal",
+    "approvalId": "apr_0123456789ab",
+    "decided": true,
+    "message": "Approved apr_0123456789ab.",
+    "signature": "runtime-signature"
+  },
+  {
     "type": "tunnel_group_invitation",
     "requestId": "ginv-1",
     "sourceRuntimeId": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",

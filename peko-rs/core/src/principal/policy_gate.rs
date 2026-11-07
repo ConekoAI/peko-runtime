@@ -9,7 +9,8 @@
 //! - **Approvals.** A request is stored in the principal's local tier
 //!   (`approvals/<id>.json`) and announced in the owner's conversation.
 //!   The owner decides with their own action — the desktop's Approve /
-//!   Deny, or `peko approve` / `peko deny` (IPC `approval_decide`) —
+//!   Deny, or `peko approve` / `peko deny` (IPC `approval_decide`); from
+//!   another of their computers, the desktop's buttons there (ADR-099) —
 //!   never in a message, so no model reading the conversation can approve
 //!   on the owner's behalf. An approved call replays as a background task
 //!   acting for the original requester, and its result wakes the session
@@ -701,6 +702,19 @@ pub async fn decide_request(
     id: &str,
     decision: Decision,
 ) -> Result<String> {
+    decide_request_via(manager, principal, id, decision, None).await
+}
+
+/// [`decide_request`] for a decision the owner made on another of their
+/// computers (ADR-099 D2): `via` is that computer's runtime, kept in the
+/// audit record.
+pub async fn decide_request_via(
+    manager: &Arc<PrincipalManager>,
+    principal: &Arc<Principal>,
+    id: &str,
+    decision: Decision,
+    via: Option<&str>,
+) -> Result<String> {
     let dir = approvals_dir(principal);
     let reply = match decision {
         Decision::Deny => {
@@ -733,6 +747,7 @@ pub async fn decide_request(
                 serde_json::json!({
                     "principal_id": principal.id.0,
                     "request_id": id,
+                    "via_runtime": via,
                     "decision": match decision {
                         Decision::Approve { always: true } => "approve_always",
                         Decision::Approve { always: false } => "approve",
