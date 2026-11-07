@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: `peko auth status` runs, group cursors live in the group's folder, and the policy reviewer's answers are read (2026-11-07)
+
+- `peko auth status` and the hidden `peko auth api-key` commands no longer
+  panic with "Cannot start a runtime from within a runtime": they now run on
+  the CLI's own runtime.
+- Channel subscribers keep `cursors.json` in the channel's own directory
+  (`channels/group.3A.<slug>/`), not a raw `channels/group:<slug>/` beside
+  it — a name Windows cannot create. Cursors an earlier build left under the
+  raw name are moved over once, so the subscriber resumes instead of
+  replaying the group's history.
+- The policy reviewer gets 2,048 output tokens instead of 300, and an answer
+  cut off at the cap is asked once more with four times the room. Claude
+  Sonnet 5.5 sometimes thinks before answering even when not asked to, and
+  thinking counts against the cap: the answer was often cut off
+  before its JSON, so every reviewed call went to the owner as "the
+  reviewer's answer could not be read".
+
 ### Fix: spend counts the prompt cache, and input tokens mean the same thing for every model (2026-11-06)
 
 - `TokenUsage::input` and `StreamEvent::Usage::input` are every input token,
