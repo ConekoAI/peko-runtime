@@ -2263,6 +2263,20 @@ impl crate::tunnel::TunnelHost for AppState {
             )
             .await?;
 
+        // A group the peko joined, by invitation or by its own link
+        // request, gets its group session and binding here, as one it
+        // creates does: without them its keepalive has no conversation
+        // to answer other pekos' posts in (ADR-096 D1).
+        if invite.kind == peko_channel::ConversationKind::Group {
+            if let Err(e) = self
+                .principal_manager
+                .ensure_group_binding(&principal, &channel)
+                .await
+            {
+                tracing::warn!(%channel, "group mirror: no group session bound: {e:#}");
+            }
+        }
+
         // 4. Live subscriber — closes the Phase 10 live-hook gap:
         //    the mirror gets its subscriber immediately, with the same
         //    responder the boot sweep would pick (`select_responder`).

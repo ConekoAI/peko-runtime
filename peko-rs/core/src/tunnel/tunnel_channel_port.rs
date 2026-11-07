@@ -1655,6 +1655,9 @@ impl ChannelPort for TunnelChannelPort {
                 self.sync_group_membership(channel, inviter, &signer)
                     .await?;
             }
+            if matches!(invitee, ActorRef::User(_)) {
+                self.report_group_roster_at_home(&ctx, channel).await;
+            }
             return Ok(());
         }
         let hub_id = known
@@ -1837,10 +1840,18 @@ impl ChannelPort for TunnelChannelPort {
     }
 
     async fn leave_actor(&self, channel: &ChannelId, subject: &ActorRef) -> Result<()> {
-        let subject = subject.clone();
-        if !self.local.list_members(channel).await?.contains(&subject) {
+        // Either of an actor's addresses names it (ADR-081): the store may
+        // keep this runtime's person as `user:local` though asked by Hub ID.
+        let key = self.local.key_of(subject);
+        let Some(subject) = self
+            .local
+            .list_members(channel)
+            .await?
+            .into_iter()
+            .find(|m| self.local.key_of(m) == key)
+        else {
             return Ok(());
-        }
+        };
         self.local.leave_actor(channel, &subject).await?;
         let event = ChannelEvent::MemberLeft {
             channel: channel.clone(),
@@ -1849,7 +1860,13 @@ impl ChannelPort for TunnelChannelPort {
         };
         self.fanout_event(channel, &event, &subject)
             .await
-            .map_err(peko_channel::ChannelError::Adapter)
+            .map_err(peko_channel::ChannelError::Adapter)?;
+        if matches!(subject, ActorRef::User(_)) {
+            if let Some(ctx) = self.ctx.read().await.clone() {
+                self.report_group_roster_at_home(&ctx, channel).await;
+            }
+        }
+        Ok(())
     }
 
     async fn list_members(&self, channel: &ChannelId) -> Result<Vec<ActorRef>> {

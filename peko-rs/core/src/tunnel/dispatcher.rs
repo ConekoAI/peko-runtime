@@ -7119,6 +7119,97 @@ mod tests {
     /// revoked link and a link-less request to an invite-only group admit
     /// no one; and a member without a runtime reads the group's history
     /// through PekoHub's proxy.
+    /// ADR-092 D4: a peko registers its group first and adds its owner
+    /// after. The home tells PekoHub again, so the group follows the owner
+    /// to their other computers; leaving is reported the same way.
+    #[tokio::test]
+    async fn the_home_reports_its_person_added_after_registering() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, CreateOpts, GroupVisibility};
+
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let group_id = "1234567890123456780".to_string();
+        let mut h = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &h.app,
+            "host",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let h_port = h.app.tunnel_channel_port();
+        h_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("host"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        let owner_account = uuid::Uuid::new_v4().to_string();
+        h_port
+            .local()
+            .link_local_user(&h.app.runtime_did(), &owner_account)
+            .await
+            .unwrap();
+        let channel = h_port
+            .create(&peko.id, CreateOpts::runtime("repo"))
+            .await
+            .unwrap();
+        let registering = {
+            let port = Arc::clone(&h_port);
+            let (channel, by) = (channel.clone(), peko.id.clone());
+            tokio::spawn(async move {
+                port.register_group(&channel, &by, GroupVisibility::InviteOnly)
+                    .await
+            })
+        };
+        let gid = group_id.clone();
+        hub_answers(
+            &mut h,
+            |m| match m {
+                TunnelMessage::GroupRegister { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            },
+            |request_id| TunnelMessage::GroupRegistered {
+                request_id,
+                group_id: gid.clone(),
+                page_url: format!("https://hub.test/g/{gid}"),
+            },
+        )
+        .await;
+        registering.await.unwrap().unwrap();
+        let _ = h.sent();
+
+        let owner = ActorRef::User(peko_subject::Route::hub(owner_account.clone()));
+        h_port.invite(&channel, &peko.id, &owner).await.unwrap();
+        assert!(
+            h.sent().iter().any(|m| matches!(m,
+                TunnelMessage::GroupRoster { group_id: g, accounts }
+                    if *g == group_id && *accounts == vec![owner_account.clone()])),
+            "adding its own person after registering is reported"
+        );
+
+        h_port.leave_actor(&channel, &owner).await.unwrap();
+        assert!(
+            h.sent().iter().any(|m| matches!(m,
+                TunnelMessage::GroupRoster { group_id: g, accounts }
+                    if *g == group_id && accounts.is_empty())),
+            "and so is their leaving"
+        );
+    }
+
     #[tokio::test]
     async fn people_join_a_registered_group_by_link_and_on_new_devices() {
         use crate::tunnel::hub_directory::FakeAgentDirectory;
@@ -7712,6 +7803,21 @@ mod tests {
             .await
             .unwrap()
             .contains(&ActorRef::User("local".into())));
+        // The home names it as PekoHub does, so `@name` mentions work there.
+        assert_eq!(
+            h_port.actor_info(&ada_ref).await.name.as_deref(),
+            Some("ada")
+        );
+        // Its own runtime binds it a group session, so its keepalive can
+        // answer other pekos' posts in the group.
+        assert!(
+            p_port
+                .binding_for(&channel, &ada.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the joined group is bound to a session of ada's"
+        );
 
         // D3: the group's peko opens a first DM with ada; ada takes it.
         let dm = h_port

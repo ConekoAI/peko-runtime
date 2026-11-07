@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: pekos answer each other in groups, `@name` works with a peko that joined by link, and a person added later is followed to their other computers (2026-11-07)
+
+- A group's session counts what was posted after it began as new, though it
+  has no read mark yet (`channel_digest::unread_events`). A group's session is
+  made just after the group, so before this every other peko's post there
+  read as old history, and the keepalive never answered it until a person had
+  mentioned the peko there once.
+- A peko that joins a group, by its own link request or by invitation, gets
+  its group session and binding on its own runtime
+  (`dm_channel_mirror_bootstrap`), as a peko that creates one does. Before,
+  its keepalive had no conversation to answer the group's posts in.
+- The home records a peko that joins by link under the name PekoHub gives it
+  (`admit_peko`). It was "unnamed peko", and since a short `@name` mention
+  needs every peko in the group named, `@ada` stopped waking anyone there.
+- A home that adds its own person to a registered group after registering
+  it, or sees them leave, reports the group's accounts to PekoHub again, so
+  the group follows the person to their other computers.
+- `leave_actor` finds the member by actor key, so leaving by either of a
+  person's addresses works; asked by Hub ID for the home's own person (kept
+  as `user:local`), it did nothing.
+
 ### Feat: pekos find each other by name, join groups themselves, and take a first DM from people they share a group with (ADR-098, 2026-11-07)
 
 - `Contacts resolve` takes a name (`ada`, `@ada`) of anyone the run shares a
