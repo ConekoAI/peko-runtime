@@ -54,7 +54,48 @@ impl HostInfo {
 
         Self { os, arch, hostname }
     }
+
+    /// The name people know this computer by: its macOS computer name
+    /// ("Maya's MacBook Pro"), Windows `COMPUTERNAME`, else the hostname
+    /// without a `.local` suffix. Shown to the owner wherever their pekos
+    /// are listed by the computer they run on.
+    #[must_use]
+    pub fn computer_name() -> String {
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(name) = std::process::Command::new("scutil")
+                .args(["--get", "ComputerName"])
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+            {
+                return name;
+            }
+        }
+        #[cfg(windows)]
+        {
+            if let Some(name) = std::env::var("COMPUTERNAME")
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+            {
+                return name;
+            }
+        }
+        let host = Self::detect().hostname;
+        let host = host.strip_suffix(".local").unwrap_or(&host);
+        if host.is_empty() || host == "unknown" {
+            DEFAULT_DISPLAY_NAME.to_string()
+        } else {
+            host.to_string()
+        }
+    }
 }
+
+/// What a runtime was called before it was named after its computer.
+const DEFAULT_DISPLAY_NAME: &str = "Peko Runtime";
 
 impl RuntimeMetadata {
     /// Create new runtime metadata with detected host info
@@ -63,7 +104,7 @@ impl RuntimeMetadata {
         let now = Utc::now();
         Self {
             runtime_id: runtime_id.into(),
-            display_name: "Peko Runtime".to_string(),
+            display_name: HostInfo::computer_name(),
             created_at: now,
             last_seen_at: now,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -84,6 +125,10 @@ impl RuntimeMetadata {
 
             // Update last_seen_at on every load
             metadata.last_seen_at = Utc::now();
+            // Runtimes made before naming took the computer's name.
+            if metadata.display_name == DEFAULT_DISPLAY_NAME {
+                metadata.display_name = HostInfo::computer_name();
+            }
 
             // Save updated metadata
             let toml = toml::to_string_pretty(&metadata)
@@ -134,6 +179,14 @@ mod tests {
         assert!(!info.os.is_empty());
         assert!(!info.arch.is_empty());
         assert!(!info.hostname.is_empty());
+    }
+
+    #[test]
+    fn a_runtime_is_named_after_its_computer() {
+        let name = HostInfo::computer_name();
+        assert!(!name.is_empty());
+        assert!(!name.ends_with(".local"), "{name}");
+        assert_eq!(RuntimeMetadata::new("did:key:z6MkTest").display_name, name);
     }
 
     #[test]

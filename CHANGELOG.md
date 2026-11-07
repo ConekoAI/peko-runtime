@@ -4,6 +4,15 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a computer is named after itself, not "peko-runtime" (2026-11-07)
+
+- A runtime takes its computer's name (`HostInfo::computer_name`: the macOS
+  computer name, Windows `COMPUTERNAME`, else the hostname without `.local`)
+  for its display name, and sends it when it signs in to PekoHub. Every
+  computer was "Peko Runtime" (in `runtime.toml` and its pekos' records on
+  PekoHub) and "peko-runtime" (its registration). A `runtime.toml` still
+  holding the old default takes the computer's name when it next loads.
+
 ### Fix: sign in from the CLI with `peko auth login`, pekos made there go online at once, others see your name, and every conversation turn checks for its peko's other posts (2026-11-07)
 
 - `peko auth login` signs this computer, and you, in to PekoHub (shown in
