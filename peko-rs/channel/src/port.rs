@@ -208,6 +208,16 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
+    /// ADR-098 D2: a peko hosted here (`peko`) joins a group by its invite
+    /// link (or a public group by its ID), for itself. Returns the group's
+    /// channel and name; the home's invitation completes the join.
+    async fn join_group_as(&self, peko: &PrincipalId, link: &str) -> Result<(ChannelId, String)> {
+        let _ = (peko, link);
+        Err(ChannelError::Adapter(
+            "this channel port does not join groups on PekoHub".into(),
+        ))
+    }
+
     /// ADR-092 D5: a group's owner or admin (`by`) mints an invite link
     /// good for `days`. Returns the link and its expiry (unix seconds).
     async fn group_invite_link(

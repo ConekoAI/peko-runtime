@@ -1208,6 +1208,7 @@ impl TunnelDispatcher {
                 source_principal_did,
                 channel_id,
                 invite,
+                source_hub_id,
                 signature,
             } => {
                 self.host
@@ -1219,6 +1220,7 @@ impl TunnelDispatcher {
                         source_principal_did,
                         channel_id,
                         invite,
+                        source_hub_id,
                         signature,
                     )
                     .await;
@@ -5712,6 +5714,7 @@ mod tests {
                 instance_id: "source-instance".into(),
                 agent_did: source_did.clone(),
                 owner_principal: ActorRef::Public,
+                owner_handle: None,
                 exposure: ResolvedExposure::Public,
             },
         );
@@ -5909,6 +5912,7 @@ mod tests {
                 instance_id: "intruder-instance".into(),
                 agent_did: other_did.clone(),
                 owner_principal: ActorRef::Public,
+                owner_handle: None,
                 exposure: ResolvedExposure::Public,
             },
         );
@@ -6336,6 +6340,7 @@ mod tests {
             identity_key: peko_key.clone(),
             agent_did: peko_did.clone(),
             owner_principal: human.clone(),
+            owner_handle: None,
             exposure: ResolvedExposure::Private,
         };
         directory.register_hub_id(&hub_id, resolution);
@@ -6833,6 +6838,7 @@ mod tests {
                 identity_key: peko_key.clone(),
                 agent_did: peko_did.clone(),
                 owner_principal: human.clone(),
+                owner_handle: None,
                 exposure: ResolvedExposure::Private,
             },
         );
@@ -7478,6 +7484,237 @@ mod tests {
             .is_err());
     }
 
+    /// A registered peko on `rt`, known to the shared fake directory.
+    async fn hub_peko(
+        rt: &DmRuntime,
+        directory: &Arc<crate::tunnel::hub_directory::FakeAgentDirectory>,
+        name: &str,
+        exposure: peko_auth::Exposure,
+    ) -> (Arc<crate::principal::Principal>, String) {
+        use crate::tunnel::hub_directory::{AgentResolution, ResolvedExposure};
+        let peko = create_test_principal(
+            &rt.app,
+            name,
+            ActorRef::User("local".into()),
+            vec![],
+            exposure,
+        )
+        .await;
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let (did, key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        rt.app
+            .tunnel_channel_port()
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&did),
+                Some(&key),
+                Some(name),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        directory.register_hub_id(
+            &hub_id,
+            AgentResolution {
+                runtime_id: rt.app.runtime_did(),
+                instance_id: format!("{name}-instance"),
+                name: Some(name.into()),
+                hub_id: hub_id.clone(),
+                local_id: peko.id.0.clone(),
+                identity_key: key,
+                agent_did: did,
+                owner_principal: ActorRef::Public,
+                owner_handle: None,
+                exposure: ResolvedExposure::Private,
+            },
+        );
+        rt.app
+            .tool_runtime
+            .tooling()
+            .services()
+            .set_cross_runtime_a2a_ctx(Arc::new(crate::tunnel::CrossRuntimeA2aCtx {
+                directory: directory.clone(),
+                caller_runtime_id: rt.app.runtime_did(),
+                principal_manager: rt.app.principal_manager().clone(),
+                channel_port: rt.app.tunnel_channel_port(),
+            }));
+        (peko, hub_id)
+    }
+
+    /// ADR-098 D2/D3 end to end: a private peko on another runtime joins a
+    /// registered group by its invite link, for itself — not its owner —
+    /// with no `Chat` grant; then the group's peko opens a first DM with
+    /// it, which it takes because they share the group. A peko it shares
+    /// nothing with is still refused.
+    #[tokio::test]
+    async fn a_private_peko_joins_by_link_and_takes_a_dm_from_a_groupmate() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, CreateOpts, GroupVisibility};
+
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut h = DmRuntime::new(Arc::clone(&directory)).await;
+        let mut p = DmRuntime::new(Arc::clone(&directory)).await;
+        let mut s = DmRuntime::new(Arc::clone(&directory)).await;
+        let private = peko_auth::Exposure::Private;
+        let (host, _) = hub_peko(&h, &directory, "host", private.clone()).await;
+        let (ada, ada_hub) = hub_peko(&p, &directory, "ada", private.clone()).await;
+        let (zed, _) = hub_peko(&s, &directory, "zed", private).await;
+        let ada_ref = ActorRef::Principal(peko_subject::Route::hub(ada_hub.clone()));
+        let group_id = "2234567890123456789".to_string();
+
+        let h_port = h.app.tunnel_channel_port();
+        let channel = h_port
+            .create(&host.id, CreateOpts::runtime("repo"))
+            .await
+            .unwrap();
+        let registering = {
+            let port = Arc::clone(&h_port);
+            let (channel, by) = (channel.clone(), host.id.clone());
+            tokio::spawn(async move {
+                port.register_group(&channel, &by, GroupVisibility::InviteOnly)
+                    .await
+            })
+        };
+        let gid = group_id.clone();
+        hub_answers(
+            &mut h,
+            |m| match m {
+                TunnelMessage::GroupRegister { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            },
+            |request_id| TunnelMessage::GroupRegistered {
+                request_id,
+                group_id: gid.clone(),
+                page_url: format!("https://hub.test/g/{gid}"),
+            },
+        )
+        .await;
+        registering.await.unwrap().unwrap();
+        let (link, _) = h_port
+            .group_invite_link(&channel, &host.id, 7)
+            .await
+            .unwrap();
+
+        // ada joins with the link, as itself.
+        let p_port = p.app.tunnel_channel_port();
+        let joining = {
+            let port = Arc::clone(&p_port);
+            let (id, link) = (ada.id.clone(), link.clone());
+            tokio::spawn(async move { port.join_group_as(&id, &link).await })
+        };
+        let (home, chan, gid) = (
+            h.app.runtime_did(),
+            channel.as_str().to_string(),
+            group_id.clone(),
+        );
+        hub_answers(
+            &mut p,
+            |m| match m {
+                TunnelMessage::GroupLookupRequest { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            },
+            move |request_id| TunnelMessage::GroupLookup {
+                request_id,
+                group: Some(crate::tunnel::AccountGroup {
+                    group_id: gid,
+                    name: "repo".into(),
+                    home_runtime: home,
+                    channel_id: chan,
+                }),
+            },
+        )
+        .await;
+        let (joined, name) = joining.await.unwrap().unwrap();
+        assert_eq!((joined, name.as_str()), (channel.clone(), "repo"));
+        let ada_member = || async {
+            p_port
+                .list_members(&channel)
+                .await
+                .is_ok_and(|m| m.contains(&ActorRef::from(&ada.id)))
+        };
+        assert!(!ada_member().await, "requested, not yet a member");
+        for _ in 0..50 {
+            route(&mut [&mut h, &mut p]).await;
+            if ada_member().await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            ada_member().await,
+            "the home's invitation completes the join"
+        );
+        assert!(
+            p_port
+                .local()
+                .take_peko_join_request(&ada.id.0, &channel, &h.app.runtime_did())
+                .await
+                .unwrap()
+                .is_none(),
+            "the invitation answered the request"
+        );
+        let ada_key = h_port.key_of(&ada_ref);
+        assert!(h_port
+            .list_members(&channel)
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| h_port.key_of(m) == ada_key));
+        // Its owner did not join.
+        assert!(!p_port
+            .list_members(&channel)
+            .await
+            .unwrap()
+            .contains(&ActorRef::User("local".into())));
+
+        // D3: the group's peko opens a first DM with ada; ada takes it.
+        let dm = h_port
+            .ensure_dm(&host.id, &ada_ref, "/principal-ada")
+            .await
+            .unwrap();
+        h_port.invite(&dm, &host.id, &ada_ref).await.unwrap();
+        route(&mut [&mut h, &mut p]).await;
+        assert!(
+            p_port.local().conversation_kind(&dm).await.is_ok(),
+            "a groupmate's first DM arrives"
+        );
+
+        // A peko ada shares nothing with is refused, as before.
+        let s_port = s.app.tunnel_channel_port();
+        let resolved =
+            crate::tunnel::hub_directory::AgentDirectory::resolve_by_hub_id(&*directory, &ada_hub)
+                .await
+                .unwrap();
+        s_port
+            .register_actor(
+                &ada_ref,
+                Some(&ada_hub),
+                Some(&resolved.agent_did),
+                Some(&resolved.identity_key),
+                Some("ada"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        let cold = s_port
+            .ensure_dm(&zed.id, &ada_ref, "/principal-ada")
+            .await
+            .unwrap();
+        s_port.invite(&cold, &zed.id, &ada_ref).await.unwrap();
+        route(&mut [&mut s, &mut p]).await;
+        assert!(
+            p_port.local().conversation_kind(&cold).await.is_err(),
+            "a stranger's first DM waits"
+        );
+    }
+
     /// ADR-092 D2 end to end: a group's home invites a person by account;
     /// their runtime keeps the invitation until they accept, joins, and
     /// becomes their route; then they and the group's peko talk both
@@ -7879,6 +8116,7 @@ mod tests {
                     identity_key: key,
                     agent_did: did,
                     owner_principal: ActorRef::Public,
+                    owner_handle: None,
                     exposure: ResolvedExposure::Public,
                 },
             );
@@ -8408,6 +8646,7 @@ mod tests {
                 identity_key: peko_key.clone(),
                 agent_did: peko_did.clone(),
                 owner_principal: alice.clone(),
+                owner_handle: None,
                 exposure: ResolvedExposure::Private,
             },
         );
@@ -8722,6 +8961,7 @@ mod tests {
                 identity_key: peko_key.clone(),
                 agent_did: peko_did.clone(),
                 owner_principal: alice.clone(),
+                owner_handle: None,
                 exposure: ResolvedExposure::Private,
             },
         );
@@ -8931,6 +9171,7 @@ mod tests {
                 identity_key: peko_key.clone(),
                 agent_did: peko_did.clone(),
                 owner_principal: alice.clone(),
+                owner_handle: None,
                 exposure: ResolvedExposure::Private,
             },
         );
@@ -9139,6 +9380,7 @@ mod tests {
                     identity_key: key.clone(),
                     agent_did: did.clone(),
                     owner_principal: ActorRef::Public,
+                    owner_handle: None,
                     exposure: ResolvedExposure::Public,
                 },
             );

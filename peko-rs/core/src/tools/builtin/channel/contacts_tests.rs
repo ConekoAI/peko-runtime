@@ -284,6 +284,8 @@ struct Directory {
     response: Mutex<AgentResolution>,
     calls: Mutex<Vec<Option<String>>>,
     forbidden: std::sync::atomic::AtomicBool,
+    /// Whether PekoHub shows the caller the peko by handle (ADR-098 D1).
+    by_handle: std::sync::atomic::AtomicBool,
 }
 impl Directory {
     fn result(&self, caller: Option<&str>) -> Result<AgentResolution, DirectoryError> {
@@ -309,10 +311,38 @@ impl AgentDirectory for Directory {
     }
     async fn resolve_by_handle(
         &self,
-        _owner: &str,
-        _name: &str,
+        owner: &str,
+        name: &str,
     ) -> Result<AgentResolution, DirectoryError> {
-        Err(DirectoryError::NotFound)
+        self.handle(owner, name, None)
+    }
+    async fn resolve_by_handle_as(
+        &self,
+        owner: &str,
+        name: &str,
+        caller: &str,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.handle(owner, name, Some(caller))
+    }
+}
+impl Directory {
+    fn handle(
+        &self,
+        owner: &str,
+        name: &str,
+        caller: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        let hit = self.response.lock().unwrap().clone();
+        if !self.by_handle.load(std::sync::atomic::Ordering::SeqCst)
+            || hit.owner_handle.as_deref() != Some(owner)
+            || !hit
+                .name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        {
+            return Err(DirectoryError::NotFound);
+        }
+        self.result(caller)
     }
 }
 
@@ -407,10 +437,12 @@ impl Fixture {
                 instance_id: "remote-instance".into(),
                 agent_did: "did:key:remote".into(),
                 owner_principal: peko_auth::ActorRef::Public,
+                owner_handle: None,
                 exposure: ResolvedExposure::Public,
             }),
             calls: Mutex::new(Vec::new()),
             forbidden: std::sync::atomic::AtomicBool::new(false),
+            by_handle: std::sync::atomic::AtomicBool::new(false),
         });
         tooling
             .services()
@@ -677,4 +709,154 @@ async fn same_runtime_directory_claims_must_match_a_hosted_identity() {
         .contains("does not match the hosted principal"));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(book(&fx.caller).is_empty());
+}
+
+/// ADR-098 D1: a name (`Human`, `@human`) or either spelling of an address
+/// finds the one actor the run shares a conversation with; several are
+/// candidates, none says how to find one.
+#[tokio::test]
+async fn names_and_both_spellings_resolve_within_shared_conversations() {
+    let temp = tempfile::tempdir().unwrap();
+    let port = Arc::new(ChannelStore::new(ChannelConfig {
+        runtime_dir: temp.path().into(),
+        shared_dir: None,
+    }));
+    let a = PrincipalId("prin_a".into());
+    register(&*port, &ActorRef::from(&a), "Alice").await;
+    let human = register(&*port, &ActorRef::User("human".into()), "Human").await;
+    let ada = register(
+        &*port,
+        &ActorRef::Principal(peko_subject::Route::hub("hub-ada")),
+        "ada",
+    )
+    .await;
+    let twin1 = register(&*port, &ActorRef::User("twin1".into()), "Twin").await;
+    let twin2 = register(&*port, &ActorRef::User("twin2".into()), "twin").await;
+    let stranger = register(&*port, &ActorRef::User("stranger".into()), "Stranger").await;
+    port.ensure_dm(&a, &human.subject(), "/human")
+        .await
+        .unwrap();
+    let group = port.create(&a, CreateOpts::runtime("team")).await.unwrap();
+    for member in [&ada, &twin1, &twin2] {
+        port.invite(&group, &a, &member.subject()).await.unwrap();
+    }
+    let tool = ContactsTool::new(port.clone(), Weak::new());
+    let ctx = context(&a);
+    let resolve = |reference: &str| {
+        tool.execute_with_context(json!({"action":"resolve","reference":reference}), &ctx)
+    };
+    for reference in ["Human", "@human", "HUMAN"] {
+        assert_eq!(
+            resolve(reference).await.unwrap()["actor"]["address"],
+            human.address,
+            "{reference}"
+        );
+    }
+    for reference in [
+        "ada",
+        "@ada",
+        "hub-ada",
+        "principal:hub:hub-ada",
+        "peko:hub:hub-ada",
+        "@peko:hub:hub-ada",
+    ] {
+        assert_eq!(
+            resolve(reference).await.unwrap()["actor"]["address"],
+            ada.address,
+            "{reference}"
+        );
+    }
+    let err = resolve("twin").await.unwrap_err().to_string();
+    assert!(err.contains("Several"), "{err}");
+    assert!(
+        err.contains(&twin1.address) && err.contains(&twin2.address),
+        "{err}"
+    );
+    // A name of someone the principal shares nothing with stays unknown.
+    let err = resolve("Stranger").await.unwrap_err().to_string();
+    assert!(err.contains("No one called Stranger"), "{err}");
+    assert!(!err.contains(&stranger.address), "{err}");
+}
+
+/// ADR-098 D1: `@owner/name` — a peko the run sees, checked against the
+/// directory's owner handle; otherwise PekoHub by handle, learned like a
+/// Hub ID by owner runs only.
+#[tokio::test]
+async fn a_peko_resolves_by_its_owners_handle() {
+    let fx = Fixture::new().await;
+    {
+        let mut hit = fx.directory.response.lock().unwrap();
+        hit.name = Some("ada".into());
+        hit.owner_handle = Some("frank".into());
+        hit.exposure = ResolvedExposure::Private;
+    }
+    // PekoHub shows no such handle: the error says how to find it.
+    let err = fx
+        .resolve(&fx.caller.id, "@frank/ada")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("PekoHub shows you no peko @frank/ada"),
+        "{err}"
+    );
+    assert!(book(&fx.caller).is_empty());
+
+    // It does (the owners share a group, PekoHub ADR-011): learned.
+    fx.directory
+        .by_handle
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let learned = fx.resolve(&fx.caller.id, "@frank/ada").await.unwrap();
+    assert_eq!(learned["actor"]["address"], "principal:hub:remote-hub");
+    assert_eq!(learned["actor"]["registration"], "private");
+    assert_eq!(book(&fx.caller).len(), 1);
+
+    // Known now: the name with its owner is checked by Hub ID, and a wrong
+    // owner is not this peko.
+    fx.directory
+        .by_handle
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let again = fx.resolve(&fx.caller.id, "frank/ADA").await.unwrap();
+    assert_eq!(again["actor"]["address"], "principal:hub:remote-hub");
+    assert!(fx.resolve(&fx.caller.id, "@gina/ada").await.is_err());
+    assert_eq!(
+        fx.resolve(&fx.caller.id, "ada").await.unwrap()["actor"]["address"],
+        "principal:hub:remote-hub"
+    );
+
+    // A run acting for someone else never learns by handle.
+    fx.directory
+        .by_handle
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut ctx =
+        ToolContext::default_for_tool("Contacts").with_acting_for(peko_tools_core::ActingFor {
+            actor: "user:hub:stranger".into(),
+            name: None,
+            trust: peko_tools_core::Trust::Untrusted,
+            compartment: peko_tools_core::Compartment::Conversation {
+                channel: "chan_none".into(),
+            },
+            origin: peko_tools_core::Origin::Ingress { channel: None },
+        });
+    ctx.principal_id = Some(fx.other.id.0.clone());
+    let err = fx
+        .tool
+        .execute_with_context(json!({"action":"resolve","reference":"@frank/ada"}), &ctx)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("only the owner"), "{err}");
+    assert!(book(&fx.other).is_empty());
+}
+
+/// ADR-098 D1: an owner run finds its runtime's other pekos by name.
+#[tokio::test]
+async fn an_owner_run_finds_a_peko_hosted_here_by_name() {
+    let fx = Fixture::new().await;
+    let found = fx.resolve(&fx.caller.id, "other").await.unwrap();
+    assert_eq!(
+        found["actor"]["local_id"].as_str(),
+        Some(fx.other.id.0.as_str())
+    );
+    assert_eq!(book(&fx.caller).len(), 1);
 }

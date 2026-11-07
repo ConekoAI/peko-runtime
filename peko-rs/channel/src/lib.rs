@@ -102,6 +102,7 @@ pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx
 pub use store::{
     member_row, new_msg_id, BlockDecision, ChannelConfig, ChannelStore, DmRequest, GroupHome,
     GroupInfo, GroupInvitation, GroupVisibility, HistoryVisibility, HubGroup, InviteLink,
+    PekoJoinRequest,
 };
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

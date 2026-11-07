@@ -1041,8 +1041,15 @@ pub enum RequestPacket {
     /// (ADR-092 D5): PekoHub says where it lives, and its home decides.
     /// Local callers only; answered with `ChannelGroupJoined` once the
     /// request is on its way (the group arrives with the home's roster).
+    /// With `peko` (a name or local id of a peko the caller owns), that
+    /// peko joins, for itself (ADR-098 D2); without, the person does.
     #[serde(rename = "channel_group_join")]
-    ChannelGroupJoin { request_id: u64, link: String },
+    ChannelGroupJoin {
+        request_id: u64,
+        link: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peko: Option<String>,
+    },
 
     /// Register a group with PekoHub, or change who may find it
     /// (ADR-092 D5), at its home and as its owner peko. Only that peko's

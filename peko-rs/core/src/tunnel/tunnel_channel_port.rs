@@ -563,13 +563,18 @@ impl TunnelChannelPort {
                 )
                 .await
             }
-            OutboxItem::GroupJoinRequest { channel, invite } => {
+            OutboxItem::GroupJoinRequest {
+                channel,
+                invite,
+                peko,
+            } => {
                 self.group_join_request_envelope(
                     ctx,
                     &entry.request_id,
                     channel,
                     &entry.recipient_runtime_id,
                     invite.clone(),
+                    peko.as_deref(),
                 )
                 .await
             }
@@ -1531,6 +1536,11 @@ impl ChannelPort for TunnelChannelPort {
             .await
             .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))
     }
+    async fn join_group_as(&self, peko: &PrincipalId, link: &str) -> Result<(ChannelId, String)> {
+        TunnelChannelPort::join_group_as(self, peko, link)
+            .await
+            .map_err(|e| peko_channel::ChannelError::Adapter(e.to_string()))
+    }
     async fn group_invite_link(
         &self,
         channel: &ChannelId,
@@ -2275,6 +2285,7 @@ mod tests {
                 instance_id: "remote-instance".into(),
                 agent_did: remote_did.clone(),
                 owner_principal: ActorRef::Public,
+                owner_handle: None,
                 exposure: crate::tunnel::hub_directory::ResolvedExposure::Public,
             },
         );

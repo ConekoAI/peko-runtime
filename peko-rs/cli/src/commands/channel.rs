@@ -181,6 +181,10 @@ pub enum ChannelCommands {
         /// Channel id from `peko channel invitations`, an invite link, or a
         /// public group's ID.
         channel: String,
+        /// Join as this peko (its name), not as you. Only with an invite
+        /// link or a public group's ID.
+        #[arg(long)]
+        peko: Option<String>,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -798,15 +802,23 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
 
-        ChannelCommands::Join { channel, .. }
-            if channel.starts_with("chan_") || channel.starts_with("group:") =>
-        {
+        ChannelCommands::Join {
+            channel,
+            peko: None,
+            ..
+        } if channel.starts_with("chan_") || channel.starts_with("group:") => {
             answer_invitation(&channel, true, json).await
         }
-        ChannelCommands::Join { channel: link, .. } => {
+        ChannelCommands::Join {
+            channel: link,
+            peko,
+            ..
+        } => {
+            let who = peko.clone();
             let resp = group_request(RequestPacket::ChannelGroupJoin {
                 request_id: 0,
                 link,
+                peko,
             })
             .await?;
             let ResponsePacket::ChannelGroupJoined { channel, name, .. } = resp else {
@@ -815,11 +827,19 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "channel": channel, "name": name, "requested": true })
+                    serde_json::json!({
+                        "channel": channel, "name": name, "requested": true, "as": who
+                    })
                 );
             } else {
+                // ADR-098 D2: say who joins — a peko running this from its
+                // shell would otherwise join its owner without knowing.
+                let as_whom = who.as_deref().map_or_else(
+                    || "you (the person; use --peko <name> to add a peko)".to_string(),
+                    |p| format!("peko {p}"),
+                );
                 println!(
-                    "Asked to join \"{name}\" ({channel}). It appears here when its home lets you in."
+                    "Asked to join \"{name}\" ({channel}) as {as_whom}. It appears here when its home lets them in."
                 );
             }
             Ok(())

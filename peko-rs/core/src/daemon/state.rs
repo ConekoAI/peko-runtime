@@ -2138,14 +2138,67 @@ impl crate::tunnel::TunnelHost for AppState {
             )
             .await
             .unwrap_or(false);
+        // ADR-098 D2: the peko asked this home to let it in. The request is
+        // answered by this invitation whatever else admits it.
+        let requested = invite.kind == peko_channel::ConversationKind::Group
+            && self
+                .tunnel_channel_port
+                .local()
+                .take_peko_join_request(
+                    &principal.id.0,
+                    &peko_channel::ChannelId(invite.channel_id.clone()),
+                    &invite.source_runtime_id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .is_some();
         if config.exposure == peko_auth::Exposure::Private && !already_member {
-            peko_auth::ownership::check_permission(
+            let granted = peko_auth::ownership::check_permission(
                 &peko_auth::ownership::principal_resource(&*config),
                 peko_auth::ownership::Permission::Chat,
                 &source_actor.subject(),
                 &peko_channel::PortKeys(self.tunnel_channel_port.as_ref()),
-            )
-            .map_err(|e| anyhow::anyhow!("Channel invite denied: {e}"))?;
+            );
+            if let Err(denied) = granted {
+                // ADR-098 D3: or it shares something with the sender here.
+                let reason = if requested {
+                    Some("its own join request")
+                } else {
+                    let runtime = self.principal_manager.runtime_did().to_string();
+                    let contacts: Vec<ActorRef> =
+                        crate::principal::contacts::ContactBook::of(&principal)
+                            .list()
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|c| c.subject_on(&runtime))
+                            .collect();
+                    let sender_owner_account = match &source.owner_principal {
+                        ActorRef::User(route) => Some(route.id().to_string()),
+                        _ => None,
+                    };
+                    crate::principal::first_contact::admits(
+                        self.tunnel_channel_port.local(),
+                        &crate::principal::first_contact::FirstContact {
+                            me: &ActorRef::from(&principal.id),
+                            my_owner: &config.owner,
+                            contacts: &contacts,
+                            sender: &source_actor.subject(),
+                            sender_owner_account: sender_owner_account.as_deref(),
+                        },
+                        invite.kind,
+                    )
+                    .await
+                };
+                match reason {
+                    Some(reason) => tracing::info!(
+                        channel = %invite.channel_id,
+                        sender = %source_actor.address,
+                        "Channel invite admitted without a Chat grant: {reason}"
+                    ),
+                    None => anyhow::bail!("Channel invite denied: {denied}"),
+                }
+            }
         }
         drop(config);
 

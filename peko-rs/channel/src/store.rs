@@ -471,6 +471,18 @@ pub struct GroupInvitation {
     pub requested: bool,
 }
 
+/// A peko hosted here asked a group's home to let it in (ADR-098 D2). The
+/// home's invitation to that channel, from that runtime, is the answer:
+/// it is taken without a `Chat` grant, and the request is removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoJoinRequest {
+    pub channel: ChannelId,
+    /// The peko's local principal id.
+    pub principal: String,
+    pub home_runtime: String,
+    pub requested_at: chrono::DateTime<Utc>,
+}
+
 /// A person's request to DM this runtime's person, waiting for their
 /// answer (ADR-095 D6). It names only who asks; nothing goes back to the
 /// asker until it is accepted.
@@ -1082,6 +1094,103 @@ impl ChannelStore {
             .parse::<ActorRef>()
             .unwrap_or_else(|_| ActorRef::from(&PrincipalId(creator.to_string())));
         self.actor_info(&subject).await.address
+    }
+
+    fn peko_join_requests_dir(&self) -> PathBuf {
+        self.cfg.runtime_dir.join("peko_join_requests")
+    }
+
+    fn peko_join_request_path(&self, principal: &str, channel: &ChannelId) -> PathBuf {
+        self.peko_join_requests_dir().join(format!(
+            "{}__{}.json",
+            principal
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                })
+                .collect::<String>(),
+            channel_dir_name(channel)
+        ))
+    }
+
+    /// Keep a hosted peko's request to join `request.channel` (ADR-098 D2).
+    pub async fn save_peko_join_request(&self, request: &PekoJoinRequest) -> Result<()> {
+        fs::create_dir_all(self.peko_join_requests_dir()).await?;
+        let path = self.peko_join_request_path(&request.principal, &request.channel);
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temp, serde_json::to_vec_pretty(request)?).await?;
+        fs::rename(temp, path).await?;
+        Ok(())
+    }
+
+    /// Remove and return `principal`'s request to join `channel`, if it
+    /// waits for an invitation from `home_runtime` and is under a week
+    /// old. Any other request is left as it is.
+    pub async fn take_peko_join_request(
+        &self,
+        principal: &str,
+        channel: &ChannelId,
+        home_runtime: &str,
+    ) -> Result<Option<PekoJoinRequest>> {
+        let path = self.peko_join_request_path(principal, channel);
+        let Ok(bytes) = fs::read(&path).await else {
+            return Ok(None);
+        };
+        let Ok(request) = serde_json::from_slice::<PekoJoinRequest>(&bytes) else {
+            let _ = fs::remove_file(&path).await;
+            return Ok(None);
+        };
+        let fresh = Utc::now() - request.requested_at < chrono::Duration::days(7);
+        if request.home_runtime != home_runtime || request.channel != *channel || !fresh {
+            return Ok(None);
+        }
+        let _ = fs::remove_file(&path).await;
+        Ok(Some(request))
+    }
+
+    /// Every conversation here whose members include every one of
+    /// `actors`, compared by immutable key (ADR-081 D1).
+    pub async fn shared_by(&self, actors: &[ActorRef]) -> Result<Vec<ChannelId>> {
+        let keys: Vec<_> = actors.iter().map(|a| self.key_of(a)).collect();
+        let mut out = Vec::new();
+        // Both tiers: a principal's conversations live in the Shared one.
+        let roots = [
+            Some(self.cfg.channels_dir()),
+            self.cfg.shared_channels_dir(),
+        ];
+        for root in roots.into_iter().flatten() {
+            let Ok(mut rd) = fs::read_dir(&root).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let Some(channel) = entry.file_name().to_str().and_then(|name| {
+                    ChannelId::parse(name).or_else(|| crate::fs::channel_dir_name_inverse(name))
+                }) else {
+                    continue;
+                };
+                if out.contains(&channel) {
+                    continue;
+                }
+                let Ok(mut members) = ChannelPort::list_members(self, &channel).await else {
+                    continue;
+                };
+                // Members on other runtimes, as `TunnelChannelPort` lists them.
+                for remote in self.list_remote_members(&channel).await.unwrap_or_default() {
+                    let subject = remote
+                        .principal_id
+                        .parse::<ActorRef>()
+                        .unwrap_or_else(|_| ActorRef::Principal(remote.principal_id.into()));
+                    members.push(self.actor_info(&subject).await.subject());
+                }
+                let theirs: Vec<_> = members.iter().map(|m| self.key_of(m)).collect();
+                if keys.iter().all(|k| theirs.contains(k)) {
+                    out.push(channel);
+                }
+            }
+        }
+        Ok(out)
     }
 
     fn invitations_dir(&self) -> PathBuf {

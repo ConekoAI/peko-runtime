@@ -22,10 +22,11 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
 /// `Channel` actions only the owner decides: `create` / `invite` change
 /// who can reach the principal and whom it can reach (ADR-082 D6);
 /// `role` changes the instructions it follows in a conversation (ADR-087
-/// D6); `admin` changes who may manage a group (ADR-092 D1). An untrusted run never gets them; a trusted run's call waits for
+/// D6); `admin` changes who may manage a group (ADR-092 D1); `join` puts
+/// the principal in a group someone else runs (ADR-098 D2). An untrusted run never gets them; a trusted run's call waits for
 /// the owner ([`crate::security::judge::owner_decides`]).
 pub const CHANNEL_OWNER_ACTIONS: &[&str] = &[
-    "create", "invite", "role", "admin", "history", "register", "link",
+    "create", "invite", "role", "admin", "history", "register", "link", "join",
 ];
 
 /// The `Channel` owner action `params` call, if any.
@@ -54,6 +55,7 @@ pub fn action_refusal(
         "role" => "Choosing the role for a conversation",
         "admin" => "Choosing a group's admins",
         "history" => "Choosing what a group's members may read",
+        "join" => "Joining a group",
         _ => "Creating groups and inviting people",
     };
     Some(format!(

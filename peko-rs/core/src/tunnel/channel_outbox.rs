@@ -75,6 +75,10 @@ pub(crate) enum OutboxItem {
     GroupJoinRequest {
         channel: ChannelId,
         invite: Option<String>,
+        /// ADR-098 D2: a peko hosted here asks for itself (its local
+        /// principal id); absent, the local user asks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peko: Option<String>,
     },
 }
 

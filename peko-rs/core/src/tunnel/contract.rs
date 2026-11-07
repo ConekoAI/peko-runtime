@@ -508,6 +508,7 @@ fn samples() -> Vec<TunnelMessage> {
             source_principal_did: format!("user:hub:{ACCOUNT}"),
             channel_id: "chan_0123abcd".into(),
             invite: Some("home-signed-invite".into()),
+            source_hub_id: Some(HUB_ID.into()),
             signature: "runtime-signature".into(),
         },
         TunnelMessage::GroupRegister {
