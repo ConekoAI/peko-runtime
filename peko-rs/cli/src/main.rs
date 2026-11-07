@@ -81,7 +81,7 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Send(args) => send::handle_send(args, paths).await,
         Commands::Stop(args) => stop::handle_stop(args, paths).await,
         Commands::Log(cmd) => log::handle_log(cmd, paths, json).await,
-        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json),
+        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
         Commands::Credential(cmd) => credential::execute(cmd, paths).await,
         Commands::Vault(cmd) => vault::execute(cmd, paths).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,

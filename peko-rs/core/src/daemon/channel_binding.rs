@@ -62,7 +62,7 @@
 //! posts.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -871,6 +871,52 @@ pub(crate) fn select_responder(
     }
 }
 
+/// The directory a channel's subscribers keep `cursors.json` in: the
+/// channel's own directory under the store's on-disk name (`group:x` →
+/// `group.3A.x`), so cursors sit beside the channel's events and the
+/// path is legal on Windows.
+///
+/// Earlier builds kept cursors under the raw channel id
+/// (`channels/group:x/`). Such a file is moved into the channel's
+/// directory once, so the subscriber resumes where it was instead of
+/// replaying the whole history, and the old directory is dropped if
+/// nothing else is in it. When the move fails the old directory is
+/// used as before, and the failure is logged.
+async fn cursor_dir(runtime_dir: &Path, channel: &ChannelId) -> PathBuf {
+    let channels = runtime_dir.join("channels");
+    let dir = channels.join(peko_channel::fs::channel_dir_name(channel));
+    let legacy_dir = channels.join(channel.as_str());
+    if legacy_dir == dir {
+        return dir;
+    }
+    let legacy = ChannelCursors::path_in(&legacy_dir);
+    let current = ChannelCursors::path_in(&dir);
+    if !tokio::fs::try_exists(&legacy).await.unwrap_or(false)
+        || tokio::fs::try_exists(&current).await.unwrap_or(false)
+    {
+        return dir;
+    }
+    let moved = async {
+        tokio::fs::create_dir_all(&dir).await?;
+        tokio::fs::rename(&legacy, &current).await
+    }
+    .await;
+    match moved {
+        Ok(()) => {
+            let _ = tokio::fs::remove_dir(&legacy_dir).await;
+            dir
+        }
+        Err(e) => {
+            warn!(
+                channel = %channel,
+                from = %legacy.display(),
+                "channel subscribers: legacy cursor move failed; reading them in place: {e}"
+            );
+            legacy_dir
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ChannelBindingSupervisor
 // ---------------------------------------------------------------------------
@@ -1021,7 +1067,7 @@ impl ChannelBindingSupervisor {
             }
         }
 
-        let channel_dir = self.runtime_dir.join("channels").join(channel.as_str());
+        let channel_dir = cursor_dir(&self.runtime_dir, &channel).await;
         // Resume from the persisted per-member cursors so a daemon
         // restart doesn't re-observe (and, for bound channels,
         // re-fire) the channel's entire event history. A missing file
@@ -1205,6 +1251,43 @@ mod tests {
 
     fn chan() -> ChannelId {
         ChannelId::generate()
+    }
+
+    #[tokio::test]
+    async fn cursor_dir_uses_the_channels_on_disk_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = ChannelId::parse("group:tinytodo").unwrap();
+        assert_eq!(
+            cursor_dir(tmp.path(), &channel).await,
+            tmp.path().join("channels").join("group.3A.tinytodo")
+        );
+        // A bare id has no colon: its directory is the id itself.
+        let bare = ChannelId::generate();
+        assert_eq!(
+            cursor_dir(tmp.path(), &bare).await,
+            tmp.path().join("channels").join(bare.as_str())
+        );
+    }
+
+    // The old raw-id directory (`group:tinytodo`) can only exist where
+    // the file system allows a `:` in a name.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_dir_moves_cursors_from_the_old_raw_id_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = ChannelId::parse("group:tinytodo").unwrap();
+        let legacy_dir = tmp.path().join("channels").join("group:tinytodo");
+        let mut old = ChannelCursors::new();
+        old.set(pid("prin_self"), "7".to_string());
+        tokio::fs::create_dir_all(&legacy_dir).await.unwrap();
+        old.save(&legacy_dir).await.unwrap();
+
+        let dir = cursor_dir(tmp.path(), &channel).await;
+
+        assert_eq!(dir, tmp.path().join("channels").join("group.3A.tinytodo"));
+        let moved = ChannelCursors::load(&dir).await.unwrap();
+        assert_eq!(moved.get(&pid("prin_self")).map(String::as_str), Some("7"));
+        assert!(!legacy_dir.exists(), "the old raw-id directory is gone");
     }
 
     fn posted(author: &str, text: &str) -> ChannelEvent {
