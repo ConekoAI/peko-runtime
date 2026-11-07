@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: sign in from the CLI with `peko auth login`, pekos made there go online at once, others see your name, and every conversation turn checks for its peko's other posts (2026-11-07)
+
+- `peko auth login` signs this computer, and you, in to PekoHub (shown in
+  `peko --help`; `peko runtime register` stays as the older name). With the
+  daemon running it registers through the daemon, which connects at once —
+  no `peko daemon restart`. `peko auth status` says how to sign in.
+- A peko `peko create` makes on a signed-in computer goes on PekoHub now
+  (`PrincipalReload` calls `register_pending_principals`, as the app's
+  create does), not at the tunnel's next connect.
+- The local user is named as PekoHub does once the runtime is signed in
+  (`ChannelStore::name_local_user_from_hub`, at registration and at daemon
+  start): other computers saw a person signed in on another runtime as
+  "local".
+- The check against a reply contradicting what its peko just posted from
+  another session now covers every conversation turn: group mentions, DM
+  ingress, completion wakes, and continuations, as well as cron turns
+  (`PeerChildTurns::drive_conversation_turn`).
+
 ### Fix: a peko's reply no longer contradicts what it just posted from another conversation (2026-11-07)
 
 - Two runs of one peko can be at work at once: its owner's DM turn, with a

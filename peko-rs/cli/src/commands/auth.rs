@@ -8,6 +8,19 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AuthCommands {
+    /// Sign in to PekoHub: links this computer, and you, to your account so
+    /// your pekos can go online and reach your other computers. Shows a code
+    /// to approve on the PekoHub website
+    Login {
+        /// PekoHub API origin (`pekohub.ai` and `pekohub.org` are read as
+        /// `api.pekohub.ai`)
+        #[arg(long, default_value = "https://api.pekohub.ai")]
+        hub: String,
+        /// API key of the Hub account (for scripts; otherwise you approve a
+        /// sign-in code on the website)
+        #[arg(long, env = "PEKOHUB_API_KEY")]
+        api_key: Option<String>,
+    },
     /// Show authentication status
     Status,
 
@@ -40,8 +53,11 @@ pub enum ApiKeyCommands {
 }
 
 /// Handle auth commands
-pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
+        AuthCommands::Login { hub, api_key } => {
+            super::runtime::register(paths, &hub, api_key, json).await
+        }
         AuthCommands::Status => {
             // ADR-081 D3: the terminal is always the local user; a registered
             // runtime gives it a Hub alias.
@@ -49,7 +65,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             match local.hub_address() {
                 Some(hub) => println!("Local user: {} = {hub}", local.address),
                 None => println!(
-                    "Local user: {} (runtime not registered with PekoHub)",
+                    "Local user: {} (not signed in to PekoHub; sign in with: peko auth login)",
                     local.address
                 ),
             }

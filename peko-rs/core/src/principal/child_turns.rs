@@ -824,6 +824,121 @@ impl PeerChildTurns {
         outcome
     }
 
+    /// [`Self::drive_turn_streaming_with_media`] for a turn whose reply is
+    /// posted to `channel`. Two runs of one peko can be at work at once
+    /// (its owner's DM turn and a group's turn): when the peko posted in
+    /// `channel` from another session while this turn ran, its reply is
+    /// held back and the turn is asked once more, shown those posts; the
+    /// outcome's text is that answer (empty when the second ask fails).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn drive_conversation_turn(
+        &self,
+        channel: Option<(
+            &Arc<dyn peko_channel::ChannelPort>,
+            &peko_channel::ChannelId,
+        )>,
+        session_id: &str,
+        message: &str,
+        media: Vec<crate::agents::subagent_executor::MediaInput>,
+        on_event: AgenticEventSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+        override_model: Option<String>,
+        acting_for: peko_tools_core::ActingFor,
+    ) -> Result<StreamingResumeOutcome> {
+        let tip = match channel {
+            Some((port, id)) => crate::principal::channel_digest::channel_tip(port, id).await,
+            None => None,
+        };
+        let mut outcome = self
+            .drive_turn_streaming_with_media(
+                session_id,
+                message,
+                media,
+                Arc::clone(&on_event),
+                cancel.clone(),
+                override_model.clone(),
+                acting_for.clone(),
+            )
+            .await?;
+        let Some((port, id)) = channel.filter(|_| !outcome.final_text.trim().is_empty()) else {
+            return Ok(outcome);
+        };
+        let own_path = self.session_path(session_id).await;
+        let posted = crate::principal::channel_digest::own_posts_from_elsewhere(
+            port,
+            &self.principal_id,
+            id,
+            tip.as_deref(),
+            own_path.as_deref(),
+        )
+        .await;
+        if posted.is_empty() {
+            return Ok(outcome);
+        }
+        let again = crate::principal::genesis::conversation_overlap_message(&posted);
+        outcome.final_text = match self
+            .drive_turn_streaming(
+                session_id,
+                &again,
+                on_event,
+                cancel,
+                override_model,
+                acting_for,
+            )
+            .await
+        {
+            Ok(second) => second.final_text,
+            Err(e) => {
+                tracing::warn!(
+                    session_id,
+                    "conversation turn: the second ask failed; nothing posted: {e}"
+                );
+                String::new()
+            }
+        };
+        Ok(outcome)
+    }
+
+    /// `session_id`'s slug path, as the `via` of its posts carries it.
+    async fn session_path(&self, session_id: &str) -> Option<String> {
+        let id = peko_session::id::SessionId::parse(session_id)?;
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .ok()?;
+        metas
+            .iter()
+            .any(|m| m.session_id == id)
+            .then(|| peko_session::path::compute_path(&metas, id))
+    }
+
+    /// The daemon's channel port, when the turns post to conversations.
+    pub(crate) fn channel_port(&self) -> Option<&Arc<dyn peko_channel::ChannelPort>> {
+        self.channel_port.as_ref()
+    }
+
+    /// The channel `session_id` is bound to, if it is a conversation.
+    pub(crate) async fn session_channel(
+        &self,
+        session_id: &str,
+    ) -> Option<peko_channel::ChannelId> {
+        let metas = self
+            .session_manager
+            .write()
+            .await
+            .list_all_sessions(false)
+            .await
+            .ok()?;
+        metas
+            .iter()
+            .find(|m| m.session_id.to_string() == session_id)
+            .and_then(|m| m.channel_id.as_deref())
+            .and_then(peko_channel::ChannelId::parse)
+    }
+
     /// The lane a turn runs on (ADR-089 D4): the model it uses — the
     /// per-message override, else the principal's preferred model.
     pub(crate) async fn lane(&self, override_model: Option<&str>) -> String {

@@ -133,8 +133,8 @@ peko deny my-peko <id>
 
 Pekos talk to people, and to each other, in DMs and group chats
 (`peko channel --help`). To reach people on other computers, link this
-computer to [PekoHub](https://pekohub.ai) with `peko runtime register` and put
-the peko online with `peko register my-peko`.
+computer to [PekoHub](https://pekohub.ai) with `peko auth login`. Your private
+pekos go online then; `peko register my-peko --public` lists one for anyone.
 
 ### Keep costs in check
 
