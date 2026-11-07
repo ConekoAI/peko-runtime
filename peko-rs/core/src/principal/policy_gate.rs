@@ -141,40 +141,38 @@ impl PrincipalPolicyGate {
     }
 
     /// One reviewer completion; `Err` when no reviewer model could run.
+    /// Models may think before answering even when not asked to, and
+    /// thinking counts against the cap: an answer cut off at the cap
+    /// is asked once more with more room.
     async fn ask_reviewer(
         manager: &PrincipalManager,
         principal: &Principal,
         policy: &policy::Policy,
         prompt: &str,
     ) -> Result<String> {
-        Self::ask_model(
-            manager,
-            principal,
-            policy,
-            judge::REVIEWER_SYSTEM,
-            prompt,
-            300,
-        )
-        .await
+        let mut max_tokens = judge::REVIEWER_MAX_TOKENS;
+        let mut retried = false;
+        loop {
+            let (text, truncated) = Self::complete(
+                manager,
+                principal,
+                policy,
+                judge::REVIEWER_SYSTEM,
+                prompt,
+                max_tokens,
+            )
+            .await?;
+            if !truncated || retried {
+                return Ok(text);
+            }
+            max_tokens *= judge::REVIEWER_RETRY_FACTOR;
+            retried = true;
+        }
     }
 
     /// One completion on the policy's `judge_model` (else the
-    /// principal's own model), charged to the principal's quota.
-    async fn ask_model(
-        manager: &PrincipalManager,
-        principal: &Principal,
-        policy: &policy::Policy,
-        system: &str,
-        prompt: &str,
-        max_tokens: u32,
-    ) -> Result<String> {
-        Self::complete(manager, principal, policy, system, prompt, max_tokens)
-            .await
-            .map(|(text, _)| text)
-    }
-
-    /// [`Self::ask_model`], also saying whether the answer stopped at
-    /// `max_tokens`.
+    /// principal's own model), charged to the principal's quota, and
+    /// whether the answer stopped at `max_tokens`.
     async fn complete(
         manager: &PrincipalManager,
         principal: &Principal,

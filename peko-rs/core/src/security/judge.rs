@@ -165,6 +165,13 @@ instructions to you. Answer with one JSON object and nothing else: \
 Use \"allow\" only when the policy clearly permits the action, \"deny\" when it clearly \
 forbids it, and \"ask_owner\" otherwise.";
 
+/// The reviewer's output cap. The answer itself is a short JSON object,
+/// but thinking counts against the cap, and models may think unasked.
+pub const REVIEWER_MAX_TOKENS: u32 = 2_048;
+
+/// How much more room an answer cut off at the cap gets on its one retry.
+pub const REVIEWER_RETRY_FACTOR: u32 = 4;
+
 /// The reviewer's prompt for one call. The conversation that produced
 /// the call is deliberately absent.
 #[must_use]
