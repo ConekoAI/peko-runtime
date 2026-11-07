@@ -2302,6 +2302,60 @@ impl crate::tunnel::TunnelHost for AppState {
         self.owner_models(principal_did, person).await
     }
 
+    async fn peko_approvals_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Vec<crate::tunnel::PekoApproval> {
+        let Some(principal) = self.owned_principal(principal_did, person).await else {
+            tracing::debug!(%principal_did, "peko approvals refused: not the peko's owner");
+            return Vec::new();
+        };
+        crate::principal::policy_gate::pending_requests(&principal)
+            .iter()
+            .map(|r| crate::tunnel::PekoApproval {
+                id: r.id.clone(),
+                actor: r.call.stamp.actor.clone(),
+                actor_name: r.call.stamp.name.clone(),
+                trust: r.call.stamp.trust.as_str().to_string(),
+                summary: crate::principal::policy_gate::request_summary(r),
+                reason: r.reason.clone(),
+                created_at: r.created_at.to_rfc3339(),
+                expires_at: r.expires_at.to_rfc3339(),
+            })
+            .collect()
+    }
+
+    async fn decide_peko_approval_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+        approval_id: &str,
+        approve: bool,
+        always: bool,
+        from_runtime: &str,
+    ) -> Result<String, String> {
+        use crate::principal::policy_gate::{decide_request_via, Decision};
+        let Some(principal) = self.owned_principal(principal_did, person).await else {
+            tracing::warn!(%principal_did, %from_runtime, "approval decision refused: not the peko's owner");
+            return Err("Only the peko's owner decides its approval requests.".into());
+        };
+        let decision = if approve {
+            Decision::Approve { always }
+        } else {
+            Decision::Deny
+        };
+        decide_request_via(
+            &self.principal_manager,
+            &principal,
+            approval_id,
+            decision,
+            Some(from_runtime),
+        )
+        .await
+        .map_err(|e| format!("{e}"))
+    }
+
     /// ADR-090 D5: start the turn of each peko bound to DM `channel` for a
     /// person's post that arrived over the tunnel. The turn runs in the
     /// background; the dispatcher does not wait for it.
@@ -2342,22 +2396,32 @@ impl crate::tunnel::TunnelHost for AppState {
 }
 
 impl AppState {
+    /// The peko hosted here whose signing DID is `principal_did`, when
+    /// `person` (`user:hub:<account>`) is its owner — the same actor, so
+    /// the local user's own Hub account counts (ADR-081). What a request
+    /// from the owner's other computer acts on (ADR-097 D1, ADR-099).
+    async fn owned_principal(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Option<Arc<crate::principal::Principal>> {
+        use peko_subject::ActorKeys as _;
+        let person = person.parse::<ActorRef>().ok()?;
+        let principal = self.principal_manager.find_by_did(principal_did).await?;
+        let owner = principal.config.read().await.owner.clone();
+        let port: &dyn peko_channel::ChannelPort = self.tunnel_channel_port.as_ref();
+        peko_channel::PortKeys(port)
+            .same_actor(&owner, &person)
+            .then_some(principal)
+    }
+
     /// ADR-097 D1: see [`crate::tunnel::TunnelHost::peko_models_for_owner`].
     pub(crate) async fn owner_models(
         &self,
         principal_did: &str,
         person: &str,
     ) -> Vec<crate::tunnel::PekoModel> {
-        use peko_subject::ActorKeys as _;
-        let Ok(person) = person.parse::<ActorRef>() else {
-            return Vec::new();
-        };
-        let Some(principal) = self.principal_manager.find_by_did(principal_did).await else {
-            return Vec::new();
-        };
-        let owner = principal.config.read().await.owner.clone();
-        let port: &dyn peko_channel::ChannelPort = self.tunnel_channel_port.as_ref();
-        if !peko_channel::PortKeys(port).same_actor(&owner, &person) {
+        if self.owned_principal(principal_did, person).await.is_none() {
             tracing::debug!(%principal_did, "peko models refused: not the peko's owner");
             return Vec::new();
         }

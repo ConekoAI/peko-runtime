@@ -692,6 +692,72 @@ pub enum TunnelMessage {
         signature: String,
     },
 
+    /// ADR-099 D1: the person (`source_principal_did`, `user:hub:<id>`)
+    /// asks the runtime hosting the peko whose signing DID is
+    /// `principal_did` for the approval requests waiting for its owner.
+    /// PekoHub relays it only from a runtime registered to that account,
+    /// to another runtime registered to it. `signature` covers every
+    /// other field (`PekoApprovalsRequestPayload`).
+    #[serde(rename = "tunnel_peko_approvals_request", rename_all = "camelCase")]
+    TunnelPekoApprovalsRequest {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        principal_did: String,
+        signature: String,
+    },
+
+    /// ADR-099 D1: the host's answer — the peko's pending requests, oldest
+    /// first, when the asker is the peko's owner; otherwise none. PekoHub
+    /// relays it only between two runtimes registered to the same
+    /// account. `signature` covers every other field
+    /// (`PekoApprovalsPayload`).
+    #[serde(rename = "tunnel_peko_approvals", rename_all = "camelCase")]
+    TunnelPekoApprovals {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        principal_did: String,
+        approvals: Vec<PekoApproval>,
+        signature: String,
+    },
+
+    /// ADR-099 D2: the person (`source_principal_did`, `user:hub:<id>`)
+    /// decides approval request `approval_id` of the peko whose signing
+    /// DID is `principal_did`: approve (with `always`, also remember it in
+    /// `POLICY.md`) or deny. The host applies it only for the peko's
+    /// owner. Relayed like `TunnelPekoApprovalsRequest`. `signature`
+    /// covers every other field (`PekoApprovalDecidePayload`).
+    #[serde(rename = "tunnel_peko_approval_decide", rename_all = "camelCase")]
+    TunnelPekoApprovalDecide {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        source_principal_did: String,
+        principal_did: String,
+        approval_id: String,
+        approve: bool,
+        always: bool,
+        signature: String,
+    },
+
+    /// ADR-099 D2: what the host did with a decision: `decided` when it
+    /// was applied, and `message` saying what happened ("Approved apr_…
+    /// Running it …") or why not. Relayed like `TunnelPekoApprovals`.
+    /// `signature` covers every other field (`PekoApprovalDecidedPayload`).
+    #[serde(rename = "tunnel_peko_approval_decided", rename_all = "camelCase")]
+    TunnelPekoApprovalDecided {
+        request_id: String,
+        source_runtime_id: String,
+        recipient_runtime_id: String,
+        principal_did: String,
+        approval_id: String,
+        decided: bool,
+        message: String,
+        signature: String,
+    },
+
     /// ADR-092 D2: a group's home invites a person by Hub account.
     /// PekoHub delivers it to every runtime registered to
     /// `recipient_account` (`user:hub:<id>`); each keeps it as a pending
@@ -842,6 +908,30 @@ pub struct AccountDm {
 pub struct PekoModel {
     pub id: String,
     pub display_name: String,
+}
+
+/// An approval request waiting for a peko's owner, as the host reports it
+/// to the owner's other computer (ADR-099 D1) — what `approval_list`
+/// reports locally.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PekoApproval {
+    /// `apr_…`
+    pub id: String,
+    /// Who asked: the actor the run acted for.
+    pub actor: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_name: Option<String>,
+    /// `trusted` / `untrusted`.
+    pub trust: String,
+    /// The tool and its target (`` `Bash` (command=…) ``).
+    pub summary: String,
+    /// The policy reviewer's reason it was unclear.
+    pub reason: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// RFC 3339.
+    pub expires_at: String,
 }
 
 /// A runtime that carries one person's side of a DM between two people

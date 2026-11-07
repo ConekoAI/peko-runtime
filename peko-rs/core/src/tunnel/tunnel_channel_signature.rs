@@ -1362,3 +1362,180 @@ pub fn verify_peko_models(runtime_key: &VerifyingKey, compact: &str) -> Result<P
     check_freshness(payload.iat, payload.exp)?;
     Ok(payload)
 }
+
+/// Version tag of [`PekoApprovalsRequestPayload`] (ADR-099 D1).
+pub const PEKO_APPROVALS_REQUEST_VERSION: &str = "peko-peko-approvals-request/1";
+/// Version tag of [`PekoApprovalsPayload`] (ADR-099 D1).
+pub const PEKO_APPROVALS_VERSION: &str = "peko-peko-approvals/1";
+/// Version tag of [`PekoApprovalDecidePayload`] (ADR-099 D2).
+pub const PEKO_APPROVAL_DECIDE_VERSION: &str = "peko-peko-approval-decide/1";
+/// Version tag of [`PekoApprovalDecidedPayload`] (ADR-099 D2).
+pub const PEKO_APPROVAL_DECIDED_VERSION: &str = "peko-peko-approval-decided/1";
+
+/// The signed payload of a `TunnelPekoApprovalsRequest`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoApprovalsRequestPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    /// `user:hub:<account>`: the person asking.
+    pub source_principal_did: String,
+    /// The peko's signing DID.
+    pub principal_did: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelPekoApprovals`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoApprovalsPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub principal_did: String,
+    /// base64url-no-pad of the serialized request list.
+    pub approvals_b64u: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+impl PekoApprovalsPayload {
+    /// The serialized request list this payload signs.
+    #[must_use]
+    pub fn approvals_b64u_of(approvals_bytes: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(approvals_bytes)
+    }
+}
+
+/// The signed payload of a `TunnelPekoApprovalDecide`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoApprovalDecidePayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    /// `user:hub:<account>`: the person deciding.
+    pub source_principal_did: String,
+    /// The peko's signing DID.
+    pub principal_did: String,
+    /// `apr_…`
+    pub approval_id: String,
+    pub approve: bool,
+    pub always: bool,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// The signed payload of a `TunnelPekoApprovalDecided`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PekoApprovalDecidedPayload {
+    pub v: String,
+    pub request_id: String,
+    pub source_runtime_id: String,
+    pub recipient_runtime_id: String,
+    pub principal_did: String,
+    pub approval_id: String,
+    pub decided: bool,
+    pub message: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verify a runtime-signed payload whose version tag is `version`:
+/// signature, version, freshness.
+fn verify_versioned<T: serde::de::DeserializeOwned>(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+    what: &str,
+    version: &str,
+    v_of: impl Fn(&T) -> &str,
+    times_of: impl Fn(&T) -> (i64, i64),
+) -> Result<T> {
+    let (_, bytes) = jws_verify(runtime_key, compact)?;
+    let payload: T = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("{what} payload is not valid JSON: {e}"))?;
+    if v_of(&payload) != version {
+        return Err(anyhow!("{what} version must be {version:?}"));
+    }
+    let (iat, exp) = times_of(&payload);
+    check_freshness(iat, exp)?;
+    Ok(payload)
+}
+
+/// Verify an approvals request: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_approvals_request(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoApprovalsRequestPayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko approvals request",
+        PEKO_APPROVALS_REQUEST_VERSION,
+        |p: &PekoApprovalsRequestPayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}
+
+/// Verify an approvals answer: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_approvals(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoApprovalsPayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko approvals",
+        PEKO_APPROVALS_VERSION,
+        |p: &PekoApprovalsPayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}
+
+/// Verify an approval decision: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_approval_decide(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoApprovalDecidePayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko approval decision",
+        PEKO_APPROVAL_DECIDE_VERSION,
+        |p: &PekoApprovalDecidePayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}
+
+/// Verify a decision's outcome: runtime signature, version, freshness.
+///
+/// # Errors
+///
+/// The JWS does not verify, the version tag differs, or it expired.
+pub fn verify_peko_approval_decided(
+    runtime_key: &VerifyingKey,
+    compact: &str,
+) -> Result<PekoApprovalDecidedPayload> {
+    verify_versioned(
+        runtime_key,
+        compact,
+        "peko approval outcome",
+        PEKO_APPROVAL_DECIDED_VERSION,
+        |p: &PekoApprovalDecidedPayload| &p.v,
+        |p| (p.iat, p.exp),
+    )
+}

@@ -696,6 +696,10 @@ impl TunnelClient {
             | TunnelMessage::TunnelDmRoute { .. }
             | TunnelMessage::TunnelPekoModelsRequest { .. }
             | TunnelMessage::TunnelPekoModels { .. }
+            | TunnelMessage::TunnelPekoApprovalsRequest { .. }
+            | TunnelMessage::TunnelPekoApprovals { .. }
+            | TunnelMessage::TunnelPekoApprovalDecide { .. }
+            | TunnelMessage::TunnelPekoApprovalDecided { .. }
             | TunnelMessage::GroupRegistered { .. }
             | TunnelMessage::GroupRegisterRejected { .. }
             | TunnelMessage::AccountGroups { .. }

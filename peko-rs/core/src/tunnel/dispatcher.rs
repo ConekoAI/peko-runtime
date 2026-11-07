@@ -1138,6 +1138,132 @@ impl TunnelDispatcher {
                     )
                     .await;
             }
+            TunnelMessage::TunnelPekoApprovalsRequest {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                principal_did,
+                signature,
+            } => {
+                // ADR-099 D1: a peko's waiting requests, only to its
+                // owner; anyone else gets none.
+                let port = self.host.tunnel_channel_port();
+                let envelope = crate::tunnel::PekoApprovalsRequestPayload {
+                    v: crate::tunnel::PEKO_APPROVALS_REQUEST_VERSION.into(),
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    principal_did,
+                    iat: 0,
+                    exp: 0,
+                };
+                if let Some(request) = port
+                    .verified_peko_approvals_request(envelope, &signature)
+                    .await
+                {
+                    let approvals = self
+                        .host
+                        .peko_approvals_for_owner(
+                            &request.principal_did,
+                            &request.source_principal_did,
+                        )
+                        .await;
+                    port.answer_peko_approvals(&handle, &request, approvals)
+                        .await;
+                }
+            }
+            TunnelMessage::TunnelPekoApprovals {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                principal_did,
+                approvals,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_peko_approvals(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        principal_did,
+                        approvals,
+                        signature,
+                    )
+                    .await;
+            }
+            TunnelMessage::TunnelPekoApprovalDecide {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                source_principal_did,
+                principal_did,
+                approval_id,
+                approve,
+                always,
+                signature,
+            } => {
+                // ADR-099 D2: the owner's decision from their other
+                // computer, applied as `approval_decide` applies it.
+                let port = self.host.tunnel_channel_port();
+                let envelope = crate::tunnel::PekoApprovalDecidePayload {
+                    v: crate::tunnel::PEKO_APPROVAL_DECIDE_VERSION.into(),
+                    request_id,
+                    source_runtime_id,
+                    recipient_runtime_id,
+                    source_principal_did,
+                    principal_did,
+                    approval_id,
+                    approve,
+                    always,
+                    iat: 0,
+                    exp: 0,
+                };
+                if let Some(request) = port
+                    .verified_peko_approval_decide(envelope, &signature)
+                    .await
+                {
+                    let outcome = self
+                        .host
+                        .decide_peko_approval_for_owner(
+                            &request.principal_did,
+                            &request.source_principal_did,
+                            &request.approval_id,
+                            request.approve,
+                            request.always,
+                            &request.source_runtime_id,
+                        )
+                        .await;
+                    port.answer_peko_approval_decide(&handle, &request, outcome)
+                        .await;
+                }
+            }
+            TunnelMessage::TunnelPekoApprovalDecided {
+                request_id,
+                source_runtime_id,
+                recipient_runtime_id,
+                principal_did,
+                approval_id,
+                decided,
+                message,
+                signature,
+            } => {
+                self.host
+                    .tunnel_channel_port()
+                    .on_peko_approval_decided(
+                        request_id,
+                        source_runtime_id,
+                        recipient_runtime_id,
+                        principal_did,
+                        approval_id,
+                        decided,
+                        message,
+                        signature,
+                    )
+                    .await;
+            }
             TunnelMessage::TunnelDmRoute {
                 request_id,
                 source_runtime_id,
@@ -6228,7 +6354,11 @@ mod tests {
                 | TunnelMessage::TunnelPersonDmInvite { .. }
                 | TunnelMessage::TunnelDmRoute { .. }
                 | TunnelMessage::TunnelPekoModelsRequest { .. }
-                | TunnelMessage::TunnelPekoModels { .. }) => {
+                | TunnelMessage::TunnelPekoModels { .. }
+                | TunnelMessage::TunnelPekoApprovalsRequest { .. }
+                | TunnelMessage::TunnelPekoApprovals { .. }
+                | TunnelMessage::TunnelPekoApprovalDecide { .. }
+                | TunnelMessage::TunnelPekoApprovalDecided { .. }) => {
                     let handle = self.app.tunnel_handle_slot().read().await.clone().unwrap();
                     self.dispatcher.dispatch(history, handle).await.unwrap();
                 }
@@ -8632,6 +8762,22 @@ mod tests {
                     | TunnelMessage::TunnelPekoModels {
                         recipient_runtime_id,
                         ..
+                    }
+                    | TunnelMessage::TunnelPekoApprovalsRequest {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelPekoApprovals {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelPekoApprovalDecide {
+                        recipient_runtime_id,
+                        ..
+                    }
+                    | TunnelMessage::TunnelPekoApprovalDecided {
+                        recipient_runtime_id,
+                        ..
                     } => runtimes
                         .iter()
                         .position(|r| &r.app.runtime_did() == recipient_runtime_id)
@@ -9716,6 +9862,202 @@ mod tests {
             None
         );
         assert_eq!(manager.owner_model(&owner, None).await, None);
+    }
+
+    /// ADR-099: alice's second computer lists her peko's waiting approval
+    /// requests on its host and decides them there; a forged decision, a
+    /// stranger, and another account's runtime decide nothing.
+    #[tokio::test]
+    async fn you_decide_your_pekos_approvals_from_another_computer() {
+        use crate::principal::policy_gate::{pending_requests, PrincipalPolicyGate};
+        use crate::security::judge::{GatedCall, PolicyGate as _};
+        use crate::tunnel::hub_directory::{AgentResolution, FakeAgentDirectory, ResolvedExposure};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let alice = ActorRef::User(peko_subject::Route::hub(account.clone()));
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let directory = Arc::new(FakeAgentDirectory::new());
+        let mut host = DmRuntime::new(Arc::clone(&directory)).await;
+        let peko = create_test_principal(
+            &host.app,
+            "peko",
+            alice.clone(),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let host_port = host.app.tunnel_channel_port();
+        host_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("peko"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        directory.register_hub_id(
+            &hub_id,
+            AgentResolution {
+                runtime_id: host.app.runtime_did(),
+                instance_id: "instance".into(),
+                name: Some("peko".into()),
+                hub_id: hub_id.clone(),
+                local_id: peko.id.0.clone(),
+                identity_key: peko_key.clone(),
+                agent_did: peko_did.clone(),
+                owner_principal: alice.clone(),
+                owner_handle: None,
+                exposure: ResolvedExposure::Private,
+            },
+        );
+        host_port
+            .local()
+            .link_local_user(&host.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        // Someone else asked the peko for something its policy left to alice.
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(host.app.principal_manager()));
+        let call = GatedCall {
+            call_id: Some("call_gated".into()),
+            principal_id: peko.id.0.clone(),
+            principal_name: None,
+            session_id: Some("guest-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "user:hub:noah".into(),
+                name: Some("Noah".into()),
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: "dm_x".into(),
+                },
+                origin: Origin::Ingress { channel: None },
+            },
+            tool_name: "Read".into(),
+            params: serde_json::json!({"file_path": "finances/q3.md"}),
+        };
+        let first = gate.ask_owner(&call, "finances are private").await.unwrap();
+
+        let mut desk = DmRuntime::new(Arc::clone(&directory)).await;
+        let desk_port = desk.app.tunnel_channel_port();
+        desk_port
+            .local()
+            .link_local_user(&desk.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        let ResponsePacket::ChannelRemoteDmOpened { channel, .. } = desk
+            .ipc(RequestPacket::ChannelOpenRemoteDm {
+                request_id: 1,
+                hub_id: hub_id.clone(),
+                token: None,
+            })
+            .await
+        else {
+            panic!("the desk opens the DM");
+        };
+        relay(&mut desk, &mut host).await;
+
+        // The desk lists what waits for alice.
+        let asking = {
+            let port = Arc::clone(&desk_port);
+            let channel = channel.clone();
+            tokio::spawn(async move { port.peko_approvals(&channel).await })
+        };
+        relay_until(&mut desk, &mut host, || async { asking.is_finished() }).await;
+        let listed = asking.await.unwrap().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, first);
+        assert_eq!(listed[0].actor, "user:hub:noah");
+        assert_eq!(listed[0].actor_name.as_deref(), Some("Noah"));
+        assert_eq!(listed[0].reason, "finances are private");
+        assert!(listed[0].summary.contains("Read"), "{}", listed[0].summary);
+
+        // Only to the peko's owner; a stranger decides nothing.
+        let stranger = format!("user:hub:{}", uuid::Uuid::new_v4());
+        assert!(host
+            .app
+            .peko_approvals_for_owner(&peko_did, &stranger)
+            .await
+            .is_empty());
+        let refused = host
+            .app
+            .decide_peko_approval_for_owner(&peko_did, &stranger, &first, true, false, "did:key:x")
+            .await
+            .expect_err("not the owner");
+        assert!(refused.contains("owner"), "{refused}");
+        assert_eq!(pending_requests(&peko).len(), 1);
+
+        // A decision whose signature does not hold is dropped unanswered.
+        host.receive(TunnelMessage::TunnelPekoApprovalDecide {
+            request_id: "forged".into(),
+            source_runtime_id: desk.app.runtime_did(),
+            recipient_runtime_id: host.app.runtime_did(),
+            source_principal_did: format!("user:hub:{account}"),
+            principal_did: peko_did.clone(),
+            approval_id: first.clone(),
+            approve: false,
+            always: false,
+            signature: "not-a-signature".into(),
+        })
+        .await;
+        assert!(host.sent().is_empty(), "no answer to a forgery");
+        assert_eq!(pending_requests(&peko).len(), 1);
+
+        // Another account's runtime cannot ask about this DM.
+        let other = DmRuntime::new(Arc::clone(&directory)).await;
+        let other_port = other.app.tunnel_channel_port();
+        other_port
+            .local()
+            .link_local_user(&other.app.runtime_did(), &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(other_port
+            .decide_peko_approval(&channel, &first, false, false)
+            .await
+            .is_err());
+
+        // Alice denies it from the desk; the host applies it.
+        let deciding = {
+            let port = Arc::clone(&desk_port);
+            let (channel, id) = (channel.clone(), first.clone());
+            tokio::spawn(
+                async move { port.decide_peko_approval(&channel, &id, false, false).await },
+            )
+        };
+        relay_until(&mut desk, &mut host, || async { deciding.is_finished() }).await;
+        let outcome = deciding.await.unwrap().unwrap();
+        assert!(outcome.starts_with("Denied"), "{outcome}");
+        assert!(pending_requests(&peko).is_empty());
+
+        // Deciding it again says why it was not applied.
+        let again = {
+            let port = Arc::clone(&desk_port);
+            let (channel, id) = (channel.clone(), first.clone());
+            tokio::spawn(async move { port.decide_peko_approval(&channel, &id, true, false).await })
+        };
+        relay_until(&mut desk, &mut host, || async { again.is_finished() }).await;
+        let again = again.await.unwrap().expect_err("decided once");
+        assert!(again.to_string().contains("already decided"), "{again}");
+
+        // Nothing waits for alice any more.
+        let listing = {
+            let port = Arc::clone(&desk_port);
+            let channel = channel.clone();
+            tokio::spawn(async move { port.peko_approvals(&channel).await })
+        };
+        relay_until(&mut desk, &mut host, || async { listing.is_finished() }).await;
+        assert!(listing.await.unwrap().unwrap().is_empty());
     }
 
     /// ADR-095 D2–D3: a DM between pekos on two runtimes has no host. A

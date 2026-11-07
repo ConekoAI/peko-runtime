@@ -170,4 +170,30 @@ pub trait TunnelHost: Send + Sync {
         principal_did: &str,
         person: &str,
     ) -> Vec<crate::tunnel::PekoModel>;
+
+    /// ADR-099 D1: the approval requests waiting for the owner of the peko
+    /// hosted here whose signing DID is `principal_did`, oldest first,
+    /// when `person` (`user:hub:<account>`) is that owner; none otherwise
+    /// (and none for a peko not hosted here).
+    async fn peko_approvals_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+    ) -> Vec<crate::tunnel::PekoApproval>;
+
+    /// ADR-099 D2: apply `person`'s decision on approval request
+    /// `approval_id` of the peko hosted here whose signing DID is
+    /// `principal_did`, as the owner's `approval_decide` does, and say
+    /// what happened. Refused unless `person` is the peko's owner.
+    /// `from_runtime` is the runtime the decision came from (audited).
+    #[allow(clippy::too_many_arguments)]
+    async fn decide_peko_approval_for_owner(
+        &self,
+        principal_did: &str,
+        person: &str,
+        approval_id: &str,
+        approve: bool,
+        always: bool,
+        from_runtime: &str,
+    ) -> Result<String, String>;
 }
