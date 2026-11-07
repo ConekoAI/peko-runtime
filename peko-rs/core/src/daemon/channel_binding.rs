@@ -1254,7 +1254,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cursor_dir_uses_the_channels_on_disk_name_and_moves_old_cursors() {
+    async fn cursor_dir_uses_the_channels_on_disk_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = ChannelId::parse("group:tinytodo").unwrap();
+        assert_eq!(
+            cursor_dir(tmp.path(), &channel).await,
+            tmp.path().join("channels").join("group.3A.tinytodo")
+        );
+        // A bare id has no colon: its directory is the id itself.
+        let bare = ChannelId::generate();
+        assert_eq!(
+            cursor_dir(tmp.path(), &bare).await,
+            tmp.path().join("channels").join(bare.as_str())
+        );
+    }
+
+    // The old raw-id directory (`group:tinytodo`) can only exist where
+    // the file system allows a `:` in a name.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_dir_moves_cursors_from_the_old_raw_id_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let channel = ChannelId::parse("group:tinytodo").unwrap();
         let legacy_dir = tmp.path().join("channels").join("group:tinytodo");
@@ -1269,13 +1288,6 @@ mod tests {
         let moved = ChannelCursors::load(&dir).await.unwrap();
         assert_eq!(moved.get(&pid("prin_self")).map(String::as_str), Some("7"));
         assert!(!legacy_dir.exists(), "the old raw-id directory is gone");
-
-        // A bare id has no colon: its directory is the id itself.
-        let bare = ChannelId::generate();
-        assert_eq!(
-            cursor_dir(tmp.path(), &bare).await,
-            tmp.path().join("channels").join(bare.as_str())
-        );
     }
 
     fn posted(author: &str, text: &str) -> ChannelEvent {
