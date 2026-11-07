@@ -1181,10 +1181,17 @@ impl TunnelChannelPort {
                     wire = vault_did;
                 }
             }
+            // This runtime's own person goes by their PekoHub display
+            // name, not the local user's placeholder.
+            let name = if matches!(p, ActorRef::User(_)) {
+                self.local.person_display_name().await
+            } else {
+                profile.name
+            };
             local_rows.push(peko_protocol::channel::InitialMember {
                 hub_id: profile.hub_id,
                 identity_key: Some(profile.identity_key),
-                name: profile.name,
+                name,
                 principal_did: wire,
                 runtime_id: Some(ctx.caller_runtime_id.clone()),
             });
@@ -1240,6 +1247,8 @@ impl TunnelChannelPort {
         #[derive(serde::Deserialize)]
         struct MetaSnapshot {
             name: String,
+            #[serde(default)]
+            created_at: Option<chrono::DateTime<chrono::Utc>>,
         }
         let meta: MetaSnapshot = serde_json::from_slice(&meta_bytes).map_err(|e| {
             format!(
@@ -1296,6 +1305,7 @@ impl TunnelChannelPort {
         let creator_address = creator_profile
             .hub_address()
             .ok_or_else(|| "Register the inviter before using Hub transport".to_string())?;
+        let created_at = meta.created_at.map(|at| at.to_rfc3339());
         let source_principal_wire = if author_key.is_some() {
             creator_did.to_string()
         } else {
@@ -1312,6 +1322,7 @@ impl TunnelChannelPort {
             name: &meta.name,
             kind: kind.as_str(),
             initial_members_bytes: &initial_members_bytes,
+            created_at: created_at.as_deref(),
         };
         // ADR-058 D3: `iat = now`, `exp = now + 300` (seconds, UTC).
         let iat = chrono::Utc::now().timestamp();

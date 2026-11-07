@@ -269,6 +269,8 @@ impl ChannelHandler {
                 }
                 None => None,
             };
+            let membership = port.membership(&ch).await?;
+            let people = self.channel_people(&membership, &pekos).await?;
             Ok::<_, peko_channel::ChannelError>(ResponsePacket::ChannelInfoResult {
                 request_id,
                 channel: ch.clone(),
@@ -277,12 +279,102 @@ impl ChannelHandler {
                 members,
                 pekos,
                 group,
+                people,
+                created_at: Some(membership.created_at).filter(|at| !at.is_empty()),
             })
         };
         match read.await {
             Ok(response) => send_response(sink, response).await,
             Err(e) => error_reply(sink, request_id, format!("channel info failed: {e}")).await,
         }
+    }
+
+    /// Everyone in `channel` once, with their names (`ChannelInfoResult`
+    /// `people`): its members here, those reached through other runtimes,
+    /// and its creator. Each person's every form here is an alias, so a
+    /// post's author or a roster row names the same person.
+    async fn channel_people(
+        &self,
+        membership: &peko_protocol::channel::ChannelMembership,
+        pekos: &[ChannelPekoWake],
+    ) -> Result<Vec<crate::ipc::packet::ChannelPerson>, peko_channel::ChannelError> {
+        use crate::ipc::packet::ChannelPerson;
+        let port = self.host.channel_port();
+        let store = self
+            .host
+            .tunnel_channel_port()
+            .map(|t| Arc::clone(t.local()));
+        let display_name = match &store {
+            Some(store) => store.person_display_name().await,
+            None => None,
+        };
+        let me = port.actor_info(&ActorRef::User("local".into())).await;
+        let mut forms: Vec<String> = membership
+            .member_provenance
+            .iter()
+            .map(|m| m.principal.clone())
+            .collect();
+        forms.push(membership.creator.clone());
+        let mut people: Vec<ChannelPerson> = Vec::new();
+        for form in forms {
+            if form.is_empty() {
+                continue;
+            }
+            let subject = ActorRef::from_str(&form)
+                .unwrap_or_else(|_| ActorRef::Principal(form.clone().into()));
+            let info = port.actor_info(&subject).await;
+            let you = info.kind == "user"
+                && (info.local_id.as_deref() == Some("local")
+                    || (me.hub_id.is_some() && info.hub_id == me.hub_id));
+            let address = if you {
+                me.address.clone()
+            } else {
+                info.address.clone()
+            };
+            let mut aliases = vec![form.clone(), subject.canonical_address()];
+            aliases.extend(info.hub_address());
+            if you {
+                aliases.extend(me.hub_address());
+                aliases.push("user:local".into());
+            }
+            if let Some(local_id) = &info.local_id {
+                aliases.push(local_id.clone());
+            }
+            let name = if you {
+                display_name.clone()
+            } else {
+                info.local_id
+                    .as_ref()
+                    .and_then(|id| pekos.iter().find(|p| &p.local_id == id))
+                    .map(|p| p.name.clone())
+                    .or_else(|| info.name.clone())
+            };
+            let here = you || (info.kind == "principal" && info.local_id.is_some());
+            let person = match people.iter_mut().find(|p| p.address == address) {
+                Some(person) => person,
+                None => {
+                    people.push(ChannelPerson {
+                        address: address.clone(),
+                        aliases: Vec::new(),
+                        kind: info.kind.clone(),
+                        name: None,
+                        you,
+                        here,
+                    });
+                    people.last_mut().expect("just pushed")
+                }
+            };
+            if person.name.is_none() {
+                person.name = name;
+            }
+            person.here |= here;
+            for alias in aliases {
+                if alias != person.address && !person.aliases.contains(&alias) {
+                    person.aliases.push(alias);
+                }
+            }
+        }
+        Ok(people)
     }
 
     /// `ChannelSetWake`: set what starts a turn for a peko in a group.

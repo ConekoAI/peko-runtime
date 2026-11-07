@@ -332,6 +332,8 @@ pub struct ChannelInviteSignedFields<'a> {
     /// responsible for serializing via `serde_json::to_vec(&members)`
     /// once and passing the same bytes to both sign and verify paths.
     pub initial_members_bytes: &'a [u8],
+    /// When the channel began at the source (RFC3339), if known.
+    pub created_at: Option<&'a str>,
 }
 
 /// The signed payload of a v2 `TunnelChannelInvite` envelope
@@ -353,6 +355,10 @@ pub struct ChannelInvitePayload {
     pub kind: String,
     /// base64url-no-pad of the serialized `initial_members` bytes.
     pub initial_members_b64u: String,
+    /// When the channel began at its source (RFC3339), so a copy shows
+    /// the group's start, not its own. Older runtimes leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
     /// Issued-at (Unix seconds, UTC).
     pub iat: i64,
     /// Expiry (Unix seconds, UTC).
@@ -381,6 +387,7 @@ pub fn sign_channel_invite(
         name: fields.name.to_string(),
         kind: fields.kind.to_string(),
         initial_members_b64u: URL_SAFE_NO_PAD.encode(fields.initial_members_bytes),
+        created_at: fields.created_at.map(str::to_string),
         iat,
         exp,
     };
@@ -597,6 +604,10 @@ pub struct GroupJoinPayload {
     pub source_principal_did: String,
     pub channel_id: String,
     pub accept: bool,
+    /// The person's PekoHub display name, so the group names them
+    /// (signed with the rest; older runtimes leave it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -651,6 +662,10 @@ pub struct GroupJoinRequestPayload {
     /// ADR-098 D2: the asking peko's Hub ID (absent for a person).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hub_id: Option<String>,
+    /// The person's PekoHub display name, so the group names them
+    /// (signed with the rest; older runtimes leave it out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -1024,6 +1039,7 @@ mod tests {
             name: "team-chat",
             kind: "group",
             initial_members_bytes: members_bytes,
+            created_at: None,
         }
     }
 

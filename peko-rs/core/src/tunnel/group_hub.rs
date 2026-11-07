@@ -314,11 +314,22 @@ impl TunnelChannelPort {
         let Some(handle) = ctx.tunnel.read().await.clone() else {
             return;
         };
+        let mine = match self.hub_account().await {
+            Some(account) => accounts.contains(&account),
+            None => false,
+        };
         if let Err(e) = handle.send(TunnelMessage::GroupRoster {
             group_id: hub.id,
             accounts,
         }) {
             debug!(%channel, "group roster not reported: {e}");
+            return;
+        }
+        // The home's own person is in it: their other computers, signed
+        // in already, look the account's groups up again (D4). PekoHub
+        // took the roster first; it reads this runtime's messages in order.
+        if mine {
+            self.tell_other_devices().await;
         }
     }
 
@@ -363,6 +374,7 @@ impl TunnelChannelPort {
             );
             return;
         }
+        let name = verified.ok().and_then(|p| p.name);
         let Some(channel) = ChannelId::parse(&channel_id) else {
             return;
         };
@@ -383,6 +395,7 @@ impl TunnelChannelPort {
                 &source_principal_did,
                 &source_runtime_id,
                 invite.as_deref(),
+                name.as_deref(),
             )
             .await
         };
@@ -402,6 +415,7 @@ impl TunnelChannelPort {
         person_address_: &str,
         route: &str,
         invite: Option<&str>,
+        name: Option<&str>,
     ) -> anyhow::Result<()> {
         let person = match person_address_.parse::<ActorRef>() {
             Ok(person @ ActorRef::User(_))
@@ -433,17 +447,22 @@ impl TunnelChannelPort {
         let admitted = member || Self::link_admits(ctx, channel, &hub, invite)?;
         anyhow::ensure!(admitted, "no live invite, and the group is not public");
 
-        if !member {
+        // The group names them as PekoHub does (the home's own person
+        // keeps the name it has here).
+        let mine = self.hub_account().await.as_deref() == Some(account.as_str());
+        if !member || (name.is_some() && !mine) {
             self.local
                 .register_actor(
                     &person,
                     Some(&account),
                     None,
                     None,
-                    None,
+                    name.filter(|_| !mine),
                     Registration::Registered,
                 )
                 .await?;
+        }
+        if !member {
             let owner = self.local.group_owner(channel).await?;
             let owner = self.local.resolve_actor(&owner).await?;
             let inviter = owner
@@ -852,6 +871,7 @@ impl TunnelChannelPort {
             channel_id: channel.as_str().into(),
             invite,
             source_hub_id,
+            name: self.local.person_display_name().await,
             iat,
             exp: iat + 300,
         };

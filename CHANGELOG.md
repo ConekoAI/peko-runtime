@@ -25,6 +25,23 @@ All notable changes to Peko.
   or DM with its owner (`principal::first_contact`). Group invitations still
   need a grant, a contact, or the peko's own join request. `ChannelSend` tells
   the sender why a first DM to a private peko may wait.
+### Fix: your groups reach your other computers, and everyone in them has a name (2026-11-07)
+
+- A group follows its person to computers that were already signed in
+  (ADR-092 D4). Before, a device asked PekoHub for its account's groups only
+  when it connected, so a group made later never reached it until the
+  person used the invite link again. Now the runtime that gains the group
+  (its home, when its own person is in it, or the device that joined) tells
+  the account's other devices, which look the account's groups up again and
+  join from the home.
+- `channel_info_result` lists `people`: everyone in the channel once, with
+  their names, those on other computers too, and `you`. A join request and
+  an invitation answer carry the person's PekoHub display name, and the
+  home's rosters name its own person by it, so copies name everyone.
+- A group's copy on another computer shows when the group began: the home
+  signs `created_at` into its invites (`channel_info_result.created_at`).
+- `peko channel members` and `peko channel show` print names and where each
+  member is.
 
 ### Fix: spend counts the prompt cache, and input tokens mean the same thing for every model (2026-11-06)
 

@@ -2175,11 +2175,26 @@ the principal's owner, groups only, the principal a member) answers
 {"type": "channel_info_result", "request_id": 1, "channel": "chan_01qwjy2l",
  "kind": "group", "name": "team",
  "members": [{"kind": "principal", "id": "prin_alice"}, {"kind": "user", "id": "local"}],
- "pekos": [{"name": "alice", "local_id": "prin_alice", "wake": "mention"}]}
+ "pekos": [{"name": "alice", "local_id": "prin_alice", "wake": "mention"}],
+ "people": [{"address": "principal:local:prin_alice", "aliases": ["prin_alice"], "kind": "principal",
+             "name": "alice", "you": false, "here": true},
+            {"address": "user:local:local", "aliases": ["user:hub:<account>", "user:local"], "kind": "user",
+             "name": "Frank", "you": true, "here": true},
+            {"address": "principal:hub:<UUID>", "aliases": ["did:key:z6Mk…"], "kind": "principal",
+             "name": "ada", "you": false, "here": false}],
+ "created_at": "2026-11-06T14:36:56.811782+00:00"}
 
 {"type": "channel_wake_set", "request_id": 1, "channel": "chan_01qwjy2l",
  "principal_name": "alice", "wake": "off"}
 ```
+
+`people` (omitted when empty) lists everyone in the channel once: its
+members here, those reached through other runtimes, and its creator, with
+the name this runtime knows (a peko's name, a person's PekoHub display
+name; the runtime's own person is `you`). `aliases` are the other forms the
+member appears as in rosters and as post authors. `created_at` is when the
+channel began: on a copy from another runtime, the time the source signed
+into its invite (ADR-092 D1), not when the copy was made.
 
 `pekos` lists the member principals hosted on this runtime. A DM's is
 always `human`; a group member without a binding yet reads as `mention`.
@@ -2425,6 +2440,13 @@ until they answer; a joined group's `meta.json` carries `account` and `home`. An
 entry with `"requested": true` is the person's own request to join (by link,
 by ID, or from a new device, ADR-092 D4/D5): it is not listed as an
 invitation and takes the home's roster as the answer.
+
+The signed payloads of `tunnel_group_join` and `tunnel_group_join_request`
+may carry `name`, the person's PekoHub display name (omitted when unknown;
+older runtimes leave it out), which the home records so its rosters name
+them. The signed payload of `tunnel_channel_invite` may carry `created_at`
+(RFC3339), when the channel began at its source; a copy takes it when
+earlier than its own `meta.json` `created_at`.
 
 ```json
 {"type":"tunnel_group_invitation","requestId":"…","sourceRuntimeId":"did:key:…","recipientAccount":"user:hub:<account>","channelId":"chan_…","name":"book club","inviter":"principal:hub:<UUID>","initialMembers":[…],"signature":"<JWS>"}

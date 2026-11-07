@@ -1023,8 +1023,8 @@ impl TunnelDispatcher {
                 recipient_account,
                 signature,
             } => {
-                self.host
-                    .tunnel_channel_port()
+                let port = self.host.tunnel_channel_port();
+                let verified = port
                     .on_account_dms_request(
                         &handle,
                         request_id,
@@ -1033,6 +1033,11 @@ impl TunnelDispatcher {
                         signature,
                     )
                     .await;
+                // ADR-092 D4: another device of this account may have
+                // joined a group; look the account's groups up again.
+                if verified {
+                    tokio::spawn(async move { port.sync_account_groups().await });
+                }
             }
             TunnelMessage::TunnelAccountDms {
                 request_id,
@@ -2740,6 +2745,7 @@ impl TunnelDispatcher {
                         false
                     });
                 if applied {
+                    adopt_start(&port, &channel_typed, payload.created_at.as_deref()).await;
                     port.mark_applied(&request_id).await;
                     port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
                         .await;
@@ -2798,6 +2804,7 @@ impl TunnelDispatcher {
                 });
             }
         }
+        adopt_start(&port, &channel_typed, payload.created_at.as_deref()).await;
         port.mark_applied(&request_id).await;
         port.send_receipt(&source_runtime_id, &channel_typed, vec![request_id.clone()])
             .await;
@@ -3450,6 +3457,25 @@ fn execution_failure(
         other => (500, format!("Execution failed: {other}")),
     }
 }
+/// A copy of a channel takes the start time its source signed into the
+/// invite (ADR-092 D1), so it shows when the group began.
+async fn adopt_start(
+    port: &Arc<crate::tunnel::TunnelChannelPort>,
+    channel: &peko_protocol::channel::ChannelId,
+    created_at: Option<&str>,
+) {
+    let Some(at) = created_at.and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok()) else {
+        return;
+    };
+    if let Err(e) = port
+        .local()
+        .adopt_created_at(channel, at.with_timezone(&chrono::Utc))
+        .await
+    {
+        debug!(%channel, "start time not taken: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5652,6 +5678,7 @@ mod tests {
             name,
             kind: kind.as_str(),
             initial_members_bytes: &initial_members_bytes,
+            created_at: None,
         };
         let iat = chrono::Utc::now().timestamp();
         let (sig, author_sig) =
@@ -5767,6 +5794,7 @@ mod tests {
             name: "registered conversation",
             kind: kind.as_str(),
             initial_members_bytes: &bytes,
+            created_at: None,
         };
         let (signature, author_signature) = crate::tunnel::sign_channel_invite(
             &runtime.signing_key,
@@ -5937,6 +5965,7 @@ mod tests {
             name: "registered conversation",
             kind: kind.as_str(),
             initial_members_bytes: &bytes,
+            created_at: None,
         };
         let (signature, author_signature) = crate::tunnel::sign_channel_invite(
             &other_runtime.signing_key,
@@ -7203,9 +7232,9 @@ mod tests {
         let hub = registering.await.unwrap().unwrap();
         assert_eq!(hub.id, group_id);
         assert!(
-            matches!(&h.sent()[..], [TunnelMessage::GroupRoster { group_id: g, accounts }]
+            matches!(&h.sent()[..], [TunnelMessage::GroupRoster { group_id: g, accounts }, TunnelMessage::TunnelAccountDmsRequest { .. }]
                 if *g == group_id && *accounts == vec![owner_account.clone()]),
-            "the home reports who is in it: its own person, so far"
+            "the home reports who is in it: its own person, so far; and tells their other devices"
         );
 
         let (link, _) = h_port
@@ -7221,6 +7250,11 @@ mod tests {
         p_port
             .local()
             .link_local_user(&p.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        p_port
+            .local()
+            .set_person_display_name(Some("Pat"))
             .await
             .unwrap();
         let lookup = |home: String, channel: String, gid: String| {
@@ -7290,6 +7324,11 @@ mod tests {
                 .as_deref(),
             Some(account.as_str()),
             "the home's roster completes the join"
+        );
+        assert_eq!(
+            h_port.local().actor_info(&person).await.name.as_deref(),
+            Some("Pat"),
+            "the group names whoever joins by their PekoHub name"
         );
         // …and the group catches up from its home.
         let mut caught_up = false;
@@ -7713,6 +7752,252 @@ mod tests {
             p_port.local().conversation_kind(&cold).await.is_err(),
             "a stranger's first DM waits"
         );
+    }
+
+    /// ADR-092 D4, found live: a group follows its person to a computer
+    /// that was signed in before the group existed. The home's own person
+    /// is in the group; registering it tells their other devices, and the
+    /// desktop on the second computer looks the account's groups up again,
+    /// asks the home with no link, and gets the group with its history,
+    /// its real start time, and everyone's names.
+    #[tokio::test]
+    async fn a_group_follows_its_person_to_a_computer_already_signed_in() {
+        use crate::tunnel::hub_directory::FakeAgentDirectory;
+        use peko_channel::{ChannelPort, CreateOpts, GroupVisibility};
+
+        let account = uuid::Uuid::new_v4().to_string();
+        let hub_id = uuid::Uuid::new_v4().to_string();
+        let group_id = "2234567890123456789".to_string();
+
+        // H: computer 1, where Frank's peko lives and starts the group.
+        let mut h = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let peko = create_test_principal(
+            &h.app,
+            "ada",
+            ActorRef::User("local".into()),
+            vec![],
+            peko_auth::Exposure::Private,
+        )
+        .await;
+        let (peko_did, peko_key) = {
+            let config = peko.config.read().await;
+            (
+                config.did.as_ref().unwrap().0.clone(),
+                config.actor_key.clone().unwrap(),
+            )
+        };
+        let h_port = h.app.tunnel_channel_port();
+        h_port
+            .register_actor(
+                &ActorRef::from(&peko.id),
+                Some(&hub_id),
+                Some(&peko_did),
+                Some(&peko_key),
+                Some("ada"),
+                peko_channel::Registration::Private,
+            )
+            .await
+            .unwrap();
+        h_port
+            .local()
+            .link_local_user(&h.app.runtime_did(), &account)
+            .await
+            .unwrap();
+        h_port
+            .local()
+            .set_person_display_name(Some("Frank"))
+            .await
+            .unwrap();
+
+        // D: computer 2, signed in to the same account, with no pekos.
+        let mut d = DmRuntime::new(Arc::new(FakeAgentDirectory::new())).await;
+        let d_port = d.app.tunnel_channel_port();
+        d_port
+            .local()
+            .link_local_user(&d.app.runtime_did(), &account)
+            .await
+            .unwrap();
+
+        // Later, ada starts a group with Frank in it, as the desktop does.
+        let channel = h_port
+            .create(&peko.id, CreateOpts::runtime("tinytodo"))
+            .await
+            .unwrap();
+        h_port
+            .invite(&channel, &peko.id, &ActorRef::User("local".into()))
+            .await
+            .unwrap();
+        h_port
+            .post(
+                &channel,
+                &ActorRef::from(&peko.id),
+                peko_channel::PostMsg::root("hello, team"),
+            )
+            .await
+            .unwrap();
+        let registering = {
+            let port = Arc::clone(&h_port);
+            let (channel, by) = (channel.clone(), peko.id.clone());
+            tokio::spawn(async move {
+                port.register_group(&channel, &by, GroupVisibility::InviteOnly)
+                    .await
+            })
+        };
+        let gid = group_id.clone();
+        hub_answers(
+            &mut h,
+            |m| match m {
+                TunnelMessage::GroupRegister { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            },
+            |request_id| TunnelMessage::GroupRegistered {
+                request_id,
+                group_id: gid.clone(),
+                page_url: format!("https://hub.test/g/{gid}"),
+            },
+        )
+        .await;
+        registering.await.unwrap().unwrap();
+
+        // The home reports the roster, then tells Frank's other devices.
+        let sent = h.sent();
+        let roster_at = sent
+            .iter()
+            .position(|m| {
+                matches!(m, TunnelMessage::GroupRoster { accounts, .. } if *accounts == vec![account.clone()])
+            })
+            .expect("the roster names Frank's account");
+        let nudge_at = sent
+            .iter()
+            .position(|m| {
+                matches!(m, TunnelMessage::TunnelAccountDmsRequest { recipient_account, .. }
+                    if *recipient_account == format!("user:hub:{account}"))
+            })
+            .expect("the home tells the person's other devices");
+        assert!(roster_at < nudge_at, "PekoHub hears the roster first");
+
+        // D hears it (PekoHub delivers it to the account's runtimes) and
+        // looks the account's groups up again.
+        d.receive(sent[nudge_at].clone()).await;
+        let (home, chan, gid) = (
+            h.app.runtime_did(),
+            channel.as_str().to_string(),
+            group_id.clone(),
+        );
+        hub_answers(
+            &mut d,
+            |m| match m {
+                TunnelMessage::AccountGroupsRequest { request_id } => Some(request_id.clone()),
+                _ => None,
+            },
+            move |request_id| TunnelMessage::AccountGroups {
+                request_id,
+                groups: vec![crate::tunnel::AccountGroup {
+                    group_id: gid,
+                    name: "tinytodo".into(),
+                    home_runtime: home,
+                    channel_id: chan,
+                }],
+            },
+        )
+        .await;
+        let mut joined = false;
+        for _ in 0..100 {
+            route(&mut [&mut h, &mut d]).await;
+            if d_port
+                .local()
+                .remote_dm_account(&channel)
+                .await
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(account.as_str())
+            {
+                joined = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            joined,
+            "the second computer joins as a member, with no link"
+        );
+        match d
+            .ipc(RequestPacket::ChannelPersonGroups { request_id: 1 })
+            .await
+        {
+            ResponsePacket::ChannelPersonGroupsResult { groups, .. } => {
+                assert!(groups.iter().any(|g| g.channel == channel), "{groups:?}")
+            }
+            other => panic!("expected the person's groups, got {other:?}"),
+        }
+        let mut caught_up = false;
+        for _ in 0..100 {
+            route(&mut [&mut h, &mut d]).await;
+            let events = d_port
+                .local()
+                .peek(&channel, &peko_channel::Checkpoint::zero())
+                .await
+                .unwrap();
+            if posts(&events).iter().any(|(_, t)| t == "hello, team") {
+                caught_up = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(caught_up, "the group reads what was said before");
+
+        // The copy names everyone and shows when the group began.
+        async fn info(
+            rt: &DmRuntime,
+            channel: &peko_channel::ChannelId,
+        ) -> (Vec<crate::ipc::packet::ChannelPerson>, Option<String>) {
+            match rt
+                .ipc(RequestPacket::ChannelInfo {
+                    request_id: 2,
+                    channel: channel.as_str().into(),
+                })
+                .await
+            {
+                ResponsePacket::ChannelInfoResult {
+                    people, created_at, ..
+                } => (people, created_at),
+                other => panic!("expected a group's info, got {other:?}"),
+            }
+        }
+        let (home_people, home_start) = info(&h, &channel).await;
+        let (people, start) = info(&d, &channel).await;
+        assert!(home_start.is_some());
+        assert_eq!(start, home_start, "the copy began when the group did");
+        let ada = people
+            .iter()
+            .find(|p| p.kind == "principal")
+            .expect("ada is in it");
+        assert_eq!(ada.name.as_deref(), Some("ada"));
+        assert!(!ada.here, "ada lives on the other computer");
+        assert!(
+            ada.address == format!("principal:hub:{hub_id}")
+                || ada.aliases.contains(&format!("principal:hub:{hub_id}")),
+            "{ada:?}"
+        );
+        let you: Vec<_> = people.iter().filter(|p| p.you).collect();
+        assert_eq!(
+            you.len(),
+            1,
+            "Frank once, though on two computers: {people:?}"
+        );
+        let frank = home_people.iter().find(|p| p.you).expect("Frank at home");
+        assert_eq!(frank.name.as_deref(), Some("Frank"));
+        assert!(
+            frank.aliases.contains(&format!("user:hub:{account}")),
+            "{frank:?}"
+        );
+        let home_ada = home_people
+            .iter()
+            .find(|p| p.kind == "principal")
+            .expect("ada at home");
+        assert!(home_ada.here);
+        assert_eq!(home_ada.name.as_deref(), Some("ada"));
     }
 
     /// ADR-092 D2 end to end: a group's home invites a person by account;
