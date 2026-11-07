@@ -274,7 +274,7 @@ pub async fn register_runtime(
         .bearer_auth(api_key)
         .json(&serde_json::json!({
             "runtime_did": runtime_did,
-            "display_name": "peko-runtime",
+            "display_name": peko_identity::runtime_metadata::HostInfo::computer_name(),
             "pop": pop,
         }))
         .send()
