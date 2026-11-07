@@ -312,6 +312,7 @@ impl TunnelChannelPort {
             name: &name,
             kind: kind.as_str(),
             initial_members_bytes: &initial_members_bytes,
+            created_at: None,
         };
         let iat = chrono::Utc::now().timestamp();
         let (signature, author_signature) =

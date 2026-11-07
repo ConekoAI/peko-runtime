@@ -196,9 +196,11 @@ impl TunnelChannelPort {
             warn!(request_id, "group join failed verification; dropped");
             return;
         }
+        let name = verified.ok().and_then(|p| p.name);
         let Some((person, account)) = hub_person(&source_principal_did) else {
             return;
         };
+
         let channel = ChannelId(channel_id);
         if let Err(e) = self
             .apply_group_join(
@@ -208,6 +210,7 @@ impl TunnelChannelPort {
                 &account,
                 &source_runtime_id,
                 accept,
+                name.as_deref(),
             )
             .await
         {
@@ -226,6 +229,7 @@ impl TunnelChannelPort {
         account: &str,
         route: &str,
         accept: bool,
+        name: Option<&str>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.local.conversation_kind(channel).await? == ConversationKind::Group,
@@ -244,6 +248,20 @@ impl TunnelChannelPort {
             }
         }
         anyhow::ensure!(invited, "{address} was not invited");
+        // The group names them as PekoHub does (the home's own person
+        // keeps the name it has here).
+        if accept && name.is_some() && self.local_account().await.as_deref() != Some(account) {
+            self.local
+                .register_actor(
+                    person,
+                    Some(account),
+                    None,
+                    None,
+                    name,
+                    Registration::Registered,
+                )
+                .await?;
+        }
         self.outbox
             .forget_for(&person_address(account), channel)
             .await;
@@ -604,6 +622,8 @@ impl TunnelChannelPort {
                 if let Err(e) = port.sync_history(&joined).await {
                     debug!(channel = %joined, "group catch-up skipped: {e}");
                 }
+                // D4: and it follows the person to their other computers.
+                port.tell_other_devices().await;
             });
         }
         Ok(true)
@@ -631,6 +651,7 @@ impl TunnelChannelPort {
             source_principal_did: person_address(&account),
             channel_id: channel.as_str().into(),
             accept,
+            name: self.local.person_display_name().await,
             iat,
             exp: iat + 300,
         };
