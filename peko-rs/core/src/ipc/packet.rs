@@ -1600,6 +1600,16 @@ pub enum ResponsePacket {
         /// A group's home and PekoHub registration (ADR-092 D1/D5).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         group: Option<ChannelGroupSummary>,
+        /// Everyone in it, once each, with their names: the members here,
+        /// those reached through other runtimes, and the creator. Every
+        /// form a member appears as (in the roster or as a post's author)
+        /// is one of their `aliases`, so a reader names them all.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        people: Vec<ChannelPerson>,
+        /// When the group (or DM) began: the home's time, not when this
+        /// copy was made (ADR-092 D1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_at: Option<String>,
     },
 
     /// Response to `ChannelPersonGroups` (ADR-092 D2).
@@ -2663,6 +2673,30 @@ pub struct ChannelGroupSummary {
     /// `invite_only` or `public`, once registered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
+}
+
+/// One member of a channel in a `ChannelInfoResult`, as people read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPerson {
+    /// Their canonical address (`principal:hub:<id>`, `user:hub:<id>`,
+    /// `principal:local:<id>`, `user:local:local`).
+    pub address: String,
+    /// The other forms they appear as here: a remote peko's signing
+    /// `did:key`, a person's Hub address, a local id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// `principal` (a peko) or `user` (a person).
+    pub kind: String,
+    /// Their name, when known: a peko's name, a person's PekoHub
+    /// display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// This runtime's own person.
+    #[serde(default)]
+    pub you: bool,
+    /// Hosted on this runtime (a peko here, or you).
+    #[serde(default)]
+    pub here: bool,
 }
 
 /// One peko hosted on this runtime in a `ChannelInfoResult`.

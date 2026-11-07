@@ -11,6 +11,10 @@
 //! - The asker ([`TunnelChannelPort::on_account_dms`]) opens each DM it
 //!   lacks, as if the person had opened it here, and catches it up from
 //!   the peko's host. PekoHub keeps no list of who a person talks to.
+//! - A request is also how a device says the person joined a group there
+//!   ([`TunnelChannelPort::tell_other_devices`]): each device that hears
+//!   one looks up the account's groups on PekoHub again (ADR-092 D4), so a
+//!   group follows the person to computers that were already signed in.
 
 use super::user_dm::ResolvedPeko;
 use super::TunnelChannelPort;
@@ -82,9 +86,19 @@ impl TunnelChannelPort {
         }
     }
 
+    /// The person joined a group on this device: ask their other devices
+    /// to sync, so each looks up the account's groups again and asks the
+    /// new one's home to add it (ADR-092 D4). Their answers bring this
+    /// device any DMs it lacks, too.
+    pub(crate) async fn tell_other_devices(&self) {
+        self.sync_account_dms().await;
+    }
+
     /// Another runtime of this account asks for the person's DMs: answer
     /// with those held here. PekoHub delivered it only from a runtime
-    /// registered to the account.
+    /// registered to the account. Returns whether it was a verified
+    /// request from another device of this account, which also means
+    /// that device may have joined a group (see `tell_other_devices`).
     pub(crate) async fn on_account_dms_request(
         &self,
         handle: &TunnelHandle,
@@ -92,17 +106,17 @@ impl TunnelChannelPort {
         source_runtime_id: String,
         recipient_account: String,
         signature: String,
-    ) {
+    ) -> bool {
         let (Some((_, account)), Some(ctx)) = (
             self.registered_person().await,
             self.ctx.read().await.clone(),
         ) else {
-            return;
+            return false;
         };
         if recipient_account != format!("user:hub:{account}")
             || source_runtime_id == ctx.caller_runtime_id
         {
-            return;
+            return false;
         }
         let verified = did_key_to_verifying_key(&source_runtime_id)
             .map_err(|e| anyhow::anyhow!("{e}"))
@@ -117,7 +131,7 @@ impl TunnelChannelPort {
                 request_id,
                 "account DM request failed verification; dropped"
             );
-            return;
+            return false;
         }
         let dms = self.account_dm_list(&ctx, &account).await;
         let people = self.person_dm_list(&account).await;
@@ -159,6 +173,7 @@ impl TunnelChannelPort {
             blocks,
             signature,
         });
+        true
     }
 
     /// The person's DMs with pekos on other runtimes held here (opened

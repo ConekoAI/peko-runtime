@@ -2062,6 +2062,26 @@ impl ChannelStore {
         meta.save(&dir).await
     }
 
+    /// A copy takes the start time its source signed (ADR-092 D1): a
+    /// group or DM began when its home made it, not when this copy was
+    /// made. Only an earlier time is taken, so a copy never moves later.
+    /// Returns whether it changed.
+    pub async fn adopt_created_at(
+        &self,
+        channel: &ChannelId,
+        at: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let dir = self.cfg.channel_dir(channel);
+        let _guard = self.lock_members(&dir).await?;
+        let mut meta = MetaJson::load(&dir, channel).await?;
+        if at >= meta.created_at {
+            return Ok(false);
+        }
+        meta.created_at = at;
+        meta.save(&dir).await?;
+        Ok(true)
+    }
+
     /// A group's PekoHub registration, kept at its home (ADR-092 D5).
     pub async fn hub_group(&self, channel: &ChannelId) -> Result<Option<HubGroup>> {
         let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
@@ -6377,6 +6397,31 @@ mod tests {
     }
 
     // -- list_remote_members / is_remote_member -------------------------
+
+    /// A copy's start time moves only earlier (ADR-092 D1).
+    #[tokio::test]
+    async fn a_copy_takes_an_earlier_start_time_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = ChannelStore::new(ChannelConfig {
+            runtime_dir: dir.path().to_path_buf(),
+            shared_dir: None,
+        });
+        let channel = store
+            .create(&PrincipalId("prin_a".into()), CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let made = store.membership(&channel).await.unwrap().created_at;
+        let earlier = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(store.adopt_created_at(&channel, earlier).await.unwrap());
+        assert_eq!(
+            store.membership(&channel).await.unwrap().created_at,
+            earlier.to_rfc3339()
+        );
+        assert!(!store.adopt_created_at(&channel, Utc::now()).await.unwrap());
+        assert_ne!(store.membership(&channel).await.unwrap().created_at, made);
+    }
 
     /// `list_remote_members` returns the rows persisted in
     /// `members.json`. The integration with the on-disk layout is
