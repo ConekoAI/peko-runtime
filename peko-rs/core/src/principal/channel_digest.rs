@@ -364,6 +364,75 @@ pub(crate) async fn waiting_conversations(
     found
 }
 
+/// The newest line on `channel`, if any: where a conversation turn starts
+/// looking for what its peko posts there from elsewhere meanwhile.
+pub(crate) async fn channel_tip(
+    port: &Arc<dyn ChannelPort>,
+    channel: &peko_channel::ChannelId,
+) -> Option<peko_channel::port::TaskId> {
+    port.peek_with_ids(channel, &Checkpoint::default())
+        .await
+        .ok()?
+        .pop()
+        .map(|(id, _)| id)
+}
+
+/// What `principal` posted on `channel` after line `since` (from the
+/// start when `None`) from another of its sessions, oldest first: posts
+/// whose `via` is not `own_path`. Two runs of one peko can be at work at
+/// once (its owner's DM turn and a group's keepalive turn), and a reply
+/// written before the other run's post can contradict it.
+pub(crate) async fn own_posts_from_elsewhere(
+    port: &Arc<dyn ChannelPort>,
+    principal: &peko_subject::PrincipalId,
+    channel: &peko_channel::ChannelId,
+    since: Option<&str>,
+    own_path: Option<&str>,
+) -> Vec<String> {
+    let checkpoint = since.map_or_else(Checkpoint::default, |s| Checkpoint(s.to_string()));
+    let Ok(events) = port.peek_with_ids(channel, &checkpoint).await else {
+        return Vec::new();
+    };
+    let me = peko_subject::ActorRef::from(principal);
+    let my_key = port.key_of(&me);
+    let my_address = port.actor_info(&me).await.address;
+    let own_path = own_path.map(peko_session::path::strip_scheme_prefix);
+    let mut seen = std::collections::HashSet::new();
+    let mut posted = Vec::new();
+    for (id, ev) in events {
+        if since.is_some_and(|mark| !strictly_after(&id, mark)) {
+            continue;
+        }
+        let ChannelEvent::Posted {
+            author,
+            text,
+            via,
+            msg_id,
+            ..
+        } = ev
+        else {
+            continue;
+        };
+        let mine = author == principal.0
+            || author == my_address
+            || author
+                .parse::<peko_subject::ActorRef>()
+                .is_ok_and(|a| port.key_of(&a) == my_key);
+        let here = own_path.is_some()
+            && via.as_deref().map(peko_session::path::strip_scheme_prefix) == own_path;
+        // A copy of a group also holds the home's echo of each post (same
+        // message, under the peko's Hub address): quote it once.
+        if mine
+            && !here
+            && seen.insert(msg_id.unwrap_or_else(|| text.clone()))
+            && !posted.contains(&text)
+        {
+            posted.push(text);
+        }
+    }
+    posted
+}
+
 /// After a conversation's keepalive turn (ADR-096 D1), the posts it was
 /// run for are handled whether or not it answered them: drop them from
 /// `session_id`'s waiting list on `channel`, and mark them observed.
@@ -1447,6 +1516,39 @@ mod tests {
             .expect("the post made after the session began waits");
         assert!(text.contains("after"), "{text}");
         assert!(!text.contains("before"), "history: {text}");
+    }
+
+    /// What a conversation turn checks before its reply goes out: only
+    /// this peko's posts since the turn began, from its other sessions.
+    #[tokio::test]
+    async fn own_posts_from_elsewhere_are_this_pekos_from_other_sessions() {
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-overlap", "/principal-overlap").await;
+        let me = PrincipalId(ME.id.to_string());
+        port.post_attributed(&dm, &me_subject(), ME.id, PostMsg::root("old, mine"))
+            .await
+            .unwrap();
+        let tip = channel_tip(&port, &dm).await;
+        for (author, via, text) in [
+            (ME.id, "sess:/user-a", "pushed it"),
+            // The home's echo of the same post, in a group's copy.
+            ("principal:local:prin_self", "sess:/user-a", "pushed it"),
+            (ME.id, "sess:/principal-overlap", "this turn's own"),
+            ("prin_other", "sess:/x", "someone else"),
+        ] {
+            port.post_attributed(
+                &dm,
+                &me_subject(),
+                author,
+                PostMsg::root(text).with_via(via),
+            )
+            .await
+            .unwrap();
+        }
+        let posted =
+            own_posts_from_elsewhere(&port, &me, &dm, tip.as_deref(), Some("/principal-overlap"))
+                .await;
+        assert_eq!(posted, vec!["pushed it".to_string()]);
     }
 
     fn peer_id() -> peko_session::id::SessionId {

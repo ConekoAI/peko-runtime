@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a peko's reply no longer contradicts what it just posted from another conversation (2026-11-07)
+
+- Two runs of one peko can be at work at once: its owner's DM turn, with a
+  shell, and a group's keepalive turn, acting for another peko, without one.
+  In a live run the DM turn posted "pushed as 7c85eb6" in the group, and four
+  seconds later the keepalive turn's reply said "nothing is pushed yet".
+- A conversation turn driven by the cron engine (a keepalive or a message job
+  in a conversation) now checks, before its reply goes out, whether its peko
+  posted in that conversation from another session while it ran
+  (`channel_digest::own_posts_from_elsewhere`). If so, the reply is held back
+  and the turn is asked once more, shown those posts
+  (`genesis::conversation_overlap_message`); that answer is what is posted,
+  and an empty one posts nothing.
+
 ### Fix: pekos answer each other in groups, `@name` works with a peko that joined by link, and a person added later is followed to their other computers (2026-11-07)
 
 - A group's session counts what was posted after it began as new, though it
