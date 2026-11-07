@@ -502,6 +502,26 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             Ok(())
         }
         ChannelCommands::Members { channel, .. } => {
+            // The daemon knows everyone's name, those on other computers
+            // too; the bare roster is for JSON and for no daemon.
+            if !json {
+                if let Ok(client) = DaemonClient::connect().await {
+                    let resp = client
+                        .request_response(RequestPacket::ChannelInfo {
+                            request_id: 0,
+                            channel: channel.clone(),
+                        })
+                        .await
+                        .context("channel_members_failed")?;
+                    if let ResponsePacket::ChannelInfoResult { people, .. } = &resp {
+                        if !people.is_empty() {
+                            println!("{} member(s):", people.len());
+                            print_people(people);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             let packet = RequestPacket::ChannelMembers {
                 request_id: 0,
                 channel: channel.clone(),
@@ -1131,6 +1151,35 @@ where
     local(port, paths).await.context(err_label)
 }
 
+/// One line per member: their name and address, and where they are.
+fn print_people(people: &[peko_core::ipc::packet::ChannelPerson]) {
+    for line in people_lines(people) {
+        println!("  {line}");
+    }
+}
+
+fn people_lines(people: &[peko_core::ipc::packet::ChannelPerson]) -> Vec<String> {
+    people
+        .iter()
+        .map(|p| {
+            let address = super::shown_address(&p.address);
+            let what = if p.kind == "principal" {
+                "peko"
+            } else {
+                "person"
+            };
+            let name = match (&p.name, p.you) {
+                (Some(name), true) => format!("{name} (you)"),
+                (None, true) => "you".to_string(),
+                (Some(name), false) => name.clone(),
+                (None, false) => format!("unnamed {what}"),
+            };
+            let place = if p.here || p.you { "" } else { ", elsewhere" };
+            format!("{name}  {address}  ({what}{place})")
+        })
+        .collect()
+}
+
 /// Print a `ChannelInfo` reply for `peko channel show`.
 fn print_channel_info(resp: ResponsePacket, json: bool) -> Result<()> {
     match resp {
@@ -1140,6 +1189,7 @@ fn print_channel_info(resp: ResponsePacket, json: bool) -> Result<()> {
             name,
             members,
             pekos,
+            people,
             ..
         } => {
             if json {
@@ -1160,9 +1210,14 @@ fn print_channel_info(resp: ResponsePacket, json: bool) -> Result<()> {
                 peko_protocol::channel::ConversationKind::Group => "group",
             };
             println!("{name} ({kind}, {channel})");
-            println!("{} member(s):", members.len());
-            for m in &members {
-                println!("  {}", super::shown_address(&m.to_string()));
+            if people.is_empty() {
+                println!("{} member(s):", members.len());
+                for m in &members {
+                    println!("  {}", super::shown_address(&m.to_string()));
+                }
+            } else {
+                println!("{} member(s):", people.len());
+                print_people(&people);
             }
             for peko in &pekos {
                 let wake = match peko.wake {
@@ -1229,6 +1284,32 @@ fn _unused(_: ChannelEvent, _: PostMsg, _: CreateOpts, _: ChannelMembership, _: 
 #[cfg(test)]
 mod response_tests {
     use super::*;
+
+    #[test]
+    fn members_read_by_name_with_where_they_are() {
+        use peko_core::ipc::packet::ChannelPerson;
+        let person =
+            |address: &str, kind: &str, name: Option<&str>, you: bool, here: bool| ChannelPerson {
+                address: address.into(),
+                aliases: Vec::new(),
+                kind: kind.into(),
+                name: name.map(str::to_string),
+                you,
+                here,
+            };
+        assert_eq!(
+            people_lines(&[
+                person("user:local:local", "user", Some("Frank"), true, true),
+                person("principal:hub:b1ec", "principal", Some("ada"), false, false),
+                person("user:hub:7777", "user", None, false, false),
+            ]),
+            vec![
+                "Frank (you)  user:local  (person)",
+                "ada  peko:hub:b1ec  (peko, elsewhere)",
+                "unnamed person  user:hub:7777  (person, elsewhere)",
+            ]
+        );
+    }
 
     fn test_paths(tmp: &tempfile::TempDir) -> GlobalPaths {
         GlobalPaths::new(
