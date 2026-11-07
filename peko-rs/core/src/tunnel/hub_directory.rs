@@ -68,6 +68,10 @@ pub struct AgentResolution {
     /// trust display) and audit code wants it.
     #[serde(rename = "ownerPrincipal", alias = "ownerSubject")]
     pub owner_principal: ActorRef,
+    /// The owner's PekoHub handle (`users.namespace`), when the owner is a
+    /// person with one. ADR-098 D1 checks `@owner/name` against it.
+    #[serde(default)]
+    pub owner_handle: Option<String>,
     /// Visibility of the target instance. Drives the local-side check
     /// before issuing the outbound a2a (an unexposed agent shouldn't
     /// be addressable even if the directory leaks it).
@@ -509,6 +513,7 @@ mod tests {
             instance_id: "inst-abc-123".to_string(),
             agent_did: "did:peko:agent:target-keyhash".to_string(),
             owner_principal: ActorRef::User("alice".into()),
+            owner_handle: None,
             exposure: ResolvedExposure::Public,
         }
     }

@@ -139,6 +139,13 @@ impl ChannelTool {
                 }, "required":["channel"], "additionalProperties":false}),
             ),
             (
+                "join",
+                json!({"type":"object", "properties":{
+                    "link":{"type":"string", "minLength":1,
+                        "description":"A group's invite link (…/g/<id>?invite=<token>), its token, or a public group's ID."}
+                }, "required":["link"], "additionalProperties":false}),
+            ),
+            (
                 "info",
                 json!({"type":"object", "properties":{"channel": channel},
                     "required":["channel"], "additionalProperties":false}),
@@ -323,12 +330,14 @@ impl Tool for ChannelTool {
          (shared, the default: everything; joined: only what followed their joining); \
          register gives a group an ID on PekoHub (invite_only, the default: people join only \
          with an invite link; public: anyone with the ID may); link makes an invite link to a \
-         registered group (default 7 days, at most 30), or with revoke stops all of them; info \
+         registered group (default 7 days, at most 30), or with revoke stops all of them; join \
+         makes you (not your owner) a member of a group by its invite link or a public \
+         group's ID; info \
          shows a channel's kind, creator, participants, a group's home runtime, owner, admins \
          and PekoHub ID, and your wake policy and role. A group's members and settings change \
          at its home runtime, by its owner or an admin. DMs are opened by ChannelSend and keep \
          their members and wake policy. Only the owner decides create, invite, admin, \
-         history, register, link, and role: a run acting for anyone else waits for the \
+         history, register, link, join, and role: a run acting for anyone else waits for the \
          owner's approval."
             .into()
     }
@@ -470,6 +479,32 @@ impl Tool for ChannelTool {
                     .map(|t| t.to_rfc3339())
                     .unwrap_or_default();
                 Ok(json!({"channel": channel.as_str(), "link": link, "expires": expires}))
+            }
+            Some("join") => {
+                // ADR-098 D2: the peko joins, for itself; the home's
+                // invitation arrives at its runtime and completes it.
+                let link = params["link"].as_str().unwrap_or_default();
+                let (channel, name) = self
+                    .port
+                    .join_group_as(&id, link)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Channel: join: {e}"))?;
+                let joined = self
+                    .port
+                    .list_members(&channel)
+                    .await
+                    .is_ok_and(|m| m.contains(&ActorRef::from(&id)));
+                Ok(json!({
+                    "channel": channel.as_str(),
+                    "name": name,
+                    "status": if joined { "joined" } else { "requested" },
+                    "note": if joined {
+                        "You are a member; post there with ChannelSend."
+                    } else {
+                        "Asked the group's home; you become a member when it answers (its \
+                         computer must be online). Contacts list shows the group then."
+                    },
+                }))
             }
             Some("leave") => {
                 let channel = self.channel_arg(&params, &stamp).await?;

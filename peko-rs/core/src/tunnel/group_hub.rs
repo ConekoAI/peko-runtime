@@ -346,6 +346,7 @@ impl TunnelChannelPort {
         source_principal_did: String,
         channel_id: String,
         invite: Option<String>,
+        source_hub_id: Option<String>,
         signature: String,
     ) {
         let Some(ctx) = self.ctx.read().await.clone() else {
@@ -364,6 +365,7 @@ impl TunnelChannelPort {
                 && p.source_principal_did == source_principal_did
                 && p.channel_id == channel_id
                 && p.invite == invite
+                && p.source_hub_id == source_hub_id
         });
         if !agrees {
             warn!(
@@ -376,8 +378,18 @@ impl TunnelChannelPort {
         let Some(channel) = ChannelId::parse(&channel_id) else {
             return;
         };
-        match self
-            .admit(
+        let admitted = if source_principal_did.starts_with("did:key:") {
+            self.admit_peko(
+                &ctx,
+                &channel,
+                &source_principal_did,
+                source_hub_id.as_deref(),
+                &source_runtime_id,
+                invite.as_deref(),
+            )
+            .await
+        } else {
+            self.admit(
                 &ctx,
                 &channel,
                 &source_principal_did,
@@ -386,7 +398,8 @@ impl TunnelChannelPort {
                 name.as_deref(),
             )
             .await
-        {
+        };
+        match admitted {
             Ok(()) => {}
             Err(e) => debug!(%channel, "group join request refused: {e}"),
         }
@@ -431,24 +444,7 @@ impl TunnelChannelPort {
         }
         // A member (invited, or joined from another device, D4) needs no
         // link; anyone else needs a live one, or a public group.
-        let admitted = member
-            || match invite {
-                Some(compact) => {
-                    let home_key = did_key_to_verifying_key(&ctx.caller_runtime_id)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    let token = GroupInviteToken::verify(&home_key, compact)?;
-                    let now = chrono::Utc::now().timestamp();
-                    token.g == hub.id
-                        && token.c == channel.as_str()
-                        && token.h == ctx.caller_runtime_id
-                        && token.exp > now
-                        && hub
-                            .links
-                            .iter()
-                            .any(|l| l.nonce == token.n && !l.revoked && l.exp > now)
-                }
-                None => hub.visibility == GroupVisibility::Public,
-            };
+        let admitted = member || Self::link_admits(ctx, channel, &hub, invite)?;
         anyhow::ensure!(admitted, "no live invite, and the group is not public");
 
         // The group names them as PekoHub does (the home's own person
@@ -486,6 +482,194 @@ impl TunnelChannelPort {
                 .await?;
         }
         self.sync_group_roster(ctx, channel).await
+    }
+
+    /// Whether `invite` is a live link this home minted for `channel`, or,
+    /// without one, whether the group is public.
+    fn link_admits(
+        ctx: &CrossRuntimeChannelCtx,
+        channel: &ChannelId,
+        hub: &HubGroup,
+        invite: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        Ok(match invite {
+            Some(compact) => {
+                let home_key = did_key_to_verifying_key(&ctx.caller_runtime_id)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let token = GroupInviteToken::verify(&home_key, compact)?;
+                let now = chrono::Utc::now().timestamp();
+                token.g == hub.id
+                    && token.c == channel.as_str()
+                    && token.h == ctx.caller_runtime_id
+                    && token.exp > now
+                    && hub
+                        .links
+                        .iter()
+                        .any(|l| l.nonce == token.n && !l.revoked && l.exp > now)
+            }
+            None => hub.visibility == GroupVisibility::Public,
+        })
+    }
+
+    /// The group's owning peko, hosted here (only a peko owns a registered
+    /// group, ADR-092 phase 4 notes), and its signing DID.
+    async fn owning_peko(
+        &self,
+        ctx: &CrossRuntimeChannelCtx,
+        channel: &ChannelId,
+    ) -> anyhow::Result<(PrincipalId, String)> {
+        let owner = self.local.group_owner(channel).await?;
+        let owner = self.local.resolve_actor(&owner).await?;
+        let inviter = owner
+            .local_id
+            .filter(|_| owner.kind == "principal")
+            .map(PrincipalId)
+            .ok_or_else(|| anyhow::anyhow!("the group's owner is not a peko hosted here"))?;
+        let did = ctx
+            .principal_keys
+            .did_for_principal(&inviter)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("the group's owner has no signing key"))?;
+        Ok((inviter, did))
+    }
+
+    /// A peko asks to join, for itself (ADR-098 D2): `signing_did` from the
+    /// runtime `route`, which PekoHub relayed only because the peko's online
+    /// link points there. The home checks the Hub ID names that key and
+    /// admits it as it does a person; the owner's invitation then goes to
+    /// the peko's runtime, where the waiting request takes it.
+    async fn admit_peko(
+        &self,
+        ctx: &Arc<CrossRuntimeChannelCtx>,
+        channel: &ChannelId,
+        signing_did: &str,
+        hub_id: Option<&str>,
+        route: &str,
+        invite: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let hub_id = hub_id.ok_or_else(|| anyhow::anyhow!("a peko asks with its Hub ID"))?;
+        self.is_home_of(ctx, channel).await?;
+        let hub = self
+            .local
+            .hub_group(channel)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("not registered"))?;
+        let (inviter, owner_did) = self.owning_peko(ctx, channel).await?;
+        let resolved = ctx
+            .directory
+            .resolve_by_hub_id_as(hub_id, &owner_did)
+            .await?;
+        anyhow::ensure!(
+            resolved.hub_id == hub_id
+                && resolved.agent_did == signing_did
+                && resolved.runtime_id == route,
+            "the asking peko's Hub ID does not name its key and runtime"
+        );
+        let peko = ActorRef::Principal(peko_subject::Route::hub(hub_id));
+        let key = self.local.key_of(&peko);
+        let mut member = false;
+        for m in self.local.list_members(channel).await? {
+            if self.local.key_of(&m) == key {
+                member = true;
+            }
+        }
+        anyhow::ensure!(
+            member || Self::link_admits(ctx, channel, &hub, invite)?,
+            "no live invite, and the group is not public"
+        );
+        if member {
+            // Asked again (a lost invitation, a moved peko): the roster
+            // goes out once more.
+            return self
+                .sync_group_membership(channel, &inviter, &owner_did)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"));
+        }
+        ChannelPort::invite(self, channel, &inviter, &peko)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.sync_group_roster(ctx, channel).await
+    }
+
+    // ── The peko's runtime ──────────────────────────────────────────────
+
+    /// A peko hosted here joins a group by its invite link, or a public one
+    /// by its ID, for itself (ADR-098 D2). The home's invitation completes
+    /// it. Returns the group's channel and name.
+    ///
+    /// # Errors
+    ///
+    /// The peko is not registered, the input is neither, PekoHub shows no
+    /// such group, or the home refuses at once (a group kept here).
+    pub async fn join_group_as(
+        &self,
+        peko: &PrincipalId,
+        input: &str,
+    ) -> anyhow::Result<(ChannelId, String)> {
+        let me = self.local.actor_info(&ActorRef::from(peko)).await;
+        anyhow::ensure!(
+            me.hub_id.is_some(),
+            "Only a peko registered on PekoHub joins a group by link"
+        );
+        let ctx = self.hub_ctx().await?;
+        let (group_id, invite) = parse_group_ref(input).ok_or_else(|| {
+            anyhow::anyhow!("Paste a group's invite link, or the ID of a public group")
+        })?;
+        let group = self
+            .look_up_group(&group_id, invite.as_deref())
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No group {group_id} is open to you: an invite-only group needs a live invite link"
+                )
+            })?;
+        let channel = ChannelId::parse(&group.channel_id)
+            .ok_or_else(|| anyhow::anyhow!("PekoHub sent an invalid channel"))?;
+        if self
+            .local
+            .list_members(&channel)
+            .await
+            .is_ok_and(|members| members.contains(&ActorRef::from(peko)))
+        {
+            return Ok((channel, group.name));
+        }
+        if group.home_runtime == ctx.caller_runtime_id {
+            // The group is kept here: its owner invites at once.
+            let hub = self
+                .local
+                .hub_group(&channel)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("not registered"))?;
+            anyhow::ensure!(
+                Self::link_admits(&ctx, &channel, &hub, invite.as_deref())?,
+                "The invite link no longer works, and the group is not public"
+            );
+            let (inviter, _) = self.owning_peko(&ctx, &channel).await?;
+            ChannelPort::invite(self, &channel, &inviter, &ActorRef::from(peko))
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            return Ok((channel, group.name));
+        }
+        self.local
+            .save_peko_join_request(&peko_channel::PekoJoinRequest {
+                channel: channel.clone(),
+                principal: peko.0.clone(),
+                home_runtime: group.home_runtime.clone(),
+                requested_at: chrono::Utc::now(),
+            })
+            .await?;
+        self.send_queued(
+            &ctx,
+            &group.home_runtime,
+            OutboxItem::GroupJoinRequest {
+                channel: channel.clone(),
+                invite,
+                peko: Some(peko.0.clone()),
+            },
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+        Ok((channel, group.name))
     }
 
     // ── The person's runtime ────────────────────────────────────────────
@@ -590,6 +774,7 @@ impl TunnelChannelPort {
             OutboxItem::GroupJoinRequest {
                 channel: channel.clone(),
                 invite,
+                peko: None,
             },
         )
         .await
@@ -648,20 +833,44 @@ impl TunnelChannelPort {
         channel: &ChannelId,
         home_runtime: &str,
         invite: Option<String>,
+        peko: Option<&str>,
     ) -> Result<TunnelMessage, String> {
-        let account = self
-            .hub_account()
-            .await
-            .ok_or_else(|| "Human sender has no Hub identity".to_string())?;
+        // ADR-098 D2: a peko asks by its signing DID and Hub ID; a person
+        // by their account.
+        let (source_principal_did, source_hub_id) = match peko {
+            Some(peko) => {
+                let id = PrincipalId(peko.to_string());
+                let did = ctx
+                    .principal_keys
+                    .did_for_principal(&id)
+                    .await
+                    .ok_or_else(|| format!("peko {peko} has no signing key"))?;
+                let hub = self
+                    .local
+                    .actor_info(&ActorRef::from(&id))
+                    .await
+                    .hub_id
+                    .ok_or_else(|| format!("peko {peko} is not registered on PekoHub"))?;
+                (did, Some(hub))
+            }
+            None => {
+                let account = self
+                    .hub_account()
+                    .await
+                    .ok_or_else(|| "Human sender has no Hub identity".to_string())?;
+                (person_address(&account), None)
+            }
+        };
         let iat = chrono::Utc::now().timestamp();
         let payload = GroupJoinRequestPayload {
             v: GROUP_JOIN_REQUEST_VERSION.into(),
             request_id: request_id.into(),
             source_runtime_id: ctx.caller_runtime_id.clone(),
             recipient_runtime_id: home_runtime.into(),
-            source_principal_did: person_address(&account),
+            source_principal_did,
             channel_id: channel.as_str().into(),
             invite,
+            source_hub_id,
             name: self.local.person_display_name().await,
             iat,
             exp: iat + 300,
@@ -674,6 +883,7 @@ impl TunnelChannelPort {
             source_principal_did: payload.source_principal_did,
             channel_id: payload.channel_id,
             invite: payload.invite,
+            source_hub_id: payload.source_hub_id,
             signature,
         })
     }

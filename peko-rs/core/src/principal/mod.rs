@@ -30,6 +30,7 @@ pub(crate) mod conversation;
 pub mod default_nodes;
 pub mod dm_rekey;
 pub mod factory;
+pub(crate) mod first_contact;
 pub mod genesis;
 pub mod identity_prompt;
 pub mod kb;

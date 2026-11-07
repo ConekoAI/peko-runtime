@@ -308,7 +308,14 @@ subject to runtime ownership guards. Page retention prunes old pages permanently
 principals explicitly learned by that caller. Contacts are per-principal; neither
 the runtime actor registry nor all hosted principals are enumerated. Each actor
 includes its local ID, optional Hub ID, kind, name, registration state, canonical local address, and
-mention token. `resolve` accepts a scoped local or Hub reference; registered remote
+mention token. `resolve` accepts a scoped local or Hub reference (`peko:` and
+`principal:` name the same actor), a name (`ada` / `@ada`) of an actor the run
+sees — one match is the answer, several are an error listing the candidates, an
+owner run also finds the principals hosted here — or a peko by its owner's PekoHub
+handle (`@frank/ada`): a peko the run sees whose directory `ownerHandle` matches,
+else (owner runs) PekoHub by handle, which answers for public pekos, the caller's
+owner's own, and pekos of people in a registered group with the caller's owner
+(ADR-098 D1, PekoHub ADR-011). Registered remote
 principals are learned through the Hub directory, anonymously for local-only callers
 or authenticated as registered callers. An unfamiliar locally hosted principal can
 be learned by its exact local ID. Learned contacts live in the principal's own
@@ -397,13 +404,14 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 | `history` | `channel`, `visibility` | The group's owner or an admin chooses what members may read of its past: `shared` (everything since it began, the default) or `joined` (only what followed their joining). At the home runtime only (ADR-092 D3). |
 | `register` | `channel`; optional `visibility` | The group's owner or an admin gives it an ID on PekoHub, or changes who may find it: `invite_only` (the default: people join only with an invite link) or `public` (anyone with the ID may). At the home runtime only; the owner must be a peko registered on PekoHub. Returns `id`, `page`, `visibility` (ADR-092 D5). |
 | `link` | `channel`; optional `days`, `revoke` | The group's owner or an admin makes an invite link to a registered group, good for `days` (1–30, default 7): `link` and `expires`. With `revoke: true`, stops every link instead and returns how many were live. At the home runtime only (ADR-092 D5). |
+| `join` | `link` | The caller itself (not its owner) joins a group by its invite link, the link's token, or a public group's ID: PekoHub says where it lives, the caller's runtime keeps a request and asks the home, and the home's invitation completes it — taken even by a private peko without a `Chat` grant. Returns `channel`, `name`, and `status` (`joined` or `requested`). The peko must be registered on PekoHub (ADR-098 D2). |
 | `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, `history`, once registered `hubId` and `visibility`, and `you.owner` / `you.admin`. |
 
 DMs are opened by `ChannelSend` and keep their members and wake policy: only
 `info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
-`invite`, `admin`, `history`, `register`, `link`, and `role` to untrusted runs, and a trusted run's call to one of
+`invite`, `admin`, `history`, `register`, `link`, `join`, and `role` to untrusted runs, and a trusted run's call to one of
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).

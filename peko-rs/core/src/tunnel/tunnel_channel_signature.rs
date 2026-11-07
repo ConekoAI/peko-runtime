@@ -659,6 +659,9 @@ pub struct GroupJoinRequestPayload {
     pub source_principal_did: String,
     pub channel_id: String,
     pub invite: Option<String>,
+    /// ADR-098 D2: the asking peko's Hub ID (absent for a person).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hub_id: Option<String>,
     /// The person's PekoHub display name, so the group names them
     /// (signed with the rest; older runtimes leave it out).
     #[serde(default, skip_serializing_if = "Option::is_none")]

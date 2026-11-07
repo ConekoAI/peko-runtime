@@ -31,7 +31,7 @@ impl ContactsTool {
                 "resolve",
                 json!({"type":"object", "properties":{
                 "reference":{"type":"string", "minLength":1,
-                    "description":"Explicit kind:local:<id> or kind:hub:<id> actor reference."}
+                    "description":"An address (principal:hub:<id>, peko:hub:<id>, user:hub:<id>, kind:local:<id>), a name you share a conversation with (ada, @ada), or a peko by its owner's PekoHub handle (@frank/ada)."}
             }, "required":["reference"], "additionalProperties":false}),
             ),
         ])
@@ -136,6 +136,296 @@ impl ContactsTool {
         record.signing_did = signing_did.map(str::to_owned);
         book.remember(record).await
     }
+
+    /// The actors `stamp` sees, without the `reachable: false` dormant ones.
+    async fn visible(&self, id: &PrincipalId, stamp: &ActingFor) -> anyhow::Result<Vec<Value>> {
+        let (actors, _) = self.discover(id, stamp).await?;
+        Ok(actors
+            .into_values()
+            .filter(|actor| actor["reachable"] != json!(false))
+            .map(|mut actor| {
+                if let Some(fields) = actor.as_object_mut() {
+                    fields.remove("reachable");
+                }
+                actor
+            })
+            .collect())
+    }
+
+    /// An address, in either spelling (`peko:` or `principal:`).
+    async fn resolve_address(
+        &self,
+        id: &PrincipalId,
+        stamp: &ActingFor,
+        subject: ActorRef,
+    ) -> anyhow::Result<Value> {
+        let route = subject
+            .route()
+            .ok_or_else(|| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
+        let reference = subject.canonical_address();
+        let (scope, identifier) = (route.scope(), route.id());
+        if let Some(actor) = self.visible(id, stamp).await?.into_iter().find(|actor| {
+            actor["address"] == json!(reference)
+                || actor["hub_id"].as_str().is_some_and(|hub| {
+                    reference == format!("{}:hub:{hub}", actor["kind"].as_str().unwrap_or(""))
+                })
+        }) {
+            return Ok(json!({ "actor": actor }));
+        }
+        anyhow::ensure!(
+            matches!(subject, ActorRef::Principal(_)),
+            "Actor is not a contact of this principal"
+        );
+        // Learned contacts are the principal's own knowledge, shared by
+        // all of its runs; only the owner's runs add to it.
+        anyhow::ensure!(
+            stamp.is_owner(),
+            "Actor is not a contact of this conversation; only the owner can learn new contacts"
+        );
+        let context = self
+            .context()
+            .ok_or_else(|| anyhow::anyhow!("Actor directory is unavailable"))?;
+        if scope == "local" {
+            anyhow::ensure!(
+                context
+                    .principal_manager
+                    .get(PrincipalId(identifier.into()))
+                    .await
+                    .is_some(),
+                "Unknown local principal; use principal:hub:<id> to learn a remote principal"
+            );
+            let actor = self.port.resolve_actor(&reference).await?;
+            self.remember(id, &actor, None).await?;
+            return Ok(json!({"actor":actor}));
+        }
+        let hub_id = reference.strip_prefix("principal:hub:").ok_or_else(|| {
+            anyhow::anyhow!("Unknown local actor; use kind:local:<id> or principal:hub:<id>")
+        })?;
+        let caller = self.caller_did(&context, id).await?;
+        let result = match &caller {
+            Some(did) => context.directory.resolve_by_hub_id_as(hub_id, did).await?,
+            None => context.directory.resolve_by_hub_id(hub_id).await?,
+        };
+        anyhow::ensure!(
+            result.hub_id == hub_id,
+            "Directory substituted a different Hub identity"
+        );
+        self.learn(id, &context, &result).await
+    }
+
+    /// The caller's signing DID when it is registered, so the directory
+    /// answers for it (ADR-073); `None` asks anonymously.
+    async fn caller_did(
+        &self,
+        context: &CrossRuntimeA2aCtx,
+        id: &PrincipalId,
+    ) -> anyhow::Result<Option<String>> {
+        let caller = context
+            .principal_manager
+            .get(id.clone())
+            .await
+            .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
+        let profile = self.port.actor_info(&ActorRef::from(&caller.id)).await;
+        Ok(match profile.hub_id {
+            Some(_) => Some(caller.did().await.0),
+            None => None,
+        })
+    }
+
+    /// Check a directory answer, register the actor it names, and keep it
+    /// in the principal's contact book.
+    async fn learn(
+        &self,
+        id: &PrincipalId,
+        context: &CrossRuntimeA2aCtx,
+        result: &crate::tunnel::hub_directory::AgentResolution,
+    ) -> anyhow::Result<Value> {
+        anyhow::ensure!(
+            !result.hub_id.is_empty(),
+            "Directory returned no Hub identity"
+        );
+        anyhow::ensure!(
+            !result.agent_did.is_empty(),
+            "Directory returned an empty target signing DID"
+        );
+        anyhow::ensure!(
+            !result.identity_key.is_empty(),
+            "Directory returned no immutable actor key"
+        );
+        anyhow::ensure!(
+            !result.runtime_id.is_empty(),
+            "Directory returned no target runtime"
+        );
+        anyhow::ensure!(
+            !result.local_id.is_empty(),
+            "Directory returned no local actor ID"
+        );
+        anyhow::ensure!(
+            result.exposure != crate::tunnel::hub_directory::ResolvedExposure::LocalOnly,
+            "Target is local_only"
+        );
+        let subject = context.actor_subject(result).await?;
+        let actor = self
+            .port
+            .register_actor(
+                &subject,
+                Some(&result.hub_id),
+                Some(&result.agent_did),
+                Some(&result.identity_key),
+                result.name.as_deref(),
+                if result.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public {
+                    peko_channel::Registration::Public
+                } else {
+                    peko_channel::Registration::Private
+                },
+            )
+            .await?;
+        self.remember(id, &actor, Some(&result.agent_did)).await?;
+        Ok(
+            json!({"actor":actor,"runtime_id":result.runtime_id,"local":result.runtime_id==context.caller_runtime_id}),
+        )
+    }
+
+    /// ADR-098 D1: `ada` / `@ada` — the one actor the run sees by that
+    /// name. An owner run also finds the principals hosted here.
+    async fn resolve_name(
+        &self,
+        id: &PrincipalId,
+        stamp: &ActingFor,
+        name: &str,
+    ) -> anyhow::Result<Value> {
+        anyhow::ensure!(
+            !name.is_empty(),
+            "Contacts resolve needs a name or an address"
+        );
+        let named = |actor: &Value| {
+            actor["name"]
+                .as_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                || actor["hub_id"].as_str() == Some(name)
+                || actor["local_id"].as_str() == Some(name)
+        };
+        let mut found: Vec<Value> = self
+            .visible(id, stamp)
+            .await?
+            .into_iter()
+            .filter(named)
+            .collect();
+        if found.is_empty() && stamp.is_owner() {
+            if let Some(context) = self.context() {
+                for principal in context.principal_manager.list_all().await {
+                    if principal.id == *id {
+                        continue;
+                    }
+                    let actor = self.port.actor_info(&ActorRef::from(&principal.id)).await;
+                    let value = json!(actor);
+                    if named(&value) || principal.name().await.eq_ignore_ascii_case(name) {
+                        self.remember(id, &actor, None).await?;
+                        found.push(value);
+                    }
+                }
+            }
+        }
+        match found.len() {
+            1 => Ok(json!({ "actor": found.remove(0) })),
+            0 => anyhow::bail!(
+                "No one called {name} among your contacts and conversations. A peko can be \
+                 found as @<owner handle>/<name> (its owner shares a group with yours, or it is \
+                 public), by its Hub ID (principal:hub:<id>) from its owner, or by sharing a \
+                 group with it (Channel join with an invite link)."
+            ),
+            _ => {
+                let candidates: Vec<String> = found
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            "{} ({} {})",
+                            a["address"].as_str().unwrap_or_default(),
+                            a["kind"].as_str().unwrap_or_default(),
+                            a["name"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                anyhow::bail!(
+                    "Several actors are called {name}: {}. Resolve one by its address.",
+                    candidates.join(", ")
+                )
+            }
+        }
+    }
+
+    /// ADR-098 D1: `@owner/name` — a peko named `name` whose owner's PekoHub
+    /// handle is `owner`. Pekos the run already sees come first, checked
+    /// against the directory; an owner run then asks PekoHub by handle.
+    async fn resolve_owned(
+        &self,
+        id: &PrincipalId,
+        stamp: &ActingFor,
+        owner: &str,
+        name: &str,
+    ) -> anyhow::Result<Value> {
+        let owner = owner.trim_start_matches('@');
+        anyhow::ensure!(
+            !owner.is_empty() && !name.is_empty(),
+            "Name a peko by its owner as @<owner handle>/<name>"
+        );
+        let context = self
+            .context()
+            .ok_or_else(|| anyhow::anyhow!("Actor directory is unavailable"))?;
+        let caller = self.caller_did(&context, id).await?;
+        for actor in self.visible(id, stamp).await? {
+            let (Some(hub_id), true) = (
+                actor["hub_id"].as_str(),
+                actor["kind"] == json!("principal")
+                    && actor["name"]
+                        .as_str()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(name)),
+            ) else {
+                continue;
+            };
+            let resolved = match &caller {
+                Some(did) => context.directory.resolve_by_hub_id_as(hub_id, did).await,
+                None => context.directory.resolve_by_hub_id(hub_id).await,
+            };
+            if resolved.is_ok_and(|r| {
+                r.hub_id == hub_id
+                    && r.owner_handle
+                        .as_deref()
+                        .is_some_and(|h| h.eq_ignore_ascii_case(owner))
+            }) {
+                return Ok(json!({ "actor": actor }));
+            }
+        }
+        anyhow::ensure!(
+            stamp.is_owner(),
+            "No peko @{owner}/{name} in this conversation; only the owner can learn new contacts"
+        );
+        let result = match &caller {
+            Some(did) => {
+                context
+                    .directory
+                    .resolve_by_handle_as(owner, name, did)
+                    .await
+            }
+            None => context.directory.resolve_by_handle(owner, name).await,
+        }
+        .map_err(|e| match e {
+            crate::tunnel::hub_directory::DirectoryError::NotFound => anyhow::anyhow!(
+                "PekoHub shows you no peko @{owner}/{name}. A private peko is found by handle \
+                 only by its owner and by people in a group with its owner; otherwise ask \
+                 {owner} for its Hub ID or for a group's invite link."
+            ),
+            other => anyhow::anyhow!(other),
+        })?;
+        anyhow::ensure!(
+            result
+                .name
+                .as_deref()
+                .is_none_or(|n| n.eq_ignore_ascii_case(name)),
+            "Directory answered for a different peko"
+        );
+        self.learn(id, &context, &result).await
+    }
 }
 #[async_trait]
 impl Tool for ContactsTool {
@@ -146,7 +436,7 @@ impl Tool for ContactsTool {
         "Contacts"
     }
     fn description(&self) -> String {
-        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned (a run acting for anyone but the owner sees only its own conversation), with canonical addresses, known names and mention tokens. resolve accepts kind:local:<id> or kind:hub:<id>; use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal, survive restarts, and travel with it; a contact this runtime cannot route to is listed with reachable: false.".into()
+        "Discover your contacts and conversations. list returns your own actor, current participants of your channels, and principals you explicitly learned (a run acting for anyone but the owner sees only its own conversation), with canonical addresses, known names and mention tokens. resolve accepts an address (principal: and peko: are the same), a name (ada or @ada) of someone in your contacts or conversations, or a peko by its owner's PekoHub handle (@frank/ada: found when its owner shares a group with yours, or it is public); several matches come back as candidates to pick by address. Use its canonical address with ChannelSend.to. You can learn a locally hosted principal by its exact local ID or a registered principal by its Hub ID. User/visitor resolution is limited to your channel participants; their opaque IDs are never inferred from names. Learned contacts are private to each principal, survive restarts, and travel with it; a contact this runtime cannot route to is listed with reachable: false.".into()
     }
     fn parameters(&self) -> Value {
         Self::tool_parameters()
@@ -176,112 +466,18 @@ impl Tool for ContactsTool {
                 let reference = params
                     .get("reference")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("Contacts resolve requires reference"))?;
-                let subject = ActorRef::parse_scoped(reference)
-                    .map_err(|_| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
-                let route = subject
-                    .route()
-                    .ok_or_else(|| anyhow::anyhow!("Use kind:local:<id> or kind:hub:<id>"))?;
-                let (scope, identifier) = (route.scope(), route.id());
-                let (actors, _) = self.discover(&id, &stamp).await?;
-                if let Some(actor) = actors.values().find(|actor| {
-                    actor["reachable"] != json!(false)
-                        && (actor["address"] == json!(reference)
-                            || actor["hub_id"].as_str().is_some_and(|hub| {
-                                reference
-                                    == format!("{}:hub:{hub}", actor["kind"].as_str().unwrap_or(""))
-                            }))
-                }) {
-                    let mut actor = actor.clone();
-                    if let Some(fields) = actor.as_object_mut() {
-                        fields.remove("reachable");
-                    }
-                    return Ok(json!({ "actor": actor }));
+                    .ok_or_else(|| anyhow::anyhow!("Contacts resolve requires reference"))?
+                    .trim();
+                // ADR-098 D1: an address in either spelling, a name, or a
+                // peko by its owner's handle.
+                let address = reference.strip_prefix('@').unwrap_or(reference);
+                if let Ok(subject) = ActorRef::parse_scoped(address) {
+                    return self.resolve_address(&id, &stamp, subject).await;
                 }
-                anyhow::ensure!(
-                    matches!(subject, ActorRef::Principal(_)),
-                    "Actor is not a contact of this principal"
-                );
-                // Learned contacts are the principal's own knowledge, shared by
-                // all of its runs; only the owner's runs add to it.
-                anyhow::ensure!(
-                    stamp.is_owner(),
-                    "Actor is not a contact of this conversation; only the owner can learn new contacts"
-                );
-                let context = self
-                    .context()
-                    .ok_or_else(|| anyhow::anyhow!("Actor directory is unavailable"))?;
-                if scope == "local" {
-                    anyhow::ensure!(context.principal_manager.get(PrincipalId(identifier.into())).await.is_some(),
-                        "Unknown local principal; use principal:hub:<id> to learn a remote principal");
-                    let actor = self.port.resolve_actor(reference).await?;
-                    self.remember(&id, &actor, None).await?;
-                    return Ok(json!({"actor":actor}));
+                if let Some((owner, name)) = address.split_once('/') {
+                    return self.resolve_owned(&id, &stamp, owner, name).await;
                 }
-                let hub_id = reference.strip_prefix("principal:hub:").ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Unknown local actor; use kind:local:<id> or principal:hub:<id>"
-                    )
-                })?;
-                let caller = context
-                    .principal_manager
-                    .get(id.clone())
-                    .await
-                    .ok_or_else(|| anyhow::anyhow!("principal not loaded"))?;
-                let caller_profile = self.port.actor_info(&ActorRef::from(&caller.id)).await;
-                let result = if caller_profile.hub_id.is_some() {
-                    context
-                        .directory
-                        .resolve_by_hub_id_as(hub_id, &caller.did().await.0)
-                        .await?
-                } else {
-                    context.directory.resolve_by_hub_id(hub_id).await?
-                };
-                anyhow::ensure!(
-                    result.hub_id == hub_id,
-                    "Directory substituted a different Hub identity"
-                );
-                anyhow::ensure!(
-                    !result.agent_did.is_empty(),
-                    "Directory returned an empty target signing DID"
-                );
-                anyhow::ensure!(
-                    !result.identity_key.is_empty(),
-                    "Directory returned no immutable actor key"
-                );
-                anyhow::ensure!(
-                    !result.runtime_id.is_empty(),
-                    "Directory returned no target runtime"
-                );
-                anyhow::ensure!(
-                    !result.local_id.is_empty(),
-                    "Directory returned no local actor ID"
-                );
-                anyhow::ensure!(
-                    result.exposure != crate::tunnel::hub_directory::ResolvedExposure::LocalOnly,
-                    "Target is local_only"
-                );
-                let subject = context.actor_subject(&result).await?;
-                let actor = self
-                    .port
-                    .register_actor(
-                        &subject,
-                        Some(hub_id),
-                        Some(&result.agent_did),
-                        Some(&result.identity_key),
-                        result.name.as_deref(),
-                        if result.exposure == crate::tunnel::hub_directory::ResolvedExposure::Public
-                        {
-                            peko_channel::Registration::Public
-                        } else {
-                            peko_channel::Registration::Private
-                        },
-                    )
-                    .await?;
-                self.remember(&id, &actor, Some(&result.agent_did)).await?;
-                Ok(
-                    json!({"actor":actor,"runtime_id":result.runtime_id,"local":result.runtime_id==context.caller_runtime_id}),
-                )
+                self.resolve_name(&id, &stamp, address).await
             }
             _ => anyhow::bail!("Contacts action must be list or resolve"),
         }

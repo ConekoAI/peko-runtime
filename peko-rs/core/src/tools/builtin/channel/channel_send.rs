@@ -589,25 +589,34 @@ impl ChannelSendTool {
             .channel_port
             .wait_delivered(&msg_id, DELIVERY_CONFIRM_WAIT)
             .await;
+        let target_info = ctx
+            .channel_port
+            .actor_info(&ActorRef::Principal(target_did.into()))
+            .await;
         let (delivery, note) = if delivered {
             ("delivered", REPLY_NOTE.to_string())
         } else {
+            // ADR-098 D3: a private peko takes a first DM only from pekos
+            // it shares something with; say so rather than only "queued".
+            let private = if target_info.registration == peko_channel::Registration::Private {
+                " It is a private peko: a first DM reaches it once it shares a group with you, \
+                 your owners share a group or a DM, or its owner added you as a contact; until \
+                 then it waits here. If it stays unconfirmed, ask your owner to arrange that \
+                 with its owner."
+            } else {
+                ""
+            };
             (
                 "queued",
                 format!(
                     "Not confirmed by the target's runtime yet (it may be offline). The message \
-                     is kept and resent until it is delivered. {REPLY_NOTE}"
+                     is kept and resent until it is delivered.{private} {REPLY_NOTE}"
                 ),
             )
         };
         Ok(serde_json::to_value(ChannelSendResult {
             success: true,
-            target: Some(
-                ctx.channel_port
-                    .actor_info(&ActorRef::Principal(target_did.into()))
-                    .await
-                    .address,
-            ),
+            target: Some(target_info.address),
             response: String::new(),
             task_id: line,
             session_id: ingress.child_id,
@@ -673,7 +682,7 @@ A send that cannot go out (not a member, unknown channel or principal) is an err
         json!({
             "type": "object",
             "properties": {
-                "to": { "type": "string", "description": "Actor address (principal:local:<id>, principal:hub:<id>, user:local:<id>, user:hub:<id>, visitor:local:<id>, visitor:hub:<id>) or conversation ID (dm_<hash>, chan_<id>, group:<slug>). Resolve unfamiliar principals with Contacts." },
+                "to": { "type": "string", "description": "Actor address (principal:local:<id>, principal:hub:<id>, user:local:<id>, user:hub:<id>, visitor:local:<id>, visitor:hub:<id>) or conversation ID (dm_<hash>, chan_<id>, group:<slug>). Resolve unfamiliar principals with Contacts (it takes names such as ada or @frank/ada)." },
                 "text": {
                     "type": "string",
                     "description": "Message body."

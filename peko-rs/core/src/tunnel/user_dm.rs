@@ -372,6 +372,7 @@ mod tests {
             identity_key: "peko-key".into(),
             agent_did: "did:key:zPeko".into(),
             owner_principal: ActorRef::Public,
+            owner_handle: None,
             exposure: ResolvedExposure::Public,
         }
     }

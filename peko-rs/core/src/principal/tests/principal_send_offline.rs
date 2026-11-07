@@ -595,6 +595,7 @@ fn remote_resolution(
         instance_id: "inst-remote".into(),
         agent_did: agent_did.into(),
         owner_principal: ActorRef::Public,
+        owner_handle: None,
         exposure,
     }
 }

@@ -81,6 +81,7 @@ impl LocalFirstAgentDirectory {
                     instance_id: principal.id.0.clone(),
                     agent_did: config.did.as_ref().map(|d| d.0.clone()).unwrap_or_default(),
                     owner_principal: config.owner.clone(),
+                    owner_handle: None,
                     exposure: map_instance_exposure(config.exposure),
                 },
             ));
@@ -158,6 +159,7 @@ impl AgentDirectory for LocalFirstAgentDirectory {
                     instance_id: principal.id.0.clone(),
                     agent_did: config.did.as_ref().map(|d| d.0.clone()).unwrap_or_default(),
                     owner_principal: config.owner.clone(),
+                    owner_handle: None,
                     exposure: map_instance_exposure(config.exposure.clone()),
                 });
             }

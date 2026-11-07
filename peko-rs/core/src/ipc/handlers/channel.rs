@@ -714,6 +714,7 @@ impl ChannelHandler {
         &self,
         request_id: u64,
         link: &str,
+        peko: Option<&str>,
         caller: &CallerContext,
         sink: &dyn ResponseSink,
     ) -> anyhow::Result<()> {
@@ -728,7 +729,15 @@ impl ChannelHandler {
         let Some(port) = self.host.tunnel_channel_port() else {
             return error_reply(sink, request_id, "PekoHub is not set up here".into()).await;
         };
-        match port.join_group(link).await {
+        let joined = match peko {
+            // ADR-098 D2: one of the caller's pekos joins, for itself.
+            Some(peko) => match self.owned_peko(peko, caller).await {
+                Ok(id) => port.join_group_as(&id, link).await,
+                Err(e) => return error_reply(sink, request_id, e).await,
+            },
+            None => port.join_group(link).await,
+        };
+        match joined {
             Ok((channel, name)) => {
                 send_response(
                     sink,
@@ -742,6 +751,31 @@ impl ChannelHandler {
             }
             Err(e) => error_reply(sink, request_id, format!("{e:#}")).await,
         }
+    }
+
+    /// The peko `name` (or local id), when the caller is its owner.
+    async fn owned_peko(&self, name: &str, caller: &CallerContext) -> Result<PrincipalId, String> {
+        let manager = self
+            .host
+            .principal_manager()
+            .ok_or_else(|| "no principal manager".to_string())?;
+        let principal = match manager.get_by_name(name).await {
+            Some(p) => p,
+            None => manager
+                .get(PrincipalId(name.to_string()))
+                .await
+                .ok_or_else(|| format!("[not_found] no peko {name} here"))?,
+        };
+        let owner = principal.config.read().await.owner.clone();
+        let port = self.host.channel_port();
+        if !crate::security::shared_actor_keys(Some(Arc::clone(&port)))
+            .same_actor(&owner, &caller.permission_subject(&owner))
+        {
+            return Err(format!(
+                "[forbidden] only {name}'s owner chooses its groups"
+            ));
+        }
+        Ok(principal.id.clone())
     }
 
     /// The group's owner peko, when the caller is that peko's owner
@@ -1280,12 +1314,18 @@ impl RequestHandler for ChannelHandler {
                 // before.
                 let invitee = match ActorRef::from_str(&invitee_name) {
                     Ok(s @ ActorRef::User(_)) => s,
+                    // ADR-098: a peko on another runtime, by its Hub ID
+                    // (`peko:hub:<id>`), invited across the tunnel.
+                    Ok(s @ ActorRef::Principal(_)) if s.is_hub_route() => s,
                     _ => match self.resolve_principal(&invitee_name) {
                         Some(p) => ActorRef::from(&p),
                         None => {
                             let response = ResponsePacket::Error {
                                 request_id,
-                                message: format!("Invitee peko '{invitee_name}' is not loaded"),
+                                message: format!(
+                                    "Invitee peko '{invitee_name}' is not on this computer; \
+                                     name one elsewhere by its Hub ID (peko:hub:<id>)"
+                                ),
                             };
                             send_response(sink, response).await?;
                             return Ok(());
@@ -1911,8 +1951,12 @@ impl RequestHandler for ChannelHandler {
                     .await?
             }
 
-            RequestPacket::ChannelGroupJoin { request_id, link } => {
-                self.channel_group_join(request_id, &link, caller, sink)
+            RequestPacket::ChannelGroupJoin {
+                request_id,
+                link,
+                peko,
+            } => {
+                self.channel_group_join(request_id, &link, peko.as_deref(), caller, sink)
                     .await?
             }
 

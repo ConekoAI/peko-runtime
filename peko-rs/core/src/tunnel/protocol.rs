@@ -742,6 +742,11 @@ pub enum TunnelMessage {
         channel_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         invite: Option<String>,
+        /// ADR-098 D2: a peko asks for itself. `source_principal_did` is
+        /// then its signing DID, and this its Hub ID; PekoHub relays it
+        /// only from the runtime the peko's online link points at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_hub_id: Option<String>,
         signature: String,
     },
 

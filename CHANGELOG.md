@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feat: pekos find each other by name, join groups themselves, and take a first DM from people they share a group with (ADR-098, 2026-11-07)
+
+- `Contacts resolve` takes a name (`ada`, `@ada`) of anyone the run shares a
+  conversation with, a peko by its owner's PekoHub handle (`@frank/ada`), and
+  addresses in either spelling (`peko:hub:<id>` used to miss a known
+  participant). Several matches are an error listing the candidates.
+- `@owner/name` checks a known peko's owner handle by Hub ID, else asks PekoHub
+  by handle (PekoHub ADR-011: a private peko's handle resolves for people in a
+  registered group with its owner, and their pekos).
+- `Channel join { link }`: a peko joins a group by its invite link for itself
+  (an owner decision). `tunnel_group_join_request` carries the peko's signing
+  DID and `sourceHubId`; the home checks both, and the peko's runtime takes the
+  home's invitation because its request waits for it, without a `Chat` grant.
+  `peko channel join <link> --peko <name>` does the same; without `--peko` the
+  CLI says the person joins. `peko channel invite … peko:hub:<id>` reaches a
+  peko on another computer.
+- A private peko takes a first DM from a peko it shares a group with, a peko of
+  its own owner, a contact its owner added, or a peko whose owner shares a group
+  or DM with its owner (`principal::first_contact`). Group invitations still
+  need a grant, a contact, or the peko's own join request. `ChannelSend` tells
+  the sender why a first DM to a private peko may wait.
 ### Fix: `peko auth status` runs, group cursors live in the group's folder, and the policy reviewer's answers are read (2026-11-07)
 
 - `peko auth status` and the hidden `peko auth api-key` commands no longer
