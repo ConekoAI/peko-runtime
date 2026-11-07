@@ -1100,56 +1100,25 @@ impl CronEngine {
             .tooling
             .upgrade()
             .and_then(|core| core.services().channel_port());
-        let watched = match (
-            &port,
-            channel.as_deref().and_then(peko_channel::ChannelId::parse),
-        ) {
-            (Some(port), Some(id)) => {
-                let tip = crate::principal::channel_digest::channel_tip(port, &id).await;
-                Some((Arc::clone(port), id, tip))
-            }
-            _ => None,
-        };
+        let id = channel.as_deref().and_then(peko_channel::ChannelId::parse);
+        let watched = port.as_ref().zip(id.as_ref());
         let sink: crate::agents::subagent_executor::AgenticEventSink = Arc::new(|_| {});
-        let outcome = match turns
-            .drive_turn_streaming(
+        let reply = match turns
+            .drive_conversation_turn(
+                watched,
                 session,
                 &turn_message,
-                Arc::clone(&sink),
+                Vec::new(),
+                sink,
                 None,
-                model.clone(),
-                acting_for.clone(),
+                model,
+                acting_for,
             )
             .await
         {
-            Ok(outcome) => outcome,
+            Ok(outcome) => outcome.final_text,
             Err(e) => return Ok(Err(e.to_string())),
         };
-        let mut reply = outcome.final_text;
-        if let Some((port, id, tip)) = watched.filter(|_| !reply.trim().is_empty()) {
-            let own_path = session_path(turns.session_manager(), session).await;
-            let posted = crate::principal::channel_digest::own_posts_from_elsewhere(
-                &port,
-                &principal.id,
-                &id,
-                tip.as_deref(),
-                own_path.as_deref(),
-            )
-            .await;
-            if !posted.is_empty() {
-                let again = crate::principal::genesis::conversation_overlap_message(&posted);
-                reply = match turns
-                    .drive_turn_streaming(session, &again, sink, None, model, acting_for)
-                    .await
-                {
-                    Ok(outcome) => outcome.final_text,
-                    Err(e) => {
-                        warn!(%session, "conversation turn: the second ask failed; nothing posted: {e}");
-                        String::new()
-                    }
-                };
-            }
-        }
         if let (Some(surface), Some(channel)) = (&surface, &channel) {
             surface.post_reply(channel, &reply).await;
         }
@@ -1789,19 +1758,6 @@ pub(crate) async fn resolve_principal(
 /// At most this many conversations get a keepalive turn per fire
 /// (ADR-096 D4); the rest wait for the next fire, oldest first.
 const MAX_CONVERSATIONS_PER_FIRE: usize = 4;
-
-/// `session`'s slug path, as the `via` of its posts carries it.
-async fn session_path(
-    sessions: &Arc<tokio::sync::RwLock<peko_session::manager::SessionManager>>,
-    session: &str,
-) -> Option<String> {
-    let id = peko_session::id::SessionId::parse(session)?;
-    let metas = sessions.write().await.list_all_sessions(false).await.ok()?;
-    metas
-        .iter()
-        .any(|m| m.session_id == id)
-        .then(|| peko_session::path::compute_path(&metas, id))
-}
 
 /// Whether `job` is the principal's seeded keepalive firing in its
 /// trunk, the fire that answers other pekos' posts in their own

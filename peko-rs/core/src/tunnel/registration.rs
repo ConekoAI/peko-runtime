@@ -295,6 +295,7 @@ pub async fn register_runtime(
     store
         .set_person_display_name(display_name.as_deref())
         .await?;
+    store.name_local_user_from_hub().await?;
     // ADR-091 D5: another person's conversations do not survive a change
     // of hands, whatever path removed the old registration.
     forget_remote_dms(resolver, &store, Some(&account)).await?;
@@ -593,6 +594,18 @@ mod tests {
                 id: account,
                 name: Some("Alice".into()),
             })
+        );
+        // Other computers see the local user by that name, not "local".
+        store.name_local_user_from_hub().await.unwrap();
+        assert_eq!(
+            peko_channel::ChannelPort::actor_info(
+                &store,
+                &peko_subject::ActorRef::User("local".into())
+            )
+            .await
+            .name
+            .as_deref(),
+            Some("Alice")
         );
 
         store.unlink_local_user().await.unwrap();

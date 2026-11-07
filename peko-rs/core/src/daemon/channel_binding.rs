@@ -728,11 +728,15 @@ impl BoundTurnDriver for PeerTurnDriver {
                 peko_tools_core::Origin::Ingress { channel: None },
             )
             .await;
+        let channel = self.turns.session_channel(session_id).await;
+        let watched = self.turns.channel_port().zip(channel.as_ref());
         let outcome = self
             .turns
-            .drive_turn_streaming(
+            .drive_conversation_turn(
+                watched,
                 session_id,
                 message,
+                Vec::new(),
                 Arc::new(|_event| {}),
                 Some(cancel.clone()),
                 None,

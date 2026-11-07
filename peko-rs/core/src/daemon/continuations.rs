@@ -206,8 +206,18 @@ async fn continue_run(
         .await;
     let sink: AgenticEventSink = Arc::new(|_| {});
     // An empty message continues from the saved history (ADR-089 D3).
+    let channel = turns.session_channel(session).await;
     match turns
-        .drive_turn_streaming(session, "", sink, None, None, acting_for)
+        .drive_conversation_turn(
+            channel.as_ref().map(|id| (channel_port, id)),
+            session,
+            "",
+            Vec::new(),
+            sink,
+            None,
+            None,
+            acting_for,
+        )
         .await
     {
         Ok(outcome) => {

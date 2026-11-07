@@ -70,6 +70,84 @@ async fn sign_in(hub: &str, json: bool) -> anyhow::Result<String> {
     finish_device_sign_in(hub, &pending).await
 }
 
+/// Sign this computer, and you as its user, in to PekoHub (`peko auth
+/// login`; `peko runtime register` is the older name). With the daemon
+/// running it registers through the daemon, which connects at once and
+/// puts your private pekos online; otherwise it registers here and the
+/// daemon connects when it starts.
+pub(crate) async fn register(
+    paths: &GlobalPaths,
+    hub: &str,
+    api_key: Option<String>,
+    json: bool,
+) -> anyhow::Result<()> {
+    let token = match api_key {
+        Some(key) => key,
+        None => sign_in(hub, json).await?,
+    };
+    let daemon = match peko_core::ipc::DaemonClient::connect().await {
+        Ok(client) if client.is_running().await => Some(client),
+        _ => None,
+    };
+    let (origin, runtime_did, account, connected) = match daemon {
+        Some(client) => match client
+            .request_response(peko_core::ipc::RequestPacket::RuntimeRegister {
+                request_id: 0,
+                hub: hub.to_string(),
+                token,
+            })
+            .await?
+        {
+            peko_core::ipc::ResponsePacket::RuntimeRegistered {
+                hub,
+                runtime_did,
+                account,
+                ..
+            } => (hub, runtime_did, account, true),
+            other => anyhow::bail!("Unexpected daemon response: {other:?}"),
+        },
+        None => {
+            let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
+                paths.resolver().vault(),
+            )?);
+            let registered = peko_core::tunnel::registration::register_runtime(
+                paths.resolver(),
+                vault,
+                hub,
+                &token,
+            )
+            .await?;
+            (
+                registered.origin,
+                registered.runtime_did,
+                registered.account,
+                false,
+            )
+        }
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "hub": origin,
+                "runtime_did": runtime_did,
+                "account": account,
+                "connected": connected,
+            })
+        );
+    } else {
+        println!("✓ Signed in to {origin}");
+        println!("  Runtime:    {runtime_did}");
+        println!("  Local user: user:local:local = user:hub:{account}");
+        if connected {
+            println!("  Connected: your private pekos go online now.");
+        } else {
+            println!("  The daemon connects when it starts: peko daemon start");
+        }
+    }
+    Ok(())
+}
+
 /// Handle runtime commands
 pub async fn handle_runtime(
     cmd: RuntimeCommands,
@@ -77,41 +155,7 @@ pub async fn handle_runtime(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        RuntimeCommands::Register { hub, api_key } => {
-            let vault = std::sync::Arc::new(peko_core::common::vault::Vault::load(
-                paths.resolver().vault(),
-            )?);
-            let api_key = match api_key {
-                Some(key) => key,
-                None => sign_in(&hub, json).await?,
-            };
-            let registered = peko_core::tunnel::registration::register_runtime(
-                paths.resolver(),
-                vault,
-                &hub,
-                &api_key,
-            )
-            .await?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "hub": registered.origin,
-                        "runtime_did": registered.runtime_did,
-                        "account": registered.account,
-                    })
-                );
-            } else {
-                println!("✓ Registered with {}", registered.origin);
-                println!("  Runtime:    {}", registered.runtime_did);
-                println!(
-                    "  Local user: user:local:local = user:hub:{}",
-                    registered.account
-                );
-                println!("  Restart the daemon to connect: peko daemon restart");
-            }
-            Ok(())
-        }
+        RuntimeCommands::Register { hub, api_key } => register(paths, &hub, api_key, json).await,
         RuntimeCommands::Unregister {
             api_key,
             discard_unsent,

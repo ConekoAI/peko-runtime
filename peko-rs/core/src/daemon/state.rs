@@ -771,6 +771,15 @@ impl AppState {
             {
                 tracing::warn!("Could not record the local user's identity: {e}");
             }
+            if let Err(e) = tunnel_channel_port
+                .as_ref()
+                .expect("channel port initialized")
+                .local()
+                .name_local_user_from_hub()
+                .await
+            {
+                tracing::warn!("Could not name the local user as PekoHub does: {e}");
+            }
             // ADR-081 D5: learned contacts move into each principal's book.
             if let Err(e) = crate::principal::contacts::migrate_known_by(
                 &path_resolver.runtime_dir(),

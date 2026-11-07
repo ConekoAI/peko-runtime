@@ -1661,10 +1661,13 @@ impl PrincipalManager {
                         peko_tools_core::Origin::Ingress { channel: None },
                     )
                     .await;
+                let watched = self.channel_port.as_ref().zip(dm_channel.as_ref());
                 let outcome = turns
-                    .drive_turn_streaming(
+                    .drive_conversation_turn(
+                        watched,
                         &child_id,
                         &ctx.message,
+                        Vec::new(),
                         Arc::from(on_event),
                         None,
                         override_model,
@@ -1811,7 +1814,8 @@ impl PrincipalManager {
         );
         let media = crate::principal::attachments::media(&principal.workspace_path, &attachments);
         let outcome = turns
-            .drive_turn_streaming_with_media(
+            .drive_conversation_turn(
+                Some((&port, channel)),
                 &child_id,
                 &text,
                 media,

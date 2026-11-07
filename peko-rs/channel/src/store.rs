@@ -909,6 +909,33 @@ impl ChannelStore {
         .await
     }
 
+    /// Name the local user as PekoHub does, once the runtime is signed in
+    /// (ADR-095 D6): the groups and DMs they take part in carry this name
+    /// to other computers, which otherwise saw "local".
+    pub async fn name_local_user_from_hub(&self) -> Result<()> {
+        let Some(name) = self.person_display_name().await else {
+            return Ok(());
+        };
+        let local = ActorRef::User("local".into());
+        let info = self.actor_info(&local).await;
+        let Some(hub_id) = info.hub_id.clone() else {
+            return Ok(());
+        };
+        if info.name.as_deref() == Some(name.as_str()) {
+            return Ok(());
+        }
+        self.register_actor(
+            &local,
+            Some(&hub_id),
+            None,
+            None,
+            Some(&name),
+            Registration::Registered,
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Find-or-create a DM between a human here and a principal hosted on
     /// another runtime (ADR-090 D1). The pair id is the caller's: both
     /// runtimes derive it from the wire, not from this registry. The DM has

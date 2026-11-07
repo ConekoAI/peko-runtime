@@ -1763,6 +1763,14 @@ impl RequestHandler for PrincipalHandler {
                             loaded: true,
                         };
                         send_response(sink, response).await?;
+                        // A peko `peko create` made on a signed-in computer
+                        // goes on PekoHub now, as one the app makes does,
+                        // rather than at the tunnel's next connect.
+                        if let Some(dispatcher) = host.tunnel_dispatcher().await {
+                            tokio::spawn(
+                                async move { dispatcher.register_pending_principals().await },
+                            );
+                        }
                     }
                     Err(e) => {
                         let response = ResponsePacket::Error {

@@ -172,8 +172,18 @@ async fn handle_completion_wake(ctx: Arc<WakeContext>, notice: CompletionWakeNot
         let acting_for = turns
             .root_stamp(None, &session_key, peko_tools_core::Origin::Wake)
             .await;
+        let channel = turns.session_channel(&session_key).await;
         match turns
-            .drive_turn_streaming(&session_key, WAKE_TURN_MARKER, sink, None, None, acting_for)
+            .drive_conversation_turn(
+                channel.as_ref().map(|id| (&ctx.channel_port, id)),
+                &session_key,
+                WAKE_TURN_MARKER,
+                Vec::new(),
+                sink,
+                None,
+                None,
+                acting_for,
+            )
             .await
         {
             Ok(outcome) => {

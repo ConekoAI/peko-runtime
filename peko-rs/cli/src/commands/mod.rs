@@ -115,7 +115,7 @@ pub enum Commands {
     /// conversation it had with someone else. Reading never wakes the peko.
     Log(log::LogCommand),
 
-    /// Authentication and credential management
+    /// Sign in to PekoHub (`peko auth login`) and see who you are
     #[command(subcommand)]
     Auth(auth::AuthCommands),
 
