@@ -812,6 +812,24 @@ async fn unread_events(
             // answer; the mark moves past the rest with the render.
             return Some((all, true));
         }
+        // What was written after the session began is new to it, though
+        // the channel is older: a group's session is made just after the
+        // group, and another peko's post there must wait for an answer
+        // before anything sets the mark (only a turn in that session does).
+        let since_session: Vec<_> = all
+            .iter()
+            .filter(|(_, ev)| {
+                chrono::DateTime::parse_from_rfc3339(ev.at())
+                    .is_ok_and(|t| t.timestamp_millis() > session_created_ms as i64)
+            })
+            .cloned()
+            .collect();
+        if since_session
+            .iter()
+            .any(|(_, ev)| matches!(ev, ChannelEvent::Posted { .. }))
+        {
+            return Some((since_session, false));
+        }
         if let Some((id, _)) = all.last().filter(|_| write) {
             let _ = port
                 .advance_read_mark(channel, session_key, id.clone())
@@ -1394,6 +1412,41 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("ping"), "{text}");
+    }
+
+    /// A group's session is made just after the group. Before anything
+    /// has set its mark, another peko's post there still waits for an
+    /// answer; what predates the session stays history.
+    #[tokio::test]
+    async fn a_new_group_session_sees_posts_made_after_it_began() {
+        let (_dir, port) = store();
+        let group = port
+            .create(
+                &PrincipalId(ME.id.to_string()),
+                CreateOpts::runtime("fresh"),
+            )
+            .await
+            .unwrap();
+        port.post_attributed(&group, &me_subject(), "prin_other", PostMsg::root("before"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let mut metas = tree(None);
+        metas[1].slug = Some("fresh".to_string());
+        metas[1].channel_id = Some(group.as_str().to_string());
+        metas[1].created_at = chrono::Utc::now().timestamp_millis() as u64;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        port.post_attributed(&group, &me_subject(), "prin_other", PostMsg::root("after"))
+            .await
+            .unwrap();
+
+        let peek = digest_pass(&port, &metas, child_id(), &ME, false, false, None).await;
+        assert_eq!(peek.waiting.len(), 1, "{:?}", peek.waiting);
+        let text = render_channel_digest(&port, &metas, child_id(), &ME, false)
+            .await
+            .expect("the post made after the session began waits");
+        assert!(text.contains("after"), "{text}");
+        assert!(!text.contains("before"), "history: {text}");
     }
 
     fn peer_id() -> peko_session::id::SessionId {

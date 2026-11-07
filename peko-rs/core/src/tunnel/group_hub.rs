@@ -274,6 +274,20 @@ impl TunnelChannelPort {
         Ok(live)
     }
 
+    /// After the home changes who is in a group itself (its own person
+    /// added or leaving), tell PekoHub again, so the group follows the
+    /// person to their other computers (ADR-092 D4). Elsewhere, and for a
+    /// group PekoHub does not know, nothing is sent.
+    pub(super) async fn report_group_roster_at_home(
+        &self,
+        ctx: &CrossRuntimeChannelCtx,
+        channel: &ChannelId,
+    ) {
+        if self.is_home_of(ctx, channel).await.is_ok() {
+            self.report_group_roster(ctx, channel).await;
+        }
+    }
+
     /// Tell PekoHub which accounts are in a registered group (ADR-092
     /// D4/D6): persons who joined (from a route), and this runtime's own
     /// person when a member. Invited but not yet joined is not in.
@@ -588,6 +602,23 @@ impl TunnelChannelPort {
         ChannelPort::invite(self, channel, &inviter, &peko)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // The group names the peko as PekoHub does. Without a name, short
+        // `@name` mentions stop working for everyone in the group, since
+        // a mention by name needs every peko in it named. Recorded once
+        // the peko is a member, so its actor record is the invite's.
+        if let Some(name) = resolved.name.as_deref().filter(|n| !n.trim().is_empty()) {
+            let registration = match resolved.exposure {
+                crate::tunnel::hub_directory::ResolvedExposure::Public => Registration::Public,
+                _ => Registration::Private,
+            };
+            if let Err(e) = self
+                .local
+                .register_actor(&peko, Some(hub_id), None, None, Some(name), registration)
+                .await
+            {
+                warn!(%channel, "the joining peko's name is not recorded: {e}");
+            }
+        }
         self.sync_group_roster(ctx, channel).await
     }
 
