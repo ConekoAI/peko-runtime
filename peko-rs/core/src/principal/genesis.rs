@@ -167,6 +167,30 @@ and leave it empty if no answer is needed. Don't also send it with ChannelSend."
         .to_string()
 }
 
+/// What a conversation turn is told when its peko posted in the same
+/// conversation from another session while the turn was writing its
+/// reply: the reply was held back, and the turn answers again knowing it.
+#[must_use]
+pub fn conversation_overlap_message(own_posts: &[String]) -> String {
+    let quoted = own_posts
+        .iter()
+        .map(|text| {
+            let text = text.trim();
+            let short: String = text.chars().take(600).collect();
+            let cut = if short.len() < text.len() { "…" } else { "" };
+            format!("> {}{cut}", short.replace('\n', "\n> "))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!(
+        "[runtime] While you were writing that reply, you also posted in this conversation from \
+another of your sessions (another run of yours, with its own tools and context):\n\n{quoted}\n\n\
+Your reply was not posted. Write the reply again in light of what you posted there: don't \
+contradict it, don't repeat it, and leave the reply empty if nothing is left to say. Your reply \
+is posted to this conversation exactly as you write it."
+    )
+}
+
 /// The runtime-authored brief for the trunk's FIRST self-turn (P2).
 ///
 /// Deterministic, model-free to produce: the only inputs are the
