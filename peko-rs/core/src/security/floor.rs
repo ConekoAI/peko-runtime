@@ -40,6 +40,65 @@ pub fn channel_owner_action<'a>(tool_name: &str, params: &'a serde_json::Value) 
         .filter(|a| CHANNEL_OWNER_ACTIONS.contains(a))
 }
 
+/// The longest brief an `Agent` `as_owner` call may hand the owner
+/// (ADR-100 D1), in characters: the owner reads all of it.
+pub const OWNER_TASK_BRIEF_MAX: usize = 4_000;
+
+/// Whether `params` hand a task to the owner (`Agent` `as_owner`,
+/// ADR-100).
+#[must_use]
+pub fn is_owner_task(tool_name: &str, params: &serde_json::Value) -> bool {
+    tool_name == "Agent" && params["as_owner"].as_bool() == Some(true)
+}
+
+/// Why `stamp` may not hand this task to the owner, if it may not
+/// (ADR-100 D1). Only a run the owner started in a conversation others
+/// share may: the owner's own runs need no hand-off, and no one else's
+/// run may fill the owner's queue.
+#[must_use]
+pub fn owner_task_refusal(
+    stamp: &ActingFor,
+    tool_name: &str,
+    params: &serde_json::Value,
+) -> Option<String> {
+    if !is_owner_task(tool_name, params) {
+        return None;
+    }
+    if stamp.is_owner() {
+        return Some(
+            "You already act for your owner with their full access here; call Agent without \
+             as_owner."
+                .into(),
+        );
+    }
+    if !stamp.owner_request {
+        return Some(format!(
+            "Only a turn your owner started in this conversation can hand work to them \
+             (as_owner); this run acts for {}.",
+            shown_actor(&stamp.actor)
+        ));
+    }
+    if params["action"].as_str().is_some_and(|a| a != "new") {
+        return Some("as_owner works only with action \"new\".".into());
+    }
+    let path = params["path"].as_str().unwrap_or_default();
+    if path.contains('/') {
+        return Some(
+            "With as_owner, `path` is a bare slug naming the task (no `/`); the task runs in \
+             your owner's own sessions."
+                .into(),
+        );
+    }
+    let length = params["prompt"].as_str().map_or(0, |p| p.chars().count());
+    if length > OWNER_TASK_BRIEF_MAX {
+        return Some(format!(
+            "The brief is {length} characters; your owner reads all of it, so keep it under \
+             {OWNER_TASK_BRIEF_MAX}."
+        ));
+    }
+    None
+}
+
 /// Why `stamp` may not make this particular call, if it may not: the
 /// per-action part of the floor, beside the per-tool [`tool_refusal`].
 #[must_use]
@@ -492,7 +551,66 @@ mod tests {
                 channel: "dm_x".into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         }
+    }
+
+    /// ADR-100 D1: only the owner's own turn in a shared room hands a
+    /// task to them, as a new task with a short-enough brief.
+    #[test]
+    fn only_the_owners_capped_turn_hands_a_task_to_them() {
+        let task = |extra: serde_json::Value| {
+            let mut params = serde_json::json!({
+                "prompt": "Run cargo test in ~/repo and report failures",
+                "path": "run-tests",
+                "as_owner": true,
+            });
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            params
+        };
+        let mut capped = stamp(Trust::Untrusted);
+        capped.owner_request = true;
+        assert!(owner_task_refusal(&capped, "Agent", &task(serde_json::json!({}))).is_none());
+        let mut capped_trusted = stamp(Trust::Trusted);
+        capped_trusted.owner_request = true;
+        assert!(
+            owner_task_refusal(&capped_trusted, "Agent", &task(serde_json::json!({}))).is_none()
+        );
+
+        let guest = owner_task_refusal(
+            &stamp(Trust::Untrusted),
+            "Agent",
+            &task(serde_json::json!({})),
+        )
+        .expect("a guest's turn is refused");
+        assert!(guest.contains("Only a turn your owner started"), "{guest}");
+        let owner = owner_task_refusal(&stamp(Trust::Owner), "Agent", &task(serde_json::json!({})))
+            .expect("the owner's own run needs no hand-off");
+        assert!(owner.contains("without as_owner"), "{owner}");
+        assert!(owner_task_refusal(
+            &capped,
+            "Agent",
+            &task(serde_json::json!({"action": "resume"}))
+        )
+        .is_some());
+        assert!(owner_task_refusal(
+            &capped,
+            "Agent",
+            &task(serde_json::json!({"path": "sess:/elsewhere"}))
+        )
+        .is_some());
+        let long = "x".repeat(OWNER_TASK_BRIEF_MAX + 1);
+        assert!(
+            owner_task_refusal(&capped, "Agent", &task(serde_json::json!({"prompt": long})))
+                .is_some()
+        );
+        // Without the flag it is an ordinary call.
+        let plain = serde_json::json!({"prompt": "x", "path": "y"});
+        assert!(owner_task_refusal(&stamp(Trust::Untrusted), "Agent", &plain).is_none());
+        assert!(!is_owner_task("Bash", &task(serde_json::json!({}))));
     }
 
     struct Tree {

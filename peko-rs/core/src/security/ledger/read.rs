@@ -576,6 +576,7 @@ mod tests {
             trust,
             compartment,
             origin: Origin::Runtime,
+            owner_request: false,
         }
     }
 

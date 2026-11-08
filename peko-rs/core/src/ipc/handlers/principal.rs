@@ -1900,6 +1900,7 @@ fn approval_info(record: &crate::principal::policy_gate::ApprovalRecord) -> Appr
         reason: record.reason.clone(),
         created_at: record.created_at.to_rfc3339(),
         expires_at: record.expires_at.to_rfc3339(),
+        kind: crate::principal::policy_gate::request_kind(record),
     }
 }
 

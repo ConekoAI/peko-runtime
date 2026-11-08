@@ -20,6 +20,7 @@ fn guest(trust: Trust) -> ActingFor {
             channel: "dm_x".into(),
         },
         origin: Origin::Ingress { channel: None },
+        owner_request: false,
     }
 }
 
@@ -451,6 +452,53 @@ async fn only_the_owner_decides_channel_rosters() {
         );
     }
     assert_eq!(*gate.reviewed.lock().unwrap(), 0);
+}
+
+/// ADR-100 D1–D2: the owner's own turn in a shared room hands a task to
+/// them, and the owner decides it — never the reviewer. No one else's
+/// run can file one.
+#[tokio::test]
+async fn the_owners_turn_in_a_shared_room_hands_work_to_them() {
+    let h = ToolHarness::new().await;
+    let gate = FakeGate::new(Verdict::Allow);
+    h.tooling.dispatcher().set_policy_gate(gate.clone());
+    let brief = json!({
+        "prompt": "Run cargo test in ~/repo and report the failures",
+        "path": "run-tests",
+        "as_owner": true,
+    });
+    let mut owner_capped = guest(Trust::Untrusted);
+    owner_capped.owner_request = true;
+
+    let out = h
+        .call_as(&Caller::acting_for(owner_capped), "Agent", brief.clone())
+        .await;
+    assert_eq!(out.value["pending_approval"], "apr_test", "{}", out.display);
+    assert!(
+        out.display.contains("Nothing was done yet"),
+        "{}",
+        out.display
+    );
+    assert_eq!(
+        *gate.reviewed.lock().unwrap(),
+        0,
+        "the reviewer never sees it"
+    );
+    let (asked, _) = gate.asked.lock().unwrap()[0].clone();
+    assert_eq!(asked.tool_name, "Agent");
+    assert_eq!(asked.params["as_owner"], true);
+
+    for stamp in [guest(Trust::Untrusted), guest(Trust::Trusted)] {
+        let out = h
+            .call_as(&Caller::acting_for(stamp), "Agent", brief.clone())
+            .await;
+        assert!(
+            !out.success && out.display.contains("Only a turn your owner started"),
+            "{}",
+            out.display
+        );
+    }
+    assert_eq!(gate.asked.lock().unwrap().len(), 1, "no one else files one");
 }
 
 /// A gate that only classifies hot-memory sources (ADR-080 D4), and

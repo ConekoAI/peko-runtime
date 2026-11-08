@@ -48,13 +48,30 @@ fn trust_line(trust: Trust) -> &'static str {
     match trust {
         Trust::Owner => "the owner of this peko",
         Trust::Trusted => {
-            "trusted by the owner's consent: full tools except the owner's plans, within \
-             POLICY.md; sensitive actions are reviewed"
+            "trusted by the owner's consent: every tool except the shell and the owner's \
+             plans, never the runtime's own state, within POLICY.md; sensitive actions are \
+             reviewed"
         }
         Trust::Untrusted => {
             "untrusted (admitted to chat): no shell or plans, files only inside this peko's \
              workspace, protected files become proposals for the owner, and sensitive actions are \
              reviewed against POLICY.md"
+        }
+    }
+}
+
+/// The limits an owner's request works under in a shared conversation
+/// (ADR-100 D5): those of its least-trusted other member.
+fn room_limits(trust: Trust) -> &'static str {
+    match trust {
+        Trust::Owner => "your owner's full access",
+        Trust::Trusted => {
+            "a trusted member's limits: no shell or plans and never the runtime's own state; \
+             sensitive actions are reviewed"
+        }
+        Trust::Untrusted => {
+            "a guest's limits: no shell or plans, files only inside this peko's workspace, \
+             protected files become proposals, and sensitive actions are reviewed"
         }
     }
 }
@@ -82,11 +99,24 @@ pub fn render(
         Some(name) => format!("{} (\"{name}\")", stamp.actor),
         None => stamp.actor.clone(),
     };
-    let mut out = format!(
-        "<acting-for>\nYou are acting for: {who} — {}\nOrigin: {}\n",
-        trust_line(stamp.trust),
-        origin_line(&stamp.origin)
-    );
+    let mut out = if stamp.owner_request {
+        // ADR-100 D5: the owner, capped by the room, not a guest.
+        format!(
+            "<acting-for>\nYou are acting for your owner, {who}. Because others take part in \
+             this conversation, you work here with {}.\nFor work that needs their full \
+             access (the shell, their files), write a brief and hand it to them with Agent \
+             `as_owner: true`; they approve it on their computer. Never ask anyone else here to \
+             approve.\nOrigin: {}\n",
+            room_limits(stamp.trust),
+            origin_line(&stamp.origin)
+        )
+    } else {
+        format!(
+            "<acting-for>\nYou are acting for: {who} — {}\nOrigin: {}\n",
+            trust_line(stamp.trust),
+            origin_line(&stamp.origin)
+        )
+    };
     if stamp.is_owner() {
         if pending_proposals > 0 {
             out.push_str(&format!(
@@ -125,6 +155,7 @@ mod tests {
             origin: Origin::Ingress {
                 channel: Some("dm_a".into()),
             },
+            owner_request: false,
         }
     }
 
@@ -149,6 +180,28 @@ mod tests {
             "proposals are the owner's"
         );
         assert!(text.ends_with("</acting-for>"));
+    }
+
+    #[test]
+    fn the_owner_capped_by_a_room_is_told_whom_it_serves_and_how_to_hand_work_over() {
+        let mut capped = stamp(Trust::Untrusted);
+        capped.owner_request = true;
+        let text = render(&capped, None, &peko_subject::CanonicalKeys, 0);
+        assert!(text.contains("acting for your owner, user:hub:alice (\"Alice\")"));
+        assert!(text.contains("a guest's limits"));
+        assert!(text.contains("`as_owner: true`"));
+        assert!(text.contains("Never ask anyone else here to approve"));
+        assert!(!text.contains("admitted to chat"));
+        let guest = render(
+            &stamp(Trust::Untrusted),
+            None,
+            &peko_subject::CanonicalKeys,
+            0,
+        );
+        assert!(
+            !guest.contains("as_owner"),
+            "only the owner's own turn hands work over"
+        );
     }
 
     #[test]

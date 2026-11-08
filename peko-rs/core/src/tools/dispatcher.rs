@@ -622,11 +622,16 @@ impl ToolDispatcher {
             crate::tools::metadata::ToolSource::Mcp { untrusted_ok, .. } => Some(*untrusted_ok),
             crate::tools::metadata::ToolSource::BuiltIn => None,
         };
-        if let Some(reason) =
-            crate::security::floor::tool_refusal(&stamp, &tool_name, mcp_untrusted_ok).or_else(
-                || crate::security::floor::action_refusal(&stamp, &tool_name, &call.params),
-            )
-        {
+        if let Some(reason) = crate::security::floor::tool_refusal(
+            &stamp,
+            &tool_name,
+            mcp_untrusted_ok,
+        )
+        .or_else(|| {
+            crate::security::floor::action_refusal(&stamp, &tool_name, &call.params).or_else(|| {
+                crate::security::floor::owner_task_refusal(&stamp, &tool_name, &call.params)
+            })
+        }) {
             self.emit_floor_denial(call, &stamp, &reason).await;
             let text = format!("Error: {reason}");
             return Ok(Dispatched::refused(text, Outcome::FloorDenied));

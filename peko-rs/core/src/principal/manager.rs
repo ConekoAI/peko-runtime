@@ -3004,6 +3004,7 @@ mod tests {
                     channel: "dm_x".into(),
                 },
                 origin: Origin::Ingress { channel: None },
+                owner_request: false,
             },
             tool_name: "Read".into(),
             params: serde_json::json!({"file_path": "finances/q3.md"}),
@@ -3090,6 +3091,115 @@ mod tests {
         assert!(policy.contains("finances/q3.md"), "{policy}");
     }
 
+    /// ADR-100 D2–D3: a task the owner's capped turn hands to them shows
+    /// its whole brief, is approved once, never always, and runs as the
+    /// owner in a new session of the owner's own tree, with no `as_owner`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn an_approved_owner_task_runs_as_the_owner_outside_the_room() {
+        use crate::principal::policy_gate::{
+            decide_request, pending_requests, request_kind, request_summary, Decision,
+            PrincipalPolicyGate,
+        };
+        use crate::security::judge::{GatedCall, PolicyGate};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let brief = "Run cargo test in ~/repo and report which tests fail.";
+        let call = GatedCall {
+            call_id: Some("call_task".into()),
+            principal_id: id.0.clone(),
+            principal_name: None,
+            session_id: Some("group-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "user:local:owner".into(),
+                name: Some("Owner".into()),
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: "chan_team".into(),
+                },
+                origin: Origin::Ingress { channel: None },
+                owner_request: true,
+            },
+            tool_name: "Agent".into(),
+            params: serde_json::json!({"prompt": brief, "path": "run-tests", "as_owner": true}),
+        };
+
+        let request = gate.ask_owner(&call, "ignored").await.unwrap();
+        let listed = pending_requests(&principal);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(request_kind(&listed[0]).as_deref(), Some("owner_task"));
+        assert_eq!(
+            request_summary(&listed[0]),
+            brief,
+            "the owner reads the whole brief"
+        );
+        assert!(
+            listed[0].reason.contains("chan_team"),
+            "{}",
+            listed[0].reason
+        );
+
+        let always = decide_request(
+            &manager,
+            &principal,
+            &request,
+            Decision::Approve { always: true },
+        )
+        .await
+        .expect_err("approved once, never always");
+        assert!(always.to_string().contains("never always"), "{always}");
+        assert_eq!(pending_requests(&principal).len(), 1, "still waiting");
+
+        adapter.queue_text("All 12 tests pass.");
+        let approved = decide_request(
+            &manager,
+            &principal,
+            &request,
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        assert!(approved.contains("Running it as you"), "{approved}");
+
+        let ledger_dir =
+            crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
+        let mut replayed = None;
+        for _ in 0..50 {
+            replayed = crate::security::ledger::read::load_calls(&ledger_dir, None)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|c| {
+                    c.start
+                        .as_ref()
+                        .is_some_and(|s| s["parent"]["kind"] == "approval")
+                });
+            if replayed.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let start = replayed
+            .expect("the approved task is in the ledger")
+            .start
+            .unwrap();
+        assert_eq!(start["tool"], "Agent", "{start}");
+        assert_eq!(start["acting_for"]["trust"], "owner", "{start}");
+        assert_eq!(
+            start["acting_for"]["compartment"]["kind"], "internal",
+            "{start}"
+        );
+        assert!(
+            start["acting_for"].get("owner_request").is_none(),
+            "{start}"
+        );
+        assert_eq!(start["params"]["path"], "sess:/run-tests", "{start}");
+        assert!(start["params"].get("as_owner").is_none(), "{start}");
+    }
+
     /// ADR-081 D8: a cron job's trust is re-derived when it fires and only
     /// lowered, so revoking a grant reaches jobs that already exist.
     #[tokio::test(flavor = "multi_thread")]
@@ -3138,6 +3248,7 @@ mod tests {
                 trust: peko_tools_core::Trust::Trusted,
                 compartment: peko_tools_core::Compartment::Internal,
                 origin: peko_tools_core::Origin::Ingress { channel: None },
+                owner_request: false,
             }),
         };
         let session = uuid::Uuid::new_v4().to_string();
@@ -3181,6 +3292,7 @@ mod tests {
                 origin: Origin::Cron {
                     job_id: "cron_x".into(),
                 },
+                owner_request: false,
             };
             let result = manager
                 .receive_trunk(id.clone(), "do it".into(), None, stamp)

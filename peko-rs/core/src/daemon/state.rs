@@ -2322,6 +2322,7 @@ impl crate::tunnel::TunnelHost for AppState {
                 reason: r.reason.clone(),
                 created_at: r.created_at.to_rfc3339(),
                 expires_at: r.expires_at.to_rfc3339(),
+                kind: crate::principal::policy_gate::request_kind(r),
             })
             .collect()
     }

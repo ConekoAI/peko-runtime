@@ -1487,6 +1487,20 @@ async fn list_approvals(name: &str, json: bool) -> Result<()> {
                 println!("No approval requests are waiting for '{name}'.");
             } else {
                 for a in &approvals {
+                    if a.kind.as_deref() == Some("owner_task") {
+                        // ADR-100: a task handed to the owner, approved once.
+                        println!(
+                            "{}  you asked {name} for this {}; approved, it runs as you, \
+                             outside that conversation, with only this brief (approve once, \
+                             never --always):",
+                            a.id, a.reason
+                        );
+                        for line in a.summary.lines() {
+                            println!("    | {line}");
+                        }
+                        println!("    expires {}", a.expires_at);
+                        continue;
+                    }
                     let who = a.actor_name.as_deref().map_or_else(
                         || super::shown_address(&a.actor),
                         |n| format!("{n} ({})", super::shown_address(&a.actor)),

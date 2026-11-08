@@ -1636,6 +1636,7 @@ mod tests {
                 channel: "dm_x".into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         });
         let visible: std::collections::HashSet<String> = guest
             .list_sessions(None, None, 50, None, None)

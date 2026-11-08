@@ -122,6 +122,41 @@ fn summarize(call: &GatedCall) -> String {
     peko_tools_core::neutralize_runtime_tags(&text)
 }
 
+/// Whether `record` hands a task to the owner (ADR-100) rather than
+/// asking about one reviewed call.
+fn is_owner_task(call: &GatedCall) -> bool {
+    crate::security::floor::is_owner_task(&call.tool_name, &call.params)
+}
+
+/// The brief of a task handed to the owner, as they read it.
+fn owner_task_brief(call: &GatedCall) -> String {
+    peko_tools_core::neutralize_runtime_tags(call.params["prompt"].as_str().unwrap_or_default())
+}
+
+/// Where a task handed to the owner was asked for, as the owner reads it:
+/// "in “repo-team” (4 people)".
+async fn owner_task_origin(manager: &PrincipalManager, call: &GatedCall) -> String {
+    let Some(channel) = call.stamp.compartment.channel() else {
+        return "in a shared conversation".into();
+    };
+    let membership = match manager.channel_port() {
+        Some(port) => port
+            .membership(&peko_channel::ChannelId(channel.to_string()))
+            .await
+            .ok(),
+        None => None,
+    };
+    match membership {
+        Some(m) if !m.name.trim().is_empty() => format!(
+            "in \u{201c}{}\u{201d} ({} members)",
+            peko_tools_core::neutralize_runtime_tags(m.name.trim()),
+            m.members.len()
+        ),
+        Some(m) => format!("in {channel} ({} members)", m.members.len()),
+        None => format!("in {channel}"),
+    }
+}
+
 /// The production [`PolicyGate`] over the loaded principals.
 pub struct PrincipalPolicyGate {
     principals: Weak<PrincipalManager>,
@@ -242,7 +277,20 @@ impl PrincipalPolicyGate {
         };
         let call = &record.call;
         let peko = principal.name().await;
-        let note = format!(
+        let note = if is_owner_task(call) {
+            format!(
+                "📋 Approval needed ({id}): you asked {peko} for something {reason}, and it \
+                 needs your full access. Approved, it runs as you, outside that conversation, \
+                 with only this brief, and its report goes back there:\n\n{brief}\n\nApprove or \
+                 deny it in the Peko app, or with `peko approve {peko} {id}` / `peko deny {peko} \
+                 {id}`. Expires {exp}.",
+                id = record.id,
+                reason = record.reason,
+                brief = owner_task_brief(call),
+                exp = record.expires_at.format("%Y-%m-%d %H:%M UTC"),
+            )
+        } else {
+            format!(
             "📋 Approval needed ({id}): {actor}{name} ({trust}) wants to run {what}. Reviewer: \
              {reason}. Approve or deny it in the Peko app, or with `peko approve {peko} {id}` \
              / `peko deny {peko} {id}`. Expires {exp}.",
@@ -258,7 +306,8 @@ impl PrincipalPolicyGate {
             what = summarize(call),
             reason = peko_tools_core::neutralize_runtime_tags(&record.reason),
             exp = record.expires_at.format("%Y-%m-%d %H:%M UTC"),
-        );
+            )
+        };
         for owner in Self::owner_subjects(principal).await {
             let delivered = messenger
                 .deliver_note(
@@ -315,15 +364,21 @@ impl PolicyGate for PrincipalPolicyGate {
     }
 
     async fn ask_owner(&self, call: &GatedCall, reason: &str) -> Result<String> {
-        let (_, principal) = self
+        let (manager, principal) = self
             .principal(&call.principal_id)
             .await
             .context("principal not loaded")?;
+        // ADR-100 D2: the owner learns where the task was asked for.
+        let reason = if is_owner_task(call) {
+            owner_task_origin(&manager, call).await
+        } else {
+            reason.to_string()
+        };
         let now = Utc::now();
         let record = ApprovalRecord {
             id: format!("apr_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]),
             call: call.clone(),
-            reason: reason.to_string(),
+            reason,
             created_at: now,
             expires_at: now + chrono::Duration::hours(APPROVAL_TTL_HOURS),
             status: ApprovalStatus::Pending,
@@ -690,7 +745,18 @@ pub fn pending_requests(principal: &Principal) -> Vec<ApprovalRecord> {
 /// One line on what a request asks: the tool and its target.
 #[must_use]
 pub fn request_summary(record: &ApprovalRecord) -> String {
+    if is_owner_task(&record.call) {
+        // ADR-100 D2: the owner reads the whole brief.
+        return owner_task_brief(&record.call);
+    }
     summarize(&record.call)
+}
+
+/// The request's kind on the wire: `owner_task` for a task handed to the
+/// owner (ADR-100), absent for a reviewed call.
+#[must_use]
+pub fn request_kind(record: &ApprovalRecord) -> Option<String> {
+    is_owner_task(&record.call).then(|| "owner_task".to_string())
 }
 
 /// Apply the owner's decision on request `id` and say what happened.
@@ -716,6 +782,15 @@ pub async fn decide_request_via(
     via: Option<&str>,
 ) -> Result<String> {
     let dir = approvals_dir(principal);
+    // ADR-100 D2: work run as the owner is approved one brief at a time.
+    if matches!(decision, Decision::Approve { always: true })
+        && load_record(&dir, id).is_some_and(|r| is_owner_task(&r.call))
+    {
+        anyhow::bail!(
+            "Request {id} runs as you, so it is approved once, never always; approve it \
+             without always."
+        );
+    }
     let reply = match decision {
         Decision::Deny => {
             let record = decide(&dir, id, ApprovalStatus::Denied)?;
@@ -729,6 +804,10 @@ pub async fn decide_request_via(
                 reply.push_str(&remember_allowance(principal, &record));
             }
             match replay(manager, principal, &record).await {
+                Ok(task) if is_owner_task(&record.call) => reply.push_str(&format!(
+                    " Running it as you now (task {task}); its report goes back to the \
+                     conversation it was asked in."
+                )),
                 Ok(task) => reply.push_str(&format!(
                     " Running it for {} now (task {task}); the result goes back to \
                      their conversation.",
@@ -811,9 +890,19 @@ async fn replay(
     stamp.origin = Origin::Approval {
         request_id: record.id.clone(),
     };
+    let mut params = call.params.clone();
+    if is_owner_task(call) {
+        // ADR-100 D3: the brief runs as the owner, in a new session of
+        // the owner's own tree, with none of the conversation it was
+        // asked in; its report still wakes that conversation.
+        stamp.trust = peko_tools_core::Trust::Owner;
+        stamp.compartment = peko_tools_core::Compartment::Internal;
+        stamp.owner_request = false;
+        params = owner_task_params(&params);
+    }
     let mut context = crate::async_exec::executor::ToolDispatchContext::builder(
         call.tool_name.clone(),
-        call.params.clone(),
+        params,
         session.clone(),
     )
     .for_principal(principal.id.0.clone())
@@ -837,6 +926,28 @@ async fn replay(
         .await;
     let receipt = executor.dispatch_tool(&core, context, config).await?;
     Ok(receipt.task_id)
+}
+
+/// The `Agent` call an approved owner task runs: no `as_owner`, and its
+/// slug at the top of the owner's tree rather than under the
+/// conversation it was asked in.
+fn owner_task_params(params: &serde_json::Value) -> serde_json::Value {
+    let mut params = params.clone();
+    if let Some(map) = params.as_object_mut() {
+        map.remove("as_owner");
+        let slug = map
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(|p| p.trim_start_matches("sess:"))
+            .filter(|p| !p.is_empty() && !p.contains('/'))
+            .unwrap_or("owner-task")
+            .to_string();
+        map.insert(
+            "path".into(),
+            serde_json::Value::String(format!("sess:/{slug}")),
+        );
+    }
+    params
 }
 
 /// Leave a note in the requesting session's inbox; it reaches the run at
@@ -880,6 +991,7 @@ mod tests {
                     channel: "dm_a".into(),
                 },
                 origin: Origin::Ingress { channel: None },
+                owner_request: false,
             },
             tool_name: "Read".into(),
             params: serde_json::json!({"file_path": "docs/q3.md"}),

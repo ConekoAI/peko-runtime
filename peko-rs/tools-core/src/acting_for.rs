@@ -91,6 +91,13 @@ pub struct ActingFor {
     pub trust: Trust,
     pub compartment: Compartment,
     pub origin: Origin,
+    /// The owner's own request, capped by the room (ADR-100): the owner
+    /// started this run in a conversation whose other participants
+    /// lowered its trust. Only such a run may hand a task to the owner
+    /// (`Agent` `as_owner`). Set by the runtime where runs start, never
+    /// from a packet or tool arguments.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owner_request: bool,
 }
 
 impl ActingFor {
@@ -104,6 +111,7 @@ impl ActingFor {
             trust: Trust::Untrusted,
             compartment: Compartment::Detached,
             origin: Origin::Runtime,
+            owner_request: false,
         }
     }
 
@@ -117,6 +125,7 @@ impl ActingFor {
             trust: Trust::Owner,
             compartment: Compartment::Internal,
             origin: Origin::Runtime,
+            owner_request: false,
         }
     }
 
@@ -196,6 +205,7 @@ mod tests {
             trust,
             compartment,
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         }
     }
 

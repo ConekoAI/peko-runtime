@@ -547,6 +547,7 @@ impl PeerChildTurns {
                 trust: driver.trust,
                 compartment,
                 origin,
+                owner_request: false,
             },
             (None, None) => peko_tools_core::ActingFor::unattributed(),
         }
@@ -1466,6 +1467,7 @@ mod tests {
                 channel: guest_dm.as_str().into(),
             },
             origin: peko_tools_core::Origin::Ingress { channel: None },
+            owner_request: false,
         };
         let out = render(Some(guest_stamp)).await;
         assert!(out.contains(guest_dm.as_str()), "{out}");
@@ -1592,6 +1594,45 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stamps.ceiling(&ceiling(&mixed)).await, Trust::Untrusted);
+
+        // ADR-100: only the owner's own turn in a room others share is an
+        // owner request; their DM-like room, a guest's turn, and the
+        // conversation's own wake are not.
+        let origin = peko_tools_core::Origin::Ingress { channel: None };
+        let owner_driver = stamps.owner_driver().await;
+        let capped = stamps
+            .enter(&owner_driver, ceiling(&mixed), origin.clone())
+            .await;
+        assert!(capped.owner_request);
+        assert_eq!(capped.trust, Trust::Untrusted);
+        assert_eq!(capped.actor, owner_driver.actor);
+        let kept = stamps.derive(&capped, ceiling(&mixed)).await;
+        assert!(
+            kept.owner_request,
+            "a run it spawns in the room is the same request"
+        );
+        let alone = stamps
+            .enter(&owner_driver, ceiling(&review), origin.clone())
+            .await;
+        assert!(alone.is_owner() && !alone.owner_request);
+        let stranger = ActorRef::User("hub:stranger".into());
+        let guest = stamps.driver(&stranger, &stranger).await;
+        let guest = stamps.enter(&guest, ceiling(&mixed), origin.clone()).await;
+        assert!(!guest.owner_request);
+        let wake = stamps
+            .natural(ceiling(&mixed), peko_tools_core::Origin::Wake)
+            .await;
+        assert!(!wake.owner_request);
+        // Re-entered elsewhere (a cron fire, another conversation), the
+        // capped trust is all that carries over.
+        let moved = stamps
+            .enter(
+                &crate::security::Driver::from(&capped),
+                ceiling(&review),
+                origin,
+            )
+            .await;
+        assert!(!moved.owner_request);
     }
 
     /// A conversation turn's reply goes to its caller, which already has

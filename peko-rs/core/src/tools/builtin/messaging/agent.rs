@@ -87,6 +87,12 @@ pub struct AgentArgs {
     /// Surviving page numbers never renumber.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_limit: Option<u64>,
+    /// ADR-100 (`new` only): hand the task to the owner. The dispatcher
+    /// files it for the owner's approval; the approved brief runs as the
+    /// owner without this flag. The tool itself never runs a call that
+    /// still carries it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub as_owner: bool,
 }
 
 /// Serde default for [`AgentArgs::action`]: the historical behavior is
@@ -126,6 +132,14 @@ fn parse_action(raw: &str) -> anyhow::Result<AgentAction> {
 /// Runtime validation mirrors the schema's required fields and checks
 /// action-specific addressing and optional parameter constraints.
 fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result<()> {
+    // ADR-100: an `as_owner` call is decided by the owner and replayed
+    // without the flag; one reaching the tool skipped that path.
+    if args.as_owner {
+        return Err(anyhow::anyhow!(
+            "'as_owner' runs only once the owner approves it; this call did not go through \
+             their approval"
+        ));
+    }
     // ADR-053: `source` / `overwrite` are branch-only parameters — a
     // stray value on any other action is a hard error so the caller
     // learns the flag was ignored rather than silently dropped.
@@ -293,6 +307,7 @@ impl AgentTool {
 - new: continues the addressed session if you spawned it, else creates it, so repeating one call (e.g. from cron) keeps one session. Only a bare slug or a one-segment absolute path can create one.
 - resume: an existing spawned session at an absolute path.
 - compact: any session except yours and your ancestors (those compact on their own). It keeps the session's model, so `model` is refused.
+- as_owner: true (new only): hand the task to your owner when they asked for it in a conversation others share, and it needs their full access (the shell, their files). `prompt` is then the whole brief (at most 4000 characters): what to do, where, and what to report back, since the run sees nothing else. Your owner approves it on their computer; then it runs as them and its report reaches this conversation.
 - branch: copies the live context of `source` (default: your session) into `path`; the source is never changed. If `path` holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug and children stay; the old transcript becomes a compaction page); without it the call is refused. For a recurring side task that needs a main session's context without adding to it.
 
 The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
@@ -344,6 +359,10 @@ Examples:
                     "default": false,
                     "description": "branch: replace the live context of an existing spawned session at path (default false: refuse)"
                 },
+                "as_owner": {
+                    "type": "boolean",
+                    "description": "new: hand the task to your owner for approval; prompt is the whole brief"
+                },
                 "page_limit": {
                     "type": "integer",
                     "minimum": 0,
@@ -355,7 +374,7 @@ Examples:
         let variants = [
             (
                 "new",
-                &["prompt", "role", "path", "model", "page_limit"][..],
+                &["prompt", "role", "path", "model", "page_limit", "as_owner"][..],
             ),
             ("resume", &["prompt", "role", "path", "model"][..]),
             ("compact", &["prompt", "role", "path"][..]),

@@ -1323,6 +1323,11 @@ pub struct ApprovalInfo {
     pub created_at: String,
     /// RFC 3339; undecided requests lapse then.
     pub expires_at: String,
+    /// `owner_task` for a task handed to the owner (ADR-100): the summary
+    /// is its whole brief, and it is approved once, never *always*.
+    /// Absent for a reviewed call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// A conversation's last failed run, as `principal_log` reports it
