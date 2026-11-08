@@ -398,7 +398,7 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 
 | Action | Parameters | Effect |
 |---|---|---|
-| `create` | `name`; optional `slug`, `members` | Creates a group (`group:<slug>`, else `chan_*`) with the caller as creator and first member, provisions its group session and binding (`wake: mention`), and invites each member as `invite` does. Returns `channel` and the `invited` addresses. |
+| `create` | `name`; optional `slug`, `members` | Creates a group (`group:<slug>`, else `chan_*`) with the caller as creator and first member, provisions its group session and binding (`wake: mention`), adds the owner when the run acts for them (a group made for the owner has them in it), and invites each member as `invite` does. Returns `channel` and the `invited` addresses. |
 | `invite` | `channel`, `actor` | Adds one actor to a group the caller belongs to: the caller's owner, or a principal in its contact book (`Contacts resolve` first). Any other human is refused — the owner adds them with `peko channel invite`. Only the group's owner or an admin adds members, and only at the group's home runtime (ADR-092 D1). Remote members receive the signed roster snapshot. |
 | `leave` | `channel` | Removes the caller from a group and deletes its binding; the session stays as history. |
 | `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |

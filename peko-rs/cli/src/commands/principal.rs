@@ -1510,9 +1510,16 @@ async fn list_approvals(name: &str, json: bool) -> Result<()> {
                     println!("    expires {}", a.expires_at);
                 }
                 println!();
-                println!(
-                    "Decide with: peko approve {name} <id> [--always]  |  peko deny {name} <id>"
-                );
+                // ADR-100: a task run as you is approved once, never always.
+                let always = if approvals
+                    .iter()
+                    .any(|a| a.kind.as_deref() != Some("owner_task"))
+                {
+                    " [--always]"
+                } else {
+                    ""
+                };
+                println!("Decide with: peko approve {name} <id>{always}  |  peko deny {name} <id>");
             }
             Ok(())
         }

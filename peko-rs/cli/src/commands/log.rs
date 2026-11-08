@@ -590,7 +590,7 @@ fn render_group_row(at: &str, author: &str, text: &str) {
         "[{}] {}: {}",
         timestamp_short(at),
         super::shown_address(author),
-        truncate(text, 240)
+        text
     );
 }
 
@@ -650,7 +650,7 @@ fn format_chat_message(message: &PrincipalLogMessage) -> String {
         "[{}] {}: {}",
         timestamp_short(&message.timestamp.to_rfc3339()),
         sender,
-        truncate(&message.text, 240)
+        message.text
     );
     for attachment in &message.attachments {
         line.push_str(&format!(
@@ -698,21 +698,6 @@ fn timestamp_short(ts: &str) -> String {
         .unwrap_or_else(|_| ts.to_string())
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut end = max;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        let mut out = String::with_capacity(end + 1);
-        out.push_str(&s[..end]);
-        out.push('…');
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,13 +732,6 @@ mod tests {
         assert_eq!(shown, expected);
         assert_eq!(shown.len(), "2026-10-30 04:06".len());
         assert_eq!(timestamp_short("yesterday"), "yesterday");
-    }
-
-    #[test]
-    fn test_truncate_respects_char_boundaries() {
-        assert_eq!(truncate("hello world", 5), "hello…");
-        // Non-ASCII should not split mid-codepoint.
-        assert_eq!(truncate("héllo wörld", 4), "hél…");
     }
 
     #[test]
@@ -796,6 +774,11 @@ mod tests {
             "got {line}"
         );
         assert_eq!(options_hint(&[]), None);
+
+        // A long message (an invite link, a report) prints whole.
+        let link = format!("http://hub/g/1?invite={}", "x".repeat(400));
+        let long = PrincipalLogMessage::new(peko_auth::ActorRef::User("local".into()), &link, None);
+        assert!(format_chat_message(&long).ends_with(&link));
     }
 
     #[test]
