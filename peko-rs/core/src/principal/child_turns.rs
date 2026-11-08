@@ -865,6 +865,23 @@ impl PeerChildTurns {
             return Ok(outcome);
         };
         let own_path = self.session_path(session_id).await;
+        if crate::principal::channel_digest::posted_from_here(
+            port,
+            &self.principal_id,
+            id,
+            tip.as_deref(),
+            own_path.as_deref(),
+        )
+        .await
+        {
+            tracing::info!(
+                session_id,
+                %id,
+                "conversation turn already posted here itself; its final text is not posted again"
+            );
+            outcome.final_text = String::new();
+            return Ok(outcome);
+        }
         let posted = crate::principal::channel_digest::own_posts_from_elsewhere(
             port,
             &self.principal_id,

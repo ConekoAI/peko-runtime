@@ -382,6 +382,44 @@ pub(crate) async fn channel_tip(
 /// whose `via` is not `own_path`. Two runs of one peko can be at work at
 /// once (its owner's DM turn and a group's keepalive turn), and a reply
 /// written before the other run's post can contradict it.
+/// Whether this session (`own_path`, the `via` its posts carry) posted
+/// in `channel` after `since` itself. A conversation turn that did has
+/// already spoken there, so its final text is not posted on top
+/// (2026-11-08 field test: a wake turn sent its result with
+/// `ChannelSend`, then its closing remark went to the group too).
+pub(crate) async fn posted_from_here(
+    port: &Arc<dyn ChannelPort>,
+    principal: &peko_subject::PrincipalId,
+    channel: &peko_channel::ChannelId,
+    since: Option<&str>,
+    own_path: Option<&str>,
+) -> bool {
+    let Some(own_path) = own_path.map(peko_session::path::strip_scheme_prefix) else {
+        return false;
+    };
+    let checkpoint = since.map_or_else(Checkpoint::default, |s| Checkpoint(s.to_string()));
+    let Ok(events) = port.peek_with_ids(channel, &checkpoint).await else {
+        return false;
+    };
+    let me = peko_subject::ActorRef::from(principal);
+    let my_key = port.key_of(&me);
+    let my_address = port.actor_info(&me).await.address;
+    events.into_iter().any(|(id, ev)| {
+        if since.is_some_and(|mark| !strictly_after(&id, mark)) {
+            return false;
+        }
+        let ChannelEvent::Posted { author, via, .. } = ev else {
+            return false;
+        };
+        let mine = author == principal.0
+            || author == my_address
+            || author
+                .parse::<peko_subject::ActorRef>()
+                .is_ok_and(|a| port.key_of(&a) == my_key);
+        mine && via.as_deref().map(peko_session::path::strip_scheme_prefix) == Some(own_path)
+    })
+}
+
 pub(crate) async fn own_posts_from_elsewhere(
     port: &Arc<dyn ChannelPort>,
     principal: &peko_subject::PrincipalId,
@@ -1549,6 +1587,46 @@ mod tests {
             own_posts_from_elsewhere(&port, &me, &dm, tip.as_deref(), Some("/principal-overlap"))
                 .await;
         assert_eq!(posted, vec!["pushed it".to_string()]);
+    }
+
+    /// A turn that posted in its own conversation itself has spoken
+    /// there: its final text is not posted on top. Only this session's
+    /// posts since the turn began count.
+    #[tokio::test]
+    async fn posted_from_here_is_this_sessions_post_since_the_turn_began() {
+        let (_dir, port) = store();
+        let dm = bound_dm(&port, "dm-here", "/principal-here").await;
+        let me = PrincipalId(ME.id.to_string());
+        port.post_attributed(
+            &dm,
+            &me_subject(),
+            ME.id,
+            PostMsg::root("an earlier turn's").with_via("sess:/principal-here"),
+        )
+        .await
+        .unwrap();
+        let tip = channel_tip(&port, &dm).await;
+        let here = || posted_from_here(&port, &me, &dm, tip.as_deref(), Some("/principal-here"));
+        assert!(!here().await, "nothing since the turn began");
+        for (author, via) in [
+            (ME.id, "sess:/user-a"),
+            ("prin_other", "sess:/principal-here"),
+        ] {
+            port.post_attributed(&dm, &me_subject(), author, PostMsg::root("x").with_via(via))
+                .await
+                .unwrap();
+        }
+        assert!(!here().await, "another session's post, or someone else's");
+        port.post_attributed(
+            &dm,
+            &me_subject(),
+            ME.id,
+            PostMsg::root("the results").with_via("sess:/principal-here"),
+        )
+        .await
+        .unwrap();
+        assert!(here().await);
+        assert!(!posted_from_here(&port, &me, &dm, tip.as_deref(), None).await);
     }
 
     fn peer_id() -> peko_session::id::SessionId {

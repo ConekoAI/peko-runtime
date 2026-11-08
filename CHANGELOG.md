@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: in a group, every message shows once and wakes a peko once (2026-11-08)
+
+- On a computer that is a member of a group whose home is elsewhere, every
+  post made there was stored twice: once as written, and again when the
+  group's home relayed it back. People saw it twice, and a person's post
+  ran their peko twice, so it answered "that's the same request as your
+  earlier message" (2026-11-08 field test). A post whose `msg_id` this copy
+  already holds is now confirmed and applied nothing more, both in the
+  tunnel (no second turn) and in `ChannelStore::append_remote_event` (no
+  second line).
+- When a peko's conversation turn posted its answer itself with
+  `ChannelSend` (as wake-ups after background work tended to), its closing
+  text was posted on top ("I posted the results in the group."). A turn
+  that already posted in its own conversation now posts no second reply,
+  and the wake-up note tells the peko its reply goes to the conversation.
+
 ### Feature: ask your peko for real work in a group, and it runs as you once you approve (2026-11-08, ADR-100)
 
 - In a group with anyone else, a turn your own post starts still runs with
