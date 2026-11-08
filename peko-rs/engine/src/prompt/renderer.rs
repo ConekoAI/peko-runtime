@@ -754,7 +754,7 @@ fn format_roles_section(text: &str) -> String {
     }
     format!(
         r"## Available Roles
-When delegating, choose the most appropriate role from the list below. Each role has an id you can pass to the `Agent` tool as the `role` argument.
+Pass a role's id as `Agent` `role`.
 
 <available_roles>
 {text}
@@ -820,8 +820,6 @@ fn format_identity_section(text: &str) -> String {
     }
     format!(
         r"## Principal identity
-Who this principal is and what it wants — applies to every agent in the tree.
-
 <principal_identity>
 {text}
 </principal_identity>"
@@ -894,12 +892,7 @@ fn format_conventions_section(hot: &HotKb) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    format!(
-        "## Conventions (kb/CONVENTIONS.md)\n\n\
-         The shared behavioral rulebook for every agent in this \
-         principal — yours to revise in place.\n\n\
-         {trimmed}\n"
-    )
+    format!("## Conventions (kb/CONVENTIONS.md)\n\n{trimmed}\n")
 }
 
 /// ADR-055 D2: the second hot file — the map of the principal's `kb/`
@@ -914,12 +907,7 @@ fn format_kb_index_section(hot: &HotKb) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    format!(
-        "## Knowledge base index (kb/index.md)\n\n\
-         The map of your persistent knowledge base (`kb/`) — look areas \
-         up via Read/Glob rather than expecting them in the prompt.\n\n\
-         {trimmed}\n"
-    )
+    format!("## Knowledge base index (kb/index.md)\n\n{trimmed}\n")
 }
 
 /// ADR-055 D8 (binding note): the run's triggering channel matched a

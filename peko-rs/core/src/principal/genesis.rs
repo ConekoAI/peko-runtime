@@ -442,6 +442,7 @@ pub fn seed_default_root_role(workspace: &std::path::Path) -> Result<bool> {
         workspace,
         "root",
         crate::principal::routers::root::root_role_seed_content(),
+        PREVIOUS_ROOT_SEEDS,
     )
 }
 
@@ -458,6 +459,7 @@ pub fn seed_default_conversation_role(workspace: &std::path::Path) -> Result<boo
         workspace,
         crate::principal::child_turns::CONVERSATION_ROLE,
         crate::principal::child_turns::conversation_role_seed_content(),
+        PREVIOUS_CONVERSATION_SEEDS,
     )
 }
 
@@ -473,6 +475,7 @@ pub fn seed_default_worker_role(workspace: &std::path::Path) -> Result<bool> {
         workspace,
         crate::tools::builtin::messaging::agent::DEFAULT_ROLE,
         include_str!("../resources/roles/worker/ROLE.md"),
+        PREVIOUS_WORKER_SEEDS,
     )
 }
 
@@ -493,13 +496,70 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
     Ok(seeded)
 }
 
+/// SHA-256 of every earlier seed of the default roles (from git history).
+/// A role file byte-identical to one of them was never edited, so it takes
+/// the current seed: a shorter or corrected seed reaches existing pekos,
+/// and an edited role is never touched.
+const PREVIOUS_ROOT_SEEDS: &[&str] = &[
+    "03d7e1bc59aff3318d60172fa77f33c4323389f614f1d9b6ffebe5f30f8dc79c",
+    "089b6460434f123f50d1da68335e248758018bcf98414233bc5f17c4d1ec9d61",
+    "1e75e9053aa6b2b6dad23a76f30baf73c6650b77d5fd08419871b2a2f66244b9",
+    "1f60fba7e4347b30897b92dd827238a8bf0a2cbdbaa9f5de7aecb474d469eaa5",
+    "21ce4f827925f679b091b11db8cb993c01d5c20295b4143599247e99d8c66c79",
+    "3337b981079a058413dd99860ab3297d766ed285d8a691e2abdd24348ed83d41",
+    "3a04ab3765610262071bd22ce77881d9faf7efd4630ede3603a3b670e0da9849",
+    "45bc5b5561d289d437aa5f7adf322fddec014b5fae134f284bd3af1afbb301fd",
+    "47ff323d607cd2697ff201fae9cffb0913a341066e4cb54151b59978f1d26dbe",
+    "65445c4070f26d0a4d6634f5281d318f68cfaf6867eccdd57270b6659e463631",
+    "6e3813fc3c33f05d87cba61f0d9784c37a9ac6a1a9d9d5ae400563421f951e5a",
+    "7860486b6482aebff9e2a85d81dc9121128c4165cce91702be1e82e064fcc05b",
+    "946459286c5eaa614df9317d6024c0d61c2b8039479165d3db727fb67fcbee29",
+    "9615517fc89aa663009ca1b6f1a39623e22324601b3de3c2d39ce986bfd24838",
+    "9ef82ccac1e781a0667078e658df77feea039ab468641509de54afcda67c725e",
+    "a7114673d5750d54173bbc323a4f14311ae7b84b4b368f2a47d24eb391dc4142",
+    "b18b17768fc8eb2218a0a99b2a4eee02c8a7a0fc6688e0f6cc950e445fe586ca",
+    "b1f1abc9b4a8b53ab669ec5cfd2b07dc1f925b47bcc8f1cab7d767adfe0e285a",
+    "c898a18f641f50a066ae325da393d81ed4e300f29e06c09698e05b3102fcea5e",
+    "c979309443108e2f49e294d5cd913dec72ae89ba1e207ee3904b5fbe2a32c999",
+    "d80316f6ebee1124b066c97928754bc863596b8449a74c276946d7ffd023abbd",
+    "e84713cd5044ec118c60e1e8737e01cf02bdaea1c284b2aac5585762e3991393",
+    "e983ffbb6f3a8dd17bdd8e7d750fc7a408946a6a8909efd25c2cc0177bdad86e",
+    "f478585faff13228d2886d868eabc70e219c9d3ebf8778c6574cb40c3137ff5b",
+    "f9521c330b366a6346d1bb7f7dbcd5a1dc0fdd4fd532800d796553ab9cd89f1e",
+];
+const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
+    "5136ffd450c426d3042c03af8680242075a1f950b710c8076ab726c723519c13",
+    "8abe12e065789e7cfd71e29b3cbf55f6e3072ccb9066d27a184ac66505735cc1",
+    "b80903f2dd5a1c895624aedb794ce681f67c82cca669702d3c86d679f4394bce",
+    "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
+];
+const PREVIOUS_WORKER_SEEDS: &[&str] = &[
+    "52415ea266893572a6a3d83c6234f2af8d156b13d750ee0c09154b7c8a148826",
+    "d0df2fcfa6fd894d5a47830365dcf95833eb6559fd1d26e85176318ff32c9f1c",
+];
+
 /// Write `roles/<id>.md` unless `roles/<id>.md` or `roles/<id>/ROLE.md`
-/// exists.
-fn seed_role(workspace: &std::path::Path, id: &str, content: &str) -> Result<bool> {
+/// exists. An existing `roles/<id>.md` that is an unedited earlier seed
+/// (`previous`) is replaced by `content`.
+fn seed_role(
+    workspace: &std::path::Path,
+    id: &str,
+    content: &str,
+    previous: &[&str],
+) -> Result<bool> {
+    use sha2::{Digest, Sha256};
     let roles_dir = workspace.join("roles");
     let flat = roles_dir.join(format!("{id}.md"));
     let dir_layout = roles_dir.join(id).join("ROLE.md");
-    if flat.exists() || dir_layout.exists() {
+    if let Ok(existing) = std::fs::read(&flat) {
+        let digest = format!("{:x}", Sha256::digest(&existing));
+        if existing != content.as_bytes() && previous.contains(&digest.as_str()) {
+            std::fs::write(&flat, content)?;
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if dir_layout.exists() {
         return Ok(false);
     }
     std::fs::create_dir_all(&roles_dir)?;
@@ -1180,6 +1240,52 @@ mod tests {
         std::fs::write(&dir_role, b"custom").unwrap();
         assert!(!seed_default_root_role(ws2.path()).unwrap());
         assert_eq!(std::fs::read_to_string(&dir_role).unwrap(), "custom");
+    }
+
+    /// A role file that is an unedited earlier seed takes the current
+    /// seed (so a shorter seed reaches existing pekos); an edited one is
+    /// kept. The previous root seed is read from git history at build
+    /// time only as its hash, so this test writes a file with a known
+    /// earlier hash: the pre-2026-11-08 root seed.
+    #[test]
+    fn an_unedited_earlier_seed_is_upgraded_and_an_edited_one_kept() {
+        use sha2::{Digest, Sha256};
+        let ws = tempfile::tempdir().unwrap();
+        let roles = ws.path().join("roles");
+        std::fs::create_dir_all(&roles).unwrap();
+        let flat = roles.join("root.md");
+        // Any content whose hash is listed counts as an earlier seed.
+        let earlier = b"an earlier seed";
+        let digest = format!("{:x}", Sha256::digest(earlier));
+        assert!(seed_role(ws.path(), "root", "current", &[digest.as_str()]).is_ok());
+        assert!(!flat.exists() || std::fs::read(&flat).unwrap() == b"current");
+        std::fs::write(&flat, earlier).unwrap();
+        assert!(seed_role(ws.path(), "root", "current", &[digest.as_str()]).unwrap());
+        assert_eq!(std::fs::read_to_string(&flat).unwrap(), "current");
+        // Current already: nothing to do.
+        assert!(!seed_role(ws.path(), "root", "current", &[digest.as_str()]).unwrap());
+        // Edited by the peko or its owner: kept.
+        std::fs::write(&flat, b"my own root role").unwrap();
+        assert!(!seed_role(ws.path(), "root", "current", &[digest.as_str()]).unwrap());
+        assert_eq!(std::fs::read_to_string(&flat).unwrap(), "my own root role");
+        // The shipped lists never name the current seeds.
+        for (current, previous) in [
+            (
+                crate::principal::routers::root_role_seed_content(),
+                PREVIOUS_ROOT_SEEDS,
+            ),
+            (
+                crate::principal::child_turns::conversation_role_seed_content(),
+                PREVIOUS_CONVERSATION_SEEDS,
+            ),
+            (
+                include_str!("../resources/roles/worker/ROLE.md"),
+                PREVIOUS_WORKER_SEEDS,
+            ),
+        ] {
+            let digest = format!("{:x}", Sha256::digest(current.as_bytes()));
+            assert!(!previous.contains(&digest.as_str()));
+        }
     }
 
     /// ADR-087 D3: `conversation` and `worker` are seeded beside `root`,

@@ -453,14 +453,15 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> String {
-        let pipe_cmd = if cfg!(windows) {
-            r#"{"command": "Get-Content file.txt | Select-String error | Select-Object -First 20"}"#
+        // PowerShell syntax differs from what models default to.
+        let syntax = if cfg!(windows) {
+            " Write PowerShell, e.g. `Get-Content file.txt | Select-String error`."
         } else {
-            r#"{"command": "cat file.txt | grep error | head -20"}"#
+            ""
         };
 
         format!(
-            r#"Run a shell command on {OS_DISPLAY} ({SHELL_DISPLAY}) with full shell syntax: pipes, redirection, environment variables. Commands run as the OS user, in the agent workspace unless `cwd` says otherwise, and can read or write anything that user can.
+            r#"Run a shell command on {OS_DISPLAY} ({SHELL_DISPLAY}) with full shell syntax: pipes, redirection, environment variables. Commands run as the OS user, in the agent workspace unless `cwd` says otherwise, and can read or write anything that user can.{syntax}
 
 ## Result
 `{{exit_code, success, stdout, stderr, stdout_truncated, stderr_truncated}}`. A non-zero exit is reported as `success: false` with its `exit_code`; the call itself still succeeds. Each stream is capped at `max_output_bytes` (default 100000) and a cut stream ends with `...(truncated)`. For large output, run in the background and read the end with `Async` action `output` + `tail_lines`: a background command keeps the last 100000 bytes of each stream (a dropped start is marked with a leading `(truncated)...`).
@@ -470,13 +471,6 @@ impl Tool for BashTool {
 
 ## Background
 `run_in_background: true` returns a receipt with a `task_id` at once (`timeout` still applies). Follow up with `Async`: action `output` (`block: true` waits for the end), `status`, `stop`, or `list`.
-
-## Examples
-```json
-{pipe_cmd}
-{{"command": "npm run build", "cwd": "web", "timeout": 600000}}
-{{"command": "sleep 10 && echo done", "run_in_background": true}}
-```
 "#
         )
     }

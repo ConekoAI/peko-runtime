@@ -226,13 +226,7 @@ Patterns: `*` and `?` match within one path segment; `**` matches any number of 
 
 `path` sets the directory patterns are relative to (default: the workspace). Like ripgrep, the search skips hidden names (`include_hidden` to include) and anything excluded by `.gitignore` / `.ignore` files (`include_ignored` to include), so build output and dependencies stay out of results.
 
-Returns `{entries, total_matched, returned, truncated}` in path order; each entry has `path` (relative to `path` / the workspace, ready for Read), `name`, `type`, `size_bytes`, and `modified_at`. `limit` defaults to 1000.
-
-Examples:
-```json
-{"pattern": "src/**/*.rs"}
-{"pattern": "**/*.log", "include_ignored": true}
-```"#
+Returns `{entries, total_matched, returned, truncated}` in path order; each entry has `path` (relative to `path` / the workspace, ready for Read), `name`, `type`, `size_bytes`, and `modified_at`. `limit` defaults to 1000."#
             .to_string()
     }
 

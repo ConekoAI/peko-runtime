@@ -4,6 +4,28 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: every turn sends a smaller prompt, round two (2026-11-08)
+
+- The `root` role no longer re-explains its tools (Agent, Session, Cron
+  were described in full in the role and again in the tool catalog): it
+  keeps the job, the process and the rules, at a third of its size, on
+  every trunk turn including the keepalive. The `conversation` and
+  `worker` roles' tool notes keep their rules in fewer words.
+- Default roles that were never edited are upgraded to the current seed
+  when the daemon starts: a role file byte-identical to an earlier seed
+  (hashes from git history) takes the new one, so existing pekos get the
+  shorter roles; an edited role is never touched.
+- The per-turn context drops its section preambles, names each
+  conversation's participants once each with only the fields they have
+  (no "Hub: none", no "registration: local_only"), stops repeating the
+  channel id in the position line, and lists roles by their path in the
+  workspace instead of an absolute one (−21% on a DM turn).
+- Tool descriptions lose example blocks that restate their schemas
+  (Agent's also named a `writer` role that does not exist), and Agent's
+  parameter descriptions stop repeating its description.
+- Real-model A/B on 8 DM tasks: −5.3% input tokens per model call
+  (34.2K → 32.4K), same answers.
+
 ### Fix: field-test polish — your group includes you, decisions reach the chat, counts and logs are right (2026-11-08)
 
 - A group your peko makes for you (`Channel create` from a run acting for

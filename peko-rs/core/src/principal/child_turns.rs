@@ -1310,8 +1310,9 @@ fn render_self_position(
     }
     let path = peko_session::path::compute_path(metas, session_id);
     let role = match crate::principal::conversation::binding(meta) {
-        Some(crate::principal::conversation::Conversation::Channel(channel)) => {
-            format!("conversation session (channel: {channel})")
+        // The channel is the context's `conversation channel:` line.
+        Some(crate::principal::conversation::Conversation::Channel(_)) => {
+            "conversation session".to_string()
         }
         None => "spawned child session".to_string(),
     };
@@ -1383,13 +1384,29 @@ impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContex
         let port = input.channel_port.clone()?;
         let principal_id = peko_subject::PrincipalId(principal_id);
 
+        // One actor, shortly: its name and address, then only what is
+        // there (a Hub address, a registration beyond local-only, a
+        // mention token): absent fields cost tokens every turn.
+        let actor_line = |p: &peko_channel::ActorInfo| {
+            let mut extra = Vec::new();
+            if let Some(hub) = p.hub_address() {
+                extra.push(hub);
+            }
+            if p.registration != peko_channel::Registration::LocalOnly {
+                extra.push(p.registration.to_string());
+            }
+            if let Some(mention) = &p.mention {
+                extra.push(format!("mention {mention}"));
+            }
+            let name = p.name.as_deref().unwrap_or("unnamed");
+            if extra.is_empty() {
+                format!("{name} {}", p.address)
+            } else {
+                format!("{name} {} ({})", p.address, extra.join(", "))
+            }
+        };
         let me = port.actor_info(&ActorRef::from(&principal_id)).await;
-        let mut lines = vec![format!(
-            "your actor: {} — Hub ID: {} — registration: {}",
-            me.address,
-            me.hub_address().unwrap_or_else(|| "none".into()),
-            me.registration
-        )];
+        let mut lines = vec![format!("you: {}", actor_line(&me))];
         // ADR-078 D4: only owner runs see the principal's other
         // conversations; any other run (or an unattributed render) sees
         // its own conversation alone.
@@ -1407,28 +1424,17 @@ impl crate::tools::prompt_sections::PromptSectionProvider for PeersSessionContex
             }
             let roster = port.participants(&channel).await.unwrap_or_default();
             let names = roster
-                .into_iter()
-                .map(|p| {
-                    format!(
-                        "{} — Hub: {} — name: {} — registration: {}{}",
-                        p.address,
-                        p.hub_address().unwrap_or_else(|| "none".into()),
-                        p.name.as_deref().unwrap_or("unknown"),
-                        p.registration,
-                        p.mention
-                            .as_ref()
-                            .map(|m| format!(" — mention: {m}"))
-                            .unwrap_or_default()
-                    )
-                })
+                .iter()
+                .filter(|p| p.identity_key != me.identity_key)
+                .map(&actor_line)
                 .collect::<Vec<_>>()
-                .join(", ");
-            lines.push(format!("- channel `{channel}` — participants: {names}"));
+                .join("; ");
+            lines.push(format!("- `{channel}`: {names}"));
         }
         if lines.is_empty() {
             return None;
         }
-        Some(format!("known contacts and conversations (Contacts lists/resolves actors; ChannelRead returns current participants):\n{}",
+        Some(format!("your conversations and who is in them (Contacts resolves actors; ChannelRead shows current participants):\n{}",
             crate::tools::prompt_sections::render_capped_lines(&lines, 8192, "More contacts: use Contacts with action=list.")))
     }
 }
