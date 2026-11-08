@@ -186,59 +186,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Make targeted string replacements in files. The 'old_string' must appear exactly once unless replace_all is true.
-
-Use when: Making precise edits to existing files (safer than full file rewrites).
-Don't use when: Creating new files (use Write) or making multiple unrelated changes (make multiple calls).
-
-## Key Rules
-
-1. The 'old_string' must match EXACTLY (including whitespace)
-2. The 'old_string' must appear EXACTLY ONCE in the file unless replace_all=true
-3. If either rule is violated, NO changes are made (atomic)
-
-## Parameters
-
-### file_path (required)
-Path to the file to modify.
-
-### old_string (required)
-The exact text to find (must be unique unless replace_all=true).
-
-### new_string (required)
-The text to replace with.
-
-### replace_all (optional, default false)
-When true, replace every occurrence of old_string. When false, old_string must appear exactly once.
-
-## Examples
-
-Single replacement:
-```json
-{
-  "file_path": "src/main.rs",
-  "old_string": "println!(\"hello\");",
-  "new_string": "println!(\"hello, world!\");"
-}
-```
-
-Replace all occurrences:
-```json
-{
-  "file_path": "src/main.rs",
-  "old_string": "foo",
-  "new_string": "bar",
-  "replace_all": true
-}
-```
-
-## Tips for Success
-
-1. Read the file first with Read to get the exact content
-2. Include enough context in 'old_string' to make it unique
-3. Use the exact whitespace (spaces vs tabs)
-4. For multi-line replacements, include the newline characters"#
+        r"Replace text in a file. `old_string` must match exactly, whitespace included, and appear exactly once unless `replace_all: true`; otherwise nothing changes. Read the file first and include enough surrounding text to make `old_string` unique. Use Write for new files."
             .to_string()
     }
 

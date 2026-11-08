@@ -199,45 +199,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Write or append content to files. Creates parent directories automatically.
-
-Use when: Creating new files, overwriting existing files, or appending to logs.
-Don't use when: Making targeted edits to existing files (use Edit instead).
-
-## Parameters
-
-### file_path (required)
-Path to the file. Can be relative to workspace or absolute.
-
-### content (required)
-Content to write to the file.
-
-### mode (optional)
-- "overwrite" (default): Replace the file's contents, or create it if missing
-- "create_new": Fail if the file already exists (safe-create for new files)
-- "append": Append to existing file (create if not exists)
-
-### encoding (optional)
-- "utf8" (default): Content is UTF-8 text
-- "base64": Content is base64-encoded binary data
-
-## Examples
-
-Create/overwrite a file:
-```json
-{"file_path": "config.toml", "content": "[settings]\nkey = \"value\""}
-```
-
-Append to a file:
-```json
-{"file_path": "log.txt", "content": "New log entry\n", "mode": "append"}
-```
-
-Write binary data:
-```json
-{"file_path": "data.bin", "content": "SGVsbG8=", "encoding": "base64"}
-```"#
+        r#"Write a file (relative to the workspace, or absolute), creating parent folders. `mode`: "overwrite" (default; creates the file if missing), "create_new" (fails if it exists), or "append". `encoding: "base64"` writes binary content given as base64. Use Edit for targeted changes to an existing file."#
             .to_string()
     }
 

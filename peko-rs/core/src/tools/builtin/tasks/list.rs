@@ -28,14 +28,7 @@ impl Tool for TaskListAction {
     }
 
     fn description(&self) -> String {
-        r"List planning todos for the current session.
-
-Parameters:
-- status_filter: string? — if provided, only return todos with this status
-  ('pending', 'in_progress', or 'completed')
-
-Returns an array of todo objects."
-            .to_string()
+        r"This session's todos, optionally only those with `status_filter`.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

@@ -26,15 +26,7 @@ impl Tool for TaskCreateAction {
     }
 
     fn description(&self) -> String {
-        r"Create a planning todo for the current session.
-
-Use when: the user asks to track work, create a checklist, or add a task.
-Parameters:
-- subject: string (required) — short imperative title
-- description: string? — longer details
-- activeForm: string? — present-continuous form shown in spinners
-
-Returns the created todo including its taskId."
+        r"Add a todo when the user asks to track work or make a checklist. Takes `subject` (short, imperative), `description?`, `activeForm?` (present-continuous, shown while it runs). Returns the todo with its taskId."
             .to_string()
     }
 

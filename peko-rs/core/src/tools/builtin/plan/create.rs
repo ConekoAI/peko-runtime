@@ -26,26 +26,7 @@ impl Tool for PlanCreateAction {
     }
 
     fn description(&self) -> String {
-        r"Create a new multi-step execution plan for the current principal.
-
-Use when: starting a non-trivial task that has 3+ distinct steps,
-needs to be tracked across turns, or benefits from being resumable.
-
-Parameters:
-- title: string (required) — short imperative plan title
-- nodes: array (required) — at least one node, each shaped:
-    { nodeId: string?, step: string, dependsOn: array<string>?, status: string?, checkAt: string? }
-  - nodeId is auto-assigned if omitted (recommended)
-  - dependsOn lists nodeIds of other nodes in this plan; give those
-    nodes an explicit nodeId (node_<8 chars a-z0-9>) to reference them
-  - status defaults to 'pending'; valid values: pending|in_progress|completed|blocked|failed
-  - checkAt: when to come back to the step — an RFC 3339 time or a
-    duration from now ('90m', '2d'). Until then a ready step is snoozed;
-    after it the check-in is due and your heartbeat runs for it. Use it
-    for follow-ups, waiting on people, and work for later.
-
-Returns the created plan record including its planId and every
-auto-assigned node id."
+        r"Start a plan for work of 3+ steps that spans turns or should be resumable. Takes `title` and `nodes` (at least one `{step, nodeId?, dependsOn?, status?, checkAt?}`; give a node an explicit nodeId, `node_<8 chars a-z0-9>`, to name it in another node's dependsOn). Returns the plan with its planId and every node id."
             .to_string()
     }
 
@@ -84,7 +65,7 @@ auto-assigned node id."
                             },
                             "checkAt": {
                                 "type": "string",
-                                "description": "When to come back to this step: RFC 3339 time or a duration from now (\"90m\", \"2d\"). Until then a ready or in-progress step is snoozed; once it passes the check-in is due and your heartbeat runs for it."
+                                "description": "When to come back to the step: RFC 3339 or a duration (\"90m\")"
                             }
                         },
                         "required": ["step"]

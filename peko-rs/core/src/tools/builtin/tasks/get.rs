@@ -26,13 +26,7 @@ impl Tool for TaskGetAction {
     }
 
     fn description(&self) -> String {
-        r"Get a planning todo by its taskId.
-
-Parameters:
-- taskId: string (required) — the todo id returned by Task action create
-
-Returns the todo, or an error if it does not exist."
-            .to_string()
+        r"One todo by `taskId`; an unknown id is an error.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

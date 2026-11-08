@@ -134,7 +134,7 @@ impl Tool for CronUpdateAction {
     }
 
     fn description(&self) -> String {
-        "Update a scheduled job's mutable fields by ID (or label): `enabled` pauses/resumes without deleting (re-enabling resets the failure budget); `wake_on_completion` subscribes or unsubscribes you to the job's result on each fire (tool jobs only — message jobs already land in your session); `model` picks the configured model a message job's turn runs on (an empty string returns it to your pinned model); `when` (\"always\" / \"attention\" / \"quiet\") sets whether every due fire runs a message job's turn, only fires when something waits on you, or waits for a quiet stretch; `message` replaces a message job's instruction; `interval_ms`, `cron` (with optional `timezone`) or `idle_ms` replaces a recurring job's schedule, and `timezone` alone moves a cron job to another zone. Retune jobs here rather than deleting and re-creating them: an update keeps the job's id, and the runtime's own jobs (`keepalive`, `memory`) keep what the runtime does for them only under their ids.".to_string()
+        r"Change a job in place, keeping its id: retune rather than delete and re-create (the runtime's own `keepalive` and `memory` jobs keep what the runtime does for them only under their ids). Takes any of `enabled` (pause or resume; re-enabling resets the failure budget), `wake_on_completion` (tool jobs), `model` ('' returns to your pinned model), `when`, `message`, `interval_ms`, `cron` with `timezone?`, `idle_ms`, or `timezone` alone.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -143,49 +143,49 @@ impl Tool for CronUpdateAction {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "ID of the scheduled job to update"
+                    "description": "Job id"
                 },
                 "label": {
                     "type": "string",
-                    "description": "Label of the scheduled job to update (alternative to id)"
+                    "description": "Job label (instead of id)"
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Enable or disable the job. Re-enabling resets its consecutive-failure budget."
+                    "description": "Pause (false) or resume; resuming resets the failure budget"
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "Subscribe (true) or unsubscribe (false) the creating session's inbox (trunk fallback) to the job's result each fire. SpawnTool jobs only; message jobs already run in your session."
+                    "description": "Tool jobs only: true sends each fire's result to the creating session (trunk fallback); false stops it"
                 },
                 "model": {
                     "type": "string",
-                    "description": "Message jobs only. Configured model id (see `ModelList`) each fire's turn runs on, e.g. a cheaper one for routine bookkeeping. An empty string returns the job to your pinned model."
+                    "description": "Message jobs only: configured model id each fire's turn runs on (see ModelList); '' returns to your pinned model"
                 },
                 "when": {
                     "type": "string",
                     "enum": ["always", "attention", "quiet"],
-                    "description": "Recurring message jobs only. \"attention\": a due fire runs its turn only when something waits on you or the job's last turn is an hour old; otherwise it is a quiet tick with no model call. \"quiet\" (interval or cron schedules): a due fire waits until nobody has talked to you for 4 hours, at most 12 hours past due. \"always\": every fire runs."
+                    "description": "Recurring message jobs only. \"attention\": a fire runs its turn only when something waits on you (posts, unread activity, ready plan steps, a failed job) or the job's last turn is an hour old; other fires are quiet ticks with no model call. \"quiet\" (interval or cron): a due fire waits until nobody has talked to you for 4 hours, at most 12 hours past due. \"always\" (default): every fire runs."
                 },
                 "message": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Message jobs only. The instruction each fire delivers. The `memory` job's message is the runtime's marker for its current memory brief and cannot be replaced; create a separate job for a routine of your own."
+                    "description": "Message jobs only: the instruction each fire delivers. The memory job's message is the runtime's marker and cannot be replaced"
                 },
                 "interval_ms": {
                     "type": "integer",
-                    "description": "New recurring interval in milliseconds (message jobs: at least 60000). The next fire is one interval from now."
+                    "description": "Recurring interval in ms (message jobs: at least 60000)"
                 },
                 "cron": {
                     "type": "string",
-                    "description": "New 5-field cron expression. Keeps the job's timezone unless `timezone` is given."
+                    "description": "5-field cron expression"
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "IANA timezone for the cron expression, e.g. 'Europe/Berlin'. Alone, moves a cron job to this zone."
+                    "description": "IANA zone for cron, e.g. 'Europe/Berlin' (default: this machine's)"
                 },
                 "idle_ms": {
                     "type": "integer",
-                    "description": "New trigger: fire once nobody has talked to you for this long, in milliseconds (whole minutes, at least one)."
+                    "description": "Fire once per quiet stretch: after nobody has talked to you this long, in ms (whole minutes)"
                 }
             },
             "allOf": [

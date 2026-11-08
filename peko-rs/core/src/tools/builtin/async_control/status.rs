@@ -31,14 +31,7 @@ impl Tool for AsyncStatusAction {
     }
 
     fn description(&self) -> String {
-        r"Check the status of a background async task.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- task_id: string (required) — the task ID from the async receipt
-
-Returns: { task_id, tool_name, status, is_terminal, parent_session_key, metadata_type, created_at, label, completed_at?, result?, duration_seconds? }"
+        r"A task's state and metadata, without its output or waiting. Returns `{task_id, tool_name, status, is_terminal, label, created_at, completed_at?, result?, duration_seconds?}`."
             .to_string()
     }
 
@@ -48,7 +41,7 @@ Returns: { task_id, tool_name, status, is_terminal, parent_session_key, metadata
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The task ID from the async receipt (e.g., 'Bash:abc-123')"
+                    "description": "task_id from the receipt"
                 }
             },
             "required": ["task_id"]

@@ -67,7 +67,7 @@ impl Tool for CronTool {
         "Cron"
     }
     fn description(&self) -> String {
-        let mut description = "Manage principal-owned scheduled jobs: create, list, delete, update, trigger, or history. Create schedules a message or a tool invocation; identify existing jobs by id or label.".to_string();
+        let mut description = "Your scheduled jobs: create, list, delete, update, trigger, or history. Name an existing job by `id` or `label`.".to_string();
         description.push_str(&format!(
             "\n\nAction create:\n{}",
             self.create.description()

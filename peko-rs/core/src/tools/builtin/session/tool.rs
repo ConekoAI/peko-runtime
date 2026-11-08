@@ -59,25 +59,21 @@ pub struct SessionTool {
 
 impl SessionTool {
     pub(crate) fn tool_description() -> String {
-        r"Inspect and manage your principal's stored sessions with 10 actions. Pure storage: no LLM runs here; to run work in a session use the Agent tool.
+        r#"Inspect and manage your principal's stored sessions with 10 actions. Storage only: no model runs here; to run work in a session use Agent.
 
-## Addressing
-`path` and `target` are absolute slug paths such as `sess:/user-bob/writer-1` — use the `path` field from `list`. `sess:/` is your trunk (readable, and usable as a list/find scope, but never moved or removed). Raw session ids and relative slugs are refused. Actions that read one session default to your current session when `path` is omitted.
+`path` and `target` are absolute slug paths such as `sess:/user-bob/writer-1` (the `path` field from `list`); raw ids and relative slugs are refused. `sess:/` is your trunk: readable and usable as a list or find scope, never moved or removed. Actions on one session default to your current one.
+- status: one session's metadata and token usage.
+- list: sessions, optionally under `path` and filtered by `peer`, `agent_name`, or `active_minutes`.
+- history: a session's messages.
+- find: case-insensitive search of transcripts for `query`.
+- copy: duplicate `path` to `target` (`<parent path>/<new slug>`, like `cp`). The copy is not running; to work on it use Agent `branch` with `source` set to it.
+- move: reparent or rename with `target` (like `mv`; children move along), set the `title`, or set `page_limit`, the closed compaction pages kept (0 = all; older pages are deleted at once, for good).
+- remove: delete a session; `recursive: true` deletes its descendants too.
+- list_pages: a session's compaction pages. Each archives the transcript before it; page numbers never shift.
+- read_page: one page as text (`offset` and `limit` window it; a cut response names the offset that continues it).
+- search_pages: case-insensitive search of every page including the live one; follow a hit with read_page.
 
-## Actions
-- status: metadata and token usage of one session (`timezone` formats timestamps).
-- list: sessions, optionally limited to the subtree at `path` and filtered by `peer`, `agent_name`, or `active_minutes`.
-- history: a session's messages (`include_tools`, `limit`).
-- find: case-insensitive text search across transcripts (`query`; optional `peer` and subtree `path`).
-- copy: duplicate `path` to `target` (`<parent path>/<new slug>`, like `cp`). The copy is not running; to work on its context use Agent action `branch` with `source` set to the copy.
-- move: reparent and/or rename with `target` (like `mv`; children move along), change the display `title`, or set `page_limit`, the number of closed compaction pages kept (0 = unlimited; older pages are deleted immediately and permanently).
-- remove: delete a session; `recursive: true` also deletes its descendants.
-- list_pages: the compaction pages of a session. Each compaction archives the transcript before it as a numbered page; numbers never shift when old pages are pruned.
-- read_page: one page as transcript text (`page` from list_pages; `offset` / `limit` window the lines). A cut response says which `offset` continues it.
-- search_pages: case-insensitive search across every page including the live one (`query`, `max_results`); follow a hit with read_page.
-
-## Refusals
-move and remove refuse your trunk, the session you are running in, and any session with an active run; a move into the session's own subtree is refused. There is no archive: to set a session aside, move it into `sess:/trash` and remove it later. New principals start with two ordinary sessions, `sess:/tmp` for throwaway work and `sess:/trash` for pending removals; nothing recreates them once removed."
+move and remove refuse your trunk, the session you run in, and any session with an active run; a move into the session's own subtree is refused. There is no archive: move a session into `sess:/trash` and remove it later. New principals start with `sess:/tmp` for throwaway work and `sess:/trash`; nothing recreates them once removed."#
             .to_string()
     }
 

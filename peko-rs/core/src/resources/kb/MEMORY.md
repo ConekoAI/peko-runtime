@@ -1,20 +1,14 @@
 # Long-term memory
 
-This file is your hot memory: it rides in every prompt, every turn,
-for every agent you run. Keep it curated — beliefs, commitments,
-preferences, standing decisions. It is NOT a log and NOT a dump:
-everything here costs tokens on every turn.
+Hot memory: it rides in every prompt, so keep it short and curated —
+beliefs, commitments, preferences, standing decisions. Not a log.
 
-Rules of the house:
-
-- Revise in place. Never append history; update the statement.
-- Anything that ages out of relevance gets deleted, not archived —
-  your sessions hold the raw history, not this file.
-- Everything else you want to persist lives in this `kb/` tree; keep
-  `index.md` pointing at it.
-- When your owner retracts something ("forget that", "that was
-  wrong, drop it"), delete it wherever the kb states it (a past
-  journal entry included: a retraction is the one reason to edit
-  one) and keep a line here, `Retracted YYYY-MM-DD: <a few neutral
-  words>`, so nothing records or uses it again. Do not repeat the
-  retracted content, there or anywhere.
+- Revise statements in place; delete what ages out (your sessions keep
+  the raw history).
+- Everything else you keep lives in this `kb/` tree, mapped by
+  `index.md`.
+- When your owner retracts something ("forget that"), delete it
+  wherever the kb states it (a past journal entry included: the one
+  reason to edit one) and keep a line here, `Retracted YYYY-MM-DD: <a
+  few neutral words>`, so nothing records or uses it again. Never
+  repeat the retracted content.

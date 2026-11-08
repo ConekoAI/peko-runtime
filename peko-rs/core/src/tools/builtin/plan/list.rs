@@ -25,10 +25,7 @@ impl Tool for PlanListAction {
     }
 
     fn description(&self) -> String {
-        r"List every plan owned by the current principal.
-
-Returns `{ count, plans }` with every plan, open and closed, oldest
-first. A closed plan has a non-null `closed`."
+        r"Every plan you own, open and closed, oldest first: `{count, plans}`. A closed plan has a non-null `closed`."
             .to_string()
     }
 
