@@ -227,7 +227,20 @@ async fn wake_and_leave_change_only_the_callers_membership() {
     fx.call(json!({"action": "leave", "channel": "group:ops"}))
         .await
         .unwrap();
-    assert!(fx.port.list_members(&channel).await.unwrap().is_empty());
+    // The owner it was made for stays (ADR-082 + 2026-11-08 field test).
+    let left: Vec<String> = futures::future::join_all(
+        fx.port
+            .list_members(&channel)
+            .await
+            .unwrap()
+            .iter()
+            .map(|m| fx.port.actor_info(m)),
+    )
+    .await
+    .into_iter()
+    .map(|info| info.address)
+    .collect();
+    assert_eq!(left, vec![fx.owner_address().await]);
     let err = fx
         .call(json!({"action": "info", "channel": "group:ops"}))
         .await
@@ -302,7 +315,12 @@ async fn non_owner_runs_stay_in_their_conversation() {
         .execute_with_context(json!({"action": "leave", "channel": "group:here"}), &ctx)
         .await
         .unwrap();
-    assert!(fx.port.list_members(&here).await.unwrap().is_empty());
+    let members = fx.port.list_members(&here).await.unwrap();
+    assert_eq!(
+        members.len(),
+        1,
+        "only the owner it was made for stays: {members:?}"
+    );
 }
 
 /// ADR-087 D6: `role` sets the caller's binding role on a group or a DM,

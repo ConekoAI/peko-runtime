@@ -139,21 +139,34 @@ async fn owner_task_origin(manager: &PrincipalManager, call: &GatedCall) -> Stri
     let Some(channel) = call.stamp.compartment.channel() else {
         return "in a shared conversation".into();
     };
-    let membership = match manager.channel_port() {
-        Some(port) => port
-            .membership(&peko_channel::ChannelId(channel.to_string()))
-            .await
-            .ok(),
-        None => None,
+    let Some(port) = manager.channel_port() else {
+        return format!("in {channel}");
     };
-    match membership {
-        Some(m) if !m.name.trim().is_empty() => format!(
-            "in \u{201c}{}\u{201d} ({} members)",
-            peko_tools_core::neutralize_runtime_tags(m.name.trim()),
-            m.members.len()
+    let id = peko_channel::ChannelId(channel.to_string());
+    let name = port
+        .membership(&id)
+        .await
+        .ok()
+        .map(|m| m.name.trim().to_string())
+        .filter(|n| !n.is_empty());
+    // Who takes part, once each: `membership().members` also lists the
+    // routes to remote members, so it counts some of them twice.
+    let members = port.participants(&id).await.ok().map(|people| {
+        let mut keys: Vec<String> = people.into_iter().map(|p| p.identity_key).collect();
+        keys.sort();
+        keys.dedup();
+        keys.len()
+    });
+    let place = match name {
+        Some(name) => format!(
+            "\u{201c}{}\u{201d}",
+            peko_tools_core::neutralize_runtime_tags(&name)
         ),
-        Some(m) => format!("in {channel} ({} members)", m.members.len()),
-        None => format!("in {channel}"),
+        None => channel.to_string(),
+    };
+    match members {
+        Some(n) => format!("in {place} ({n} members)"),
+        None => format!("in {place}"),
     }
 }
 
@@ -818,6 +831,9 @@ pub async fn decide_request_via(
             reply
         }
     };
+    if let Some(record) = load_record(&dir, id) {
+        notify_owner_decided(principal, &record).await;
+    }
     if let Some(obs) = manager.observability() {
         let _ = obs
             .audit_security(
@@ -837,6 +853,62 @@ pub async fn decide_request_via(
             .await;
     }
     Ok(reply)
+}
+
+/// Tell the owner's conversation that a request it announced was decided.
+/// The decision is made outside any conversation (the app's buttons, the
+/// CLI, another computer); without this note the peko still reads the
+/// request as waiting there (2026-11-08 field test: it told its owner two
+/// approved requests "are still waiting for you").
+async fn notify_owner_decided(principal: &Principal, record: &ApprovalRecord) {
+    let Some(messenger) = crate::principal::messenger::global_messenger() else {
+        return;
+    };
+    let Some(note) = decision_note(record) else {
+        return;
+    };
+    for owner in PrincipalPolicyGate::owner_subjects(principal).await {
+        let delivered = messenger
+            .deliver_note(
+                &principal.id.0,
+                &owner,
+                &note,
+                None,
+                peko_session::events::MessageSource::Agent,
+                Some("approvals"),
+            )
+            .await;
+        if matches!(delivered, Ok(true)) {
+            return;
+        }
+    }
+}
+
+/// The note [`notify_owner_decided`] leaves; `None` while pending.
+fn decision_note(record: &ApprovalRecord) -> Option<String> {
+    let what = if is_owner_task(&record.call) {
+        let brief = owner_task_brief(&record.call);
+        let first = brief.lines().next().unwrap_or_default();
+        let mut short: String = first.chars().take(120).collect();
+        if short.len() < brief.len() {
+            short.push('…');
+        }
+        short
+    } else {
+        summarize(&record.call)
+    };
+    match record.status {
+        ApprovalStatus::Approved => Some(format!(
+            "✅ You approved {}: {what}. It is running now; its result goes back to the \
+             conversation that asked.",
+            record.id
+        )),
+        ApprovalStatus::Denied => Some(format!(
+            "🚫 You denied {}: {what}. Nothing was done.",
+            record.id
+        )),
+        ApprovalStatus::Pending => None,
+    }
 }
 
 /// Move a pending, unexpired request to `status`.
@@ -974,6 +1046,39 @@ async fn notify_requester(manager: &PrincipalManager, record: &ApprovalRecord, t
 mod tests {
     use super::*;
     use peko_tools_core::{Compartment, Trust};
+
+    /// The owner's conversation hears each decision, so the peko never
+    /// reads an approved request as still waiting (2026-11-08 field test).
+    #[test]
+    fn a_decided_request_leaves_a_note_for_the_owners_conversation() {
+        let mut record = ApprovalRecord {
+            id: "apr_0123456789ab".into(),
+            call: call(),
+            reason: "unclear".into(),
+            created_at: Utc::now(),
+            expires_at: Utc::now(),
+            status: ApprovalStatus::Pending,
+            digest: String::new(),
+        };
+        assert_eq!(decision_note(&record), None);
+        record.status = ApprovalStatus::Approved;
+        let approved = decision_note(&record).unwrap();
+        assert!(
+            approved.starts_with("✅ You approved apr_0123456789ab"),
+            "{approved}"
+        );
+        record.status = ApprovalStatus::Denied;
+        let denied = decision_note(&record).unwrap();
+        assert!(
+            denied.contains("You denied apr_0123456789ab") && denied.contains("Nothing was done")
+        );
+        // A task handed to the owner is named by its brief's first line.
+        record.call.tool_name = "Agent".into();
+        record.call.params = serde_json::json!({"prompt": "Run the tests.\nThen report.", "path": "t", "as_owner": true});
+        assert!(decision_note(&record)
+            .unwrap()
+            .contains(": Run the tests.…"));
+    }
 
     fn call() -> GatedCall {
         GatedCall {

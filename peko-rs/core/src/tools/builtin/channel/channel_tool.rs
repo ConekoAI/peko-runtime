@@ -320,7 +320,7 @@ impl Tool for ChannelTool {
 
     fn description(&self) -> String {
         "Manage your group channels. create starts a group (you are its creator and first \
-         member) and can invite members at once; invite adds your owner or a principal from \
+         member; made for your owner, it has them in it too) and can invite members at once; invite adds your owner or a principal from \
          Contacts; leave removes you from a group; wake sets what starts a turn for you in a \
          group (human: every human root post, mention: only @<your name> — the default, off: \
          nothing; posts by principals and replies never do); role chooses the role (from \
@@ -384,8 +384,25 @@ impl Tool for ChannelTool {
                 manager.ensure_group_binding(&principal, &channel).await?;
                 manager.ensure_channel_subscriber(&id, &channel);
                 let mut invited = Vec::new();
+                // A group made for the owner has them in it: they asked
+                // for it, and otherwise could not read or post there
+                // (2026-11-08 field test). They can leave.
+                if stamp.is_owner() {
+                    let owner = principal.config.read().await.owner.clone();
+                    let owner = self.port.actor_info(&owner).await.subject();
+                    self.port
+                        .invite(&channel, &id, &owner)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Channel: invite your owner: {e}"))?;
+                    invited.push(self.port.actor_info(&owner).await.address);
+                }
                 for member in params["members"].as_array().into_iter().flatten() {
                     let reference = member.as_str().unwrap_or_default();
+                    let invitee = self.invitee(&principal, reference).await?;
+                    let address = self.port.actor_info(&invitee).await.address;
+                    if invited.contains(&address) {
+                        continue;
+                    }
                     invited.push(self.invite_one(&principal, &channel, reference).await?);
                 }
                 Ok(json!({"channel": channel.as_str(), "invited": invited}))

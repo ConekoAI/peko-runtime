@@ -4,6 +4,22 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: field-test polish — your group includes you, decisions reach the chat, counts and logs are right (2026-11-08)
+
+- A group your peko makes for you (`Channel create` from a run acting for
+  its owner) now has you in it. Asked for a group "with Noah and rex", the
+  peko used to leave its owner out, who then could not read or post there.
+- When you approve or deny a request (app, CLI, or another computer), your
+  conversation with the peko gets a note ("✅ You approved apr_… / 🚫 You
+  denied …"). Before, the peko still read approved requests as waiting and
+  told its owner so.
+- A task handed to you from a group (ADR-100) counts the group's members
+  once each ("3 members", not 7: routes to remote members were counted as
+  members).
+- `peko log` prints messages whole; it cut them at 240 characters, so an
+  invite link copied from it did not work.
+- `peko approvals` offers `--always` only when a listed request can take it.
+
 ### Fix: in a group, every message shows once and wakes a peko once (2026-11-08)
 
 - On a computer that is a member of a group whose home is elsewhere, every
