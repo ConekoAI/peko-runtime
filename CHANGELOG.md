@@ -4,6 +4,16 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a background task's result stays in the session, so a peko no longer disowns a true answer (2026-11-08)
+
+- A background task's completion (Bash, Workflow, cron-spawned tools…) was
+  shown to the next model call but never written to the session; only
+  subagent results were. The next turn reloaded an answer whose source was
+  gone, and a peko on a real model "corrected" its true `ls` answer as made
+  up (2026-11-08 live A/B). The inbox drain now persists every completion
+  for its session (`persist_completions`, was `persist_subagent_completions`)
+  with the exact text the run saw, tagged `MessageSource::Hook`; subagent
+  results keep their `📨 [Helper: Agent]` entry.
 ### Fix: every turn sends a smaller prompt (2026-11-08)
 
 - The 25 built-in tool definitions were ~85% of a turn's base prompt
