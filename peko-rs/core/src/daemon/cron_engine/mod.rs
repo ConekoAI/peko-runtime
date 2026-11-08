@@ -5146,4 +5146,115 @@ mod tests {
         let runs = scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap();
         assert_eq!(runs[0].status, "success", "{runs:?}");
     }
+    /// A conversation turn that posts its answer to its own conversation
+    /// with `ChannelSend` has spoken there: its closing text is not posted
+    /// on top (2026-11-08 field test: a wake turn posted its results, then
+    /// "I posted the results in the group." went to the group too).
+    ///
+    /// `ChannelSend` finds the session store by `PEKO_HOME`, so this test
+    /// points it at its tempdir (for the post's `via`) and runs serially.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn a_turn_that_posted_its_answer_itself_posts_no_second_reply() {
+        use peko_channel::{ChannelPort, PostMsg};
+
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("PEKO_HOME", tmp.path());
+        let path_resolver = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        // `ChannelRead` reads the same store the turn answers in.
+        let tool_runtime = ToolRuntime::with_workspace_channel_port(
+            path_resolver.clone(),
+            tmp.path().to_path_buf(),
+            Arc::clone(&port),
+        )
+        .await
+        .expect("tool runtime should initialize");
+        let (llm, adapter) =
+            LlmResolver::mock(MockAdapter::new(), tmp.path().join("models.toml")).await;
+        let manager = Arc::new(
+            PrincipalManager::with_path_resolver(
+                path_resolver.clone(),
+                Arc::new(DefaultPrincipalMemoryFactory),
+                Arc::new(DefaultPrincipalRouterFactory),
+                crate::async_exec::executor::standalone_inbox_registry(),
+            )
+            .with_tooling(tool_runtime.tooling().clone())
+            .with_resolver(llm)
+            .with_channel_port(Arc::clone(&port)),
+        );
+        tokio::fs::create_dir_all(tmp.path().join("pekos"))
+            .await
+            .unwrap();
+        let principal = create_test_principal(&manager, &tmp.path().join("pekos"), "ada").await;
+        let tooling = manager.tooling();
+        tooling.services().set_channel_port(Arc::clone(&port));
+        let bo = ActorRef::Principal("prin_bo".into());
+        let ingress = manager
+            .ensure_peer_child_ingress(&principal, &bo)
+            .await
+            .unwrap();
+        let dm = ingress.dm_channel.clone().unwrap();
+        store
+            .post(&dm, &bo, PostMsg::root("did the tests pass?"))
+            .await
+            .unwrap();
+        adapter.queue_tool_call(
+            "call_send",
+            "ChannelSend",
+            serde_json::json!({ "to": dm.as_str(), "text": "2 passed, 1 failed: test_median_even." }),
+        );
+        adapter.queue_text("I posted the results in the conversation.");
+
+        let scheduler = CronScheduler::new(path_resolver.cron_schedule("ada")).unwrap();
+        let config = principal.config.read().await.clone();
+        let now = Utc::now();
+        let mut keepalive = crate::principal::genesis::keepalive_job(&config, now).unwrap();
+        keepalive.last_run = Some(now - Duration::minutes(5));
+        keepalive.next_run = now - Duration::seconds(1);
+        scheduler.add_job(&keepalive).unwrap();
+        let engine = CronEngine::new(
+            path_resolver,
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(Arc::clone(&manager)),
+            Arc::downgrade(&tooling),
+        );
+        assert!(run_due_jobs(&engine).await >= 1);
+
+        let mine: Vec<String> = store
+            .peek_with_ids(&dm, &peko_channel::Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, ev)| match ev {
+                peko_channel::ChannelEvent::Posted { author, text, .. }
+                    if author.contains(&principal.id.0) =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            mine,
+            vec!["2 passed, 1 failed: test_median_even.".to_string()],
+            "the closing remark is not posted on top"
+        );
+        assert_eq!(
+            adapter.recorded_requests().len(),
+            2,
+            "and the turn is not asked again"
+        );
+    }
 }

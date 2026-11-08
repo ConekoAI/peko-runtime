@@ -270,6 +270,22 @@ async fn apply_inbound_event(host: Arc<dyn TunnelHost>, inbound: InboundEvent) {
         );
         return;
     }
+    // A post this copy already holds — its own post relayed back by the
+    // group's home, or one that arrived with the history — is confirmed
+    // and applied nothing more: no second line, no second turn.
+    if let peko_protocol::channel::ChannelEvent::Posted {
+        msg_id: Some(msg_id),
+        ..
+    } = &event
+    {
+        if port.holds_post(&channel, msg_id).await {
+            port.mark_applied(&request_id).await;
+            port.send_receipt(&source_runtime_id, &channel, vec![request_id])
+                .await;
+            debug!(%channel, msg_id, "inbound TunnelChannelEvent: post already held; not applied again");
+            return;
+        }
+    }
     // ADR-094: the files first. One that cannot be had now is asked for
     // again later; the post applies either way.
     if let peko_protocol::channel::ChannelEvent::Posted { attachments, .. } = &event {
@@ -5477,7 +5493,11 @@ mod tests {
             model: None,
         };
         deliver("req-1", post.clone()).await.unwrap();
-        deliver("req-1", post).await.unwrap();
+        deliver("req-1", post.clone()).await.unwrap();
+        // The same post in a new envelope (a group's home relaying it
+        // back, or history and live both carrying it) is confirmed and
+        // applied nothing more.
+        deliver("req-echo", post).await.unwrap();
         let posted = port
             .peek(&channel, &peko_channel::Checkpoint::default())
             .await
@@ -5486,10 +5506,10 @@ mod tests {
             .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
             .count();
         assert_eq!(posted, 1, "applied once");
-        for _ in 0..2 {
+        for expected in ["req-1", "req-1", "req-echo"] {
             let (to, ids) = receipt_for(outbound.try_recv().expect("a receipt per arrival"));
             assert_eq!(to, source);
-            assert_eq!(ids, ["req-1"]);
+            assert_eq!(ids, [expected]);
         }
 
         // Our own post to the source runtime waits in the outbox until the

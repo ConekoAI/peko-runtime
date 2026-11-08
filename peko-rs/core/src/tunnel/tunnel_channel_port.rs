@@ -608,6 +608,12 @@ impl TunnelChannelPort {
         self.received.contains(request_id).await
     }
 
+    /// Whether this copy of `channel` already holds the post `msg_id`:
+    /// a member runtime gets its own posts back from the group's home.
+    pub(crate) async fn holds_post(&self, channel: &ChannelId, msg_id: &str) -> bool {
+        matches!(self.local.post_line(channel, msg_id).await, Ok(Some(_)))
+    }
+
     /// Record inbound envelope `request_id` as applied.
     pub(crate) async fn mark_applied(&self, request_id: &str) {
         self.received.record(request_id).await;

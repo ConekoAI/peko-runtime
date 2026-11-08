@@ -3307,12 +3307,34 @@ impl ChannelStore {
     /// `peko_protocol::channel::ChannelEvent` schema doesn't carry it
     /// (and adding the field would break the wire protocol). Source
     /// tracking is audit-only.
+    /// The line holding `channel`'s post `msg_id`, if this copy has it.
+    pub async fn post_line(&self, channel: &ChannelId, msg_id: &str) -> Result<Option<TaskId>> {
+        let tier = self.resolve_tier(channel).await?;
+        Ok(self
+            .read_events(tier, channel, &Checkpoint::zero())
+            .await?
+            .into_iter()
+            .find(|(_, held)| posted_msg_id(held) == Some(msg_id))
+            .map(|(line, _)| line))
+    }
+
     pub async fn append_remote_event(
         &self,
         channel: &ChannelId,
         ev: &ChannelEvent,
     ) -> Result<TaskId> {
         let tier = self.resolve_tier(channel).await?;
+        // A post this copy already holds is the same message coming back
+        // (a group's home relays every member's post to every member
+        // runtime, the author's included) or arriving twice (history and
+        // live). It is applied once: a second line would show it twice and
+        // wake the peko for it again.
+        if let Some(line) = match posted_msg_id(ev) {
+            Some(id) => self.post_line(channel, id).await?,
+            None => None,
+        } {
+            return Ok(line);
+        }
         if let ChannelEvent::MemberLeft { member, .. } = ev {
             let leaving = self.actor_info(&member_subject(member)).await;
             let chan_dir = self.channel_dir_for_tier(tier, channel);
@@ -6815,6 +6837,56 @@ mod tests {
             line, "1",
             "Created is line 0, so the first remote event lands at line 1"
         );
+    }
+
+    /// A post that comes back from a group's home, or arrives a second
+    /// time, carries the `msg_id` this copy already holds: it is not
+    /// appended again (2026-11-08 field test: every post made on a
+    /// member runtime showed twice there and woke its peko twice).
+    #[tokio::test]
+    async fn a_post_already_held_is_not_appended_again() {
+        let store = ChannelStore::new(tmp_cfg("echo-dedup"));
+        let creator = pid("prin_alice");
+        let channel = store
+            .create(&creator, CreateOpts::runtime("team"))
+            .await
+            .unwrap();
+        let echo = |msg_id: Option<&str>| ChannelEvent::Posted {
+            channel: channel.clone(),
+            author: "prin_bob@runtime-B".to_string(),
+            parent: None,
+            text: "hello from B".to_string(),
+            at: "2026-11-08T00:00:00Z".to_string(),
+            via: None,
+            msg_id: msg_id.map(str::to_string),
+            reply_to: None,
+            attachments: Vec::new(),
+            options: Vec::new(),
+            model: None,
+        };
+        let first = store
+            .append_remote_event(&channel, &echo(Some("msg_same")))
+            .await
+            .unwrap();
+        let again = store
+            .append_remote_event(&channel, &echo(Some("msg_same")))
+            .await
+            .unwrap();
+        assert_eq!(again, first, "the copy already held answers for it");
+        // Posts without a msg_id (older peers) cannot be matched and
+        // still apply.
+        store
+            .append_remote_event(&channel, &echo(None))
+            .await
+            .unwrap();
+        let posted = store
+            .peek(&channel, &Checkpoint::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|ev| matches!(ev, ChannelEvent::Posted { .. }))
+            .count();
+        assert_eq!(posted, 2);
     }
 
     /// ADR-093 D2: local posts with broken options are refused; a

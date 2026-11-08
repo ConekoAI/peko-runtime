@@ -36,7 +36,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 /// handler and the post-run successor chains so the wording stays
 /// consistent.
 pub const WAKE_TURN_MARKER: &str = "[peko] Background work completed or a reply arrived while no \
-     turn was running; it is injected with this turn. Act on it as appropriate.";
+     turn was running; it is injected with this turn. Act on it as appropriate. In a \
+     conversation, your reply is posted there as usual: do not also send it with ChannelSend.";
 
 /// One terminal delivery that may need to wake an idle session.
 #[derive(Debug, Clone)]
