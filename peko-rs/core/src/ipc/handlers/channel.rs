@@ -1126,6 +1126,7 @@ impl ChannelHandler {
                             reason: a.reason,
                             created_at: a.created_at,
                             expires_at: a.expires_at,
+                            kind: a.kind,
                         })
                         .collect(),
                 }

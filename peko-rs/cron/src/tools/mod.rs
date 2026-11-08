@@ -988,6 +988,7 @@ mod tests {
                     channel: "dm_x".into(),
                 },
                 origin: peko_tools_core::Origin::Ingress { channel: None },
+                owner_request: false,
             }),
         }
     }

@@ -506,6 +506,7 @@ fn samples() -> Vec<TunnelMessage> {
                 reason: "finances are private".into(),
                 created_at: "2026-11-07T10:00:00+00:00".into(),
                 expires_at: "2026-11-08T10:00:00+00:00".into(),
+                kind: None,
             }],
             signature: "runtime-signature".into(),
         },

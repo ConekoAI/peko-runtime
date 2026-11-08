@@ -224,8 +224,11 @@ Run work in a new, resumed, compacted, or branched session.
 | `source` | string | no | — |
 | `overwrite` | boolean | no | — |
 | `page_limit` | integer | no | ≥ 0, ≤ 10000 |
+| `as_owner` | boolean | no | new only (ADR-100) |
 
 All four actions require nonempty prompt and path. role names the template the run follows (a RoleCatalog id); omitted, it is `worker`, the seeded role for a delegated task. new is create-or-resume; new/branch accept a single relative slug or an absolute session address, while resume/compact use absolute addresses such as sess:/worker. source and overwrite are branch-only; source defaults to the calling session and overwrite defaults false. page_limit is new/branch-only, 0–10000 (0 clears the cap), omission preserves an existing cap (new sessions are unlimited); exceeding it permanently deletes the oldest closed pages. model is new/resume/branch-only and refused for compact. All live runs share the principal’s concurrency pool (default 20); delegation depth is unrestricted.
+
+`as_owner: true` (ADR-100) hands the task to the owner. Only a run the owner's own post started in a conversation others share may use it (its stamp carries `owner_request`), and only with action new, a bare-slug `path`, and a `prompt` of at most 4,000 characters: the whole brief, since the run sees nothing else. The dispatcher refuses it to every other run. It never goes to the policy reviewer: it waits as an `owner_task` approval, which the owner approves once (never *always*). On approval the brief runs as the owner (owner trust, internal compartment, origin `approval`) at `sess:/<slug>` at the top of the owner's tree, outside the conversation's reach, and its report wakes the session that asked.
 
 ### RoleCatalog
 

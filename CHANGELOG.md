@@ -4,6 +4,29 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: ask your peko for real work in a group, and it runs as you once you approve (2026-11-08, ADR-100)
+
+- In a group with anyone else, a turn your own post starts still runs with
+  the least-trusted member's limits (no shell, files only in the workspace),
+  because everyone's words are in its context. Now that turn can hand the
+  task to you: `Agent` gains `as_owner: true`, whose `prompt` is the whole
+  brief (at most 4,000 characters). Only your own turn in a shared room may
+  use it (the stamp's new `owner_request`); peers, wakes and cron fires
+  cannot, so nobody else can fill your approval queue.
+- The request never goes to the policy reviewer. It waits for you as an
+  `owner_task` approval, from any of your computers (ADR-099): you read the
+  whole brief and where it was asked, and approve it once (*always* is
+  refused). Approved, it runs as you in a new session at the top of your
+  peko's own tree, with only the brief, outside the group's reach, and its
+  report goes back to the group.
+- The `<acting-for>` block now tells such a turn it acts for its owner and
+  why it is capped, how to hand work over, and never to ask anyone else to
+  approve (the 2026-11-07 field test's peko asked the other person). The
+  trusted line no longer claims the shell.
+- Wire: `ApprovalInfo` (IPC) and `PekoApproval` (tunnel) gain an optional
+  `kind` (`owner_task`); `ActingFor` gains `owner_request` (omitted when
+  false).
+
 ### Fix: a background task's result stays in the session, so a peko no longer disowns a true answer (2026-11-08)
 
 - A background task's completion (Bash, Workflow, cron-spawned tools…) was

@@ -152,6 +152,7 @@ async fn non_owner_runs_see_only_their_own_conversation() {
                 channel: guest_dm.as_str().into(),
             },
             origin: peko_tools_core::Origin::Ingress { channel: None },
+            owner_request: false,
         });
     ctx.principal_id = Some(a.0.clone());
     let listed = tool
@@ -837,6 +838,7 @@ async fn a_peko_resolves_by_its_owners_handle() {
                 channel: "chan_none".into(),
             },
             origin: peko_tools_core::Origin::Ingress { channel: None },
+            owner_request: false,
         });
     ctx.principal_id = Some(fx.other.id.0.clone());
     let err = fx

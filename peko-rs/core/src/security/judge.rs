@@ -132,6 +132,11 @@ pub fn owner_decides(
     if stamp.is_owner() {
         return None;
     }
+    // ADR-100 D2: a reviewer may refuse the owner's authority, never grant
+    // it, so a task handed to the owner always waits for them.
+    if crate::security::floor::is_owner_task(tool_name, params) {
+        return Some("it would run with your owner's full access, so only they can approve it");
+    }
     match crate::security::floor::channel_owner_action(tool_name, params)? {
         "role" => Some("only the owner decides which role the principal runs in a conversation"),
         _ => Some("only the owner decides who joins the principal's groups"),
@@ -264,6 +269,7 @@ mod tests {
                 channel: "dm_a".into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         }
     }
 

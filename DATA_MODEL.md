@@ -54,7 +54,10 @@ This document defines every on-disk and in-memory data format used by the Peko r
   (`actor: "runtime"`, owner, internal). Unstamped non-seeded jobs fail at
   fire time.
 - `ActingFor` JSON: `{actor, name?, trust: "owner"|"trusted"|"untrusted",
-  compartment, origin: {kind: "ingress"|"cron"|"wake"|"runtime"|"approval", …}}`.
+  compartment, origin: {kind: "ingress"|"cron"|"wake"|"runtime"|"approval", …},
+  owner_request?: true}`. `owner_request` (ADR-100, omitted when false) marks
+  the owner's own turn in a conversation others share, capped by the room;
+  set only where a turn starts, never carried into another compartment.
   Carried on tool calls, audit events (`tool.call`'s `acting_for`), run-token
   entries, and background-task dispatch; never read from a packet.
 - `<workspace>/POLICY.md` (protected, seeded create-once): optional front
@@ -80,10 +83,13 @@ This document defines every on-disk and in-memory data format used by the Peko r
   `pending`|`approved`|`denied`, `digest` of tool + arguments). The owner
   lists and decides them over IPC: `approval_list {name}` →
   `approval_list {name, approvals: [{id, actor, actor_name?, trust, summary,
-  reason, created_at, expires_at}]}` (pending only, oldest first), and
+  reason, created_at, expires_at, kind?}]}` (pending only, oldest first), and
   `approval_decide {name, id, approve, always?}` → `approval_decided {id,
   approved, message}`; both refuse callers without the owner's
-  `ManageSettings` (`[forbidden]`).
+  `ManageSettings` (`[forbidden]`). `kind: "owner_task"` (ADR-100) marks an
+  `Agent` `as_owner` call: `summary` is its whole brief, `reason` says where it
+  was asked ("in “repo-team” (4 members)"), and `always` is refused. The
+  tunnel's `PekoApproval` carries the same optional `kind` (ADR-099 D1).
 - `Permission::Trusted` (`"trusted"`) in `peko.toml` grants: the owner's
   consent to give one named actor full tools. Never `public`, never in invites.
 - MCP definitions gain `untrusted_ok` (default `false`) and the reserved

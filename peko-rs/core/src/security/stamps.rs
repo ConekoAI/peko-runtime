@@ -273,20 +273,28 @@ impl Stamps {
         origin: Origin,
     ) -> ActingFor {
         let ceiling = self.ceiling(&compartment).await;
-        let (actor, name) = match &compartment {
+        let (actor, name, drives) = match &compartment {
             Compartment::Conversation { channel }
                 if !self.is_member(channel, &driver.actor).await =>
             {
-                self.counterpart(channel).await
+                let (actor, name) = self.counterpart(channel).await;
+                (actor, name, false)
             }
-            _ => (driver.actor.clone(), driver.name.clone()),
+            _ => (driver.actor.clone(), driver.name.clone(), true),
         };
+        let trust = driver.trust.min(ceiling);
+        // ADR-100: the owner speaking in a conversation others share.
+        let owner_request = drives
+            && driver.trust == Trust::Owner
+            && trust < Trust::Owner
+            && matches!(compartment, Compartment::Conversation { .. });
         ActingFor {
             actor,
             name,
-            trust: driver.trust.min(ceiling),
+            trust,
             compartment,
             origin,
+            owner_request,
         }
     }
 
@@ -314,6 +322,7 @@ impl Stamps {
                     trust: self.ceiling(&compartment).await,
                     compartment,
                     origin,
+                    owner_request: false,
                 }
             }
             _ => {
@@ -434,6 +443,7 @@ mod tests {
                 channel: "dm_x".into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         };
         let ids: Vec<_> = visible_metas(&guest, &metas)
             .iter()

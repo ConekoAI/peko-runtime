@@ -213,6 +213,7 @@ mod tests {
                 channel: "dm_abc".into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         }
     }
 

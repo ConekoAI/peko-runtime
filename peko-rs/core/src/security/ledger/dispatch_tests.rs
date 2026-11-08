@@ -22,6 +22,7 @@ fn guest(trust: Trust) -> ActingFor {
             channel: "dm_x".into(),
         },
         origin: Origin::Ingress { channel: None },
+        owner_request: false,
     }
 }
 

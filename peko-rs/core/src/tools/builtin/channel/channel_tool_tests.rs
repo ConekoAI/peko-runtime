@@ -94,6 +94,7 @@ impl Fixture {
                 channel: channel.as_str().into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         });
         ctx.principal_id = Some(self.caller.id.0.clone());
         ctx

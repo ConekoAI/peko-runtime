@@ -3237,6 +3237,7 @@ async fn a_guests_spawn_stays_in_its_conversation_and_cannot_reach_out() {
             channel: "dm_x".into(),
         },
         origin: Origin::Ingress { channel: None },
+        owner_request: false,
     };
     let executor = SubagentExecutor::with_registry(
         registry,

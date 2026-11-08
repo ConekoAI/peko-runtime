@@ -220,6 +220,7 @@ mod tests {
                 channel: channel.into(),
             },
             origin: Origin::Ingress { channel: None },
+            owner_request: false,
         })
     }
 
