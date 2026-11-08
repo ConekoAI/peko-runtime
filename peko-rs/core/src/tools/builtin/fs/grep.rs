@@ -492,14 +492,7 @@ Paths inside the workspace are reported relative to it. The response's `output` 
 - `files_with_matches`: one path per line.
 - `count`: `path:count` per file.
 
-`limit` (default 100, max 1000) caps the matching lines collected in every mode; `truncated: true` means more matches exist. `files_searched` and `files_with_matches` counts come back alongside `output`.
-
-Examples:
-```json
-{"pattern": "^pub fn ", "include": "*.rs"}
-{"pattern": "TODO|FIXME", "case_insensitive": true, "output_mode": "files_with_matches"}
-{"pattern": "my_function\\(", "context": 2}
-```"#
+`limit` (default 100, max 1000) caps the matching lines collected in every mode; `truncated: true` means more matches exist. `files_searched` and `files_with_matches` counts come back alongside `output`."#
         .to_string()
     }
 

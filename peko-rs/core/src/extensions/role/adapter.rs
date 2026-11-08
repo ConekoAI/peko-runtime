@@ -311,7 +311,14 @@ impl WorkspaceRolesPromptHandler {
                 // and produce a less-readable location string for
                 // users). Matches the format style used by the sibling
                 // `WorkspaceSkillsPromptHandler` (skills/{name}/SKILL.md).
-                let location = a.file_path.to_string_lossy().replace('\\', "/");
+                // Relative to the workspace: file tools resolve it there,
+                // and the absolute path only costs tokens every turn.
+                let location = a
+                    .file_path
+                    .strip_prefix(workspace)
+                    .unwrap_or(&a.file_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 format!(
                     "- {} (id: {}): {} (location: {})",
                     a.manifest.name, a.manifest.id, a.manifest.description, location

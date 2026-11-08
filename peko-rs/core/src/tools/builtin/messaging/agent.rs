@@ -312,12 +312,7 @@ impl AgentTool {
 
 The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
 
-Refused: your own session or an ancestor, a session with an active run, and (resume) one that is missing or was not spawned. All your principal's live runs share one limit (default 20): at it the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent` and `max_concurrent`; retry after a run ends instead of polling. Delegation depth is unlimited and idle sessions use no slots.
-
-Examples:
-{"prompt": "Find every TODO in src/ and list them by file", "path": "todo-scan"}
-{"prompt": "Update report.txt with the new numbers", "role": "writer", "path": "writer-1"}
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above", "role": "writer", "overwrite": true}"#
+Refused: your own session or an ancestor, a session with an active run, and (resume) one that is missing or was not spawned. All your principal's live runs share one limit (default 20): at it the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent` and `max_concurrent`; retry after a run ends instead of polling. Delegation depth is unlimited and idle sessions use no slots."#
             .to_string()
     }
 
@@ -328,23 +323,23 @@ Examples:
                 "action": {
                     "type": "string",
                     "enum": ["new", "resume", "compact", "branch"],
-                    "description": "new (default): start or continue a spawned session; resume: continue an existing spawned session; compact: compact a session, then run prompt; branch: run prompt on a copy of a session's context",
+                    "description": "Default new",
                     "default": "new"
                 },
                 "prompt": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "The task to run (for compact, run after compacting; for branch, run against the copied context)"
+                    "description": "The task (compact: run after compacting; branch: run on the copy)"
                 },
                 "role": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Role template id (see RoleCatalog); its body becomes the run's system prompt. Omit for `worker`, the general role for a delegated task"
+                    "description": "RoleCatalog id; omit for worker"
                 },
                 "path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Session address: an absolute slug path ('sess:/a/b'), or for new/branch a bare slug (1-64 chars, no '/') for a session under yours"
+                    "description": "Absolute slug path ('sess:/a/b'), or for new/branch a bare slug under your session"
                 },
                 "model": {
                     "type": "string",
