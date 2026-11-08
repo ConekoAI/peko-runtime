@@ -27,16 +27,7 @@ impl Tool for PlanRecordEvidenceAction {
     }
 
     fn description(&self) -> String {
-        r"Record per-node evidence on a plan step.
-
-Parameters:
-- planId: string (required)
-- nodeId: string (required)
-- output: string (required) — short summary of what the node produced
-- artifacts: array<string>? — file paths or external references
-- decidedBy: string? — attribution (e.g., 'root-agent', 'subagent:researcher')
-
-Returns the updated plan. An unknown planId or nodeId is an error."
+        r"Record what a step produced. Takes `planId`, `nodeId`, `output` (a short summary), `artifacts?` (paths or references), `decidedBy?`. Returns the plan."
             .to_string()
     }
 

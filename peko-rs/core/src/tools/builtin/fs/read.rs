@@ -288,63 +288,9 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> String {
-        r#"## Purpose
-Read file contents with support for partial reading (line ranges) and binary files.
-Images (PNG, JPEG, GIF, WebP), audio (WAV, MP3, FLAC, M4A, OGG), and video
-(MP4, MOV, AVI, WMV, WebM) come back as the media itself for you to view, hear,
-or watch, when the current model takes that kind; otherwise a note says so.
+        r#"Read a file (relative to the workspace, or absolute). Text comes back in `cat -n` form: each line prefixed with its 1-indexed number and a tab. Images (PNG, JPEG, GIF, WebP), audio (WAV, MP3, FLAC, M4A, OGG) and video (MP4, MOV, AVI, WMV, WebM) come back as media to view, hear or watch when the current model takes that kind; otherwise a note says so. `encoding: "base64"` returns any file as base64 text instead.
 
-Text output is in `cat -n` format: each line of `content` is prefixed with
-its 1-indexed line number and a tab, so line numbers are visible inline.
-
-Use when: Reading source code, configuration files, logs, or any text file.
-Don't use when: You need to write files (use Write) or search across files (use Grep).
-
-## Parameters
-
-### file_path (required)
-Path to the file. Can be relative to workspace or absolute.
-
-### offset (optional)
-Starting line number (1-indexed). If omitted, starts from beginning.
-
-### limit (optional)
-Maximum number of lines to read. Defaults to 2000.
-
-### encoding (optional)
-- "utf8" (default): Read as text, content returned in `cat -n` format
-- "base64": Force base64 encoding for binary data (media files then come back as
-  base64 text instead of media)
-
-## Output limits
-
-A read returns at most `limit` lines (2000 when omitted) and at most 256 KiB
-of text, cut at a line boundary. When lines remain beyond that, the response
-has `truncated: true` and `next_offset` — pass it as `offset` to continue.
-A single line longer than 256 KiB is cut and ends with `...(line truncated)`.
-Binary files over 256 KiB are refused; inspect them with Bash (`xxd`, `head -c`).
-
-## Examples
-
-Read a file (first 2000 lines):
-```json
-{"file_path": "src/main.rs"}
-```
-
-Read specific lines:
-```json
-{"file_path": "src/main.rs", "offset": 10, "limit": 20}
-```
-
-View an image (or hear audio, watch video):
-```json
-{"file_path": "screenshot.png"}
-```
-
-Read binary file as base64:
-```json
-{"file_path": "data.bin", "encoding": "base64"}
-```"#
+A read returns at most `limit` lines (default 2000) and 256 KiB, cut at a line boundary; when more remains the response has `truncated: true` and `next_offset` to pass as `offset`. A line over 256 KiB ends with `...(line truncated)`. Binary files over 256 KiB are refused; inspect them with Bash (`xxd`, `head -c`). Search across files with Grep."#
             .to_string()
     }
 

@@ -45,9 +45,7 @@ impl Tool for CronDeleteAction {
     }
 
     fn description(&self) -> String {
-        "Cancel a scheduled job by ID (or by label). The runtime's own jobs (`keepalive`, \
-         `memory`) are deleted only at the owner's own request; retune them with \
-         `update` instead."
+        r"Cancel a job. The runtime's own jobs (`keepalive`, `memory`) are deleted only at the owner's own request; retune them with `update` instead."
             .to_string()
     }
 
@@ -63,11 +61,11 @@ impl Tool for CronDeleteAction {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "ID of the scheduled job to cancel"
+                    "description": "Job id"
                 },
                 "label": {
                     "type": "string",
-                    "description": "Label of the scheduled job to cancel (alternative to id)"
+                    "description": "Job label (instead of id)"
                 }
             },
             "oneOf": [

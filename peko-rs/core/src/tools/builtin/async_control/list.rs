@@ -30,16 +30,7 @@ impl Tool for AsyncListAction {
     }
 
     fn description(&self) -> String {
-        r"List background async tasks.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- status_filter: string? — filter by status (pending, running, completed, failed, cancelled, timed_out)
-- tool_filter: string? — filter by tool name (e.g., 'Bash', 'Agent')
-
-Returns: { total, active, tasks: [{ task_id, tool_name, status, is_terminal, metadata_type, created_at, label }] }"
-            .to_string()
+        r"Your background tasks, optionally filtered. Returns `{total, active, tasks}`.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -49,11 +40,11 @@ Returns: { total, active, tasks: [{ task_id, tool_name, status, is_terminal, met
                 "status_filter": {
                     "type": "string",
                     "enum": ["pending", "running", "completed", "failed", "cancelled", "timed_out"],
-                    "description": "Optional filter by status: pending, running, completed, failed, cancelled, timed_out"
+                    "description": "Only tasks in this state"
                 },
                 "tool_filter": {
                     "type": "string",
-                    "description": "Optional filter by tool name (e.g., 'Bash', 'Agent')"
+                    "description": "Only tasks of this tool"
                 }
             }
         })

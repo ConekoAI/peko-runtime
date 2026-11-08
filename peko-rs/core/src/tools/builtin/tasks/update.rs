@@ -28,14 +28,7 @@ impl Tool for TaskUpdateAction {
     }
 
     fn description(&self) -> String {
-        r"Update the status or owner of a planning todo.
-
-Parameters:
-- taskId: string (required) — the todo id returned by Task action create
-- status: string? — new status ('pending', 'in_progress', or 'completed')
-- owner: string? — new owner/agent name
-
-Returns the updated todo, or an error if it does not exist."
+        r"Change a todo's `status` or `owner` by `taskId`. Returns the todo; an unknown id is an error."
             .to_string()
     }
 

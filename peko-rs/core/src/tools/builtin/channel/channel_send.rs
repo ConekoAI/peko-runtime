@@ -660,21 +660,13 @@ impl Tool for ChannelSendTool {
     }
 
     fn description(&self) -> String {
-        r#"Post a message. Every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. The `to` address picks where the message goes (use Contacts to list and resolve actors and channels):
+        r#"Post a message; every send returns at once. Posting never starts a run in another principal: it sees your message the next time it reads the channel. `to` picks where it goes (Contacts lists and resolves actors and channels):
+- `principal:local:<id>` / `principal:hub:<id>`: on your DM channel with that principal (`dm_channel` in the result). Its answer, if any, is a post there: read it later with ChannelRead, or wait for it with ChannelRead `watch: true`.
+- `user:…` / `visitor:…` (local or hub): a note to that user's conversation. It shows in their next turn, and their answer arrives in their conversation with you.
+- `dm_<hash>` / `chan_<id>` / `group:<slug>`: a post to a channel you are a member of; `parent` threads it. In a group an `@<name>` mention does not wake a principal either; only users' mentions do.
+Each post carries your session path as `via`. To run work in your own principal's sessions, use Agent instead.
 
-- `principal:local:<id>` / `principal:hub:<id>` — a message to another principal, on your shared DM channel (`dm_channel` in the result). Its answer, if any, is a post on that channel: read it later with ChannelRead, or call ChannelRead with `watch: true` to wait for the next post.
-- `user:local:<id>` / `user:hub:<id>` / `visitor:local:<id>` / `visitor:hub:<id>` — a note to a user's conversation; it appears in their next turn, and their answer arrives in their conversation with you.
-- `dm_<hash>` / `chan_<id>` / `group:<slug>` — a post to a channel you are a member of. `parent` threads it onto an earlier message. In a group, mentioning `@<name>` does not wake that principal either — only users' mentions do.
-
-`options` offers the reader 2–4 short suggested replies; a tap sends that text as their own message, so they mean nothing more than typed words.
-
-Each post carries your session path as `via`. Not for running work in your own principal's sessions — use the Agent tool.
-
-## Result
-- Principal: `{success, kind: "principal", id, dm_channel, delivery, note}` — `id` is the message on `dm_channel`; `delivery` is `delivered`, or `queued` when the target's runtime has not confirmed it yet (it may be offline; the message is resent until it arrives).
-- User: `{success, kind: "user", response}`.
-- Channel / group: `{success, id, channel}` — the same `id` ChannelRead reports, usable as `parent`.
-A send that cannot go out (not a member, unknown channel or principal) is an error."#
+Result: to a principal `{success, kind: "principal", id, dm_channel, delivery, note}`, where `delivery` is `delivered`, or `queued` until the target's runtime confirms it (it may be offline; the message is resent until it arrives); to a user `{success, kind: "user", response}`; to a channel `{success, id, channel}`, the `id` ChannelRead reports, usable as `parent`. A send that cannot go out (not a member, unknown channel or principal) is an error."#
             .to_string()
     }
 

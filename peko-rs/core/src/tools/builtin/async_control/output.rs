@@ -40,17 +40,7 @@ impl Tool for AsyncOutputAction {
     }
 
     fn description(&self) -> String {
-        r"Read the output of a background async task.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- task_id: string (required) — the task ID from the async receipt
-- block: boolean (default false) — if true, wait until the task reaches a terminal state
-- timeout_ms: integer? — milliseconds to wait when block=true (default 300000, 5 minutes)
-- tail_lines: integer (default 0) — if >0, return only the last N lines
-
-Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds? }"
+        r"Read a task's result. `block: true` waits for the task to end. Returns `{task_id, status, is_terminal, result?, completed_at?, elapsed_seconds?}`."
             .to_string()
     }
 
@@ -60,22 +50,22 @@ Returns: { task_id, status, is_terminal, result?, completed_at?, elapsed_seconds
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The task ID from the async receipt (e.g., 'Bash:abc-123')"
+                    "description": "task_id from the receipt"
                 },
                 "block": {
                     "type": "boolean",
-                    "description": "If true, wait until the task reaches a terminal state before returning.",
+                    "description": "Wait for the task to end",
                     "default": false
                 },
                 "timeout_ms": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "How long block=true waits, in milliseconds (default 300000). The task keeps running if the wait ends first."
+                    "description": "How long block waits, in ms (default 300000); the task keeps running"
                 },
                 "tail_lines": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "If >0, return only the last N lines of output.",
+                    "description": "Only the last N lines",
                     "default": 0
                 }
             },

@@ -28,17 +28,7 @@ impl Tool for PlanMarkStepAction {
     }
 
     fn description(&self) -> String {
-        r"Flip a plan node's status.
-
-Parameters:
-- planId: string (required)
-- nodeId: string (required)
-- status: string (required) — one of pending|in_progress|completed|blocked|failed
-- reason: string? — used when status is 'blocked' or 'failed'
-- checkAt: string? — when to come back to the step: RFC 3339 or a duration
-  from now ('90m', '2d'); '' clears it. Completing a step clears it.
-
-Returns the updated plan. An unknown planId or nodeId is an error."
+        r"Set a step's status. Takes `planId`, `nodeId`, `status`, `reason?` (for blocked or failed), `checkAt?` ('' clears it; completing a step clears it). Returns the plan."
             .to_string()
     }
 
@@ -53,7 +43,7 @@ Returns the updated plan. An unknown planId or nodeId is an error."
                     "enum": ["pending","in_progress","completed","blocked","failed"]
                 },
                 "reason":  { "type": "string", "description": "Optional reason for blocked/failed." },
-                "checkAt": { "type": "string", "description": "When to come back to this step: RFC 3339 time or a duration from now (\"90m\", \"2d\"). Until then a ready or in-progress step is snoozed; once it passes the check-in is due and your heartbeat runs for it. An empty string clears it." }
+                "checkAt": { "type": "string", "description": "When to come back to the step: RFC 3339 or a duration (\"90m\"); '' clears it" }
             },
             "required": ["planId","nodeId","status"]
         })

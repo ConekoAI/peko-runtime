@@ -203,49 +203,12 @@ impl Tool for ChannelReadTool {
     }
 
     fn description(&self) -> String {
-        "Read events from a peko channel the calling principal is a member of, \
-         or wait for the next post there.\n\n\
-         Parameters:\n\
-         - channel:  string (required) — channel id, e.g. 'chan_a1b2c3d4' or a \
-         named group 'group:<slug>'\n\
-         - limit:    int    (optional) — max events returned (default 50, cap 1000)\n\
-         - query:    string (optional) — search mode: case-insensitive substring \
-         match on message text\n\
-         - author:   string (optional) — search mode: exact author match \
-         (e.g. 'user:alice' or a principal id)\n\
-         - before:   string (optional) — event id; in read mode return the page \
-         of events OLDER than it; in search mode, only search older history\n\
-         - since:    string (optional) — event id; return events strictly NEWER \
-         than it (catch up after a prior read). Overrides `before`. Ignored in \
-         search mode.\n\
-         - watch:    bool   (optional) — wait until someone else posts after \
-         `since` (default: the newest event now), then return those posts. \
-         `query`, `author` and `reply_to` narrow which posts count.\n\
-         - reply_to: string (optional) — watch mode: only replies threaded \
-         onto the event with this id (the `id` ChannelSend or ChannelRead gave \
-         you).\n\n\
-         With no cursor and no query, returns the NEWEST `limit` events. Events \
-         are always oldest→newest; each carries an `id` field (its line number \
-         in the channel log). The response object is {channel, events, \
-         has_more, next_cursor}: when `has_more` is true, pass `next_cursor` \
-         back as `before` (or `since` after a forward read) to continue. \
-         Search mode scans backward from `before` (or the tip) and returns \
-         only matching `posted` events (at most 200 per call). Each event's \
-         `kind` is created, posted, member_joined, or member_left. A post may \
-         carry `options`: short replies its author suggested — answer in your \
-         own words; picking one means nothing more than writing it.\n\n\
-         Watch mode is how you wait for an answer: posting never wakes another \
-         principal, so after ChannelSend you can watch the returned dm_channel. \
-         It has no time limit; a long wait moves to the background like any \
-         slow tool and its result arrives when a post does. Your own posts \
-         never end a watch, nor do posts that start turns by themselves (a \
-         user's message on a DM, a user's @mention of you in a group) — those \
-         reach you as conversation turns. Pass the returned `next_cursor` as \
-         `since` to keep watching without missing posts.\n\n\
-         Reading also answers for the posts it returns: other principals' \
-         posts listed under \"waiting on you\" in your session context leave \
-         that list once a read returns them (or once you post on their \
-         channel)."
+        r#"Read a channel you are a member of, search it, or wait for its next post. `channel` is a channel id (`chan_…`) or `group:<slug>`.
+- Read (default): the newest `limit` events (default 50, at most 1000); `before` pages to older ones, `since` catches up on newer ones (and overrides `before`).
+- Search: `query` (case-insensitive text) and/or `author` scan back from `before` or the tip and return only matching posts, at most 200 per call.
+- Watch: `watch: true` waits until someone else posts after `since` (default: now) and returns those posts; `query`, `author` and `reply_to` narrow which posts count. This is how you wait for an answer, since posting never wakes another principal. It has no time limit: a long wait moves to the background and its result arrives with the post. Your own posts never end a watch, nor do posts that start turns by themselves (a user's DM, a user's @mention of you), which reach you as turns.
+
+Returns `{channel, events, has_more, next_cursor}`, events oldest first, each with an `id` and a `kind` (created, posted, member_joined, member_left). With `has_more`, pass `next_cursor` as `before` (or as `since` after a forward read or a watch). A post may carry `options`, replies its author suggested: answer in your own words; picking one means only what it says. Reading the posts listed under "waiting on you" takes them off that list, as does posting on their channel."#
             .to_string()
     }
 

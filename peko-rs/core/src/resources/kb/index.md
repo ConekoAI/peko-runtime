@@ -1,23 +1,14 @@
 # Knowledge base index
 
-This file is the map of your `kb/` tree — and like `MEMORY.md`, it
-rides in every prompt. One line per area: where it lives and what it
-holds. When you add, move, or retire a subtree, update this map in
-the same breath.
+The map of your `kb/` tree, one line per area. Update it whenever you
+add, move, or retire a subtree.
 
-Areas at creation: `people/`, `groups/`, `roles/` (notes about
-people, groups and roles), `journal/` (the daily log, append-only),
-`dreams/` (nightly reflections on how you work; cold until a lesson
-is promoted into `CONVENTIONS.md`).
+- `people/`, `groups/`, `roles/`: notes about people, groups and roles.
+- `journal/`: the daily log, append-only.
+- `dreams/`: nightly reflections on how you work; cold until a lesson
+  is promoted into `CONVENTIONS.md`.
 
-Revision rules for the whole tree:
-
-- Files you write yourself: revise in place, no append-only history.
-- Imported material: replace on refresh; your notes ABOUT an import
-  are revised, the import itself is swapped.
-- Nothing here is compacted away — that word belongs to sessions.
-- Every opaque artifact (image, xlsx, db, …) gets a one-paragraph
-  `.md` shadow next to it saying what it is and how to use it.
-
-You own this tree. Restructure it as you see fit — just keep this
-index honest, or delete it if you outgrow it.
+Revise your own files in place; replace imported material on refresh
+(revising your notes about it). Give every opaque file (image, xlsx,
+db, …) a one-paragraph `.md` beside it saying what it is and how to
+use it. Restructure the tree as you like; keep this map honest.

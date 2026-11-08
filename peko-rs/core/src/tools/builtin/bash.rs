@@ -453,20 +453,10 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> String {
-        let (simple_cmd, pipe_cmd, redirect_cmd, env_cmd) = if cfg!(windows) {
-            (
-                r#"{"command": "Get-ChildItem"}"#,
-                r#"{"command": "Get-Content file.txt | Select-String error | Select-Object -First 20"}"#,
-                r#"{"command": "Write-Output 'hello' | Set-Content greeting.txt"}"#,
-                r#"{"command": "Write-Output $env:USERPROFILE"}"#,
-            )
+        let pipe_cmd = if cfg!(windows) {
+            r#"{"command": "Get-Content file.txt | Select-String error | Select-Object -First 20"}"#
         } else {
-            (
-                r#"{"command": "ls -la"}"#,
-                r#"{"command": "cat file.txt | grep error | head -20"}"#,
-                r#"{"command": "echo 'hello' > greeting.txt"}"#,
-                r#"{"command": "echo $HOME"}"#,
-            )
+            r#"{"command": "cat file.txt | grep error | head -20"}"#
         };
 
         format!(
@@ -483,10 +473,7 @@ impl Tool for BashTool {
 
 ## Examples
 ```json
-{simple_cmd}
 {pipe_cmd}
-{redirect_cmd}
-{env_cmd}
 {{"command": "npm run build", "cwd": "web", "timeout": 600000}}
 {{"command": "sleep 10 && echo done", "run_in_background": true}}
 ```
