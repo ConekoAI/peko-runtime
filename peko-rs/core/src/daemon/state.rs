@@ -582,7 +582,7 @@ impl AppState {
         // executor whose completion pushes must land in the same
         // registry the agentic loop drains at iteration start —
         // otherwise subagent results are silently dropped on the
-        // floor and `persist_subagent_completions` never fires.
+        // floor and `persist_completions` never fires.
         let inbox_registry = Arc::new(InboxRegistry::new(Arc::new(
             || -> Arc<dyn peko_session::AsyncInboxLike> { Arc::new(SessionInbox::new()) },
         )));

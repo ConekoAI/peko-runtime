@@ -1138,21 +1138,14 @@ impl AgenticLoop {
                 ) {
                     messages.push(msg);
                 }
-                // WS3 (implicit session management): persist each
-                // subagent completion (`tool_name == "Agent"`) into
-                // the parent's live session JSONL as a first-class
-                // user-role entry tagged `MessageSource::Agent`.
-                // Mirrors the `📨 [<agent>]` `send_peer` convention so
-                // we don't introduce a fifth label convention. Without
-                // this append, the next reload would lose the helper's
-                // output — the synthetic `LlmMessage` above only feeds
-                // the in-memory `messages` slice for this iteration.
-                super::async_completion::persist_subagent_completions(
-                    &completions,
-                    session,
-                    &session_id,
-                )
-                .await;
+                // Persist every completion the run is about to see:
+                // the synthetic `LlmMessage` above only feeds this
+                // iteration's in-memory `messages`, so without the
+                // append the next turn reloads an answer whose source
+                // is gone. Subagent results keep the WS3 `📨 [Helper]`
+                // form; the rest are stored as the run saw them.
+                super::async_completion::persist_completions(&completions, session, &session_id)
+                    .await;
                 for mut msg in steering {
                     // ADR-078: queued text may not impersonate runtime blocks.
                     msg.content = peko_tools_core::neutralize_runtime_tags(&msg.content);

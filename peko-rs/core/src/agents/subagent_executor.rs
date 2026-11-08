@@ -404,7 +404,7 @@ pub struct SubagentExecutor {
     /// WS3 (implicit session management, 2026-08-11): the daemon-shared
     /// inbox registry. Completions pushed by subagent spawns MUST land
     /// in this registry so the parent agentic loop's per-iteration
-    /// drain sees them; otherwise WS3's `persist_subagent_completions`
+    /// drain sees them; otherwise WS3's `persist_completions`
     /// never fires. `None` falls back to a per-executor standalone
     /// registry (kept for tests and CLI one-shots where no daemon
     /// state is wired).
@@ -476,7 +476,7 @@ impl SubagentExecutor {
     /// daemon-shared inbox registry so subagent completions land in
     /// the same registry the parent agentic loop drains. Without
     /// this binding the executor's `AsyncExecutor` creates its own
-    /// private registry and WS3's `persist_subagent_completions`
+    /// private registry and WS3's `persist_completions`
     /// hook never fires for production runs.
     #[must_use]
     pub fn with_inbox_registry(

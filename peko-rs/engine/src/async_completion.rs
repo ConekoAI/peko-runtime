@@ -113,6 +113,35 @@ pub fn truncate_for_preview(text: &str) -> String {
     out
 }
 
+/// The text one completion shows the model: a header naming the task,
+/// tool and status, then its (truncated) result or error. Shared by the
+/// in-memory message and the persisted copy, so a reloaded session
+/// reads exactly what the run saw.
+fn completion_block_text<E: AsyncCompletionLike>(event: &E) -> String {
+    let (status_word, error) = match event.status() {
+        AsyncTaskStatus::Completed { .. } => ("completed", None),
+        AsyncTaskStatus::Failed { error } => ("failed", Some(error)),
+        AsyncTaskStatus::Cancelled => ("cancelled", None),
+        AsyncTaskStatus::TimedOut { error } => ("timed out", Some(error)),
+        AsyncTaskStatus::Pending => ("pending", None),
+        AsyncTaskStatus::Running => ("running", None),
+    };
+    // A failed or timed-out task's reason lives in its status; its
+    // result is usually null, which alone tells the model nothing.
+    let body = match (error, event.result()) {
+        (Some(error), serde_json::Value::Null) => format!("error: {error}"),
+        (Some(error), result) => format!("error: {error}\n{result}"),
+        (None, result) => result.to_string(),
+    };
+    format!(
+        "[Async task result — task_id: {} — tool: {} — status: {}]\n{}",
+        event.task_id(),
+        event.tool_name(),
+        status_word,
+        truncate_for_preview(&body),
+    )
+}
+
 /// Build a synthetic user-role `LlmMessage` from a list of completed
 /// async-task events. Filters to events whose `parent_session_key`
 /// matches the current session. Returns `None` if no events belong to
@@ -157,29 +186,8 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
         text: format!("[Async task results — {n} completed since last turn]"),
     }];
     for event in for_session {
-        let (status_word, error) = match event.status() {
-            AsyncTaskStatus::Completed { .. } => ("completed", None),
-            AsyncTaskStatus::Failed { error } => ("failed", Some(error)),
-            AsyncTaskStatus::Cancelled => ("cancelled", None),
-            AsyncTaskStatus::TimedOut { error } => ("timed out", Some(error)),
-            AsyncTaskStatus::Pending => ("pending", None),
-            AsyncTaskStatus::Running => ("running", None),
-        };
-        // A failed or timed-out task's reason lives in its status; its
-        // result is usually null, which alone tells the model nothing.
-        let body = match (error, event.result()) {
-            (Some(error), serde_json::Value::Null) => format!("error: {error}"),
-            (Some(error), result) => format!("error: {error}\n{result}"),
-            (None, result) => result.to_string(),
-        };
         content.push(ContentBlock::Text {
-            text: format!(
-                "[Async task result — task_id: {} — tool: {} — status: {}]\n{}",
-                event.task_id(),
-                event.tool_name(),
-                status_word,
-                truncate_for_preview(&body),
-            ),
+            text: completion_block_text(event),
         });
     }
 
@@ -193,24 +201,26 @@ pub fn build_async_completion_message<E: AsyncCompletionLike>(
     })
 }
 
-/// Persist subagent completions into the parent's live session JSONL.
+/// Persist this session's async completions into its live session JSONL.
 ///
-/// WS3 (implicit session management): the agentic loop's inbox drain
-/// injects a synthetic `LlmMessage` for the next LLM turn via
-/// [`build_async_completion_message`], but that message lives only in
-/// memory and is lost on reload. This helper writes the same payload
-/// out — tagged with [`MessageSource::Agent`] — so the helper's output
-/// is part of the parent's permanent transcript. Filtered to events
-/// whose `parent_session_key` matches and whose `tool_name` is the
-/// subagent dispatcher (`Agent`); other completions (cron, shell,
-/// a2a) are out of scope for this hook and continue to live only in
-/// the in-memory `messages` slice.
+/// The agentic loop's inbox drain shows completions to the next model
+/// call through [`build_async_completion_message`], but that message
+/// lives only in memory. Without a persisted copy, the next turn reloads
+/// a transcript where the run answered from a result that is no longer
+/// there, and the model concludes it made the answer up (2026-11-08 live
+/// test: a peko "corrected" a true `ls` answer as a fabrication).
 ///
-/// Returns `Ok(())` even when individual appends fail — log-and-continue
-/// matches the steering-branch behavior in `agentic_loop::run_inner`'s
-/// inbox drain. A torn append is recoverable via the
-/// `torn_last_line_filtered` invariant in `peko_session::jsonl`.
-pub async fn persist_subagent_completions<E: AsyncCompletionLike>(
+/// - Subagent completions (`Agent`) are written as `📨 [Helper: Agent]`
+///   entries tagged [`MessageSource::Agent`] (WS3).
+/// - Every other completion (Bash, Workflow, cron-spawned tools, …) is
+///   written with the exact text the run saw, tagged
+///   [`MessageSource::Hook`] like the runtime's other injected notes.
+///
+/// Filtered to events whose `parent_session_key` matches. Log-and-
+/// continue on append failures, like the steering branch of the inbox
+/// drain; a torn append is recoverable via the `torn_last_line_filtered`
+/// invariant in `peko_session::jsonl`.
+pub async fn persist_completions<E: AsyncCompletionLike>(
     completions: &[E],
     session: &dyn SessionView,
     session_id: &str,
@@ -219,20 +229,21 @@ pub async fn persist_subagent_completions<E: AsyncCompletionLike>(
         if event.parent_session_key() != session_id {
             continue;
         }
-        if event.tool_name() != "Agent" {
-            continue;
-        }
-        let persisted = format!(
-            "📨 [Helper: {}] {}",
-            event.tool_name(),
-            truncate_for_preview(&event.result().to_string())
-        );
-        if let Err(e) = session
-            .add_user_with_source(persisted, MessageSource::Agent)
-            .await
-        {
+        let (persisted, source) = if event.tool_name() == "Agent" {
+            (
+                format!(
+                    "📨 [Helper: {}] {}",
+                    event.tool_name(),
+                    truncate_for_preview(&event.result().to_string())
+                ),
+                MessageSource::Agent,
+            )
+        } else {
+            (completion_block_text(event), MessageSource::Hook)
+        };
+        if let Err(e) = session.add_user_with_source(persisted, source).await {
             tracing::warn!(
-                "AgenticLoop: failed to persist subagent completion (task {}): {e}",
+                "AgenticLoop: failed to persist async completion (task {}): {e}",
                 event.task_id()
             );
         }
@@ -535,7 +546,7 @@ mod tests {
     /// type) and verifies the source tag round-trips through the
     /// native event loader.
     #[tokio::test]
-    async fn test_persist_subagent_completions_filters_and_tags_source() {
+    async fn test_persist_completions_filters_and_tags_source() {
         use peko_session::events::{MessageSource, SessionEvent, SessionMessage};
         use peko_session::{Arc as SessionArc, RwLock as SessionRwLock, Session};
         use tempfile::TempDir;
@@ -554,9 +565,10 @@ mod tests {
         ));
 
         // Mixed completion set:
-        //   - one matching parent + Agent tool → must persist
-        //   - one matching parent but `shell` tool → must NOT persist
-        //   - one for a different session_key → must NOT persist
+        //   - one matching parent + Agent tool → persisted as Agent
+        //   - one matching parent but `shell` tool → persisted as Hook
+        //     (see `test_persist_completions_keeps_tool_results_as_seen`)
+        //   - one for a different session_key → not persisted
         let events = vec![
             make_completion_event("agent:x", "Agent", session_id),
             make_completion_event("shell:y", "shell", session_id),
@@ -565,7 +577,7 @@ mod tests {
         // The blanket impl `impl<T> SessionView for Arc<tokio::sync::RwLock<T>>`
         // applies; `&session` is `&Arc<RwLock<Session>>` which coerces to
         // `&dyn SessionView` via unsized coercion at the function boundary.
-        persist_subagent_completions(&events, &session, session_id).await;
+        persist_completions(&events, &session, session_id).await;
 
         // Reload raw events and look for our `📨 [Helper: Agent]` line.
         let events = storage.load_events(session_id).await.unwrap();
@@ -607,13 +619,85 @@ mod tests {
         }
     }
 
-    /// `persist_subagent_completions` is log-and-continue: an append
+    /// A background tool's result (not only a subagent's) is written to
+    /// the session with the exact text the run saw, so the next turn's
+    /// reload still holds the source of any answer built on it
+    /// (2026-11-08 live test: without it a peko disowned a true answer).
+    #[tokio::test]
+    async fn test_persist_completions_keeps_tool_results_as_seen() {
+        use peko_session::events::{MessageSource, SessionEvent};
+        use peko_session::{Arc as SessionArc, RwLock as SessionRwLock, Session};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = peko_session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = peko_subject::ActorRef::User("default".into());
+        let session_id = "test-persist-tool-results";
+        storage.create_session(session_id, None).await.unwrap();
+        let session: SessionArc<SessionRwLock<Session>> = SessionArc::new(SessionRwLock::new(
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap(),
+        ));
+
+        let events = vec![
+            make_completion_event("Bash:y", "Bash", session_id),
+            make_completion_event("Bash:z", "Bash", "other-session"),
+        ];
+        let seen = build_async_completion_message(&events, session_id).unwrap();
+        persist_completions(&events, &session, session_id).await;
+
+        let hook_texts: Vec<String> = storage
+            .load_events(session_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|ev| match ev {
+                SessionEvent::MessageV2(m)
+                    if matches!(
+                        m.role_metadata,
+                        peko_session::message::RoleMetadata::User {
+                            source: MessageSource::Hook
+                        }
+                    ) =>
+                {
+                    match &m.message.content[0] {
+                        peko_message::ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hook_texts.len(),
+            1,
+            "only this session's result: {hook_texts:?}"
+        );
+        assert!(
+            hook_texts[0].contains("task_id: Bash:y"),
+            "{}",
+            hook_texts[0]
+        );
+        assert!(
+            hook_texts[0].contains("hello"),
+            "the result itself: {}",
+            hook_texts[0]
+        );
+        // Byte-identical to the block the run was shown.
+        let shown = seen.content.iter().any(
+            |b| matches!(b, peko_message::ContentBlock::Text { text } if *text == hook_texts[0]),
+        );
+        assert!(shown, "persisted text must match what the run saw");
+    }
+
+    /// `persist_completions` is log-and-continue: an append
     /// failure on one event does not abort the loop. Today this is
     /// hard to exercise without a failing append sink — covered here
     /// by a happy-path-only smoke test that asserts no panics on an
     /// empty event list (the common steady-state at runtime).
     #[tokio::test]
-    async fn test_persist_subagent_completions_empty_noop() {
+    async fn test_persist_completions_empty_noop() {
         use peko_session::{Arc as SessionArc, RwLock as SessionRwLock, Session};
         use tempfile::TempDir;
 
@@ -629,7 +713,7 @@ mod tests {
                 .unwrap(),
         ));
         let events: Vec<peko_session::CompletionEvent> = vec![];
-        persist_subagent_completions(&events, &session, session_id).await;
+        persist_completions(&events, &session, session_id).await;
 
         // Nothing appended on the helper's side. `SessionCreated` /
         // other lifecycle events emitted by `open_by_id` are not in
@@ -641,7 +725,7 @@ mod tests {
             .count();
         assert_eq!(
             message_v2_count, 0,
-            "persist_subagent_completions must not append any MessageV2 events when the event list is empty"
+            "persist_completions must not append any MessageV2 events when the event list is empty"
         );
     }
 }

@@ -197,7 +197,7 @@ pub fn create_local_transport() -> Arc<dyn AsyncTaskTransport> {
 /// dispatched through this transport actually reach the parent
 /// agentic loop's per-iteration drain. Without this, the
 /// `AsyncExecutionRouter` creates a private registry disconnected
-/// from the loop's drain and WS3's `persist_subagent_completions`
+/// from the loop's drain and WS3's `persist_completions`
 /// never fires in production.
 pub fn create_local_transport_with_inbox(
     inbox_registry: Arc<peko_session::InboxRegistry>,
