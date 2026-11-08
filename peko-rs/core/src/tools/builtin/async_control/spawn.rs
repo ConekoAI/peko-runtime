@@ -37,19 +37,7 @@ impl Tool for AsyncSpawnAction {
     }
 
     fn description(&self) -> String {
-        r"Invoke any tool asynchronously and return a task receipt.
-
-The spawned task runs in the background. Use Async action status/Async action output to check
-progress and read results; use Async action stop to cancel.
-
-Parameters:
-- tool: string (required) — the tool name to invoke
-- params: object (required) — parameters to pass to the tool
-- label: string? — optional label for the task
-- wake_on_completion: boolean? — default true; deliver completion to the spawning session and start a follow-up turn when idle. false queues the completion silently for the next run.
-- timeout_secs: integer? — optional limit on the task's lifetime in seconds. Omit for no limit (the default).
-
-Returns: { task_id, status, tool_name }"
+        r"Run any tool in the background. Returns `{task_id, status, tool_name}`; the result reaches this session when the task ends."
             .to_string()
     }
 
@@ -59,11 +47,11 @@ Returns: { task_id, status, tool_name }"
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "The tool name to invoke (e.g., 'Bash', 'Agent', 'Read')"
+                    "description": "Tool to run, e.g. 'Bash' or 'Agent'"
                 },
                 "params": {
                     "type": "object",
-                    "description": "Parameters to pass to the tool (forwarded verbatim)"
+                    "description": "The tool's parameters, passed verbatim"
                 },
                 "label": {
                     "type": "string",
@@ -71,12 +59,12 @@ Returns: { task_id, status, tool_name }"
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "If true (default), the completion is pushed into the spawning session's inbox AND, when the session is idle (no run in flight), a follow-up turn is started so the agent reacts to the result. If false, the completion is pushed silently for the next run to drain (background bookkeeping). Cron schedules use their creating session, with a trunk fallback."
+                    "description": "Default true: the result goes to this session and starts a turn if it is idle. false: it waits quietly for the next run."
                 },
                 "timeout_secs": {
                     "type": ["integer", "null"],
                     "minimum": 1,
-                    "description": "Optional limit on the spawned task's lifetime in seconds. Omit (or null) for no limit, the default."
+                    "description": "Lifetime limit in seconds; omit for none"
                 }
             },
             "required": ["tool", "params"]

@@ -231,8 +231,6 @@ Returns `{entries, total_matched, returned, truncated}` in path order; each entr
 Examples:
 ```json
 {"pattern": "src/**/*.rs"}
-{"pattern": "**/test_*.py"}
-{"pattern": "*.toml", "include_hidden": true}
 {"pattern": "**/*.log", "include_ignored": true}
 ```"#
             .to_string()

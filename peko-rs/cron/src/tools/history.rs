@@ -47,7 +47,7 @@ impl Tool for CronHistoryAction {
     }
 
     fn description(&self) -> String {
-        "Read a scheduled job's run history by ID (or label): per-fire status, start/finish timestamps, output, and error message — most recent first. One-shot jobs delete themselves after firing; read their history by the job_id returned at creation (labels resolve only live jobs). Use it to debug why a job failed or what it did (Cron action list only shows the LAST fire's status, not the error text or trend).".to_string()
+        r"A job's runs, newest first: status, start and finish times, output, and error. Use it to see why a job failed (`list` shows only the last fire's status). One-shot jobs delete themselves after firing, so read theirs by the job_id create returned; labels resolve only live jobs.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -56,15 +56,15 @@ impl Tool for CronHistoryAction {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "ID of the scheduled job"
+                    "description": "Job id"
                 },
                 "label": {
                     "type": "string",
-                    "description": "Label of the scheduled job (alternative to id)"
+                    "description": "Job label (instead of id)"
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max runs to return (most recent first). Defaults to 10, capped at 50."
+                    "description": "Runs to return (default 10, at most 50)"
                 }
             },
             "oneOf": [

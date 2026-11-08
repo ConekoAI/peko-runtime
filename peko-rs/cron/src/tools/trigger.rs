@@ -44,7 +44,7 @@ impl Tool for CronTriggerAction {
     }
 
     fn description(&self) -> String {
-        "Fire a scheduled job immediately, out of schedule, by ID (or label). Works even when the job is disabled — use it to verify a freshly-created job's wiring before its first scheduled fire. The run executes in the background; if the job is already running, the fire coalesces into the in-flight run. Check the outcome with Cron action history.".to_string()
+        r"Fire a job now, even when it is disabled, e.g. to check a new job's wiring. It runs in the background (joining a run already in flight); read the outcome with `history`.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -53,11 +53,11 @@ impl Tool for CronTriggerAction {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "ID of the scheduled job to fire now"
+                    "description": "Job id"
                 },
                 "label": {
                     "type": "string",
-                    "description": "Label of the scheduled job to fire now (alternative to id)"
+                    "description": "Job label (instead of id)"
                 }
             },
             "oneOf": [

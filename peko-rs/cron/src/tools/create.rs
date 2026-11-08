@@ -150,7 +150,7 @@ impl Tool for CronCreateAction {
     }
 
     fn description(&self) -> String {
-        "Schedule future work. Two modes: (1) `message` — an instruction delivered to you (the principal) at fire time, running a full agent turn so output is composed fresh on every fire (LLM-driven, costs tokens per fire; use for reminders/pings whose text should vary); (2) `tool` + `params` — a fixed tool call at fire time (parameters verbatim, no scheduler model call; invoked tools such as Agent may call an LLM and consume tokens). Supports `delay` for relative one-shots (\"in 10m\" — preferred, no clock arithmetic), `at` for absolute RFC3339 one-shots, `cron` expressions, intervals, and idle triggers. Jobs are stored and executed by the daemon. Runs of the same job do not overlap. Recurring intervals keep their grid: a successful run that finishes past its next slot runs once more right away (one catch-up, never a burst; a failed run waits for the next future slot). A turn that is always longer than its interval therefore runs back to back, so keep the whole tool/agent turn shorter than the interval. A `message` job on `interval_ms` needs at least 60000 ms (use `cron` or `delay` for anything faster).".to_string()
+        r#"Schedule work. A `message` job delivers an instruction to you at each fire and runs a full turn (a model call per fire; for reminders and pings whose text should vary). A `tool` + `params` job makes that exact call at each fire with no model call of its own. Schedule with `delay` for "in N" one-shots (preferred: no clock arithmetic), `at` (RFC 3339), `cron` (+ `timezone`), `interval_ms`, or `idle_ms`. Runs of one job never overlap. An interval keeps its grid: a run that ends past its next slot runs once more at once (one catch-up, never a burst; a failed run waits for the next slot), so keep each turn shorter than the interval. A `message` job's `interval_ms` is at least 60000."#.to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -160,67 +160,67 @@ impl Tool for CronCreateAction {
                 "message": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Instruction delivered to the creating session at fire time (trunk fallback), running a full agent turn (dynamic, LLM-driven output — e.g. \"compose a fresh ping and ChannelSend it\"). Mutually exclusive with `tool`."
+                    "description": "Message jobs only: the instruction each fire delivers. The memory job's message is the runtime's marker and cannot be replaced"
                 },
                 "model": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Only with `message`. Configured model id (see `ModelList`) each fire's turn runs on instead of your pinned model, e.g. a cheaper one for routine bookkeeping."
+                    "description": "Message jobs only: configured model id each fire's turn runs on (see ModelList); '' returns to your pinned model"
                 },
                 "when": {
                     "type": "string",
                     "enum": ["always", "attention", "quiet"],
-                    "description": "Only with `message` on a recurring schedule. \"attention\" runs a fire's turn only when something waits on you (other principals' posts, unread channel activity, ready plan steps, a failed job) or your last turn from this job is an hour old; other fires are quiet ticks that call no model. \"quiet\" (interval or cron schedules) holds a due fire until nobody has talked to you for 4 hours, at most 12 hours past due: a stand-in for night when your owner's hours are unknown. \"always\" (default) runs every fire."
+                    "description": "Recurring message jobs only. \"attention\": a fire runs its turn only when something waits on you (posts, unread activity, ready plan steps, a failed job) or the job's last turn is an hour old; other fires are quiet ticks with no model call. \"quiet\" (interval or cron): a due fire waits until nobody has talked to you for 4 hours, at most 12 hours past due. \"always\" (default): every fire runs."
                 },
                 "tool": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Tool name to invoke at fire time (e.g. \"Agent\", \"Bash\", \"ChannelSend\"). The scheduled job calls this tool with `params` at every fire — no scheduler model call. Invoked tools such as Agent may call an LLM and consume tokens. Mutually exclusive with `message`."
+                    "description": "Tool each fire calls with `params`, e.g. Agent, Bash, ChannelSend; not with `message`"
                 },
                 "params": {
                     "type": "object",
-                    "description": "Tool-call parameters passed to `tool` at fire time. Defaults to {} when omitted. Only meaningful with `tool`."
+                    "description": "Parameters for `tool` (default {})"
                 },
                 "wake_on_completion": {
                     "type": "boolean",
-                    "description": "Whether to post a steer message into the creating session's inbox (trunk fallback) when the run completes. Defaults to false for cron-spawned runs."
+                    "description": "Tool jobs only: true sends each fire's result to the creating session (trunk fallback); false stops it"
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "Optional per-run time limit in seconds. Omit for no limit (the default)."
+                    "description": "Per-run limit in seconds; omit for none"
                 },
                 "one_shot": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Delete the job after its first fire. at/delay schedules are always one-shot, even when this is false."
+                    "description": "Delete the job after its first fire (at and delay jobs always do)"
                 },
                 "label": {
                     "type": "string",
-                    "description": "Optional human-readable label for the job"
+                    "description": "A name for the job"
                 },
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression (5-field). Supply a schedule: delay, at, interval_ms, cron, or idle_ms. Explicit fields resolve in that order after delay; delay cannot be combined with another schedule."
+                    "description": "5-field cron expression"
                 },
                 "at": {
                     "type": "string",
-                    "description": "RFC3339 timestamp in the FUTURE for a one-shot scheduled job (past times are rejected). One-shot by default — the job deletes itself after firing. The current date/time is in your system prompt. For 'in N units' style delays prefer `delay` — no timestamp arithmetic needed."
+                    "description": "Future RFC 3339 time for a one-shot (the current time is in your context)"
                 },
                 "delay": {
                     "type": "string",
-                    "description": "PREFERRED for 'in N units' requests: relative delay for a one-shot job (e.g. \"90s\", \"5m\", \"1h\", \"1d\"). Resolved to an absolute timestamp at registration time — no clock arithmetic. Cannot be combined with at/cron/interval_ms/idle_ms."
+                    "description": "Preferred for 'in N' one-shots: \"90s\", \"5m\", \"1h\", \"1d\"; not with other schedules"
                 },
                 "interval_ms": {
                     "type": "integer",
-                    "description": "Recurring interval in milliseconds. Same-job runs do not overlap; a successful run that overran its next slot runs once more right away, and further overdue slots are skipped. Whole-turn duration and daemon polling can delay checks."
+                    "description": "Recurring interval in ms (message jobs: at least 60000)"
                 },
                 "timezone": {
                     "type": "string",
-                    "description": "IANA timezone for the cron expression, e.g. 'Europe/Berlin' (default: this machine's local zone)"
+                    "description": "IANA zone for cron, e.g. 'Europe/Berlin' (default: this machine's)"
                 },
                 "idle_ms": {
                     "type": "integer",
-                    "description": "Fire once nobody has talked to you (the principal) for this long, in milliseconds (rounded down to whole minutes, at least one minute). Fires once per quiet stretch; cron turns are not activity"
+                    "description": "Fire once per quiet stretch: after nobody has talked to you this long, in ms (whole minutes)"
                 }
             },
             "allOf": [

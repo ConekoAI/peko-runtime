@@ -53,7 +53,7 @@ impl Tool for PlanTool {
         "Plan"
     }
     fn description(&self) -> String {
-        let mut description = "Manage principal-owned durable plans and dependency graphs: create, list, get, add_step, mark_step, record_evidence, or close. Closed plans cannot be modified. You set a node's status as a string (`\"blocked\"` plus `reason`); plan records report it as an object such as `{\"kind\": \"blocked\", \"reason\": \"...\"}`.".to_string();
+        let mut description = "Durable plans: dependency graphs of steps that last across turns. Closed plans cannot be modified. Set a status as a string (`\"blocked\"` plus `reason`); records report it as an object such as `{\"kind\": \"blocked\", \"reason\": \"...\"}`. A step's `checkAt` (RFC 3339, or a duration from now such as `90m` or `2d`) snoozes it until then; after that its check-in is due and your heartbeat runs for it. Use it for follow-ups, waiting on people, and work for later.".to_string();
         description.push_str(&format!(
             "\n\nAction create:\n{}",
             self.create.description()

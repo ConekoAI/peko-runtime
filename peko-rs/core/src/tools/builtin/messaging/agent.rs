@@ -287,31 +287,22 @@ pub struct AgentTool {
 
 impl AgentTool {
     pub(crate) fn tool_description() -> String {
-        r#"Run LLM work in a session: start or continue a sub-agent (action "new", the default), re-attach to a session you spawned earlier ("resume"), compact a session and continue it ("compact"), or run a prompt on a copy of a session's context ("branch"). Every action needs `prompt` and `path`. `role` picks the template the run follows (an id from RoleCatalog: `<workspace>/roles/<role>.md` or `roles/<role>/ROLE.md`); omit it for `worker`, the general role for a delegated task.
+        r#"Run model work in a session. Actions: "new" (the default) starts a sub-agent or continues one you spawned; "resume" re-attaches to a session you spawned; "compact" summarizes a session's older messages, then runs `prompt` on it; "branch" runs `prompt` on a copy of a session's context. Every action needs `prompt` and `path`. `role` is a RoleCatalog id; omit it for `worker`, the role for one delegated task.
 
-## Addressing
-Session addresses are slug paths like `sess:/user-bob/writer-1` (the `path` field of Session action `list`; your own position is in the runtime context). For `new` and `branch`, a bare slug (`writer-1`, 1-64 chars, no `/`) means a session under yours. Raw session ids are refused.
+`path` is a slug path like `sess:/user-bob/writer-1` (Session `list` gives them; yours is in the runtime context). For new and branch a bare slug (`writer-1`, 1-64 chars, no `/`) means a session under yours. Raw session ids are refused.
+- new: continues the addressed session if you spawned it, else creates it, so repeating one call (e.g. from cron) keeps one session. Only a bare slug or a one-segment absolute path can create one.
+- resume: an existing spawned session at an absolute path.
+- compact: any session except yours and your ancestors (those compact on their own). It keeps the session's model, so `model` is refused.
+- branch: copies the live context of `source` (default: your session) into `path`; the source is never changed. If `path` holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug and children stay; the old transcript becomes a compaction page); without it the call is refused. For a recurring side task that needs a main session's context without adding to it.
 
-## Actions
-- new: if the addressed session exists and was spawned, the run continues it with its history; otherwise a new session is created. Repeating the same `new` call (e.g. from a cron job) keeps one continuous session. Only a bare slug or a single-segment absolute path can create a session.
-- resume: continue an existing spawned session at an absolute path.
-- compact: summarize the session's older messages now, then run `prompt` against the compacted history. Works on any session except yours and your ancestors (those compact automatically). Keeps the session's model, so `model` is refused.
-- branch: copy the live context of `source` (default: your session) into the session at `path` and run `prompt` there; the source is never modified. If `path` already holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug, and children stay; the old transcript is kept as a compaction page); without it the call is refused. Useful for a recurring side task that needs a main session's context without adding to it.
+The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
 
-## Result and time
-The call waits for the run and returns `{status, success, run_id, role, output | error}`. Runs have no time limit: if one is still going after 10 minutes, the call returns a receipt with a `task_id` and the run continues; its result is delivered to your session when it finishes (starting a turn if you are idle). Check sooner with `Async` action `output` or `status`; cancel with `Async` action `stop`.
+Refused: your own session or an ancestor, a session with an active run, and (resume) one that is missing or was not spawned. All your principal's live runs share one limit (default 20): at it the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent` and `max_concurrent`; retry after a run ends instead of polling. Delegation depth is unlimited and idle sessions use no slots.
 
-## Refusals
-A call is refused when the target is your own session or an ancestor, already has an active run, or (resume) does not exist or was not spawned. All live runs of your principal share one concurrency limit (default 20) — peer turns, cron runs, waiting parents, detached runs. At capacity the call fails at once with `error_type: "ConcurrentLimitExceeded"`, `current_concurrent`, and `max_concurrent`; retry after a run finishes instead of polling. Delegation depth is unlimited and idle sessions use no slots.
-
-## Examples
-```json
+Examples:
 {"prompt": "Find every TODO in src/ and list them by file", "path": "todo-scan"}
-{"prompt": "Use Write to create report.txt with a summary", "role": "writer", "path": "writer-1"}
-{"prompt": "Now update report.txt with the new numbers", "role": "writer", "path": "writer-1"}
-{"action": "compact", "path": "sess:/user-bob/writer-1", "prompt": "Draft the final report from our work so far", "role": "writer"}
-{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above", "role": "writer", "overwrite": true}
-```"#
+{"prompt": "Update report.txt with the new numbers", "role": "writer", "path": "writer-1"}
+{"action": "branch", "path": "briefing", "prompt": "Write today's briefing from the context above", "role": "writer", "overwrite": true}"#
             .to_string()
     }
 

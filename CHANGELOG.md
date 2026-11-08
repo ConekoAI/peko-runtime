@@ -14,6 +14,23 @@ All notable changes to Peko.
   for its session (`persist_completions`, was `persist_subagent_completions`)
   with the exact text the run saw, tagged `MessageSource::Hook`; subagent
   results keep their `📨 [Helper: Agent]` entry.
+### Fix: every turn sends a smaller prompt (2026-11-08)
+
+- The 25 built-in tool definitions were ~85% of a turn's base prompt
+  (2026-11-07 field test). Their descriptions no longer repeat what each
+  JSON schema already says: per-action `Parameters:` blocks became one
+  "Takes …" line (the wire schema flattens every action's properties, so
+  the line is what says which action takes what); Read, Edit and Write
+  lost their parameter sections; Skill's authoring notes, ChannelRead,
+  ChannelSend, Cron, Plan, Async, Task, Agent and Session were tightened;
+  Bash and Glob keep one or two examples. No rule, limit or refusal was
+  dropped, and no tool was removed.
+- New pekos are seeded with shorter `kb/MEMORY.md`, `kb/index.md` and
+  `kb/CONVENTIONS.md` (they ride in every prompt; same rules, and the
+  `Retracted YYYY-MM-DD:` line is unchanged). Existing pekos keep theirs.
+- An owner DM turn on a fresh peko, captured from its real request
+  (~4 characters per token): tools ~16.5K → ~12.7K tokens (−23%), the
+  whole request ~19.4K → ~15.3K (−21%).
 
 ### Feature: approve or deny your peko's waiting requests from any of your computers (ADR-099) (2026-11-07)
 

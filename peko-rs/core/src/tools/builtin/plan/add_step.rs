@@ -29,20 +29,7 @@ impl Tool for PlanAddStepAction {
     }
 
     fn description(&self) -> String {
-        r"Append a new node to an existing open plan.
-
-Parameters:
-- planId: string (required)
-- step: string (required) — imperative description of the new step
-- nodeId: string? — auto-assigned if omitted
-- dependsOn: array<string>? — ids of existing nodes in this plan the new step depends on
-- status: string? — defaults to 'pending'
-- checkAt: string? — when to come back to the step: RFC 3339 or a duration
-  from now ('90m', '2d'); snoozes it until then, then the check-in is due
-
-Returns the updated PlanRecord. Errors when the plan is closed or a
-dependsOn id is not in the plan. A nodeId that already exists is a
-no-op (the existing node is kept), so retries are safe."
+        r"Append a step to an open plan. Takes `planId`, `step`, `nodeId?`, `dependsOn?` (ids already in the plan), `status?`, `checkAt?`. A nodeId that already exists is a no-op, so retries are safe. Returns the plan."
             .to_string()
     }
 
@@ -61,7 +48,7 @@ no-op (the existing node is kept), so retries are safe."
                     "type": "string",
                     "enum": ["pending","in_progress","completed","blocked","failed"]
                 },
-                "checkAt":    { "type": "string", "description": "When to come back to this step: RFC 3339 time or a duration from now (\"90m\", \"2d\"). Until then a ready or in-progress step is snoozed; once it passes the check-in is due and your heartbeat runs for it." }
+                "checkAt":    { "type": "string", "description": "When to come back to the step: RFC 3339 or a duration (\"90m\")" }
             },
             "required": ["planId","step"]
         })

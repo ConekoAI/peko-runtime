@@ -69,33 +69,9 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> String {
-        r#"Invoke a SKILL.md body with argument substitution.
+        r#"Run a skill: returns `{name, dir, body}`, its SKILL.md body with dynamic context resolved and arguments substituted. `name` is the skill's directory name; `args` are positional strings. Files the body mentions are relative to `dir`; its commands run in the workspace. An unknown name lists the available skills; an unreadable or invalid skill file is an error.
 
-Parameters:
-- name: required — skill name (must match a discovered SKILL.md directory name).
-- args: optional array of strings — positional arguments.
-
-Argument substitution (Claude-style):
-- $ARGUMENTS — full args array joined with single spaces
-- $0, $1, … — positional, 0-indexed
-- $name — declared in SKILL.md frontmatter `arguments:` list; positions map to names by order
-
-Escape: prefix with `\$` to keep a placeholder literal.
-
-If a `$name` placeholder's name is not declared in the frontmatter `arguments:` list, it is left unsubstituted in the rendered body.
-
-Dynamic context (Claude-style):
-- Inline: `!` + `command` + `` ` `` — runs `command` and inlines its stdout. Only recognized when `!` is at the start of a line or preceded by ASCII whitespace.
-- Fenced: ` ```! ` … ` ``` ` — same idea, multiline; the entire fence is replaced by the command output.
-- Single pass: substituted output is not re-scanned.
-- Failure mode: on non-zero exit, stdout is inlined verbatim and a `stderr: <stderr>` line is appended. On timeout, `stderr: command timed out after 5000 ms` is appended.
-- Frontmatter knobs:
-  - `shell: bash` (default; only supported value today)
-  - `allowed-tools: ["git *", "pwd", ...]` — glob allowlist. Empty list = all commands allowed. Glob is anchored to the full trimmed command.
-
-Returns:
-- { name, dir, body } — the skill's body with dynamic context resolved, then arguments substituted. `dir` is the skill's directory: files the body mentions (scripts, references) are relative to it. Dynamic-context commands run in the workspace.
-- An unknown name, or an unreadable or invalid skill file, is a tool error (an unknown name lists the available skills)."#
+Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … are positional; `$name` maps by position to the frontmatter `arguments:` list (undeclared names stay as written; `\$` keeps a placeholder literal). `!` plus a backticked command, at a line start or after whitespace, or a fenced block opened with ```!, is replaced by the command's stdout in one pass; a failure appends `stderr: …`, and a command times out after 5000 ms. Frontmatter `allowed-tools: ["git *", …]` limits commands by globs anchored to the whole command (empty: all); `shell: bash` is the only shell."#
             .to_string()
     }
 

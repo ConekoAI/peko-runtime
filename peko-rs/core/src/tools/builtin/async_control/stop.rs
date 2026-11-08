@@ -31,19 +31,7 @@ impl Tool for AsyncStopAction {
     }
 
     fn description(&self) -> String {
-        r"Cancel a running or pending background async task.
-
-Works for ALL async tasks: Bash, Agent, Read, etc.
-
-Parameters:
-- task_id: string (required) — the task ID from the async receipt
-
-Returns: { success, task_id, previous_status?, already_terminal, message }
-
-If the task is already in a terminal state (completed / failed /
-cancelled / timed_out), the response has `success: true,
-already_terminal: true` so the model can treat it as a no-op rather
-than an error."
+        r"Cancel a pending or running task. Stopping a task that already ended is a no-op (`success: true, already_terminal: true`), not an error."
             .to_string()
     }
 
@@ -53,7 +41,7 @@ than an error."
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The task ID from the async receipt (e.g., 'Bash:abc-123')"
+                    "description": "task_id from the receipt"
                 }
             },
             "required": ["task_id"]

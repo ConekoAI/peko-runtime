@@ -29,15 +29,7 @@ impl Tool for PlanCloseAction {
     }
 
     fn description(&self) -> String {
-        r"Close an open plan.
-
-Parameters:
-- planId: string (required)
-- reason: string (required) — short human-readable note explaining
-  why the plan is being closed.
-
-Returns { planId, closedAt, reason }. Closing an already-closed plan
-is an error."
+        r"Close an open plan with a short `reason`. Returns `{planId, closedAt, reason}`; closing a closed plan is an error."
             .to_string()
     }
 

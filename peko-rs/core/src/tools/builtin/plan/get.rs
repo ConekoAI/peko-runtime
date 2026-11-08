@@ -25,13 +25,7 @@ impl Tool for PlanGetAction {
     }
 
     fn description(&self) -> String {
-        r"Fetch a single plan by id, scoped to the calling principal.
-
-Parameters:
-- planId: string (required)
-
-Returns the full plan. An unknown planId is an error."
-            .to_string()
+        r"One plan by `planId`. An unknown planId is an error.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -40,7 +34,7 @@ Returns the full plan. An unknown planId is an error."
             "properties": {
                 "planId": {
                     "type": "string",
-                    "description": "Plan id returned by Plan action create (e.g., 'plan_01abc...')."
+                    "description": "Plan id"
                 }
             },
             "required": ["planId"]
