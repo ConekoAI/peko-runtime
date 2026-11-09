@@ -528,6 +528,21 @@ async fn the_board_is_changed_and_read_through_the_tool() {
         .unwrap();
     assert_eq!(claimed["item"]["state"], "doing", "{claimed}");
 
+    // The friend, asked for the same work at the same time, adds its own
+    // item: the reply shows the one already there.
+    let dup = fx
+        .tool
+        .execute_with_context(
+            json!({"action": "board", "channel": group, "op": "add",
+                "title": "Run the tests"}),
+            &fx.owner_ctx_of(&fx.friend),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dup["similar"][0]["id"], json!(item), "{dup}");
+    assert!(dup["note"].as_str().unwrap().contains("same work"), "{dup}");
+    assert!(claimed.get("similar").is_none(), "{claimed}");
+
     // The friend sees it held.
     let err = fx
         .tool

@@ -331,6 +331,26 @@ impl ChannelOutbox {
         }
     }
 
+    /// The posts in `channel` some recipient has not confirmed yet, by
+    /// `msg_id`, oldest first (a client marks them as waiting).
+    pub(crate) async fn pending_msgs_in(&self, channel: &ChannelId) -> Vec<String> {
+        let mut guard = self.state.lock().await;
+        let entries = self.loaded(&mut guard).await;
+        let mut pending: Vec<(u64, String)> = entries
+            .values()
+            .filter(|e| e.item.channel() == channel)
+            .filter_map(|e| e.msg_id().map(|id| (e.seq, id.to_string())))
+            .collect();
+        pending.sort();
+        let mut ids: Vec<String> = Vec::new();
+        for (_, id) in pending {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
     /// Whether any entry carrying message `msg_id` is still unconfirmed.
     pub(crate) async fn pending_msg(&self, msg_id: &str) -> bool {
         let mut guard = self.state.lock().await;
@@ -624,6 +644,27 @@ mod tests {
                 .wait_confirmed("msg_1", std::time::Duration::from_secs(5))
                 .await
         );
+    }
+
+    /// What a client marks as waiting: each undelivered post of the
+    /// channel once, oldest first, until its recipients confirm it.
+    #[tokio::test]
+    async fn undelivered_posts_are_listed_until_confirmed() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let outbox = ChannelOutbox::new(dir.path().join("outbox"));
+        let channel = ChannelId("chan_test0001".into());
+        let first = outbox.enqueue("pc1", posted("msg_1")).await.unwrap();
+        outbox.enqueue("pc4", posted("msg_1")).await.unwrap();
+        outbox.enqueue("pc1", posted("msg_2")).await.unwrap();
+        assert_eq!(outbox.pending_msgs_in(&channel).await, ["msg_1", "msg_2"]);
+        assert!(outbox
+            .pending_msgs_in(&ChannelId("chan_other001".into()))
+            .await
+            .is_empty());
+        outbox.confirm("pc1", &[first.request_id]).await;
+        // msg_1 still waits for its other recipient.
+        assert_eq!(outbox.pending_msgs_in(&channel).await, ["msg_1", "msg_2"]);
     }
 
     #[tokio::test]

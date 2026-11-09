@@ -1111,6 +1111,12 @@ pub enum RequestPacket {
     /// change is posted as `sender_name` (a peko the caller operates) or,
     /// when absent, as the caller. Groups only. Answered with
     /// `ChannelBoardResult`.
+    /// The posts in `channel` not yet delivered to a member on another
+    /// runtime (that runtime has been away since, e.g. asleep), by
+    /// `msg_id`. Members only. Answered with `ChannelUndeliveredResult`.
+    #[serde(rename = "channel_undelivered")]
+    ChannelUndelivered { request_id: u64, channel: String },
+
     #[serde(rename = "channel_board")]
     ChannelBoard {
         request_id: u64,
@@ -1220,7 +1226,8 @@ impl RequestPacket {
             | Self::ChannelGroupRegister { request_id, .. }
             | Self::ChannelGroupLink { request_id, .. }
             | Self::ChannelSetWake { request_id, .. }
-            | Self::ChannelBoard { request_id, .. } => *request_id,
+            | Self::ChannelBoard { request_id, .. }
+            | Self::ChannelUndelivered { request_id, .. } => *request_id,
         }
     }
 
@@ -1805,6 +1812,15 @@ pub enum ResponsePacket {
     /// showing (everything not done, and what was done in the last day),
     /// in the order they were added. Each item carries its full `id` and
     /// its `short` reference.
+    /// Response to `ChannelUndelivered`: undelivered posts by `msg_id`,
+    /// oldest first; empty when everything arrived.
+    #[serde(rename = "channel_undelivered_result")]
+    ChannelUndeliveredResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        msg_ids: Vec<String>,
+    },
+
     #[serde(rename = "channel_board_result")]
     ChannelBoardResult {
         request_id: u64,
@@ -3150,7 +3166,8 @@ impl ResponsePacket {
             | Self::ChannelGroupRegistered { request_id, .. }
             | Self::ChannelGroupLinkResult { request_id, .. }
             | Self::ChannelWakeSet { request_id, .. }
-            | Self::ChannelBoardResult { request_id, .. } => *request_id,
+            | Self::ChannelBoardResult { request_id, .. }
+            | Self::ChannelUndeliveredResult { request_id, .. } => *request_id,
         }
     }
 
@@ -3253,6 +3270,7 @@ impl ResponsePacket {
             Self::ChannelGroupLinkResult { .. } => "ChannelGroupLinkResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
             Self::ChannelBoardResult { .. } => "ChannelBoardResult",
+            Self::ChannelUndeliveredResult { .. } => "ChannelUndeliveredResult",
         }
     }
 

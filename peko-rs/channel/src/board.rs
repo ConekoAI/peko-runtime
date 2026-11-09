@@ -396,6 +396,28 @@ impl Board {
             .collect()
     }
 
+    /// Open or active items other than `item` whose titles look like the
+    /// same work: they share at least half the longer title's words.
+    /// Two pekos asked at once each add an item before they see the
+    /// other's (2026-11-09 field test); the second sees this when it
+    /// adds or claims.
+    pub fn similar_to<'b>(&'b self, item: &BoardItem) -> Vec<&'b BoardItem> {
+        let mine = title_words(&item.title);
+        if mine.is_empty() {
+            return Vec::new();
+        }
+        self.items
+            .iter()
+            .filter(|other| other.id != item.id && other.state != BoardState::Done)
+            .filter(|other| {
+                let theirs = title_words(&other.title);
+                let shared = mine.intersection(&theirs).count();
+                let larger = mine.len().max(theirs.len());
+                shared * 10 >= larger * SIMILAR_TITLE_TENTHS
+            })
+            .collect()
+    }
+
     /// Whether `member` holds `item`.
     pub fn holds(item: &BoardItem, member: &str, auth: &Authority<'_>) -> bool {
         item.claimant
@@ -419,6 +441,23 @@ impl Board {
                 || parse_time(Some(&i.updated_at)).is_none_or(|at| at >= cutoff)
         })
     }
+}
+
+/// Share of the longer title's words two titles must have in common to
+/// look like the same work, in tenths.
+const SIMILAR_TITLE_TENTHS: usize = 5;
+
+/// A title's words for comparison: lowercase, letters and digits, at
+/// least three characters, without the most common filler words.
+fn title_words(title: &str) -> std::collections::BTreeSet<String> {
+    const FILLER: &[&str] = &[
+        "the", "and", "for", "with", "from", "that", "this", "into", "after", "before", "once",
+    ];
+    title
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.chars().count() >= 3 && !FILLER.contains(&w.as_str()))
+        .collect()
 }
 
 fn parse_time(s: Option<&str>) -> Option<DateTime<Utc>> {
@@ -813,6 +852,42 @@ mod tests {
         assert!(validate_op(&soon, now).is_err());
         assert!(validate_op(&add(""), now).is_err());
         assert!(validate_op(&add(&"x".repeat(121)), now).is_err());
+    }
+
+    #[test]
+    fn items_for_the_same_work_are_found_and_others_are_not() {
+        let auth = Authority::new(&CanonicalKeys, None, &[]);
+        let events = [
+            posted(
+                REX,
+                "2026-11-09T10:00:00Z",
+                "msg_a",
+                add("Fix even-length median in stats.py"),
+            ),
+            posted(
+                KIT,
+                "2026-11-09T10:00:01Z",
+                "msg_b",
+                add("Fix even-length median in stats.py (prepare, push after review)"),
+            ),
+            posted(
+                MAYA,
+                "2026-11-09T10:00:02Z",
+                "msg_c",
+                add("Review the median fix before it is pushed"),
+            ),
+            posted(MAYA, "2026-11-09T10:00:03Z", "msg_d", add("Write a README")),
+        ];
+        let board = Board::fold(&events, &auth);
+        let kit = board.find("msg_b").unwrap();
+        let similar: Vec<&str> = board
+            .similar_to(kit)
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect();
+        assert_eq!(similar, ["msg_a"]);
+        let readme = board.find("msg_d").unwrap();
+        assert!(board.similar_to(readme).is_empty());
     }
 
     #[test]
