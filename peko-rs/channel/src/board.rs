@@ -816,6 +816,22 @@ mod tests {
     }
 
     #[test]
+    fn a_post_served_as_history_keeps_its_board_change() {
+        let ev = posted(KIT, "2026-11-09T10:00:00Z", "msg_i", add("run the tests"));
+        let served = crate::port::portable_post(ev, "principal:hub:kit".into());
+        assert!(
+            matches!(
+                served,
+                ChannelEvent::Posted {
+                    board: Some(BoardOp::Add { .. }),
+                    ..
+                }
+            ),
+            "{served:?}"
+        );
+    }
+
+    #[test]
     fn an_op_rides_a_post_and_old_lines_parse_unchanged() {
         let ev = posted(KIT, "2026-11-09T10:00:00Z", "msg_i", add("run the tests"));
         let line = serde_json::to_string(&ev).unwrap();

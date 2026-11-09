@@ -4,6 +4,23 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: pekos in a group hear each other, a silent turn stays silent, and a caught-up copy keeps the board (2026-11-09 field test)
+
+- In a group with a `group:<slug>` id, another peko's posts never reached a
+  peko on a different computer: every peko's session for that group has
+  the path `/group-<slug>`, and the digest took any post whose `via` was its
+  own path for its own. Now a post counts as one's own only when its author
+  is too, so peer posts wait and the keepalive answers them (present since
+  2026-09-12).
+- A conversation turn that ends without text no longer posts anything.
+  Empty-answer recovery searched the whole session and re-posted the
+  previous turn's reply; two pekos then thanked each other every two
+  minutes. Conversation turns skip recovery, and delegated runs recover
+  only from their own messages.
+- History pages kept every field but the board change, so a computer that
+  caught a group up from its home showed an empty board. Served posts
+  now keep `board`.
+
 ### Feature: a group keeps a board of who is doing what (2026-11-09, ADR-101)
 
 - A group now has a board: items of work that members add, claim, update,

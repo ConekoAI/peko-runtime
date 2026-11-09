@@ -3085,6 +3085,11 @@ async fn execute_subagent_task(
     let mut prompt = combined_prompt;
     let mut run_media = user_media;
     let mut run_history = history;
+    // Where this run's own messages begin in the session: an empty answer
+    // is recovered only from them. A conversation's earlier turns are not
+    // this run's answer (2026-11-09: an empty keepalive reply re-posted
+    // the previous turn's, and two pekos thanked each other in a loop).
+    let recover_from = run_history.as_ref().map_or(0, Vec::len);
     let mut attempts: u32 = 0;
     let result = loop {
         let run_fut: std::pin::Pin<
@@ -3166,10 +3171,18 @@ async fn execute_subagent_task(
             // This can happen when the LLM only makes tool calls without producing
             // text (accumulated_text is empty), or when the final assistant message
             // has empty text content.
-            if final_answer.trim().is_empty() {
+            //
+            // Not for a conversation turn: there an empty answer is the
+            // peko choosing not to speak (a keepalive told it to leave the
+            // reply empty when nothing needs one), and anything recovered
+            // would be posted to the conversation. 2026-11-09: recovery
+            // re-posted the previous turn's reply (two pekos thanked each
+            // other in a loop), then a raw ChannelRead result.
+            if final_answer.trim().is_empty() && !conversation {
                 if let Some(recovered) =
                     crate::agents::subagent_recovery::ResultRecovery::recover_from_session(
                         &child_session_for_recovery,
+                        recover_from,
                     )
                     .await
                 {

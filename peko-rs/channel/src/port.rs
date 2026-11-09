@@ -1009,6 +1009,7 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
             attachments,
             options,
             model,
+            board,
             ..
         } => ChannelEvent::Posted {
             channel,
@@ -1028,7 +1029,8 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
                 .collect(),
             options,
             model,
-            board: None,
+            // ADR-101: a copy caught up from history folds the same board.
+            board,
         },
         other => other,
     }

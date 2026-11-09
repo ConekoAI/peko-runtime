@@ -1026,11 +1026,15 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
         let by_user = author.starts_with("user:") || author.starts_with("visitor:");
         return !by_user && board_asks_me(op, me);
     }
-    if via.as_deref() == Some(own_path) {
+    let by_user = author.starts_with("user:") || author.starts_with("visitor:");
+    let by_me = author == me.id || author == me.address || me.hub == Some(author.as_str());
+    // This session's own post. `via` alone is not enough: every peko's
+    // session for `group:<slug>` has the path `/group-<slug>`, so another
+    // peko's post there carries this session's path too (2026-11-09
+    // field test: otto never answered juno).
+    if by_me && via.as_deref() == Some(own_path) {
         return false;
     }
-    let by_user = author.starts_with("user:") || author.starts_with("visitor:");
-    let by_me = author == me.id || author == me.address;
     match (scope, kind) {
         (Scope::Bound, Kind::Dm) => parent.is_some() || !by_user,
         (_, Kind::Group) => {
@@ -1330,6 +1334,13 @@ mod tests {
             (Elsewhere, Group),
         ] {
             assert!(!worthy(&posted(me, None, Some(own), "x"), scope, kind));
+            // Another peko's session in the same group has the same path
+            // (`/group-<slug>`): its posts are not ours (2026-11-09).
+            assert!(worthy(
+                &posted("principal:hub:juno", None, Some(own), "x"),
+                scope,
+                kind
+            ));
         }
 
         // Bound DM: user roots started the turn; everything else shows,
