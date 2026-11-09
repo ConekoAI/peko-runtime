@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: existing pekos get the current conversation role (2026-11-09)
+
+- A seeded role that was never edited is replaced on boot with the current
+  seed, matched by its hash against every earlier seed. Four
+  `conversation` seeds (the board, #607, #608, and one before) were never
+  recorded, so a peko created since the board kept its first conversation
+  role and missed #610's `NO_REPLY` guidance. They are recorded now.
+- Each current seed's hash is pinned in `genesis.rs`. Changing a seed fails
+  `seed_hashes_record_every_change` until the old hash is added to its
+  `PREVIOUS_*_SEEDS`. An edited role is still never touched.
+
 ### Fix: pekos stay quiet when nothing needs them (2026-11-09)
 
 - In every run of the collaboration benchmark, a peko posted that another
