@@ -170,6 +170,9 @@ pub struct HubAgentDirectoryClient {
     base_url: String,
     http: reqwest::Client,
     principal_keys: Option<std::sync::Arc<dyn super::cross_runtime_channel::PrincipalSigningKeys>>,
+    /// This runtime's DID and key: a person's lookup without a PekoHub
+    /// token of their own is signed by the runtime they signed in on.
+    runtime_key: Option<(String, std::sync::Arc<ed25519_dalek::SigningKey>)>,
 }
 
 impl HubAgentDirectoryClient {
@@ -185,6 +188,7 @@ impl HubAgentDirectoryClient {
         Self {
             base_url: base_url.into(),
             principal_keys: None,
+            runtime_key: None,
             // Reasonable default; the call-site adds per-request
             // timeouts via the outbound a2a policy layer.
             http: reqwest::Client::builder()
@@ -192,6 +196,42 @@ impl HubAgentDirectoryClient {
                 .build()
                 .expect("reqwest client builder must not fail with default settings"),
         }
+    }
+
+    /// Sign a person's directory lookups that carry no PekoHub token with
+    /// this runtime's key (`PekoRuntime` proof): the Hub answers as it would
+    /// the account the runtime is registered to. The CLI on a person's
+    /// second computer has no token of its own to send.
+    #[must_use]
+    pub fn with_runtime_key(
+        mut self,
+        runtime_did: impl Into<String>,
+        key: std::sync::Arc<ed25519_dalek::SigningKey>,
+    ) -> Self {
+        self.runtime_key = Some((runtime_did.into(), key));
+        self
+    }
+
+    /// A directory proof for `path`: a compact EdDSA JWS by `sub`'s `key`,
+    /// valid for 60 seconds.
+    fn directory_proof(
+        sub: &str,
+        key: &ed25519_dalek::SigningKey,
+        path: &str,
+    ) -> Result<String, DirectoryError> {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use ed25519_dalek::Signer as _;
+        let now = chrono::Utc::now().timestamp();
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub":sub,"aud":"peko-directory-v1","path":path,"iat":now,"exp":now+60
+            }))
+            .map_err(|e| DirectoryError::Transport(e.to_string()))?,
+        );
+        let input = format!("{header}.{payload}");
+        let signature = URL_SAFE_NO_PAD.encode(key.sign(input.as_bytes()).to_bytes());
+        Ok(format!("{input}.{signature}"))
     }
 
     pub fn with_principal_keys(
@@ -207,8 +247,6 @@ impl HubAgentDirectoryClient {
         path: &str,
         caller: &str,
     ) -> Result<AgentResolution, DirectoryError> {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        use ed25519_dalek::Signer as _;
         let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
         if caller.starts_with("did:key:") {
@@ -216,20 +254,8 @@ impl HubAgentDirectoryClient {
                 let key = keys.signing_key_for_did(caller).await.ok_or_else(|| {
                     DirectoryError::Transport("principal signing key unavailable".into())
                 })?;
-                let now = chrono::Utc::now().timestamp();
-                let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
-                let payload = URL_SAFE_NO_PAD.encode(
-                    serde_json::to_vec(&serde_json::json!({
-                        "sub":caller,"aud":"peko-directory-v1","path":path,"iat":now,"exp":now+60
-                    }))
-                    .map_err(|e| DirectoryError::Transport(e.to_string()))?,
-                );
-                let input = format!("{header}.{payload}");
-                let signature = URL_SAFE_NO_PAD.encode(key.sign(input.as_bytes()).to_bytes());
-                request = request.header(
-                    "authorization",
-                    format!("PekoPrincipal {input}.{signature}"),
-                );
+                let proof = Self::directory_proof(caller, &key, path)?;
+                request = request.header("authorization", format!("PekoPrincipal {proof}"));
             }
         }
         let response = request
@@ -306,10 +332,16 @@ impl AgentDirectory for HubAgentDirectoryClient {
         hub_id: &str,
         bearer: Option<&str>,
     ) -> Result<AgentResolution, DirectoryError> {
-        let url = format!("{}/v1/principals/by-hub-id/{hub_id}", self.base_url);
+        let path = format!("/v1/principals/by-hub-id/{hub_id}");
+        let url = format!("{}{path}", self.base_url);
         let mut request = self.http.get(&url);
         if let Some(token) = bearer.filter(|t| !t.is_empty()) {
             request = request.bearer_auth(token);
+        } else if let Some((did, key)) = &self.runtime_key {
+            // No token of the person's: the runtime they signed in on
+            // speaks for them (pekohub `PekoRuntime` proof).
+            let proof = Self::directory_proof(did, key, &path)?;
+            request = request.header("authorization", format!("PekoRuntime {proof}"));
         }
         let response = request
             .send()
@@ -649,6 +681,87 @@ mod tests {
     /// `FakeAgentDirectory` round-trips a registered hit. Pins the
     /// fake's contract so Slice B's outbound-path tests can rely on
     /// it.
+    /// A person's lookup without a PekoHub token is signed by the runtime
+    /// (`PekoRuntime`, verifiable with the runtime's did:key); a token,
+    /// when given, is sent instead.
+    #[tokio::test]
+    async fn a_tokenless_lookup_carries_the_runtimes_proof() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use ed25519_dalek::Verifier as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        async fn authorization_sent(
+            client: &HubAgentDirectoryClient,
+            bearer: Option<&str>,
+            listener: tokio::net::TcpListener,
+        ) -> String {
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap();
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    )
+                    .await;
+                request
+            });
+            let _ = client
+                .resolve_by_hub_id_for_user("6f1c2d3e-0000-4000-8000-000000000001", bearer)
+                .await;
+            let request = server.await.unwrap();
+            request
+                .lines()
+                .find_map(|l| {
+                    l.strip_prefix("authorization: ")
+                        .or_else(|| l.strip_prefix("Authorization: "))
+                })
+                .unwrap_or_default()
+                .to_string()
+        }
+
+        let key = std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client =
+            HubAgentDirectoryClient::new(base).with_runtime_key("did:key:zRuntime", key.clone());
+
+        let header = authorization_sent(&client, None, listener).await;
+        let proof = header
+            .strip_prefix("PekoRuntime ")
+            .expect("a runtime proof");
+        let (input, signature) = proof.rsplit_once('.').unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(input.split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["sub"], "did:key:zRuntime");
+        assert_eq!(claims["aud"], "peko-directory-v1");
+        assert_eq!(
+            claims["path"],
+            "/v1/principals/by-hub-id/6f1c2d3e-0000-4000-8000-000000000001"
+        );
+        let signature =
+            ed25519_dalek::Signature::from_slice(&URL_SAFE_NO_PAD.decode(signature).unwrap())
+                .unwrap();
+        assert!(key
+            .verifying_key()
+            .verify(input.as_bytes(), &signature)
+            .is_ok());
+
+        // The person's own token, when the client has one, wins.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client = HubAgentDirectoryClient::new(base).with_runtime_key("did:key:zRuntime", key);
+        assert_eq!(
+            authorization_sent(&client, Some("tok"), listener).await,
+            "Bearer tok"
+        );
+    }
+
     #[tokio::test]
     async fn test_fake_directory_returns_registered_hit() {
         let fake = FakeAgentDirectory::new();

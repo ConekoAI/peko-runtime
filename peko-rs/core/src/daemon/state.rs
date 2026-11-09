@@ -1555,7 +1555,13 @@ impl AppState {
                 vault: Arc::clone(&self.vault),
                 principal_manager: Arc::clone(&self.principal_manager),
                 cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            }));
+            }))
+            // A person's lookups from the CLI carry no PekoHub token: the
+            // runtime they signed in on speaks for them.
+            .with_runtime_key(
+                cred.runtime_id.clone(),
+                Arc::clone(&self.runtime_signing_key),
+            );
         let directory: Arc<dyn crate::tunnel::AgentDirectory> =
             Arc::new(crate::tunnel::LocalFirstAgentDirectory::new(
                 cred.runtime_id.clone(),

@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the CLI opens a DM with your own private peko on another computer (2026-11-09)
+
+- `peko channel dm peko:hub:<id>` from a second computer refused your own
+  private peko ("PekoHub does not let you reach this peko"): the CLI has no
+  PekoHub token of its own (device sign-in uses one only to register the
+  runtime), and the Hub resolves a private peko only for a signed-in
+  person. A lookup without a token is now signed by the runtime itself
+  (`PekoRuntime` directory proof, pekohub); the Hub answers it as it would
+  the account the runtime is registered to, so it reaches what that person
+  reaches when signed in, no more. A token, when the desktop sends one,
+  still wins. Found by the peko-benchmark collaboration benchmark.
+
 ### Feature: a computer stays awake while its peko works; pekos keep the board current (2026-11-09)
 
 - While a peko works (a live run, or an executing background task) the
