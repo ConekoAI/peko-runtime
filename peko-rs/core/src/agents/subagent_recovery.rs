@@ -16,39 +16,43 @@ use peko_providers::MessageRole;
 pub struct ResultRecovery;
 
 impl ResultRecovery {
-    /// Attempt to recover a non-empty answer from session history.
+    /// Attempt to recover a non-empty answer from session history,
+    /// looking only at messages from index `since` on (the run's own).
     /// Returns `Some(recovered_text)` if recovery succeeds.
     pub async fn recover_from_session(
         session: &Arc<RwLock<peko_session::Session>>,
+        since: usize,
     ) -> Option<String> {
         match session.read().await.load_history().await {
-            Ok(history) => {
-                // First, try to find the last assistant message with non-empty text
-                if let Some(text) = Self::extract_last_assistant(&history) {
-                    info!(
-                        "Recovered subagent answer from assistant message: {} chars",
-                        text.len()
-                    );
-                    return Some(text);
-                }
-
-                // If no assistant text found, try to extract from tool results
-                if let Some(text) = Self::extract_tool_results(&history) {
-                    info!(
-                        "Recovered subagent answer from tool results: {} chars",
-                        text.len()
-                    );
-                    return Some(text);
-                }
-
-                info!("Subagent fallback: no tool results found in history");
-                None
-            }
+            Ok(history) => Self::recover_from_history(&history, since),
             Err(e) => {
                 warn!("Subagent fallback: failed to load history: {}", e);
                 None
             }
         }
+    }
+
+    /// [`Self::recover_from_session`] over a loaded history.
+    fn recover_from_history(history: &[LlmMessage], since: usize) -> Option<String> {
+        let history = history.get(since..).unwrap_or_default();
+        // First, try to find the last assistant message with non-empty text
+        if let Some(text) = Self::extract_last_assistant(history) {
+            info!(
+                "Recovered subagent answer from assistant message: {} chars",
+                text.len()
+            );
+            return Some(text);
+        }
+        // If no assistant text found, try to extract from tool results
+        if let Some(text) = Self::extract_tool_results(history) {
+            info!(
+                "Recovered subagent answer from tool results: {} chars",
+                text.len()
+            );
+            return Some(text);
+        }
+        info!("Subagent fallback: no tool results found in history");
+        None
     }
 
     /// Extract the last assistant message text from history.
@@ -191,6 +195,24 @@ mod tests {
     fn test_process_tool_result_invalid_json() {
         let raw = "not json at all";
         assert_eq!(ResultRecovery::process_tool_result(raw), raw);
+    }
+
+    /// A conversation turn that ends empty says nothing: the previous
+    /// turn's reply is not its answer (2026-11-09 reply loop).
+    #[test]
+    fn recovery_reads_only_the_runs_own_messages() {
+        let history = vec![
+            LlmMessage::user("@juno thanks for the review"),
+            LlmMessage::assistant("Thanks, @otto."),
+            LlmMessage::user("[keepalive] answer if needed"),
+            LlmMessage::assistant(""),
+        ];
+        assert_eq!(ResultRecovery::recover_from_history(&history, 2), None);
+        assert_eq!(
+            ResultRecovery::recover_from_history(&history, 0).as_deref(),
+            Some("Thanks, @otto.")
+        );
+        assert_eq!(ResultRecovery::recover_from_history(&history, 9), None);
     }
 
     #[test]
