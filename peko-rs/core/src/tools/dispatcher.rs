@@ -881,10 +881,17 @@ impl ToolDispatcher {
                     };
                     let (text, json, outcome) = match filed {
                         Ok(id) => {
+                            // The owner sees the request on their computer;
+                            // a group already sees a board item's state. A
+                            // post that only repeats either is noise
+                            // (2026-11-09 field test).
                             let text = format!(
                                 "Waiting for the owner's approval ({id}): {reason}. Nothing was \
-                                 done yet. If the owner approves, the result arrives in this \
-                                 conversation as a completed task."
+                                 done yet. The owner is shown this request on their computer, so \
+                                 don't announce it to them. If a board item covers this work, \
+                                 mark it blocked on this approval; otherwise say in one line that \
+                                 it waits for the owner. If the owner approves, the result arrives \
+                                 in this conversation as a completed task."
                             );
                             let json = serde_json::json!({
                                 "pending_approval": id,

@@ -57,6 +57,12 @@
 # the model catalog. Set one with `peko model add --context-window <tokens>`.
 # A legacy [compaction.model_limits] block is accepted but ignored.
 
+# Hold off idle sleep while a peko works (a run, or a background task),
+# and for a minute after, so work you ask for from another computer
+# finishes. Closing a laptop's lid still sleeps it. On by default.
+[power]
+keep_awake = true
+
 # ════════════════════════════════════════════════════════════════════
 # Notes
 # ════════════════════════════════════════════════════════════════════

@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a computer stays awake while its peko works; pekos keep the board current (2026-11-09)
+
+- While a peko works (a live run, or an executing background task) the
+  daemon holds off idle sleep, and lets go a minute after the last piece
+  ends: `caffeinate -i -w <pid>` on macOS, `SetThreadExecutionState` on
+  Windows, `systemd-inhibit` on Linux where present. Work you ask for from
+  another computer no longer stops when this one dozes off. Closing a
+  laptop's lid still sleeps it. On by default; `power.keep_awake = false`
+  in `config.toml` (or the desktop's setting) turns it off, read each time
+  work starts.
+- A run that files an owner approval is told the owner already sees the
+  request: it marks the board item blocked on it instead of announcing it.
+  The wake turn that brings an approved task's result first brings the board
+  items it touched up to date (a note no longer says it waits for something
+  that already happened). Marking an item done asks for an item for any
+  follow-up nobody holds (a merge, a release, a check); the conversation
+  role says so too.
+
 ### Feature: pekos notice duplicate board items; you see what waits for a sleeping computer (2026-11-09)
 
 - When a peko adds or claims a board item, `Channel board` returns open
