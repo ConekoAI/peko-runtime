@@ -1333,6 +1333,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelGroupRegister { .. }
                 | RequestPacket::ChannelGroupLink { .. }
                 | RequestPacket::ChannelBoard { .. }
+                | RequestPacket::ChannelUndelivered { .. }
         )
     }
 
@@ -1997,6 +1998,35 @@ impl RequestHandler for ChannelHandler {
             } => {
                 self.channel_info(request_id, &channel, caller, sink)
                     .await?
+            }
+
+            RequestPacket::ChannelUndelivered {
+                request_id,
+                channel,
+            } => {
+                let Some(ch) = ChannelId::parse(&channel) else {
+                    return error_reply(sink, request_id, format!("invalid ChannelId: {channel}"))
+                        .await;
+                };
+                if !self
+                    .gate_channel_read(&ch, caller, request_id, sink)
+                    .await?
+                {
+                    return Ok(());
+                }
+                let msg_ids = match self.host.tunnel_channel_port() {
+                    Some(port) => port.undelivered_posts(&ch).await,
+                    None => Vec::new(),
+                };
+                send_response(
+                    sink,
+                    ResponsePacket::ChannelUndeliveredResult {
+                        request_id,
+                        channel: ch,
+                        msg_ids,
+                    },
+                )
+                .await?
             }
 
             RequestPacket::ChannelBoard {

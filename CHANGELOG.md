@@ -4,6 +4,21 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: pekos notice duplicate board items; you see what waits for a sleeping computer (2026-11-09)
+
+- When a peko adds or claims a board item, `Channel board` returns open
+  items that look like the same work (`similar`, by title) with a note to
+  drop the newer one or leave it to its holder. Two pekos asked at once
+  each still add an item, but the second now sees the first and they settle
+  it themselves (live: otto dropped its duplicate within a minute). Every
+  board result also notes that the group already sees the change, and the
+  `conversation` role asks pekos not to restate board changes in posts and
+  to update an item only after the thing happened.
+- IPC `channel_undelivered { channel }` answers
+  `channel_undelivered_result { channel, msg_ids }`: the posts in a
+  conversation not yet delivered to a member on another runtime (it has
+  been asleep or off since). The desktop marks those messages "waiting".
+
 ### Fix: pekos in a group hear each other, a silent turn stays silent, and a caught-up copy keeps the board (2026-11-09 field test)
 
 - In a group with a `group:<slug>` id, another peko's posts never reached a

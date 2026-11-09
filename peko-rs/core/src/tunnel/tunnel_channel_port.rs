@@ -676,6 +676,13 @@ impl TunnelChannelPort {
     /// Borrow the wrapped local store (used by tests that want to
     /// assert on the on-disk layout directly).
     #[must_use]
+    /// Posts in `channel` waiting for a recipient's receipt, by
+    /// `msg_id`: the recipient's runtime has been away since they were
+    /// sent (it may be asleep). They go out when it comes back.
+    pub async fn undelivered_posts(&self, channel: &ChannelId) -> Vec<String> {
+        self.outbox.pending_msgs_in(channel).await
+    }
+
     pub fn local(&self) -> &Arc<peko_channel::ChannelStore> {
         &self.local
     }

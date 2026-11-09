@@ -321,11 +321,29 @@ impl ChannelTool {
             None => board.items.iter().find(|i| i.id == msg_id),
             Some(reference) => board.find(reference).ok(),
         };
-        Ok(json!({
+        let mut result = json!({
             "channel": channel.as_str(),
             "op": op.name(),
             "item": item.map(item_json),
-        }))
+            "note": "The group sees this change on the board. Mention it in your reply only if \
+                     someone has to act on it.",
+        });
+        // Two pekos asked at once each add an item before they see the
+        // other's: show the second one what is already there.
+        if matches!(op, BoardOp::Add { .. } | BoardOp::Claim { .. }) {
+            let similar: Vec<Value> = item
+                .map(|item| board.similar_to(item).into_iter().map(item_json).collect())
+                .unwrap_or_default();
+            if !similar.is_empty() {
+                result["similar"] = json!(similar);
+                result["note"] = json!(
+                    "Other open items look like the same work (see similar). If one is, drop \
+                     the newer item or leave the work to whoever holds the other, and settle it \
+                     in one short post."
+                );
+            }
+        }
+        Ok(result)
     }
 
     async fn info(

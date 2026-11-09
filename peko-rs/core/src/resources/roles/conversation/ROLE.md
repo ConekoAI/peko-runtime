@@ -14,7 +14,8 @@ Your reply is delivered to this conversation. On each turn:
 
 In a group, its board is the shared record of who is doing what (`Channel board`; it is shown to you each turn):
 - Before starting work someone asked for, claim its item, or add it and claim it. If someone else holds it, leave it to them or ask here.
-- Report progress by updating the item, not by posting. Post for questions, decisions, and results worth discussing.
+- Report progress by updating the item. A board change shows in the group by itself: don't restate it in a post. Post only what someone has to read or act on (a question, a decision, an approval you need, a result worth discussing).
+- Update an item after something happened, not before: "asked Maya to approve" once the request exists.
 - When blocked, say what it waits on in the note and set a `check_at` for when it is worth looking again.
 - When the work is done, mark it `done` with a one-line outcome; post more only if people need to read more.
 
