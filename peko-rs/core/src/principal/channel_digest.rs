@@ -262,6 +262,9 @@ pub(crate) struct WaitingConversation {
     pub(crate) counterpart: Option<peko_subject::ActorRef>,
     /// The waiting posts' line ids.
     pub(crate) waiting: Vec<peko_channel::port::TaskId>,
+    /// Check-ins on items this peko holds on the group's board that came
+    /// due and have not fired (ADR-101 D6), as check-in keys.
+    pub(crate) check_ins: Vec<String>,
     /// When the oldest of them was written (RFC 3339).
     pub(crate) oldest: String,
 }
@@ -335,7 +338,21 @@ pub(crate) async fn waiting_conversations(
             }
             None => continue,
         };
-        if waiting.is_empty() {
+        // ADR-101 D6: a check-in on an item this peko holds brings the
+        // group back once, like a post waiting there.
+        let check_ins = match (kind, &session) {
+            (Kind::Group, Some(_)) => {
+                crate::principal::board_prompt::due_check_ins(
+                    port,
+                    &channel,
+                    &principal.id,
+                    chrono::Utc::now(),
+                )
+                .await
+            }
+            _ => Vec::new(),
+        };
+        if waiting.is_empty() && check_ins.is_empty() {
             continue;
         }
         let counterpart = match kind {
@@ -355,9 +372,15 @@ pub(crate) async fn waiting_conversations(
             oldest: waiting
                 .iter()
                 .map(|w| w.at.clone())
+                .chain(
+                    check_ins
+                        .iter()
+                        .filter_map(|k| k.split_once('@').map(|(_, at)| at.to_string())),
+                )
                 .min()
                 .unwrap_or_default(),
             waiting: waiting.into_iter().map(|w| w.id).collect(),
+            check_ins,
         });
     }
     found.sort_by(|a, b| a.oldest.cmp(&b.oldest));
@@ -408,7 +431,14 @@ pub(crate) async fn posted_from_here(
         if since.is_some_and(|mark| !strictly_after(&id, mark)) {
             return false;
         }
-        let ChannelEvent::Posted { author, via, .. } = ev else {
+        // A board change (ADR-101) is not the turn speaking.
+        let ChannelEvent::Posted {
+            author,
+            via,
+            board: None,
+            ..
+        } = ev
+        else {
             return false;
         };
         let mine = author == principal.0
@@ -446,6 +476,7 @@ pub(crate) async fn own_posts_from_elsewhere(
             text,
             via,
             msg_id,
+            board: None,
             ..
         } = ev
         else {
@@ -982,11 +1013,19 @@ fn digest_worthy(ev: &ChannelEvent, own_path: &str, me: &Me<'_>, scope: Scope, k
         parent,
         via,
         text,
+        board,
         ..
     } = ev
     else {
         return false;
     };
+    // ADR-101: board changes live in the board section, not the digest.
+    // An item another peko added for this one waits like its post would;
+    // one a person added for it woke the turn.
+    if let Some(op) = board {
+        let by_user = author.starts_with("user:") || author.starts_with("visitor:");
+        return !by_user && board_asks_me(op, me);
+    }
     if via.as_deref() == Some(own_path) {
         return false;
     }
@@ -1029,12 +1068,17 @@ fn sort_new_posts<'a>(
     for event in events {
         let (id, ev) = event;
         let ChannelEvent::Posted {
-            author, text, at, ..
+            author,
+            text,
+            at,
+            board,
+            ..
         } = ev
         else {
             continue;
         };
-        if author == me.id || author == me.address {
+        // A board change of its own is not an answer (ADR-101).
+        if board.is_none() && (author == me.id || author == me.address) {
             waiting.retain(|w| !strictly_after(id, &w.id));
         }
         if !digest_worthy(ev, own_path, me, scope, kind) {
@@ -1058,6 +1102,22 @@ fn sort_new_posts<'a>(
         .saturating_sub(peko_channel::attention::MAX_WAITING_PER_CHANNEL);
     waiting.drain(..excess);
     (fresh, waiting)
+}
+
+/// Whether a board change asks this principal for something: an item
+/// added for it, by address (either alias).
+fn board_asks_me(op: &peko_protocol::channel::BoardOp, me: &Me<'_>) -> bool {
+    let peko_protocol::channel::BoardOp::Add {
+        for_member: Some(member),
+        ..
+    } = op
+    else {
+        return false;
+    };
+    member == me.address
+        || member == me.id
+        || me.hub.is_some_and(|h| member == h)
+        || member == &format!("principal:local:{}", me.id)
 }
 
 /// Does a worthy post by `author` wait for an answer? Only other
@@ -1199,6 +1259,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 

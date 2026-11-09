@@ -155,6 +155,26 @@ pub(crate) fn carries_keepalive_tick(job: &CronJob) -> bool {
             if message.starts_with(KEEPALIVE_TICK_PREFIX))
 }
 
+/// The keepalive's turn message for a conversation where only board
+/// check-ins came due (ADR-101 D6), or posts and check-ins both.
+#[must_use]
+pub fn keepalive_conversation_message_for(posts: bool, check_ins: usize) -> String {
+    let check = format!(
+        "{check_ins} item(s) you hold on this group's board reached their check-in: they are \
+marked \"check-in due\" on the board. For each, move it on, set a new check-in, release it, or \
+ask here who or what it waits for. This check-in won't come back on its own."
+    );
+    match (posts, check_ins) {
+        (_, 0) => keepalive_conversation_message(),
+        (false, _) => format!(
+            "[keepalive] {check} Your reply is posted to this conversation exactly as you write \
+it, so write only what they should read, and leave it empty if there is nothing to say. Don't \
+also send it with ChannelSend."
+        ),
+        (true, _) => format!("{} {check}", keepalive_conversation_message()),
+    }
+}
+
 /// What the keepalive says in a conversation where other pekos' posts
 /// wait (ADR-096 D1). The turn runs in that conversation, acting for
 /// whoever wrote them, and its reply is posted there.

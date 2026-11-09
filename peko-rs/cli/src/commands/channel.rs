@@ -268,6 +268,84 @@ pub enum ChannelCommands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Show a group's board of work, or change it (ADR-101).
+    Board {
+        /// The group's channel id.
+        channel: String,
+        /// Change the board; omit to show it.
+        #[command(subcommand)]
+        change: Option<BoardChange>,
+        /// Make the change as one of your pekos instead of yourself.
+        #[arg(long = "as", value_name = "PEKO", global = true)]
+        as_peko: Option<String>,
+        /// Output as JSON.
+        #[arg(long, global = true)]
+        json: bool,
+    },
+}
+
+/// `peko channel board <group> <change>`.
+#[derive(Subcommand)]
+pub enum BoardChange {
+    /// Add an item, optionally asking a member to do it.
+    Add {
+        /// The work, in one line.
+        title: String,
+        /// The member it is asked of (address or name); wakes them like a mention.
+        #[arg(long = "for", value_name = "MEMBER")]
+        for_member: Option<String>,
+    },
+    /// Take an item.
+    Claim {
+        /// The item's id from the board.
+        item: String,
+        /// When to look at it again (RFC 3339).
+        #[arg(long)]
+        check_at: Option<String>,
+    },
+    /// Mark an item you hold as being worked on.
+    Doing { item: String, note: Option<String> },
+    /// Mark an item blocked; it comes back to its holder at the check-in.
+    Block {
+        item: String,
+        /// What it waits on.
+        note: Option<String>,
+        /// When to look at it again (RFC 3339); default in 24 hours.
+        #[arg(long)]
+        check_at: Option<String>,
+    },
+    /// Mark an item done, with its outcome.
+    Done { item: String, note: Option<String> },
+    /// Let go of an item you hold.
+    Release { item: String },
+    /// Remove an item you added.
+    Drop { item: String },
+}
+
+impl BoardChange {
+    fn op(self) -> peko_protocol::channel::BoardOp {
+        use peko_protocol::channel::{BoardOp, BoardState};
+        let update = |item, state, note, check_at| BoardOp::Update {
+            item,
+            state,
+            note,
+            check_at,
+        };
+        match self {
+            Self::Add { title, for_member } => BoardOp::Add { title, for_member },
+            Self::Claim { item, check_at } => BoardOp::Claim { item, check_at },
+            Self::Doing { item, note } => update(item, BoardState::Doing, note, None),
+            Self::Block {
+                item,
+                note,
+                check_at,
+            } => update(item, BoardState::Blocked, note, check_at),
+            Self::Done { item, note } => update(item, BoardState::Done, note, None),
+            Self::Release { item } => BoardOp::Release { item },
+            Self::Drop { item } => BoardOp::Drop { item },
+        }
+    }
 }
 
 impl ChannelCommands {
@@ -293,7 +371,8 @@ impl ChannelCommands {
             | ChannelCommands::Unblock { json, .. }
             | ChannelCommands::Blocked { json }
             | ChannelCommands::Register { json, .. }
-            | ChannelCommands::Link { json, .. } => *json,
+            | ChannelCommands::Link { json, .. }
+            | ChannelCommands::Board { json, .. } => *json,
         }
     }
 }
@@ -893,6 +972,43 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
             }
             Ok(())
         }
+        ChannelCommands::Board {
+            channel,
+            change,
+            as_peko,
+            ..
+        } => {
+            let client = DaemonClient::connect()
+                .await
+                .context("The board needs the daemon: start it with `peko daemon start`")?;
+            let resp = client
+                .request_response(RequestPacket::ChannelBoard {
+                    request_id: 0,
+                    channel,
+                    sender_name: as_peko,
+                    op: change.map(BoardChange::op),
+                })
+                .await?;
+            let ResponsePacket::ChannelBoardResult { channel, items, .. } = resp else {
+                if let ResponsePacket::Error { message, .. } = resp {
+                    anyhow::bail!("{message}");
+                }
+                anyhow::bail!("unexpected reply: {resp:?}");
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "channel": channel, "items": items })
+                );
+            } else if items.is_empty() {
+                println!("The board of {channel} is empty.");
+            } else {
+                for item in &items {
+                    println!("{}", board_line(item));
+                }
+            }
+            Ok(())
+        }
         ChannelCommands::Link {
             channel,
             days,
@@ -1097,6 +1213,36 @@ async fn remote_peko_hub_id(paths: &GlobalPaths, target: &str) -> Result<String>
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| anyhow::anyhow!("@{owner}/{name} isn't online on PekoHub"))
+}
+
+/// One board item as `peko channel board` prints it.
+fn board_line(item: &serde_json::Value) -> String {
+    let field = |k: &str| item[k].as_str().unwrap_or_default();
+    let named = |name: &str, address: &str| {
+        item[name]
+            .as_str()
+            .or(item[address].as_str())
+            .map(str::to_string)
+    };
+    let who = match (named("claimant_name", "claimant"), named("for_name", "for")) {
+        (Some(c), _) => c,
+        (None, Some(f)) => format!("for {f}"),
+        (None, None) => "unclaimed".to_string(),
+    };
+    let mut line = format!(
+        "#{} {:<7} {}  “{}”",
+        field("short"),
+        field("state"),
+        who,
+        field("title")
+    );
+    if let Some(note) = item["note"].as_str() {
+        line.push_str(&format!(": {note}"));
+    }
+    if let Some(at) = item["check_at"].as_str() {
+        line.push_str(&format!("  (check-in {at})"));
+    }
+    line
 }
 
 async fn group_request(packet: RequestPacket) -> Result<ResponsePacket> {

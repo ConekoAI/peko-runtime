@@ -644,6 +644,11 @@ async fn install_principal_tool_bag(
             crate::principal::channel_digest::ChannelDigestSessionContextHandler,
         ));
 
+        // ADR-101 D3: a group turn reads its board before it speaks.
+        core.register_prompt_section(Arc::new(
+            crate::principal::board_prompt::BoardSessionContextHandler,
+        ));
+
         core.mark_tool_bag_installed();
     }
 

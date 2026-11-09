@@ -518,30 +518,6 @@ impl TunnelChannelPort {
         }
     }
 
-    /// One page of a group at its home (ADR-092 D3), from `since` when the
-    /// member may read only what followed their joining.
-    pub(crate) async fn group_history_page(
-        &self,
-        channel: &ChannelId,
-        before: Option<&str>,
-        after: Option<&str>,
-        limit: u32,
-        since: Option<&str>,
-    ) -> HistoryPage {
-        let Some(since) = since else {
-            return self.history_page(channel, before, after, limit).await;
-        };
-        let limit = limit.clamp(1, HISTORY_PAGE_LIMIT) as usize;
-        match self
-            .local
-            .history_page_since(channel, before, after, limit, since)
-            .await
-        {
-            Ok((events, has_more)) => HistoryPage { events, has_more },
-            Err(_) => HistoryPage::default(),
-        }
-    }
-
     /// One page of `channel` on this host (ADR-091 D2).
     pub(crate) async fn history_page(
         &self,

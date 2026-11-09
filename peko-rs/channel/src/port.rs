@@ -180,20 +180,6 @@ pub trait ChannelPort: Send + Sync + 'static {
         ))
     }
 
-    /// ADR-092 D3: a group's owner or admin (`by`) chooses what members may
-    /// read of its past.
-    async fn set_group_history(
-        &self,
-        channel: &ChannelId,
-        by: &PrincipalId,
-        visibility: crate::store::HistoryVisibility,
-    ) -> Result<()> {
-        let _ = (channel, by, visibility);
-        Err(ChannelError::Adapter(
-            "this channel port does not keep group settings".into(),
-        ))
-    }
-
     /// ADR-092 D5: a group's owner or admin (`by`) registers it with
     /// PekoHub, or changes who may find it. Returns the registration.
     async fn register_group(
@@ -665,6 +651,47 @@ pub trait ChannelPort: Send + Sync + 'static {
         Ok(())
     }
 
+    /// ADR-101: the group's board, folded from its log; `None` for a DM.
+    /// Authority is the registry's keys and the group's owner and
+    /// admins as this runtime knows them.
+    async fn board(&self, channel: &ChannelId) -> Result<Option<crate::board::Board>> {
+        if self.conversation_kind(channel).await? != ConversationKind::Group {
+            return Ok(None);
+        }
+        let events = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        let info = self.group_info(channel).await?;
+        let keys = SelfKeys(self);
+        let auth = crate::board::Authority::new(
+            &keys,
+            info.as_ref().map(|i| i.owner.as_str()),
+            info.as_ref().map(|i| i.admins.as_slice()).unwrap_or(&[]),
+        );
+        Ok(Some(crate::board::Board::fold(
+            events.iter().map(|(_, ev)| ev),
+            &auth,
+        )))
+    }
+
+    /// ADR-101 D6: the check-ins that already brought one of
+    /// `principal`'s items back on `channel` (fired once each). The
+    /// default keeps none.
+    async fn fired_check_ins(&self, channel: &ChannelId, principal: &str) -> Result<Vec<String>> {
+        let _ = (channel, principal);
+        Ok(Vec::new())
+    }
+
+    /// Replace `principal`'s fired check-ins on `channel`. The default
+    /// is a no-op.
+    async fn set_fired_check_ins(
+        &self,
+        channel: &ChannelId,
+        principal: &str,
+        fired: Vec<String>,
+    ) -> Result<()> {
+        let _ = (channel, principal, fired);
+        Ok(())
+    }
+
     /// PR-2b: subscribe to live events for `channel`. The returned
     /// receiver yields every event appended to the channel after this
     /// call (events appended before subscription are NOT replayed —
@@ -844,6 +871,16 @@ impl ActorInfo {
     }
 }
 
+/// Any port's registry as [`ActorKeys`], for the trait's own default
+/// methods (which cannot make a `&dyn ChannelPort` of `Self`).
+struct SelfKeys<'a, P: ?Sized>(&'a P);
+
+impl<P: ChannelPort + ?Sized> ActorKeys for SelfKeys<'_, P> {
+    fn key_of(&self, subject: &ActorRef) -> ActorKey {
+        self.0.key_of(subject)
+    }
+}
+
 /// A [`ChannelPort`]'s registry as the runtime's single identity
 /// comparison (ADR-081 D1).
 pub struct PortKeys<'a>(pub &'a dyn ChannelPort);
@@ -991,6 +1028,7 @@ pub fn portable_post(event: ChannelEvent, author: String) -> ChannelEvent {
                 .collect(),
             options,
             model,
+            board: None,
         },
         other => other,
     }
@@ -1039,6 +1077,9 @@ pub struct PostMsg {
     /// ADR-097 D2: the model the author asks the receiving peko to
     /// answer with, for this post only. `None` for most posts.
     pub model: Option<String>,
+    /// ADR-101: the board change this post makes; `None` for most
+    /// posts. The store refuses an op that breaks [`crate::board::validate_op`].
+    pub board: Option<peko_protocol::channel::BoardOp>,
 }
 
 impl PostMsg {
@@ -1052,6 +1093,7 @@ impl PostMsg {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 
@@ -1065,6 +1107,7 @@ impl PostMsg {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 
@@ -1089,6 +1132,13 @@ impl PostMsg {
     #[must_use]
     pub fn with_options(mut self, options: Vec<String>) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Make a board change with the post (ADR-101).
+    #[must_use]
+    pub fn with_board(mut self, op: peko_protocol::channel::BoardOp) -> Self {
+        self.board = Some(op);
         self
     }
 

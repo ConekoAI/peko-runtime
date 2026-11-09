@@ -2,9 +2,9 @@
 //!
 //! Actions: `create` a group, `invite` an actor into one, `leave` it, set
 //! its own `wake` policy there, choose the `role` its turns run in a
-//! channel (ADR-087), make a member an `admin`, choose what members read
-//! of its `history`, `register` it on PekoHub and make invite `link`s
-//! (ADR-092), and read a channel's `info`. DMs are opened
+//! channel (ADR-087), make a member an `admin`, `register` it on PekoHub
+//! and make invite `link`s (ADR-092), change its `board` (ADR-101), and
+//! read a channel's `info`. DMs are opened
 //! by `ChannelSend` and keep their members and wake policy: only `info`
 //! and `role` accept one.
 //!
@@ -113,12 +113,24 @@ impl ChannelTool {
                 }, "required":["channel", "actor", "admin"], "additionalProperties":false}),
             ),
             (
-                "history",
+                "board",
                 json!({"type":"object", "properties":{
                     "channel": channel,
-                    "visibility":{"type":"string", "enum":["shared", "joined"],
-                        "description":"shared: members read everything since the group began; joined: only what followed their joining."}
-                }, "required":["channel", "visibility"], "additionalProperties":false}),
+                    "op":{"type":"string", "enum":["add", "claim", "update", "release", "drop"],
+                        "description":"add an item; claim one for yourself; update yours (state + note); release one you hold; drop one you added."},
+                    "title":{"type":"string", "minLength":1, "maxLength":120,
+                        "description":"add: the work, in one line."},
+                    "for":{"type":"string", "minLength":1,
+                        "description":"add: the member it is asked of (address or name); it wakes them like a mention."},
+                    "item":{"type":"string", "minLength":1,
+                        "description":"claim/update/release/drop: the item's id from the board (e.g. b3f9a1)."},
+                    "state":{"type":"string", "enum":["doing", "blocked", "done"],
+                        "description":"update: the item's new state."},
+                    "note":{"type":"string", "minLength":1, "maxLength":500,
+                        "description":"update: what changed, what it waits on, or the outcome, in a line or two."},
+                    "check_at":{"type":"string", "minLength":1,
+                        "description":"claim/update: RFC 3339 time to look at it again (10 minutes to 30 days ahead). blocked without one gets 24 hours."}
+                }, "required":["channel", "op"], "additionalProperties":false}),
             ),
             (
                 "register",
@@ -252,6 +264,70 @@ impl ChannelTool {
         Ok(self.port.actor_info(&invitee).await.address)
     }
 
+    /// ADR-101: make one board change in `channel` as `id`, and return
+    /// the item as the board now folds it.
+    async fn board(
+        &self,
+        id: &PrincipalId,
+        channel: &ChannelId,
+        params: &Value,
+        ctx: &ToolContext,
+    ) -> anyhow::Result<Value> {
+        use peko_protocol::channel::{BoardOp, BoardState};
+        let text = |key: &str| params[key].as_str().map(str::to_string);
+        let item = || text("item").ok_or_else(|| anyhow::anyhow!("Channel: board: name the item"));
+        let op = match params["op"].as_str().unwrap_or_default() {
+            "add" => {
+                let title = text("title")
+                    .ok_or_else(|| anyhow::anyhow!("Channel: board add: give the item a title"))?;
+                let for_member = text("for");
+                BoardOp::Add { title, for_member }
+            }
+            "claim" => BoardOp::Claim {
+                item: item()?,
+                check_at: text("check_at"),
+            },
+            "update" => {
+                let state = match params["state"].as_str() {
+                    Some("doing") => BoardState::Doing,
+                    Some("blocked") => BoardState::Blocked,
+                    Some("done") => BoardState::Done,
+                    _ => anyhow::bail!("Channel: board update: state is doing, blocked, or done"),
+                };
+                BoardOp::Update {
+                    item: item()?,
+                    state,
+                    note: text("note"),
+                    check_at: text("check_at"),
+                }
+            }
+            "release" => BoardOp::Release { item: item()? },
+            "drop" => BoardOp::Drop { item: item()? },
+            other => anyhow::bail!("Channel: board: unknown op {other:?}"),
+        };
+        let msg_id = peko_channel::new_msg_id();
+        let mut msg = peko_channel::PostMsg::root(String::new())
+            .with_board(op.clone())
+            .with_msg_id(msg_id.clone());
+        if let Some(via) = crate::tools::builtin::channel::channel_send::via_for_ctx(ctx).await {
+            msg = msg.with_via(via);
+        }
+        self.port
+            .post(channel, &ActorRef::from(id), msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("Channel: {e}"))?;
+        let board = self.port.board(channel).await?.unwrap_or_default();
+        let item = match op.item() {
+            None => board.items.iter().find(|i| i.id == msg_id),
+            Some(reference) => board.find(reference).ok(),
+        };
+        Ok(json!({
+            "channel": channel.as_str(),
+            "op": op.name(),
+            "item": item.map(item_json),
+        }))
+    }
+
     async fn info(
         &self,
         id: &PrincipalId,
@@ -296,7 +372,11 @@ impl ChannelTool {
             info["home"] = json!(group.home.map(|h| h.runtime));
             info["owner"] = json!(group.owner);
             info["admins"] = json!(group.admins);
-            info["history"] = json!(group.history);
+            // ADR-101: the group's board.
+            if let Some(board) = self.port.board(channel).await? {
+                let now = chrono::Utc::now();
+                info["board"] = json!(board.visible(now).map(item_json).collect::<Vec<_>>());
+            }
             // ADR-092 D5: its PekoHub ID, once registered.
             if let Some(hub_id) = group.hub_id {
                 info["hubId"] = json!(hub_id);
@@ -305,6 +385,13 @@ impl ChannelTool {
         }
         Ok(info)
     }
+}
+
+/// One board item as tools and clients see it: its short id.
+fn item_json(item: &peko_channel::BoardItem) -> Value {
+    let mut v = json!(item);
+    v["id"] = json!(item.short_id());
+    v
 }
 
 #[async_trait]
@@ -326,18 +413,18 @@ impl Tool for ChannelTool {
          nothing; posts by principals and replies never do); role chooses the role (from \
          RoleCatalog) your turns run in a DM or group, or returns it to your default \
          conversation role when omitted; admin lets a member add members, or stops it (the \
-         group's owner only); history chooses what a group's members may read of its past \
-         (shared, the default: everything; joined: only what followed their joining); \
-         register gives a group an ID on PekoHub (invite_only, the default: people join only \
+         group's owner only); board changes a group's shared board of work (add an item, \
+         claim it before you start, update it instead of posting status, release it, drop \
+         one you added; check_at brings an item you hold back to you once); register gives a group an ID on PekoHub (invite_only, the default: people join only \
          with an invite link; public: anyone with the ID may); link makes an invite link to a \
          registered group (default 7 days, at most 30), or with revoke stops all of them; join \
          makes you (not your owner) a member of a group by its invite link or a public \
          group's ID; info \
-         shows a channel's kind, creator, participants, a group's home runtime, owner, admins \
-         and PekoHub ID, and your wake policy and role. A group's members and settings change \
+         shows a channel's kind, creator, participants, a group's home runtime, owner, admins, \
+         PekoHub ID and board, and your wake policy and role. A group's members and settings change \
          at its home runtime, by its owner or an admin. DMs are opened by ChannelSend and keep \
-         their members and wake policy. Only the owner decides create, invite, admin, \
-         history, register, link, join, and role: a run acting for anyone else waits for the \
+         their members and wake policy and have no board. Only the owner decides create, \
+         invite, admin, register, link, join, and role: a run acting for anyone else waits for the \
          owner's approval."
             .into()
     }
@@ -437,19 +524,14 @@ impl Tool for ChannelTool {
                     "admin": admin,
                 }))
             }
-            Some("history") => {
+            Some("board") => {
                 let channel = self.channel_arg(&params, &stamp).await?;
-                self.require_group(&channel).await?;
+                anyhow::ensure!(
+                    self.port.conversation_kind(&channel).await? == ConversationKind::Group,
+                    "Channel: boards are for groups; a DM has none"
+                );
                 self.require_member(&channel, &id).await?;
-                let visibility = match params["visibility"].as_str() {
-                    Some("joined") => peko_channel::HistoryVisibility::Joined,
-                    _ => peko_channel::HistoryVisibility::Shared,
-                };
-                self.port
-                    .set_group_history(&channel, &id, visibility)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Channel: history: {e}"))?;
-                Ok(json!({"channel": channel.as_str(), "history": visibility}))
+                self.board(&id, &channel, &params, ctx).await
             }
             Some("register") => {
                 let channel = self.channel_arg(&params, &stamp).await?;

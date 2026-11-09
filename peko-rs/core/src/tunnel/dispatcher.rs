@@ -3447,7 +3447,9 @@ impl TunnelDispatcher {
                 "not the group's home"
             );
         }
-        let address = match request.source_principal_did.parse::<ActorRef>() {
+        // The member check is the whole gate: every member reads the
+        // whole record (ADR-101 D8).
+        match request.source_principal_did.parse::<ActorRef>() {
             Ok(person @ ActorRef::User(_))
                 if person.is_hub_route()
                     && person.canonical_address() == request.source_principal_did =>
@@ -3460,7 +3462,6 @@ impl TunnelDispatcher {
                     }
                 }
                 anyhow::ensure!(member, "not a member");
-                address
             }
             _ if request.source_principal_did.starts_with("did:key:") => {
                 anyhow::ensure!(
@@ -3473,17 +3474,11 @@ impl TunnelDispatcher {
                         .await?,
                     "not a member's route"
                 );
-                port.actor_info(&ActorRef::Principal(
-                    request.source_principal_did.clone().into(),
-                ))
-                .await
-                .address
             }
             _ => anyhow::bail!("only a member may ask for a group's history"),
-        };
+        }
         self.group_page_for(
             channel,
-            &address,
             request.before.as_deref(),
             request.after.as_deref(),
             request.limit,
@@ -3491,28 +3486,19 @@ impl TunnelDispatcher {
         .await
     }
 
-    /// A page of `channel` for its member `address`, as the group's
-    /// history setting lets them read it (ADR-092 D3).
+    /// A page of `channel` for one of its members: the whole record
+    /// (ADR-092 D3 as amended by ADR-101 D8).
     async fn group_page_for(
         &self,
         channel: &peko_channel::ChannelId,
-        address: &str,
         before: Option<&str>,
         after: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<crate::tunnel::HistoryPage> {
-        let port = self.host.tunnel_channel_port();
-        let since = match port.local().history_visibility(channel).await? {
-            peko_channel::HistoryVisibility::Shared => None,
-            peko_channel::HistoryVisibility::Joined => Some(
-                port.local()
-                    .joined_at(channel, address)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("no record of their joining"))?,
-            ),
-        };
-        Ok(port
-            .group_history_page(channel, before, after, limit, since.as_deref())
+        Ok(self
+            .host
+            .tunnel_channel_port()
+            .history_page(channel, before, after, limit)
             .await)
     }
 
@@ -3553,7 +3539,6 @@ impl TunnelDispatcher {
             });
         self.group_page_for(
             &channel,
-            &address,
             body["before"].as_str(),
             body["after"].as_str(),
             limit,
@@ -5167,6 +5152,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5226,6 +5212,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp_signer,
@@ -5281,6 +5268,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
 
         let result = dispatcher
@@ -5342,6 +5330,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5491,6 +5480,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         deliver("req-1", post.clone()).await.unwrap();
         deliver("req-1", post.clone()).await.unwrap();
@@ -5587,6 +5577,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let (signature, event) = build_signed_tunnel_channel_event(
             &kp,
@@ -5685,6 +5676,7 @@ mod tests {
                 attachments: Vec::new(),
                 options: Vec::new(),
                 model: None,
+                board: None,
             };
             let event_bytes = serde_json::to_vec(&event).expect("event must serialize");
             let signed = crate::tunnel::ChannelSignedFields {
@@ -6020,6 +6012,7 @@ mod tests {
                 attachments: Vec::new(),
                 options: Vec::new(),
                 model: None,
+                board: None,
             };
             let bytes = serde_json::to_vec(&event).unwrap();
             let fields = crate::tunnel::ChannelSignedFields {
@@ -8457,8 +8450,8 @@ mod tests {
     }
 
     /// ADR-092 D3 end to end: a person who joins a group that already
-    /// talked catches up from its home; under `joined` visibility they get
-    /// only what followed their joining; a non-member gets nothing.
+    /// talked catches up from its home with everything said before they
+    /// came (ADR-101 D8); a non-member gets nothing.
     #[tokio::test]
     async fn a_group_member_reads_its_history_from_the_home() {
         use crate::tunnel::hub_directory::FakeAgentDirectory;
@@ -8506,24 +8499,11 @@ mod tests {
             posts(&events).into_iter().map(|(_, t)| t).collect()
         };
 
-        for (visibility, before, expected) in [
-            (None, "we met on tuesday", vec!["we met on tuesday"]),
-            (
-                Some(peko_channel::HistoryVisibility::Joined),
-                "before you came",
-                vec![],
-            ),
-        ] {
+        for (before, expected) in [("we met on tuesday", vec!["we met on tuesday"])] {
             let channel = h_port
                 .create(&peko.id, CreateOpts::runtime("club"))
                 .await
                 .unwrap();
-            if let Some(visibility) = visibility {
-                h_port
-                    .set_group_history(&channel, &peko.id, visibility)
-                    .await
-                    .unwrap();
-            }
             h_port
                 .post(
                     &channel,
@@ -8553,7 +8533,7 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             let on_p = texts(p_port.peek(&channel, &Checkpoint::zero()).await.unwrap());
-            assert_eq!(on_p, expected, "{visibility:?}");
+            assert_eq!(on_p, expected);
 
             // What follows reaches them either way.
             h_port

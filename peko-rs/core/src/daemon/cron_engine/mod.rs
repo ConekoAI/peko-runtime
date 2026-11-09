@@ -1257,7 +1257,10 @@ impl CronEngine {
                 "session {session} is not in a conversation compartment; not running it"
             ));
         }
-        let message = crate::principal::genesis::keepalive_conversation_message();
+        let message = crate::principal::genesis::keepalive_conversation_message_for(
+            !conversation.waiting.is_empty(),
+            conversation.check_ins.len(),
+        );
         self.drive_session_turn(
             pm,
             principal,
@@ -1275,6 +1278,14 @@ impl CronEngine {
                 &conversation.channel,
                 &session,
                 &conversation.waiting,
+            )
+            .await;
+            // ADR-101 D6: a check-in fires once, answered or not.
+            crate::principal::board_prompt::record_fired(
+                port,
+                &conversation.channel,
+                &principal.id,
+                &conversation.check_ins,
             )
             .await;
         }
@@ -4589,6 +4600,139 @@ mod tests {
                 .unwrap()
                 .next_run,
             after.next_run
+        );
+    }
+
+    /// ADR-101 D6 end to end: a check-in on an item this peko holds on a
+    /// group's board makes the group a waiting conversation; the keepalive
+    /// runs one turn there and records the check-in as fired, so it does
+    /// not bring the group back again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_board_check_in_runs_the_keepalive_in_its_group_once() {
+        use crate::principal::genesis::KEEPALIVE_JOB_ID;
+        use peko_channel::{ChannelEvent, ChannelPort};
+        use peko_protocol::channel::BoardOp;
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(peko_channel::ChannelStore::new(
+            peko_channel::ChannelConfig {
+                runtime_dir: tmp.path().join("channels"),
+                shared_dir: None,
+            },
+        ));
+        let port = Arc::clone(&store) as Arc<dyn ChannelPort>;
+        let (engine, scheduler, principal) =
+            nudge_fixture(&tmp, Duration::minutes(5), Arc::clone(&port)).await;
+        peko_session::SessionManager::new()
+            .with_sessions_dir_internal(principal.memory.sessions_dir())
+            .create_session(
+                "root",
+                &ActorRef::User("local".into()),
+                peko_session::manager::SessionCreateOptions {
+                    session_id: Some(peko_session::SessionId::from(
+                        peko_session::TRUNK_SESSION_LITERAL,
+                    )),
+                    trigger: "cron".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let channel = port
+            .create(&principal.id, peko_channel::CreateOpts::runtime("stats"))
+            .await
+            .unwrap();
+        {
+            let config = principal.config.read().await;
+            let agent_name = crate::principal::child_turns::peer_child_session_agent_name(
+                &config,
+                &principal.workspace_path,
+            );
+            let sessions = crate::principal::child_turns::peer_child_session_manager(
+                &principal,
+                &agent_name,
+                &config.owner,
+            );
+            crate::principal::peer_children::ensure_group_binding(
+                &port,
+                &principal.id,
+                &agent_name,
+                &channel,
+                &sessions,
+            )
+            .await
+            .unwrap();
+        }
+        // The peko holds an item whose check-in passed an hour ago (as a
+        // copy of the group would carry it: a local post can only set a
+        // check-in ahead).
+        let me = port
+            .actor_info(&ActorRef::from(&principal.id))
+            .await
+            .address;
+        let at = |ago: i64| (Utc::now() - Duration::minutes(ago)).to_rfc3339();
+        for (id, ago, op) in [
+            (
+                "msg_item",
+                120,
+                BoardOp::Add {
+                    title: "review the fix".into(),
+                    for_member: None,
+                },
+            ),
+            (
+                "msg_claim",
+                110,
+                BoardOp::Claim {
+                    item: "msg_item".into(),
+                    check_at: Some(at(60)),
+                },
+            ),
+        ] {
+            store
+                .append_remote_event(
+                    &channel,
+                    &ChannelEvent::Posted {
+                        channel: channel.clone(),
+                        author: me.clone(),
+                        parent: None,
+                        text: String::new(),
+                        at: at(ago),
+                        via: None,
+                        msg_id: Some(id.into()),
+                        reply_to: None,
+                        attachments: Vec::new(),
+                        options: Vec::new(),
+                        model: None,
+                        board: Some(op),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let waiting =
+            crate::principal::channel_digest::waiting_conversations(&port, &principal).await;
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert_eq!(waiting[0].channel, channel);
+        assert_eq!(waiting[0].check_ins.len(), 1, "{waiting:?}");
+        assert!(
+            waiting[0].waiting.is_empty(),
+            "board posts never wait: {waiting:?}"
+        );
+
+        let mut job = scheduler.get_job(KEEPALIVE_JOB_ID).unwrap().unwrap();
+        job.next_run = Utc::now() - Duration::seconds(1);
+        replace_job(&scheduler, &job);
+        assert!(run_due_jobs(&engine).await >= 1);
+        let runs = scheduler.get_run_history(KEEPALIVE_JOB_ID, 10).unwrap();
+        assert!(
+            runs.iter().any(|r| r.status == "success"),
+            "the check-in runs a turn, not a quiet tick: {runs:?}"
+        );
+        assert!(
+            crate::principal::channel_digest::waiting_conversations(&port, &principal)
+                .await
+                .is_empty(),
+            "a check-in fires once"
         );
     }
 

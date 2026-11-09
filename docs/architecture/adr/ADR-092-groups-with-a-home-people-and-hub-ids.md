@@ -41,6 +41,8 @@ A person joins a group as `user:hub:<account>`, like a peko joins as `principal:
 
 ### D3 — History comes from the home, to members only
 
+> **Amended by [ADR-101](ADR-101-a-group-keeps-a-board.md) D8 (2026-11-09):** `joined` visibility is retired. Every member reads the whole group from its start, for as long as they are a member; condition 3 below no longer applies.
+
 The ADR-091 messages carry group pages too. The home serves a page only when **all** hold:
 
 1. The requester is a current member: a person (`user:hub:<id>`, Hub-vouched as in ADR-091 D3) or a peko (`principal:hub:<id>`, author-signed by its key) — on a runtime that is that member's route.

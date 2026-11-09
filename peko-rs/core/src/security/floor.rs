@@ -26,7 +26,7 @@ pub const OWNER_ONLY_TOOLS: &[&str] = &["Plan", "Bash"];
 /// the principal in a group someone else runs (ADR-098 D2). An untrusted run never gets them; a trusted run's call waits for
 /// the owner ([`crate::security::judge::owner_decides`]).
 pub const CHANNEL_OWNER_ACTIONS: &[&str] = &[
-    "create", "invite", "role", "admin", "history", "register", "link", "join",
+    "create", "invite", "role", "admin", "register", "link", "join",
 ];
 
 /// The `Channel` owner action `params` call, if any.
@@ -113,7 +113,6 @@ pub fn action_refusal(
     let what = match channel_owner_action(tool_name, params)? {
         "role" => "Choosing the role for a conversation",
         "admin" => "Choosing a group's admins",
-        "history" => "Choosing what a group's members may read",
         "join" => "Joining a group",
         _ => "Creating groups and inviting people",
     };
