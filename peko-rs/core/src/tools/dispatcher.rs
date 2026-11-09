@@ -889,9 +889,10 @@ impl ToolDispatcher {
                                 "Waiting for the owner's approval ({id}): {reason}. Nothing was \
                                  done yet. The owner is shown this request on their computer, so \
                                  don't announce it to them. If a board item covers this work, \
-                                 mark it blocked on this approval; otherwise say in one line that \
-                                 it waits for the owner. If the owner approves, the result arrives \
-                                 in this conversation as a completed task."
+                                 mark it blocked on this approval and post nothing about it: \
+                                 reply NO_REPLY unless something else needs saying. Otherwise say \
+                                 in one line that it waits for the owner. If the owner approves, \
+                                 the result arrives in this conversation as a completed task."
                             );
                             let json = serde_json::json!({
                                 "pending_approval": id,

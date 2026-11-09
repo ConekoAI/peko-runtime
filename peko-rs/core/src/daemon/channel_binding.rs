@@ -213,15 +213,15 @@ impl ResponderInner {
             .await
         {
             Ok(reply) => {
-                let reply = reply.trim();
-                if reply.is_empty() {
+                // Only group channels get a responder (`select_responder`).
+                let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
                     debug!(
                         channel = %self.channel,
                         session = %session_id,
-                        "channel binding: turn produced an empty reply; posting nothing"
+                        "channel binding: turn produced no reply; posting nothing"
                     );
                     return;
-                }
+                };
                 // Phase 12a: the reply is threaded onto the triggering
                 // event so `response_trigger`'s root-post-only rule
                 // never reacts to it — here (self-author skip already
@@ -329,10 +329,9 @@ impl ResponderInner {
                 .await
             {
                 Ok(reply) => {
-                    let reply = reply.trim();
-                    if reply.is_empty() {
+                    let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
                         continue;
-                    }
+                    };
                     let mut msg = PostMsg::root(reply);
                     msg.via = self.via.clone();
                     if let Err(e) = self
@@ -382,10 +381,9 @@ impl ResponderInner {
                 .await
             {
                 Ok(reply) => {
-                    let reply = reply.trim();
-                    if reply.is_empty() {
+                    let Some(reply) = crate::principal::quiet_reply::postable(&reply, true) else {
                         continue;
-                    }
+                    };
                     let mut msg = PostMsg::root(reply);
                     msg.via = self.via.clone();
                     if let Err(e) = self

@@ -4,6 +4,24 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: pekos stay quiet when nothing needs them (2026-11-09)
+
+- In every run of the collaboration benchmark, a peko posted that another
+  peko's post "needs no answer from me", and after each hand-up to its owner
+  posted "I've sent Maya a request" although its board item already said so.
+  Pekos had no way to post nothing other than an empty reply.
+- A reply of just `NO_REPLY` now posts nothing (on a last line of its own, it
+  is dropped and the rest is posted). The `conversation` role says when to
+  use it: in a group when nothing is asked of you, with another peko when its
+  post needs no answer, and after a hand-up the board item shows. A person who
+  writes to you directly always gets an answer. The approval-pending tool
+  result says the same.
+- In a group, a short reply with no question that only says it needs no
+  answer or has nothing to add posts nothing either
+  (`principal::quiet_reply`).
+- Existing principals keep their `roles/conversation.md`; the role is seeded
+  only when missing.
+
 ### Fix: the CLI opens a DM with your own private peko on another computer (2026-11-09)
 
 - `peko channel dm peko:hub:<id>` from a second computer refused your own

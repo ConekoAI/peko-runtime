@@ -247,8 +247,9 @@ pub(crate) async fn post_peer_dm_inbound_attached(
 /// responder's reply post (`daemon::channel_binding::ResponderInner`):
 /// the reply has already been delivered over the IPC stream; the
 /// channel row is the durable projection, not the delivery mechanism.
-/// Empty/whitespace replies are skipped (mirrors the responder's own
-/// guard).
+/// A reply that posts nothing (empty, `NO_REPLY`, or in a group only
+/// saying nothing is needed: [`super::quiet_reply`]) is skipped, as in the
+/// group responder.
 pub(crate) async fn post_peer_dm_reply(
     port: &Arc<dyn ChannelPort>,
     principal: &PrincipalId,
@@ -258,9 +259,13 @@ pub(crate) async fn post_peer_dm_reply(
     // Suggested replies the run staged with `Suggest` (ADR-093 D3) go on
     // this post; a run without a reply drops them.
     let options = super::reply_options::take(port.as_ref(), channel, principal).await;
-    if text.trim().is_empty() {
+    let group = matches!(
+        port.conversation_kind(channel).await,
+        Ok(peko_channel::ConversationKind::Group)
+    );
+    let Some(text) = super::quiet_reply::postable(text, group) else {
         return Vec::new();
-    }
+    };
     let via = port
         .binding_for(channel, principal)
         .await
@@ -589,6 +594,7 @@ mod tests {
                 .unwrap();
 
         post_peer_dm_reply(&port, &principal_id(), &provision.channel, "   ").await;
+        post_peer_dm_reply(&port, &principal_id(), &provision.channel, "NO_REPLY").await;
 
         let events = store
             .peek(&provision.channel, &peko_channel::Checkpoint::default())
@@ -598,7 +604,7 @@ mod tests {
             events
                 .iter()
                 .all(|ev| !matches!(ev, peko_channel::ChannelEvent::Posted { .. })),
-            "whitespace reply must not land in the channel log"
+            "a whitespace or NO_REPLY reply must not land in the channel log"
         );
     }
 
