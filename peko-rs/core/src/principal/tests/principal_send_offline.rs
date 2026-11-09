@@ -53,6 +53,15 @@ impl AgentDirectory for PanicDirectory {
     ) -> Result<AgentResolution, DirectoryError> {
         panic!("hub directory should not be consulted for same-runtime ChannelSend");
     }
+
+    async fn resolve_by_handle_for_user(
+        &self,
+        _owner: &str,
+        _name: &str,
+        _bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        panic!("hub directory should not be consulted for same-runtime ChannelSend");
+    }
 }
 
 async fn create_test_principal(
@@ -148,6 +157,61 @@ async fn local_directory_waits_for_busy_config_without_hub_fallback() {
     assert!(!lookup.is_finished());
     drop(guard);
     assert_eq!(lookup.await.unwrap().unwrap().local_id, fx.target.id.0);
+}
+
+/// The daemon's directory passes a person's handle lookup to PekoHub with
+/// their credentials: without them PekoHub answers their own private peko as
+/// missing (2026-11-09: `peko channel dm @maya/juno` from a second computer).
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn local_directory_forwards_a_persons_handle_lookup_with_their_credentials() {
+    struct Recording(std::sync::Mutex<Vec<(String, String, Option<String>)>>);
+    #[async_trait]
+    impl AgentDirectory for Recording {
+        async fn resolve_by_hub_id(&self, _: &str) -> Result<AgentResolution, DirectoryError> {
+            Err(DirectoryError::NotFound)
+        }
+        async fn resolve_by_handle(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<AgentResolution, DirectoryError> {
+            panic!("a person's lookup must not go out without their credentials");
+        }
+        async fn resolve_by_handle_for_user(
+            &self,
+            owner: &str,
+            name: &str,
+            bearer: Option<&str>,
+        ) -> Result<AgentResolution, DirectoryError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((owner.into(), name.into(), bearer.map(str::to_string)));
+            Err(DirectoryError::NotFound)
+        }
+    }
+    let fx = Fixture::new().await;
+    let inner = Arc::new(Recording(std::sync::Mutex::default()));
+    let directory =
+        LocalFirstAgentDirectory::new(CALLER_RUNTIME, fx.manager.clone(), inner.clone());
+    let _ = directory
+        .resolve_by_handle_for_user("maya", "juno", Some("tok"))
+        .await;
+    let _ = directory
+        .resolve_by_handle_for_user("maya", "juno", None)
+        .await;
+    assert_eq!(
+        *inner.0.lock().unwrap(),
+        vec![
+            (
+                "maya".to_string(),
+                "juno".to_string(),
+                Some("tok".to_string())
+            ),
+            ("maya".to_string(), "juno".to_string(), None),
+        ]
+    );
 }
 
 impl Fixture {

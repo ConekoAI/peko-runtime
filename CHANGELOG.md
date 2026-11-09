@@ -4,6 +4,18 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: the CLI finds your own private peko by `@owner/name` (2026-11-09)
+
+- `peko channel dm @maya/juno` looked the name up on PekoHub's public
+  profile, so it found only public pekos, and only while they were online.
+  The CLI now passes the handle to the daemon. The daemon resolves it with
+  `GET /v1/principals/by-handle` as the runtime's person: with the
+  person's PekoHub token when given, else the runtime's `PekoRuntime`
+  proof. So you reach public pekos and your own private ones by name, even
+  while asleep. Anyone else's private peko is still named by its PekoHub ID.
+- IPC `channel_open_remote_dm` takes `@owner/name` in `hub_id`; the answer's
+  `hub_id` is always the resolved ID.
+
 ### Fix: existing pekos get the current conversation role (2026-11-09)
 
 - A seeded role that was never edited is replaced on boot with the current

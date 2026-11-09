@@ -29,6 +29,14 @@ impl AgentDirectory for OfflineDirectory {
             "remote directory is not configured".into(),
         ))
     }
+    async fn resolve_by_handle_for_user(
+        &self,
+        owner: &str,
+        name: &str,
+        _bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.resolve_by_handle(owner, name).await
+    }
 }
 
 /// Directory wrapper that resolves same-runtime principals locally before
@@ -128,6 +136,17 @@ impl AgentDirectory for LocalFirstAgentDirectory {
             return Ok(resolution);
         }
         self.inner.resolve_by_hub_id_for_user(hub_id, bearer).await
+    }
+    /// Always the Hub's: a handle names its owner's account.
+    async fn resolve_by_handle_for_user(
+        &self,
+        owner: &str,
+        name: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.inner
+            .resolve_by_handle_for_user(owner, name, bearer)
+            .await
     }
     async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError> {
         if let Some(resolution) = self.local_by_hub_id(did).await {

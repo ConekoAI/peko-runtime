@@ -148,6 +148,18 @@ pub trait AgentDirectory: Send + Sync {
     ) -> Result<AgentResolution, DirectoryError> {
         self.resolve_by_hub_id(hub_id).await
     }
+    /// Resolve an `@owner/name` handle on behalf of the runtime's local
+    /// user, like [`Self::resolve_by_hub_id_for_user`]. PekoHub resolves a
+    /// private peko by handle only for its owner (hub ADR-010). No default:
+    /// a wrapper that fell back to [`Self::resolve_by_handle`] would send the
+    /// lookup without the person's credentials, and their own private peko
+    /// would read as missing.
+    async fn resolve_by_handle_for_user(
+        &self,
+        owner: &str,
+        name: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError>;
     /// Resolve a `did:peko:agent:...` to its host.
     async fn resolve_by_hub_id(&self, did: &str) -> Result<AgentResolution, DirectoryError>;
 
@@ -300,6 +312,29 @@ impl HubAgentDirectoryClient {
         Ok(Self::new(base_url))
     }
 
+    /// A lookup for the runtime's person: with their `bearer` token when
+    /// given, else with the runtime's own proof (pekohub `PekoRuntime`),
+    /// which PekoHub answers as the account the runtime is registered to.
+    async fn request_for_user(
+        &self,
+        path: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        let url = format!("{}{path}", self.base_url);
+        let mut request = self.http.get(&url);
+        if let Some(token) = bearer.filter(|t| !t.is_empty()) {
+            request = request.bearer_auth(token);
+        } else if let Some((did, key)) = &self.runtime_key {
+            let proof = Self::directory_proof(did, key, path)?;
+            request = request.header("authorization", format!("PekoRuntime {proof}"));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DirectoryError::Transport(e.to_string()))?;
+        Self::handle_response(response).await
+    }
+
     /// Map an HTTP response status + body into our `DirectoryError`
     /// shape. Factored out so the by-did and by-handle paths share
     /// the contract.
@@ -332,22 +367,17 @@ impl AgentDirectory for HubAgentDirectoryClient {
         hub_id: &str,
         bearer: Option<&str>,
     ) -> Result<AgentResolution, DirectoryError> {
-        let path = format!("/v1/principals/by-hub-id/{hub_id}");
-        let url = format!("{}{path}", self.base_url);
-        let mut request = self.http.get(&url);
-        if let Some(token) = bearer.filter(|t| !t.is_empty()) {
-            request = request.bearer_auth(token);
-        } else if let Some((did, key)) = &self.runtime_key {
-            // No token of the person's: the runtime they signed in on
-            // speaks for them (pekohub `PekoRuntime` proof).
-            let proof = Self::directory_proof(did, key, &path)?;
-            request = request.header("authorization", format!("PekoRuntime {proof}"));
-        }
-        let response = request
-            .send()
+        self.request_for_user(&format!("/v1/principals/by-hub-id/{hub_id}"), bearer)
             .await
-            .map_err(|e| DirectoryError::Transport(e.to_string()))?;
-        Self::handle_response(response).await
+    }
+    async fn resolve_by_handle_for_user(
+        &self,
+        owner: &str,
+        name: &str,
+        bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.request_for_user(&format!("/v1/principals/by-handle/{owner}/{name}"), bearer)
+            .await
     }
     async fn resolve_by_hub_id_as(
         &self,
@@ -507,6 +537,15 @@ pub mod fake {
                 .cloned()
                 .ok_or(DirectoryError::NotFound)?
                 .map_err(Into::into)
+        }
+
+        async fn resolve_by_handle_for_user(
+            &self,
+            owner: &str,
+            name: &str,
+            _bearer: Option<&str>,
+        ) -> Result<AgentResolution, DirectoryError> {
+            self.resolve_by_handle(owner, name).await
         }
 
         async fn resolve_by_handle(
@@ -693,6 +732,7 @@ mod tests {
         async fn authorization_sent(
             client: &HubAgentDirectoryClient,
             bearer: Option<&str>,
+            by_handle: bool,
             listener: tokio::net::TcpListener,
         ) -> String {
             let server = tokio::spawn(async move {
@@ -707,9 +747,15 @@ mod tests {
                     .await;
                 request
             });
-            let _ = client
-                .resolve_by_hub_id_for_user("6f1c2d3e-0000-4000-8000-000000000001", bearer)
-                .await;
+            let _ = if by_handle {
+                client
+                    .resolve_by_handle_for_user("maya", "juno", bearer)
+                    .await
+            } else {
+                client
+                    .resolve_by_hub_id_for_user("6f1c2d3e-0000-4000-8000-000000000001", bearer)
+                    .await
+            };
             let request = server.await.unwrap();
             request
                 .lines()
@@ -727,7 +773,7 @@ mod tests {
         let client =
             HubAgentDirectoryClient::new(base).with_runtime_key("did:key:zRuntime", key.clone());
 
-        let header = authorization_sent(&client, None, listener).await;
+        let header = authorization_sent(&client, None, false, listener).await;
         let proof = header
             .strip_prefix("PekoRuntime ")
             .expect("a runtime proof");
@@ -752,12 +798,29 @@ mod tests {
             .verify(input.as_bytes(), &signature)
             .is_ok());
 
+        // A lookup by handle carries the same proof, for its own path.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let client =
+            HubAgentDirectoryClient::new(base).with_runtime_key("did:key:zRuntime", key.clone());
+        let header = authorization_sent(&client, None, true, listener).await;
+        let proof = header
+            .strip_prefix("PekoRuntime ")
+            .expect("a runtime proof");
+        let claims: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(proof.split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(claims["path"], "/v1/principals/by-handle/maya/juno");
+
         // The person's own token, when the client has one, wins.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let client = HubAgentDirectoryClient::new(base).with_runtime_key("did:key:zRuntime", key);
         assert_eq!(
-            authorization_sent(&client, Some("tok"), listener).await,
+            authorization_sent(&client, Some("tok"), false, listener).await,
             "Bearer tok"
         );
     }
