@@ -498,3 +498,93 @@ async fn an_untrusted_run_does_not_choose_admins() {
     .expect("refused");
     assert!(reason.contains("admins"), "{reason}");
 }
+
+/// ADR-101: a group's board through `Channel board`: an item is added,
+/// claimed, refused to another member, updated with a default check-in,
+/// shown by `info`, and a DM has none.
+#[tokio::test]
+async fn the_board_is_changed_and_read_through_the_tool() {
+    let fx = Fixture::new().await;
+    fx.learn(&fx.friend).await;
+    let friend = fx.address(&fx.friend).await;
+    fx.call(json!({"action": "create", "name": "stats", "slug": "stats", "members": [friend]}))
+        .await
+        .unwrap();
+    let group = "group:stats";
+    let added = fx
+        .call(
+            json!({"action": "board", "channel": group, "op": "add", "title": "run the tests",
+            "for": "friend"}),
+        )
+        .await
+        .unwrap();
+    let item = added["item"]["id"].as_str().unwrap().to_string();
+    assert_eq!(item.len(), peko_channel::board::SHORT_ID_CHARS, "{added}");
+    assert_eq!(added["item"]["for"], json!(friend), "{added}");
+
+    let claimed = fx
+        .call(json!({"action": "board", "channel": group, "op": "claim", "item": item}))
+        .await
+        .unwrap();
+    assert_eq!(claimed["item"]["state"], "doing", "{claimed}");
+
+    // The friend sees it held.
+    let err = fx
+        .tool
+        .execute_with_context(
+            json!({"action": "board", "channel": group, "op": "claim", "item": item}),
+            &fx.owner_ctx_of(&fx.friend),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("already claimed"), "{err}");
+
+    let blocked = fx
+        .call(
+            json!({"action": "board", "channel": group, "op": "update", "item": item,
+            "state": "blocked", "note": "waiting on the fixture"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked["item"]["state"], "blocked", "{blocked}");
+    assert!(
+        blocked["item"]["check_at"].is_string(),
+        "a default check-in: {blocked}"
+    );
+
+    let info = fx
+        .call(json!({"action": "info", "channel": group}))
+        .await
+        .unwrap();
+    assert_eq!(info["board"][0]["title"], "run the tests", "{info}");
+    assert!(info.get("history").is_none(), "{info}");
+
+    // The post's readable line was written from the op.
+    let events = fx
+        .port
+        .peek(
+            &ChannelId::for_group("stats"),
+            &peko_channel::Checkpoint::zero(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        events.iter().any(|ev| matches!(ev,
+            peko_channel::ChannelEvent::Posted { text, board: Some(_), .. }
+                if text.contains("took “run the tests”"))),
+        "{events:?}"
+    );
+
+    let dm = fx
+        .port
+        .ensure_dm(&fx.caller.id, &ActorRef::User("bob".into()), "/user-bob")
+        .await
+        .unwrap();
+    let err = fx
+        .call(json!({"action": "board", "channel": dm.as_str(), "op": "add", "title": "x"}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("boards are for groups"), "{err}");
+}

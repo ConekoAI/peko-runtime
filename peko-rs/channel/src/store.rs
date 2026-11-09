@@ -376,10 +376,6 @@ pub struct MetaJson {
     /// addresses). Kept at the home.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admins: Vec<String>,
-    /// ADR-092 D3: what a group's members may read of its past. Kept at
-    /// the home; absent is `shared`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history: Option<HistoryVisibility>,
     /// ADR-092 D5: the group's PekoHub registration. Kept at the home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub: Option<HubGroup>,
@@ -436,17 +432,6 @@ pub struct InviteLink {
     pub exp: i64,
     #[serde(default)]
     pub revoked: bool,
-}
-
-/// What a group's members may read of its past (ADR-092 D3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoryVisibility {
-    /// Everything since the group was created, while a member.
-    #[default]
-    Shared,
-    /// Only what was posted after they joined.
-    Joined,
 }
 
 /// A group's invitation waiting for the person's answer (ADR-092 D2),
@@ -529,8 +514,6 @@ pub struct GroupInfo {
     pub owner: String,
     /// Canonical addresses; kept at the home.
     pub admins: Vec<String>,
-    /// What members may read of the past (ADR-092 D3).
-    pub history: HistoryVisibility,
     /// The group's PekoHub ID, once registered (ADR-092 D5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub_id: Option<String>,
@@ -573,8 +556,6 @@ struct MetaJsonOnDisk {
     home: Option<GroupHome>,
     #[serde(default)]
     admins: Vec<String>,
-    #[serde(default)]
-    history: Option<HistoryVisibility>,
     #[serde(default)]
     hub: Option<HubGroup>,
     #[serde(default)]
@@ -619,7 +600,6 @@ impl From<MetaJsonOnDisk> for MetaJson {
             account: raw.account,
             home: raw.home,
             admins: raw.admins,
-            history: raw.history,
             hub: raw.hub,
             history_complete: raw.history_complete,
         }
@@ -1005,7 +985,6 @@ impl ChannelStore {
             account: Some(account.to_string()),
             home: None,
             admins: Vec::new(),
-            history: None,
             hub: None,
             history_complete: false,
         }
@@ -1655,7 +1634,6 @@ impl ChannelStore {
                 owner: None,
             }),
             admins: Vec::new(),
-            history: None,
             hub: None,
             history_complete: false,
         }
@@ -2176,28 +2154,6 @@ impl ChannelStore {
         Ok(out)
     }
 
-    /// A group's history visibility (ADR-092 D3).
-    pub async fn history_visibility(&self, channel: &ChannelId) -> Result<HistoryVisibility> {
-        let meta = MetaJson::load(&self.cfg.channel_dir(channel), channel).await?;
-        Ok(meta.history.unwrap_or_default())
-    }
-
-    /// Set a group's history visibility (ADR-092 D3).
-    pub async fn set_history_visibility(
-        &self,
-        channel: &ChannelId,
-        visibility: HistoryVisibility,
-    ) -> Result<()> {
-        let dir = self.cfg.channel_dir(channel);
-        let _guard = self.lock_members(&dir).await?;
-        let mut meta = MetaJson::load(&dir, channel).await?;
-        if meta.kind != ConversationKind::Group {
-            return Err(ChannelError::Adapter(format!("{channel} is not a group")));
-        }
-        meta.history = Some(visibility);
-        meta.save(&dir).await
-    }
-
     /// A copy takes the start time its source signed (ADR-092 D1): a
     /// group or DM began when its home made it, not when this copy was
     /// made. Only an earlier time is taken, so a copy never moves later.
@@ -2241,58 +2197,6 @@ impl ChannelStore {
         meta.hub = Some(hub.clone());
         meta.save(&dir).await?;
         Ok(hub)
-    }
-
-    /// When `address` (canonical) joined `channel`: the `at` of the newest
-    /// `MemberJoined` naming it, or the channel's creation for its creator.
-    /// `None` when the log never shows it joining.
-    pub async fn joined_at(&self, channel: &ChannelId, address: &str) -> Result<Option<String>> {
-        let tier = self.resolve_tier(channel).await?;
-        let mut joined = None;
-        for (_, ev) in self.read_events(tier, channel, &Checkpoint::zero()).await? {
-            match &ev {
-                ChannelEvent::MemberJoined { member, at, .. }
-                    if self.creator_address(member).await == address =>
-                {
-                    joined = Some(at.clone());
-                }
-                ChannelEvent::Created { creator, at, .. }
-                    if joined.is_none() && self.creator_address(creator).await == address =>
-                {
-                    joined = Some(at.clone());
-                }
-                _ => {}
-            }
-        }
-        Ok(joined)
-    }
-
-    /// [`Self::history_page`] limited to posts at or after `since` (RFC
-    /// 3339), for a member who may read only what followed their joining.
-    pub async fn history_page_since(
-        &self,
-        channel: &ChannelId,
-        before: Option<&str>,
-        after: Option<&str>,
-        limit: usize,
-        since: &str,
-    ) -> Result<(Vec<ChannelEvent>, bool)> {
-        let (page, _) = self
-            .history_page(channel, before, after, usize::MAX / 4)
-            .await?;
-        let visible: Vec<ChannelEvent> = page.into_iter().filter(|ev| ev.at() >= since).collect();
-        let limit = limit.max(1);
-        let (start, end) = if after.is_some() {
-            (0, limit.min(visible.len()))
-        } else {
-            (visible.len().saturating_sub(limit), visible.len())
-        };
-        let more = if after.is_some() {
-            end < visible.len()
-        } else {
-            start > 0
-        };
-        Ok((visible[start..end].to_vec(), more))
     }
 
     /// Delete every DM with a remote peko that does not belong to
@@ -3361,14 +3265,27 @@ impl ChannelStore {
         // A peer's post keeps its message but loses suggested replies
         // that break the limits (ADR-093 D2): another runtime cannot
         // hand our clients an arbitrary number of buttons.
+        // A board change of a shape we don't keep (ADR-101) is dropped
+        // the same way; the post's readable line stays.
         let sanitized;
         let ev = match ev {
-            ChannelEvent::Posted { options, .. }
-                if crate::port::validate_options(options).is_err() =>
+            ChannelEvent::Posted { options, board, .. }
+                if crate::port::validate_options(options).is_err()
+                    || board
+                        .as_ref()
+                        .is_some_and(|op| !crate::board::well_formed(op)) =>
             {
                 let mut copy = ev.clone();
-                if let ChannelEvent::Posted { options, .. } = &mut copy {
-                    options.clear();
+                if let ChannelEvent::Posted { options, board, .. } = &mut copy {
+                    if crate::port::validate_options(options).is_err() {
+                        options.clear();
+                    }
+                    if board
+                        .as_ref()
+                        .is_some_and(|op| !crate::board::well_formed(op))
+                    {
+                        *board = None;
+                    }
                 }
                 sanitized = copy;
                 &sanitized
@@ -3720,7 +3637,6 @@ impl ChannelStore {
             account: None,
             home: None,
             admins: Vec::new(),
-            history: None,
             hub: None,
             history_complete: false,
         };
@@ -3795,6 +3711,16 @@ impl ChannelStore {
         // refused whole, so the model that offered them sees why.
         let options = crate::port::validate_options(&msg.options)
             .map_err(|e| ChannelError::Adapter(format!("invalid options: {e}")))?;
+        // ADR-101: a board change is checked against the board as this
+        // runtime folds it, and the post's text is written from it.
+        let author = self.canonical_address(author);
+        let (board, text) = match msg.board.as_ref() {
+            Some(op) => {
+                let (op, text) = self.prepare_board_op(channel, &author, op).await?;
+                (Some(op), text)
+            }
+            None => (None, msg.text),
+        };
 
         // Validate parent (if any) references an existing line in the
         // log. Line numbers are global across rotated pages and never
@@ -3830,9 +3756,9 @@ impl ChannelStore {
         };
         let ev = ChannelEvent::Posted {
             channel: channel.clone(),
-            author: self.canonical_address(author),
+            author,
             parent: msg.parent.clone(),
-            text: msg.text,
+            text,
             at: Utc::now().to_rfc3339(),
             via: msg.via.clone(),
             msg_id: Some(msg.msg_id.unwrap_or_else(new_msg_id)),
@@ -3840,11 +3766,121 @@ impl ChannelStore {
             attachments: msg.attachments,
             options,
             model: msg.model,
+            board,
         };
         let line = self
             .append_event(tier, channel, &ev, EventOrigin::Local)
             .await?;
         Ok((line.to_string(), ev))
+    }
+
+    /// ADR-101: check `author`'s board change on `channel` and return it
+    /// with its item resolved to a full id, plus the post's readable line.
+    async fn prepare_board_op(
+        &self,
+        channel: &ChannelId,
+        author: &str,
+        op: &peko_protocol::channel::BoardOp,
+    ) -> Result<(peko_protocol::channel::BoardOp, String)> {
+        use peko_protocol::channel::BoardOp;
+        let refuse = |e: String| ChannelError::Adapter(format!("board: {e}"));
+        let Some(board) = ChannelPort::board(self, channel).await? else {
+            return Err(refuse("boards are for groups".to_string()));
+        };
+        let mut op = crate::board::validate_op(op, Utc::now()).map_err(refuse)?;
+        if let BoardOp::Add {
+            for_member: Some(member),
+            title,
+        } = &op
+        {
+            // A member by address (either alias) or by display name.
+            let reference = member.trim().trim_start_matches('@');
+            let wanted = reference.parse::<ActorRef>().ok().map(|a| self.key_of(&a));
+            let roster = self.participants(channel).await?;
+            let found: Vec<&ActorInfo> = roster
+                .iter()
+                .filter(|p| match &wanted {
+                    Some(key) => p
+                        .address
+                        .parse::<ActorRef>()
+                        .is_ok_and(|a| self.key_of(&a) == *key),
+                    None => p
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(reference)),
+                })
+                .collect();
+            let found = match found.as_slice() {
+                [one] => *one,
+                [] => return Err(refuse(format!("{reference} is not in this group"))),
+                _ => {
+                    return Err(refuse(format!(
+                        "more than one member is called {reference}; use their address"
+                    )))
+                }
+            };
+            op = BoardOp::Add {
+                title: title.clone(),
+                for_member: Some(found.address.clone()),
+            };
+        }
+        let info = ChannelPort::group_info(self, channel).await?;
+        let keys = crate::port::PortKeys(self);
+        let auth = crate::board::Authority::new(
+            &keys,
+            info.as_ref().map(|i| i.owner.as_str()),
+            info.as_ref().map(|i| i.admins.as_slice()).unwrap_or(&[]),
+        );
+        board.check(author, &op, &auth).map_err(refuse)?;
+        let title = match op.item() {
+            Some(reference) => {
+                let item = board.find(reference).map_err(refuse)?;
+                let title = item.title.clone();
+                op = crate::board::with_item(op, &item.id.clone());
+                Some(title)
+            }
+            None => None,
+        };
+        let who = match author.parse::<ActorRef>() {
+            Ok(actor) => self.actor_info(&actor).await.name,
+            Err(_) => None,
+        }
+        .unwrap_or_else(|| author.to_string());
+        let text = crate::board::describe(&op, &who, title.as_deref());
+        Ok((op, text))
+    }
+
+    /// ADR-101 D6: `principal`'s fired check-ins on `channel`.
+    pub async fn fired_check_ins(
+        &self,
+        channel: &ChannelId,
+        principal: &str,
+    ) -> Result<Vec<String>> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let fired = crate::board::FiredCheckIns::load(&chan_dir).await?;
+        Ok(fired.0.get(principal).cloned().unwrap_or_default())
+    }
+
+    /// Replace `principal`'s fired check-ins on `channel` under the
+    /// file's lock (other principals' records are kept).
+    pub async fn set_fired_check_ins(
+        &self,
+        channel: &ChannelId,
+        principal: &str,
+        list: Vec<String>,
+    ) -> Result<()> {
+        let chan_dir = self.channel_dir_for_marks(channel).await?;
+        let _guard = lock_beside(&crate::board::FiredCheckIns::path_in(&chan_dir)).await?;
+        let mut fired = crate::board::FiredCheckIns::load(&chan_dir).await?;
+        if fired.0.get(principal).map(Vec::as_slice).unwrap_or(&[]) == list.as_slice() {
+            return Ok(());
+        }
+        if list.is_empty() {
+            fired.0.remove(principal);
+        } else {
+            fired.0.insert(principal.to_string(), list);
+        }
+        fired.save(&chan_dir).await
     }
 
     /// The event at global line `line`, if there is one.
@@ -4219,25 +4255,9 @@ impl ChannelPort for ChannelStore {
             home: self.group_home(channel).await?,
             owner: self.group_owner(channel).await?,
             admins: self.group_admins(channel).await?,
-            history: self.history_visibility(channel).await?,
             hub_id: self.hub_group(channel).await?.map(|h| h.id),
             visibility: self.hub_group(channel).await?.map(|h| h.visibility),
         }))
-    }
-
-    async fn set_group_history(
-        &self,
-        channel: &ChannelId,
-        by: &PrincipalId,
-        visibility: HistoryVisibility,
-    ) -> Result<()> {
-        if !self.may_manage_group(channel, &ActorRef::from(by)).await? {
-            let owner = self.group_owner(channel).await?;
-            return Err(ChannelError::Adapter(format!(
-                "Only the group's owner ({owner}) or an admin chooses what members may read"
-            )));
-        }
-        self.set_history_visibility(channel, visibility).await
     }
 
     async fn set_group_admin(
@@ -4429,7 +4449,6 @@ impl ChannelPort for ChannelStore {
             account: None,
             home: None,
             admins: Vec::new(),
-            history: None,
             hub: None,
             history_complete: false,
         };
@@ -4685,6 +4704,19 @@ impl ChannelPort for ChannelStore {
         items: Vec<crate::AttentionItem>,
     ) -> Result<()> {
         ChannelStore::set_attention(self, channel, session_key, items).await
+    }
+
+    async fn fired_check_ins(&self, channel: &ChannelId, principal: &str) -> Result<Vec<String>> {
+        ChannelStore::fired_check_ins(self, channel, principal).await
+    }
+
+    async fn set_fired_check_ins(
+        &self,
+        channel: &ChannelId,
+        principal: &str,
+        fired: Vec<String>,
+    ) -> Result<()> {
+        ChannelStore::set_fired_check_ins(self, channel, principal, fired).await
     }
 
     async fn leave(&self, channel: &ChannelId, principal: &PrincipalId) -> Result<()> {
@@ -5248,6 +5280,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let mut line = serde_json::to_vec(&foreign).unwrap();
         line.push(b'\n');
@@ -5919,6 +5952,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 
@@ -6542,7 +6576,6 @@ mod tests {
             account: None,
             home: None,
             admins: Vec::new(),
-            history: None,
             hub: None,
             history_complete: false,
         };
@@ -6819,6 +6852,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let line = store
             .append_remote_event(&channel, &remote_event)
@@ -6863,6 +6897,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let first = store
             .append_remote_event(&channel, &echo(Some("msg_same")))
@@ -6938,6 +6973,7 @@ mod tests {
             attachments: Vec::new(),
             options,
             model: None,
+            board: None,
         };
         let flood: Vec<String> = (0..50).map(|i| format!("option {i}")).collect();
         store
@@ -7010,6 +7046,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -7030,6 +7067,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let mut line = serde_json::to_vec(&legacy).unwrap();
         line.push(b'\n');
@@ -7120,6 +7158,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         store
             .append_remote_event(&channel, &remote_event)
@@ -7150,6 +7189,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let result = store.append_remote_event(&bogus, &ev).await;
         assert!(
@@ -7367,6 +7407,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         store
             .append_remote_event(&channel, &remote_event)

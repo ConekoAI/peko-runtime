@@ -202,6 +202,112 @@ impl ChannelHandler {
 impl ChannelHandler {
     /// `ChannelInfo`: kind, name, members, and the wake policy of each
     /// member peko hosted here. Membership-gated like `ChannelPeek`.
+    /// Who a post from `caller` is written as: the caller's own identity
+    /// (`sender_name: None`), or a peko the caller operates. A `user:`
+    /// sender other than the caller is refused as impersonation, for
+    /// every caller class, and a JWT user is never a peko sender (ADR-057,
+    /// ADR-049 Phase 2). API keys bind as their owner.
+    fn post_sender(
+        &self,
+        caller: &CallerContext,
+        sender_name: Option<&str>,
+    ) -> Result<ActorRef, String> {
+        let own = match caller_binding(caller) {
+            CallerBinding::Derived(own) | CallerBinding::User(own) => own,
+        };
+        let forbidden =
+            || format!("[forbidden] caller may only post as their own identity ('{own}')");
+        let Some(raw) = sender_name else {
+            return Ok(own);
+        };
+        match ActorRef::from_str(raw) {
+            Ok(s @ ActorRef::User(_)) if s == own => Ok(own),
+            Ok(ActorRef::User(_)) => Err(forbidden()),
+            _ if matches!(caller_binding(caller), CallerBinding::User(_)) => Err(forbidden()),
+            _ => self
+                .resolve_principal(raw)
+                .map(|p| ActorRef::from(&p))
+                .ok_or_else(|| format!("Sender peko '{raw}' is not loaded")),
+        }
+    }
+
+    /// `ChannelBoard` (ADR-101): change a group's board when `op` is given,
+    /// then answer with the board.
+    async fn channel_board(
+        &self,
+        request_id: u64,
+        channel: &str,
+        sender_name: Option<&str>,
+        op: Option<peko_protocol::channel::BoardOp>,
+        caller: &CallerContext,
+        sink: &dyn ResponseSink,
+    ) -> anyhow::Result<()> {
+        let Some(ch) = ChannelId::parse(channel) else {
+            return error_reply(sink, request_id, format!("invalid ChannelId: {channel}")).await;
+        };
+        if !self
+            .gate_channel_read(&ch, caller, request_id, sink)
+            .await?
+        {
+            return Ok(());
+        }
+        let port = self.host.channel_port();
+        if let Some(op) = op {
+            let sender = match self.post_sender(caller, sender_name) {
+                Ok(sender) => sender,
+                Err(message) => return error_reply(sink, request_id, message).await,
+            };
+            let msg = peko_channel::PostMsg::root(String::new()).with_board(op);
+            if let Err(e) = port.post(&ch, &sender, msg).await {
+                return error_reply(sink, request_id, e.to_string()).await;
+            }
+        }
+        let board = match port.board(&ch).await {
+            Ok(Some(board)) => board,
+            Ok(None) => {
+                return error_reply(sink, request_id, "boards are for groups".into()).await;
+            }
+            Err(e) => return error_reply(sink, request_id, e.to_string()).await,
+        };
+        // Names for the people and pekos an item mentions, for readers
+        // that show the board as text (the CLI).
+        let roster = port.participants(&ch).await.unwrap_or_default();
+        let name_of = |address: &str| -> Option<String> {
+            let key = address.parse::<ActorRef>().ok().map(|a| port.key_of(&a))?;
+            roster
+                .iter()
+                .find(|p| {
+                    p.address
+                        .parse::<ActorRef>()
+                        .is_ok_and(|a| port.key_of(&a) == key)
+                })
+                .and_then(|p| p.name.clone())
+        };
+        let items = board
+            .visible(chrono::Utc::now())
+            .map(|item| {
+                let mut v = serde_json::json!(item);
+                v["short"] = serde_json::json!(item.short_id());
+                if let Some(name) = item.claimant.as_deref().and_then(&name_of) {
+                    v["claimant_name"] = serde_json::json!(name);
+                }
+                if let Some(name) = item.for_member.as_deref().and_then(&name_of) {
+                    v["for_name"] = serde_json::json!(name);
+                }
+                v
+            })
+            .collect();
+        send_response(
+            sink,
+            ResponsePacket::ChannelBoardResult {
+                request_id,
+                channel: ch,
+                items,
+            },
+        )
+        .await
+    }
+
     async fn channel_info(
         &self,
         request_id: u64,
@@ -1226,6 +1332,7 @@ impl RequestHandler for ChannelHandler {
                 | RequestPacket::ChannelGroupJoin { .. }
                 | RequestPacket::ChannelGroupRegister { .. }
                 | RequestPacket::ChannelGroupLink { .. }
+                | RequestPacket::ChannelBoard { .. }
         )
     }
 
@@ -1470,48 +1577,9 @@ impl RequestHandler for ChannelHandler {
                 // `user:<id>` sender is refused as impersonation —
                 // for every caller class. API keys bind as their
                 // owner (a key is a scoped credential, not a class).
-                let own = match caller_binding(caller) {
-                    CallerBinding::Derived(own) | CallerBinding::User(own) => own,
-                };
-                let sender = match &sender_name {
-                    None => own,
-                    Some(raw) => match ActorRef::from_str(raw) {
-                        Ok(s @ ActorRef::User(_)) if s == own => own,
-                        Ok(_s @ ActorRef::User(_)) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!(
-                                    "[forbidden] caller may only post as their own identity ('{own}')"
-                                ),
-                            };
-                            send_response(sink, response).await?;
-                            return Ok(());
-                        }
-                        // ADR-049 Phase 2 (JWT): a JWT user is never a
-                        // principal sender — the declared name must be
-                        // their own user subject.
-                        _ if matches!(caller_binding(caller), CallerBinding::User(_)) => {
-                            let response = ResponsePacket::Error {
-                                request_id,
-                                message: format!(
-                                    "[forbidden] caller may only post as their own identity ('{own}')"
-                                ),
-                            };
-                            send_response(sink, response).await?;
-                            return Ok(());
-                        }
-                        _ => match self.resolve_principal(raw) {
-                            Some(p) => ActorRef::from(&p),
-                            None => {
-                                let response = ResponsePacket::Error {
-                                    request_id,
-                                    message: format!("Sender peko '{raw}' is not loaded"),
-                                };
-                                send_response(sink, response).await?;
-                                return Ok(());
-                            }
-                        },
-                    },
+                let sender = match self.post_sender(caller, sender_name.as_deref()) {
+                    Ok(sender) => sender,
+                    Err(message) => return error_reply(sink, request_id, message).await,
                 };
                 let ch = match ChannelId::parse(&channel) {
                     Some(id) => id,
@@ -1929,6 +1997,23 @@ impl RequestHandler for ChannelHandler {
             } => {
                 self.channel_info(request_id, &channel, caller, sink)
                     .await?
+            }
+
+            RequestPacket::ChannelBoard {
+                request_id,
+                channel,
+                sender_name,
+                op,
+            } => {
+                self.channel_board(
+                    request_id,
+                    &channel,
+                    sender_name.as_deref(),
+                    op,
+                    caller,
+                    sink,
+                )
+                .await?
             }
 
             RequestPacket::ChannelSetWake {
@@ -3844,6 +3929,7 @@ mod tests {
                 attachments: Vec::new(),
                 options: Vec::new(),
                 model: None,
+                board: None,
             },
         };
         let json = serde_json::to_string(&resp).expect("encode");

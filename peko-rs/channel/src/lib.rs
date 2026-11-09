@@ -71,6 +71,7 @@
 #![allow(clippy::module_inception)]
 
 pub mod attention;
+pub mod board;
 pub mod cli_handlers;
 pub mod cost;
 pub mod cursors;
@@ -85,6 +86,7 @@ pub mod subscription;
 // submodule a type lives in. Mirrors `peko_cron::lib.rs:59-65` and
 // `peko-rs/cron/src/lib.rs:53-67`.
 pub use attention::{AttentionItem, ChannelAttention};
+pub use board::{Authority, Board, BoardItem};
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
@@ -101,8 +103,7 @@ pub use read_marks::ChannelReadMarks;
 pub use responder::{mentions, ChannelResponder, NoopChannelResponder, RespondCtx};
 pub use store::{
     member_row, new_msg_id, BlockDecision, ChannelConfig, ChannelStore, DmRequest, GroupHome,
-    GroupInfo, GroupInvitation, GroupVisibility, HistoryVisibility, HubGroup, InviteLink,
-    PekoJoinRequest,
+    GroupInfo, GroupInvitation, GroupVisibility, HubGroup, InviteLink, PekoJoinRequest,
 };
 pub use subscription::{ChannelSubscriber, SubscriptionConfig};
 

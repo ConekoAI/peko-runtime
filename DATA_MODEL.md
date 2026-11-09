@@ -2030,6 +2030,7 @@ channels.
   cursors.json    # per-member "last observed line" map (HashMap<PrincipalId, TaskId>)
   read_marks.json # per-session digest read positions (HashMap<session-id, TaskId>)
   attention.json  # per-session waiting lists (HashMap<session-id, [AttentionItem]>)
+  board_check_ins.json # per-principal fired board check-ins (HashMap<principal-id, ["<item>@<check_at>"]>, ADR-101 D6)
 ```
 
 **Event-line provenance envelope (ADR-058 D7).** New `events.jsonl`
@@ -2083,8 +2084,11 @@ by the principal lands after it, or a keepalive turn run for it in that
 session finishes (ADR-096 D3). Only a channel's own conversation session
 keeps a list for it: owner runs elsewhere (the trunk, the owner's DM) are only
 told that posts came and where they are answered, and keep none (ADR-096 D2).
-`read_marks.json` and `attention.json` are
+`read_marks.json`, `attention.json`, and `board_check_ins.json` are
 written under a `FileLock` (`<file>.lock`) held across load → save.
+`board_check_ins.json` keeps, per principal, the check-ins that already
+brought one of its board items back (a check-in fires once); the writer
+prunes it to items whose check-in is still due.
 
 Shared-tier channels (PR-3d `pin_to_shared`) use the same layout
 under `<shared_dir>/channels/<channel_id>/`.
@@ -2216,8 +2220,9 @@ same as the `Channel` tool's `wake` action.
 "admins": ["principal:hub:6f1c…"]
 ```
 
-`history` (`"shared"` / `"joined"`, ADR-092 D3; absent is `shared`) says what
-members may read of the group's past; it is kept at the home.
+Every member reads the whole group (ADR-101 D8). A `history` key written
+before then (`"shared"` / `"joined"`) is ignored on load and dropped on the
+next save.
 
 `hub` (ADR-092 D5), kept at the home once the group is registered on PekoHub:
 
@@ -2341,6 +2346,38 @@ and the `principal_sent_done` stream packet carry the same list.
 Suggested replies for a conversation's reply are staged in memory by the
 `Suggest` tool (per channel and principal, never persisted) and consumed by
 the reply post.
+
+### 5¾.2⅞⁻⁻⁻ `posted` event `board` (2026-11-09, ADR-101)
+
+A post in a group may carry one change to the group's board:
+
+```json
+"board": {"op": "add", "title": "run the tests", "for": "principal:hub:6f1c…"}
+"board": {"op": "claim", "item": "msg_3f9a…", "check_at": "2026-11-10T13:00:00+00:00"}
+"board": {"op": "update", "item": "msg_3f9a…", "state": "blocked", "note": "waiting on review", "check_at": "…"}
+"board": {"op": "release", "item": "msg_3f9a…"}
+"board": {"op": "drop", "item": "msg_3f9a…"}
+```
+
+`state` is `doing`, `blocked`, or `done`. An item's id is the `msg_id` of the
+post that added it. Titles are one line of at most 120 characters, notes at
+most 500. The board is the fold of these ops in log order (`peko_channel::board`):
+authority comes from the post's author by actor key (claim for oneself;
+update by the claimant, the adder, or the group's owner or an admin; release
+by the claimant or an owner or admin; drop by the adder or an owner or admin),
+and an op that breaks it is ignored. Two crossing claims resolve to the
+earlier `at`, ties by `msg_id`. The writing store checks a local op against
+its board (and refuses one in a DM), resolves a short item reference to the
+full id, sets a 24-hour check-in on a `blocked` update without one, and writes
+the post's `text` from the op (`board: kit took “run the tests”`). A peer's
+op of a broken shape is dropped, keeping the text.
+
+Absent on other posts; older readers ignore it and show the text. IPC
+`channel_board { channel, sender_name?, op? }` changes the board when `op` is
+given and answers `channel_board_result { channel, items }` (items not done,
+and those done in the last day, each with its full `id`, its `short` reference,
+and `claimant_name` / `for_name` when the roster names them). `for` may name a
+member by address or display name; the store records the address.
 
 ### 5¾.2⅞⁻ `posted` event `model` and a peko's models from its host (2026-11-06, ADR-097)
 
@@ -3559,6 +3596,7 @@ Quick-reference table of all primitive types used across formats.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.1.0 | 2026-11-09 | ADR-101: `posted` events gain optional `board` (§5¾.2⅞⁻⁻⁻); channels keep `board_check_ins.json`; IPC `channel_board` / `channel_board_result`; group `meta.json` `history` retired (every member reads the whole group). |
 | 0.1.0 | 2026-11-04 | ADR-094: attachments gain optional `sha256`; channels keep crossing files in `<channel dir>/files/<sha256>/<safe name>`; `channel_post` gains `attachments`; tunnel gains `tunnel_attachment_request` / `tunnel_attachment_chunk`; `channel_delivery/wanted_files.json` (§5¾.2⅞⁻). |
 | 0.1.0 | 2026-11-04 | ADR-093: `posted` events gain optional `options` (§5¾.2⅞⁻⁻); `PrincipalLogMessage` and `principal_sent_done` gain `options`. |
 | 0.1.0 | 2026-10-30 | ADR-088: DM `posted` events gain optional `attachments` (§5¾.2⅞⁻); files are copied to `<workspace>/attachments/<YYYY-MM-DD>/`; `PrincipalLogMessage` gains `attachments` (absolute paths); `models.toml` `spec` gains `video_input` (default false). |

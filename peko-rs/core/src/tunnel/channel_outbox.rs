@@ -540,6 +540,7 @@ mod tests {
                 attachments: Vec::new(),
                 options: Vec::new(),
                 model: None,
+                board: None,
             },
             source: "prin_a".into(),
         }

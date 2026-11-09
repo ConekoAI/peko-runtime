@@ -534,6 +534,25 @@ impl ChannelResponder for GroupWakeResponder {
             .binding_for(&self.inner.channel, &self.inner.principal)
             .await?
             .map_or(WakePolicy::Mention, |b| b.wake);
+        if wake == WakePolicy::Off {
+            return Ok(());
+        }
+        // ADR-101 D2: a board change wakes no one, except an item a
+        // person added for this peko, which counts as mentioning it.
+        if let ChannelEvent::Posted {
+            board: Some(op), ..
+        } = &ctx.event
+        {
+            let asked = Self::human_root_post(&ctx.event).is_some()
+                && board_asks(self.inner.port.as_ref(), op, &self.inner.principal);
+            if asked {
+                if let Some((author, text)) = Self::human_root_post(&ctx.event) {
+                    let input = format!("{author}: {text}");
+                    spawn_turn(Arc::clone(&self.inner), ctx, input);
+                }
+            }
+            return Ok(());
+        }
         match wake {
             WakePolicy::Off => return Ok(()),
             WakePolicy::Human => {
@@ -571,6 +590,25 @@ impl ChannelResponder for GroupWakeResponder {
         spawn_turn(Arc::clone(&self.inner), ctx, input);
         Ok(())
     }
+}
+
+/// Whether a board change asks `principal` for something: an item added
+/// for it (ADR-101 D2).
+fn board_asks(
+    port: &dyn ChannelPort,
+    op: &peko_protocol::channel::BoardOp,
+    principal: &PrincipalId,
+) -> bool {
+    let peko_protocol::channel::BoardOp::Add {
+        for_member: Some(member),
+        ..
+    } = op
+    else {
+        return false;
+    };
+    member
+        .parse::<ActorRef>()
+        .is_ok_and(|m| port.key_of(&m) == port.key_of(&ActorRef::from(principal)))
 }
 
 // ---------------------------------------------------------------------------
@@ -795,9 +833,17 @@ impl PeerPostNudger {
     /// Whether `ctx.event` is a post by a principal other than the one
     /// this subscriber acts for.
     async fn is_peer_post(&self, ctx: &RespondCtx) -> bool {
-        let ChannelEvent::Posted { author, .. } = &ctx.event else {
+        let ChannelEvent::Posted { author, board, .. } = &ctx.event else {
             return false;
         };
+        // A board change brings nobody's keepalive forward unless it asks
+        // this peko for something (ADR-101 D2).
+        if board
+            .as_ref()
+            .is_some_and(|op| !board_asks(self.port.as_ref(), op, &ctx.principal))
+        {
+            return false;
+        }
         let Ok(author @ ActorRef::Principal(_)) = ActorRef::from_str(author) else {
             return false;
         };
@@ -1307,6 +1353,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 
@@ -1323,6 +1370,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 
@@ -2479,6 +2527,77 @@ mod tests {
                 &channel,
                 "3",
                 posted("user:local:alice", "no mention needed"),
+            ))
+            .await
+            .unwrap();
+        assert!(eventually(|| async { !calls.lock().unwrap().is_empty() }).await);
+    }
+
+    /// ADR-101 D2: a board change wakes no one, whatever the policy,
+    /// except an item a person added for this peko.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn board_posts_wake_only_the_peko_an_item_is_for() {
+        let (store, _tmp) = test_store("board-wake");
+        let principal = pid("prin_self");
+        let channel = store
+            .create(&principal, CreateOpts::runtime("group"))
+            .await
+            .unwrap();
+        store.bind(&channel, &principal, "session-1").await.unwrap();
+        let (driver, calls) = StubDriver::new("r");
+        let responder = select_responder(
+            channel.clone(),
+            principal.clone(),
+            Arc::clone(&store) as Arc<dyn ChannelPort>,
+            ConversationKind::Group,
+            Some(stub_drivers(driver, "session-1")),
+        );
+        store
+            .set_wake(&channel, &principal, WakePolicy::Human)
+            .await
+            .unwrap();
+        let board_post = |author: &str, for_member: Option<&str>| {
+            let mut ev = posted(author, "board: alice added “run the tests”");
+            if let ChannelEvent::Posted { board, .. } = &mut ev {
+                *board = Some(peko_protocol::channel::BoardOp::Add {
+                    title: "run the tests".into(),
+                    for_member: for_member.map(str::to_string),
+                });
+            }
+            ev
+        };
+        for (line, ev) in [
+            ("1", board_post("user:local:alice", None)),
+            (
+                "2",
+                board_post("user:local:alice", Some("principal:local:prin_other")),
+            ),
+            (
+                "3",
+                board_post("prin_other", Some("principal:local:prin_self")),
+            ),
+        ] {
+            responder
+                .consider_response(respond_ctx(&principal, &channel, line, ev))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "board changes wake no one"
+        );
+
+        store
+            .set_wake(&channel, &principal, WakePolicy::Mention)
+            .await
+            .unwrap();
+        responder
+            .consider_response(respond_ctx(
+                &principal,
+                &channel,
+                "4",
+                board_post("user:local:alice", Some("principal:local:prin_self")),
             ))
             .await
             .unwrap();

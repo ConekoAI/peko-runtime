@@ -289,6 +289,90 @@ pub struct Attachment {
     pub sha256: Option<String>,
 }
 
+/// What a board item is doing (ADR-101 D1). An item a `release` reopens
+/// has no claimant; `open` is never set by an `update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoardState {
+    Open,
+    Doing,
+    Blocked,
+    Done,
+}
+
+impl BoardState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Doing => "doing",
+            Self::Blocked => "blocked",
+            Self::Done => "done",
+        }
+    }
+}
+
+/// A change to a group's board (ADR-101), carried by the post that
+/// makes it. The board is the fold of every op in the group's log; an
+/// item's id is the `msg_id` of the post that added it.
+///
+/// Authority comes from the post's author, never from the op: who may
+/// make which op is decided where the board is folded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum BoardOp {
+    /// A new item, `open`. `for_member` names the member it is asked
+    /// of (a mention of that member).
+    Add {
+        title: String,
+        #[serde(rename = "for", default, skip_serializing_if = "Option::is_none")]
+        for_member: Option<String>,
+    },
+    /// The author takes the item: state `doing`.
+    Claim {
+        item: String,
+        /// RFC 3339; when the claimant looks at it again (D6).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check_at: Option<String>,
+    },
+    /// Move the item to `doing`, `blocked`, or `done`.
+    Update {
+        item: String,
+        state: BoardState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check_at: Option<String>,
+    },
+    /// The claimant lets go: state `open`, no claimant, no check-in.
+    Release { item: String },
+    /// The item leaves the board.
+    Drop { item: String },
+}
+
+impl BoardOp {
+    /// The item an op acts on (`None` for `add`, which makes one).
+    pub fn item(&self) -> Option<&str> {
+        match self {
+            Self::Add { .. } => None,
+            Self::Claim { item, .. }
+            | Self::Update { item, .. }
+            | Self::Release { item }
+            | Self::Drop { item } => Some(item),
+        }
+    }
+
+    /// The op's wire name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Add { .. } => "add",
+            Self::Claim { .. } => "claim",
+            Self::Update { .. } => "update",
+            Self::Release { .. } => "release",
+            Self::Drop { .. } => "drop",
+        }
+    }
+}
+
 /// Causal-ordered event log for one channel.
 ///
 /// Wire shape (one example per variant):
@@ -362,6 +446,13 @@ pub enum ChannelEvent {
         /// lines without it are byte-identical to before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// ADR-101: a change to the group's board. The post's `text` is
+        /// a readable line the runtime wrote from it, so clients and
+        /// runtimes that predate the board show the change as a post.
+        /// Omitted when absent, so other lines are byte-identical to
+        /// before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        board: Option<BoardOp>,
     },
     /// A principal was invited / joined the channel. Append-only — a
     /// subsequent `MemberLeft` carries the inverse.
@@ -602,6 +693,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -622,6 +714,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_bob","parent":"node_xyz12345","text":"reply","at":"2026-08-05T12:02:00Z"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -646,6 +739,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let expected = r#"{"kind":"posted","channel":"chan_abcdefgh","author":"prin_alice","parent":null,"text":"hello","at":"2026-08-05T12:01:00Z","via":"/user-a/reminder"}"#;
         assert_eq!(serde_json::to_string(&ev).unwrap(), expected);
@@ -709,6 +803,7 @@ mod tests {
                     attachments: Vec::new(),
                     options: Vec::new(),
                     model: None,
+                    board: None,
                 },
                 "posted",
             ),

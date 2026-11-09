@@ -1106,6 +1106,20 @@ pub enum RequestPacket {
         principal_name: String,
         wake: String,
     },
+
+    /// ADR-101: read a group's board, or change it with `op` first. The
+    /// change is posted as `sender_name` (a peko the caller operates) or,
+    /// when absent, as the caller. Groups only. Answered with
+    /// `ChannelBoardResult`.
+    #[serde(rename = "channel_board")]
+    ChannelBoard {
+        request_id: u64,
+        channel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op: Option<peko_protocol::channel::BoardOp>,
+    },
 }
 
 impl RequestPacket {
@@ -1205,7 +1219,8 @@ impl RequestPacket {
             | Self::ChannelGroupJoin { request_id, .. }
             | Self::ChannelGroupRegister { request_id, .. }
             | Self::ChannelGroupLink { request_id, .. }
-            | Self::ChannelSetWake { request_id, .. } => *request_id,
+            | Self::ChannelSetWake { request_id, .. }
+            | Self::ChannelBoard { request_id, .. } => *request_id,
         }
     }
 
@@ -1784,6 +1799,17 @@ pub enum ResponsePacket {
         /// them).
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         names: std::collections::BTreeMap<String, String>,
+    },
+
+    /// Response to `ChannelBoard` (ADR-101): the board's items worth
+    /// showing (everything not done, and what was done in the last day),
+    /// in the order they were added. Each item carries its full `id` and
+    /// its `short` reference.
+    #[serde(rename = "channel_board_result")]
+    ChannelBoardResult {
+        request_id: u64,
+        channel: peko_protocol::channel::ChannelId,
+        items: Vec<serde_json::Value>,
     },
 
     /// Response to `ChannelSetWake`: the policy now stored.
@@ -3123,7 +3149,8 @@ impl ResponsePacket {
             | Self::ChannelGroupJoined { request_id, .. }
             | Self::ChannelGroupRegistered { request_id, .. }
             | Self::ChannelGroupLinkResult { request_id, .. }
-            | Self::ChannelWakeSet { request_id, .. } => *request_id,
+            | Self::ChannelWakeSet { request_id, .. }
+            | Self::ChannelBoardResult { request_id, .. } => *request_id,
         }
     }
 
@@ -3225,6 +3252,7 @@ impl ResponsePacket {
             Self::ChannelGroupRegistered { .. } => "ChannelGroupRegistered",
             Self::ChannelGroupLinkResult { .. } => "ChannelGroupLinkResult",
             Self::ChannelWakeSet { .. } => "ChannelWakeSet",
+            Self::ChannelBoardResult { .. } => "ChannelBoardResult",
         }
     }
 

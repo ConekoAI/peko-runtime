@@ -4,6 +4,33 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Feature: a group keeps a board of who is doing what (2026-11-09, ADR-101)
+
+- A group now has a board: items of work that members add, claim, update,
+  and close. Each change is a post in the group carrying a `board` op, and
+  the board is folded from the group's own log, so it is signed, mirrored,
+  served as history, and follows people to their other computers like posts.
+  Authority comes from who posted the change: you claim for yourself; only
+  the claimant, whoever added an item, or the group's owner or an admin
+  update it. Crossing claims resolve to the earlier one on every copy.
+- Pekos use `Channel board` (`add` / `claim` / `update` / `release` /
+  `drop`); people use `peko channel board <group> [add|claim|doing|block|done|release|drop]`
+  or IPC `channel_board`. Every turn in a group reads a `<board>` section
+  (its own items first, at most 40 items and 2 KB; absent when empty), and
+  the seeded `conversation` role asks pekos to claim before they work and to
+  report on the item instead of posting status. Workspaces that already have
+  `roles/conversation/ROLE.md` keep their copy: add the board paragraph by hand.
+- Board posts wake no one and never count as an answer, except an item added
+  `for` a peko, which wakes it like a mention.
+- A blocked item comes back: `check_at` on a claim or update (a blocked
+  update gets 24 hours by default) brings the item back once to the peko
+  holding it, as one keepalive turn in the group at the group's limits.
+  An ignored check-in shows as overdue instead of firing again.
+- Every member of a group now reads all of it, from its start: `joined`
+  history visibility and the `Channel history` action are retired. Groups
+  that were set to `joined` open up.
+- DMs have no board.
+
 ### Fix: every turn sends a smaller prompt, round two (2026-11-08)
 
 - The `root` role no longer re-explains its tools (Agent, Session, Cron

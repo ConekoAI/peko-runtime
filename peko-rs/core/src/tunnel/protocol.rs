@@ -1585,6 +1585,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         };
         let msg = TunnelMessage::TunnelChannelEvent {
             request_id: "chan-evt-1".to_string(),

@@ -310,6 +310,7 @@ fn samples() -> Vec<TunnelMessage> {
             }],
             options: vec!["Yes".into(), "Not yet".into()],
             model: Some("work-model".into()),
+            board: None,
         }),
         channel_envelope(ChannelEvent::MemberJoined {
             channel: channel.clone(),
@@ -382,6 +383,7 @@ fn samples() -> Vec<TunnelMessage> {
                 }],
                 options: vec!["Yes".into(), "Not yet".into()],
                 model: Some("work-model".into()),
+                board: None,
             }],
             has_more: true,
             signature: "runtime-signature".into(),

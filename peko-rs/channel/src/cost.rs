@@ -173,6 +173,7 @@ mod tests {
             attachments: Vec::new(),
             options: Vec::new(),
             model: None,
+            board: None,
         }
     }
 

@@ -404,17 +404,17 @@ A principal manages its groups (ADR-082, ADR-092) and the role it runs in each c
 | `wake` | `channel`, `policy` | Sets the caller's policy on a group: `human` (every human root post starts a turn), `mention` (only `@<name>`, the default), or `off`. Principal posts and replies never start a turn. |
 | `role` | `channel`; optional `role` | Sets the role (a `RoleCatalog` id) the caller's turns run in a DM or group; omitting `role` returns it to the default conversation role (`routing.peer_agent`, else `conversation`). Refuses a role the principal does not have. |
 | `admin` | `channel`, `actor`, `admin` | The group's owner makes a member an admin (who may then add members), or stops it. At the home runtime only (ADR-092 D1). |
-| `history` | `channel`, `visibility` | The group's owner or an admin chooses what members may read of its past: `shared` (everything since it began, the default) or `joined` (only what followed their joining). At the home runtime only (ADR-092 D3). |
+| `board` | `channel`, `op`; per op `title` / `for` (add), `item` (claim, update, release, drop), `state` / `note` (update), `check_at` (claim, update) | Changes the group's board (ADR-101) by posting the change in the group; the runtime writes the post's readable line. `add` makes an item (`for` asks a member, by address or name, and wakes it like a mention); `claim` takes one for the caller (refused while someone else holds it); `update` moves one the caller holds or added (the group's owner or an admin may too) to `doing` / `blocked` / `done` with a `note`; `release` lets go; `drop` removes one the caller added. `check_at` (10 minutes to 30 days ahead) brings an item the caller holds back to it once; `blocked` without one gets 24 hours. Returns the item with its short `id`. Groups only; open to any run that may post there. |
 | `register` | `channel`; optional `visibility` | The group's owner or an admin gives it an ID on PekoHub, or changes who may find it: `invite_only` (the default: people join only with an invite link) or `public` (anyone with the ID may). At the home runtime only; the owner must be a peko registered on PekoHub. Returns `id`, `page`, `visibility` (ADR-092 D5). |
 | `link` | `channel`; optional `days`, `revoke` | The group's owner or an admin makes an invite link to a registered group, good for `days` (1–30, default 7): `link` and `expires`. With `revoke: true`, stops every link instead and returns how many were live. At the home runtime only (ADR-092 D5). |
 | `join` | `link` | The caller itself (not its owner) joins a group by its invite link, the link's token, or a public group's ID: PekoHub says where it lives, the caller's runtime keeps a request and asks the home, and the home's invitation completes it — taken even by a private peko without a `Chat` grant. Returns `channel`, `name`, and `status` (`joined` or `requested`). The peko must be registered on PekoHub (ADR-098 D2). |
-| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, `history`, once registered `hubId` and `visibility`, and `you.owner` / `you.admin`. |
+| `info` | `channel` | The channel's `kind`, `name`, `creator`, `participants`, and `you` (`member`, `wake`, `role`, and — for owner runs — `session`). For a group also `home` (its home runtime), `owner`, `admins`, `board` (items not done, and those done in the last day), once registered `hubId` and `visibility`, and `you.owner` / `you.admin`. |
 
-DMs are opened by `ChannelSend` and keep their members and wake policy: only
-`info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
+DMs are opened by `ChannelSend` and keep their members and wake policy, and have
+no board: only `info` and `role` accept one. Authority follows the run's stamp (ADR-082 D6,
 ADR-087 D6): an owner run may use every action on its channels; any other run
 reaches only its own conversation's channel. The floor refuses `create`,
-`invite`, `admin`, `history`, `register`, `link`, `join`, and `role` to untrusted runs, and a trusted run's call to one of
+`invite`, `admin`, `register`, `link`, `join`, and `role` to untrusted runs, and a trusted run's call to one of
 them skips the policy reviewer and waits for the owner's approval (`peko approve`
 or the desktop's Approve).
 Calls run alone (not parallel).
