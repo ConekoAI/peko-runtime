@@ -495,7 +495,14 @@ impl ReceivedLog {
             .await
         {
             Ok(mut file) => {
-                if let Err(e) = file.write_all(line.as_bytes()).await {
+                // tokio's `write_all` can return while the bytes are still
+                // on their way to the file; flush so a reader that opens it
+                // next (a restart) sees the line.
+                let written = match file.write_all(line.as_bytes()).await {
+                    Ok(()) => file.flush().await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = written {
                     warn!("channel delivery: could not record a received envelope: {e}");
                 }
             }
