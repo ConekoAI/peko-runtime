@@ -93,6 +93,11 @@ pub struct AgentArgs {
     /// still carries it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub as_owner: bool,
+    /// With `as_owner`, in a group: the board item the task serves. Once
+    /// approved, the task runs only if no one else has done or is doing
+    /// that work (ADR-100 D5); the approved call carries neither field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 /// Serde default for [`AgentArgs::action`]: the historical behavior is
@@ -138,6 +143,11 @@ fn validate_action_args(action: AgentAction, args: &AgentArgs) -> anyhow::Result
         return Err(anyhow::anyhow!(
             "'as_owner' runs only once the owner approves it; this call did not go through \
              their approval"
+        ));
+    }
+    if args.item.is_some() {
+        return Err(anyhow::anyhow!(
+            "'item' goes with as_owner: it names the board item a task handed to your owner serves"
         ));
     }
     // ADR-053: `source` / `overwrite` are branch-only parameters — a
@@ -307,7 +317,7 @@ impl AgentTool {
 - new: continues the addressed session if you spawned it, else creates it, so repeating one call (e.g. from cron) keeps one session. Only a bare slug or a one-segment absolute path can create one.
 - resume: an existing spawned session at an absolute path.
 - compact: any session except yours and your ancestors (those compact on their own). It keeps the session's model, so `model` is refused.
-- as_owner: true (new only): hand the task to your owner when they asked for it in a conversation others share, and it needs their full access (the shell, their files). `prompt` is then the whole brief (at most 4000 characters): what to do, where, and what to report back, since the run sees nothing else. Your owner approves it on their computer; then it runs as them and its report reaches this conversation.
+- as_owner: true (new only): hand the task to your owner when they asked for it in a conversation others share, and it needs their full access (the shell, their files). `prompt` is then the whole brief (at most 4000 characters): what to do, where, and what to report back, since the run sees nothing else. Your owner approves it on their computer; then it runs as them and its report reaches this conversation. In a group, name the board item it serves in `item`: if by then someone else has done or is doing that work, it doesn't run, and you hear why.
 - branch: copies the live context of `source` (default: your session) into `path`; the source is never changed. If `path` holds a spawned session, `overwrite: true` replaces its live context in place (its id, slug and children stay; the old transcript becomes a compaction page); without it the call is refused. For a recurring side task that needs a main session's context without adding to it.
 
 The call waits for the run and returns `{status, success, run_id, role, output | error}`. A run still going after 10 minutes returns a receipt with a `task_id` and keeps going; its result reaches your session when it ends (starting a turn if you are idle). Check it with Async `output` or `status`; cancel with Async `stop`.
@@ -358,6 +368,10 @@ Refused: your own session or an ancestor, a session with an active run, and (res
                     "type": "boolean",
                     "description": "new: hand the task to your owner for approval; prompt is the whole brief"
                 },
+                "item": {
+                    "type": "string",
+                    "description": "with as_owner, in a group: the board item the task serves"
+                },
                 "page_limit": {
                     "type": "integer",
                     "minimum": 0,
@@ -369,7 +383,15 @@ Refused: your own session or an ancestor, a session with an active run, and (res
         let variants = [
             (
                 "new",
-                &["prompt", "role", "path", "model", "page_limit", "as_owner"][..],
+                &[
+                    "prompt",
+                    "role",
+                    "path",
+                    "model",
+                    "page_limit",
+                    "as_owner",
+                    "item",
+                ][..],
             ),
             ("resume", &["prompt", "role", "path", "model"][..]),
             ("compact", &["prompt", "role", "path"][..]),
@@ -1410,6 +1432,17 @@ mod tests {
         parse_action(&args.action)
             .and_then(|action| validate_action_args(action, &args))
             .map_err(|e| e.to_string())
+    }
+
+    /// ADR-100 D5: `item` names the board item of a task handed to the
+    /// owner; it never reaches the tool on its own.
+    #[test]
+    fn item_goes_only_with_a_task_handed_to_the_owner() {
+        let error = validate(serde_json::json!({
+            "prompt": "go", "path": "fix", "item": "b3f9a1"
+        }))
+        .unwrap_err();
+        assert!(error.contains("goes with as_owner"), "{error}");
     }
 
     /// The argument contract every action enforces before any session is

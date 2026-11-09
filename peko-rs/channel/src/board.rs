@@ -403,19 +403,61 @@ impl Board {
     /// adds or claims.
     pub fn similar_to<'b>(&'b self, item: &BoardItem) -> Vec<&'b BoardItem> {
         let mine = title_words(&item.title);
-        if mine.is_empty() {
-            return Vec::new();
-        }
         self.items
             .iter()
             .filter(|other| other.id != item.id && other.state != BoardState::Done)
-            .filter(|other| {
-                let theirs = title_words(&other.title);
-                let shared = mine.intersection(&theirs).count();
-                let larger = mine.len().max(theirs.len());
-                shared * 10 >= larger * SIMILAR_TITLE_TENTHS
-            })
+            .filter(|other| looks_same(&mine, &other.title))
             .collect()
+    }
+
+    /// Whether the work of `item`, which `member` is about to do, is
+    /// already done or being done elsewhere, and by what. Asked before an
+    /// approved owner task runs (ADR-100), so two pekos whose owners
+    /// approve the same work at once don't both do it. It is covered when:
+    ///
+    /// - `item` itself is done, or someone other than `member` holds it;
+    /// - an item that looks like the same work (the [`Self::similar_to`]
+    ///   title rule) is done, or someone else holds it and is doing it;
+    /// - someone else holds such an item, it is blocked too (waiting on its
+    ///   own approval), it was added first, and `item` isn't under way
+    ///   already. Every copy folds the same board, so of two tasks approved
+    ///   in the same moment exactly one runs.
+    pub fn covered<'b>(
+        &'b self,
+        item: &BoardItem,
+        member: &str,
+        auth: &Authority<'_>,
+    ) -> Option<Covered<'b>> {
+        let mine = self.items.iter().find(|i| i.id == item.id)?;
+        if mine.state == BoardState::Done {
+            return Some(Covered::Done(mine));
+        }
+        if mine.claimant.is_some() && !Self::holds(mine, member, auth) {
+            return Some(Covered::HeldElsewhere(mine));
+        }
+        let words = title_words(&mine.title);
+        let added = |i: &BoardItem| (i.added_at.clone(), i.id.clone());
+        self.items
+            .iter()
+            .filter(|other| other.id != mine.id && looks_same(&words, &other.title))
+            .find_map(|other| {
+                let theirs = other.claimant.is_some() && !Self::holds(other, member, auth);
+                match other.state {
+                    BoardState::Done => Some(Covered::Done(other)),
+                    BoardState::Doing if theirs => Some(Covered::HeldElsewhere(other)),
+                    // A tie between two waiting on approval: the earlier
+                    // runs. Work already under way never yields to one
+                    // still waiting.
+                    BoardState::Blocked
+                        if theirs
+                            && mine.state != BoardState::Doing
+                            && added(other) < added(mine) =>
+                    {
+                        Some(Covered::HeldElsewhere(other))
+                    }
+                    _ => None,
+                }
+            })
     }
 
     /// Whether `member` holds `item`.
@@ -443,9 +485,39 @@ impl Board {
     }
 }
 
+/// Why an item's work is covered ([`Board::covered`]), naming the item
+/// that covers it: this one, or one that looks like the same work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Covered<'b> {
+    /// It is done.
+    Done(&'b BoardItem),
+    /// Someone else holds it.
+    HeldElsewhere(&'b BoardItem),
+}
+
+impl Covered<'_> {
+    /// The item that covers the work.
+    pub fn item(&self) -> &BoardItem {
+        match self {
+            Self::Done(item) | Self::HeldElsewhere(item) => item,
+        }
+    }
+}
+
 /// Share of the longer title's words two titles must have in common to
 /// look like the same work, in tenths.
 const SIMILAR_TITLE_TENTHS: usize = 5;
+
+/// Whether a title with words `mine` and `other` look like the same work.
+fn looks_same(mine: &std::collections::BTreeSet<String>, other: &str) -> bool {
+    if mine.is_empty() {
+        return false;
+    }
+    let theirs = title_words(other);
+    let shared = mine.intersection(&theirs).count();
+    let larger = mine.len().max(theirs.len());
+    shared * 10 >= larger * SIMILAR_TITLE_TENTHS
+}
 
 /// A title's words for comparison: lowercase, letters and digits, at
 /// least three characters, without the most common filler words.
@@ -723,6 +795,93 @@ mod tests {
             note: None,
             check_at: None,
         }
+    }
+
+    /// Two pekos asked for the same fix each add, claim, and hand their
+    /// item to their owner (blocked). Approved in the same moment, only
+    /// the earlier item's task runs; once one is doing or done, the other
+    /// is covered whatever the order (2026-11-09 benchmark: two branches
+    /// pushed for one fix).
+    #[test]
+    fn approved_work_already_covered_elsewhere_is_named() {
+        let auth = Authority::new(&CanonicalKeys, Some(MAYA), &[]);
+        let fold = |extra: &[&ChannelEvent]| {
+            let base = [
+                posted(
+                    KIT,
+                    "2026-11-09T10:00:00Z",
+                    "msg_k",
+                    add("Fix even-length median, push a branch"),
+                ),
+                posted(
+                    REX,
+                    "2026-11-09T10:00:01Z",
+                    "msg_r",
+                    add("Fix even-length median and push to a branch"),
+                ),
+                posted(KIT, "2026-11-09T10:00:02Z", "msg_kc", claim("msg_k")),
+                posted(REX, "2026-11-09T10:00:03Z", "msg_rc", claim("msg_r")),
+                posted(
+                    KIT,
+                    "2026-11-09T10:00:04Z",
+                    "msg_kb",
+                    update("msg_k", BoardState::Blocked),
+                ),
+                posted(
+                    REX,
+                    "2026-11-09T10:00:05Z",
+                    "msg_rb",
+                    update("msg_r", BoardState::Blocked),
+                ),
+            ];
+            let mut events: Vec<&ChannelEvent> = base.iter().collect();
+            events.extend_from_slice(extra);
+            let board = Board::fold(events.iter().copied(), &auth);
+            let item = |id: &str| board.items.iter().find(|i| i.id == id).unwrap().clone();
+            let kit = board
+                .covered(&item("msg_k"), KIT, &auth)
+                .map(|c| c.item().id.clone());
+            let rex = board
+                .covered(&item("msg_r"), REX, &auth)
+                .map(|c| c.item().id.clone());
+            (kit, rex)
+        };
+        // Both blocked: kit's item came first, so kit runs and rex stands down.
+        assert_eq!(fold(&[]), (None, Some("msg_k".into())));
+        // Rex's task started first (doing): now kit stands down instead.
+        let rex_doing = posted(
+            REX,
+            "2026-11-09T10:01:00Z",
+            "msg_rd",
+            update("msg_r", BoardState::Doing),
+        );
+        assert_eq!(fold(&[&rex_doing]), (Some("msg_r".into()), None));
+        // Done by kit: rex's is covered by it.
+        let kit_done = posted(
+            KIT,
+            "2026-11-09T10:02:00Z",
+            "msg_kd",
+            update("msg_k", BoardState::Done),
+        );
+        assert_eq!(fold(&[&kit_done]).1, Some("msg_k".into()));
+        // Kit's own item done: nothing left for kit to run.
+        assert_eq!(fold(&[&kit_done]).0, Some("msg_k".into()));
+        // Unrelated work never covers.
+        let other = posted(
+            REX,
+            "2026-11-09T10:03:00Z",
+            "msg_o",
+            add("Write the release notes"),
+        );
+        let auth2 = Authority::new(&CanonicalKeys, Some(MAYA), &[]);
+        let k = posted(
+            KIT,
+            "2026-11-09T10:00:00Z",
+            "msg_k",
+            add("Fix even-length median"),
+        );
+        let board = Board::fold([&k, &other], &auth2);
+        assert!(board.covered(&board.items[0], KIT, &auth2).is_none());
     }
 
     #[test]

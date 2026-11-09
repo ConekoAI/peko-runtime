@@ -25,6 +25,22 @@ use thiserror::Error;
 // Trait
 // ---------------------------------------------------------------------------
 
+/// The board item an approved owner task serves
+/// ([`ChannelPort::owner_task_item`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerTaskItem {
+    pub item: crate::board::BoardItem,
+    /// What already covers its work, if anything.
+    pub covered: Option<CoveredBy>,
+}
+
+/// The item that covers an owner task's work: done, or someone else's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoveredBy {
+    pub done: bool,
+    pub item: crate::board::BoardItem,
+}
+
 /// Port trait for the multi-principal chat primitive.
 ///
 /// `peko-rs/core` and `peko-rs/cli` hold `Arc<dyn ChannelPort>` on
@@ -670,6 +686,52 @@ pub trait ChannelPort: Send + Sync + 'static {
             events.iter().map(|(_, ev)| ev),
             &auth,
         )))
+    }
+
+    /// ADR-100 + ADR-101: the board item an approved owner task of
+    /// `member` serves in group `channel`, and what already covers its work
+    /// ([`crate::board::Board::covered`]). `item` names the item (its id or
+    /// short id); without one, it is the one item `member` holds and is
+    /// working on. `None` for a DM, or when no item is found.
+    async fn owner_task_item(
+        &self,
+        channel: &ChannelId,
+        item: Option<&str>,
+        member: &ActorRef,
+    ) -> Result<Option<OwnerTaskItem>> {
+        if self.conversation_kind(channel).await? != ConversationKind::Group {
+            return Ok(None);
+        }
+        let events = self.peek_with_ids(channel, &Checkpoint::default()).await?;
+        let info = self.group_info(channel).await?;
+        let keys = SelfKeys(self);
+        let auth = crate::board::Authority::new(
+            &keys,
+            info.as_ref().map(|i| i.owner.as_str()),
+            info.as_ref().map(|i| i.admins.as_slice()).unwrap_or(&[]),
+        );
+        let board = crate::board::Board::fold(events.iter().map(|(_, ev)| ev), &auth);
+        let me = member.to_string();
+        let served = match item {
+            Some(reference) => board.find(reference).ok(),
+            None => {
+                let mut held = board
+                    .items
+                    .iter()
+                    .filter(|i| i.is_active() && crate::board::Board::holds(i, &me, &auth));
+                match (held.next(), held.next()) {
+                    (Some(only), None) => Some(only),
+                    _ => None,
+                }
+            }
+        };
+        Ok(served.map(|served| OwnerTaskItem {
+            item: served.clone(),
+            covered: board.covered(served, &me, &auth).map(|c| CoveredBy {
+                done: matches!(c, crate::board::Covered::Done(_)),
+                item: c.item().clone(),
+            }),
+        }))
     }
 
     /// ADR-101 D6: the check-ins that already brought one of

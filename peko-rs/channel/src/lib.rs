@@ -86,13 +86,13 @@ pub mod subscription;
 // submodule a type lives in. Mirrors `peko_cron::lib.rs:59-65` and
 // `peko-rs/cron/src/lib.rs:53-67`.
 pub use attention::{AttentionItem, ChannelAttention};
-pub use board::{Authority, Board, BoardItem};
+pub use board::{Authority, Board, BoardItem, Covered};
 pub use cli_handlers::ChannelCliRouter;
 pub use cost::{audit_meter, AuditChannelMeter, ChannelMeter, NoopChannelMeter};
 pub use cursors::ChannelCursors;
 pub use port::{
-    dm_channel_id, portable_post, short_name_unambiguous, ActorInfo, Binding, PortKeys,
-    Registration, WakePolicy,
+    dm_channel_id, portable_post, short_name_unambiguous, ActorInfo, Binding, CoveredBy,
+    OwnerTaskItem, PortKeys, Registration, WakePolicy,
 };
 pub use port::{
     global_channel_port, set_global_channel_port, validate_options, ChannelError, ChannelPort,

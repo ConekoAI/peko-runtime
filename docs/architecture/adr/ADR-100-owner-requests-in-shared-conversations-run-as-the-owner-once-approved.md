@@ -80,6 +80,14 @@ When the stamp names the owner but trust is below `Owner`, the block reads:
 
 (With a trusted member's limits when the least-trusted other member is trusted.) The trusted line is corrected to match the floor (F2): "trusted by the owner's consent: every tool except the shell and the owner's plans, never the runtime's own state, within POLICY.md; sensitive actions are reviewed".
 
+### D6: An approved task whose work is taken meanwhile does not run (2026-11-09 addendum)
+
+A brief is approved minutes after it was written, and in a group the same work may be asked of two pekos at once (ADR-101). The 2026-11-09 collaboration benchmark had both pekos add an item for one fix and agree in the group that the first approved would do it. Both owners approved in the same second, and both approved tasks pushed a branch: the brief carries nothing of that agreement.
+
+So in a group, a task handed to the owner names the board item it serves (`Agent` `item`; without one, the one item the peko holds and works on). Before an approved task runs, the runtime folds the group's board (`Board::covered`). It does not run when that item is done or someone else holds it, or when an item that looks like the same work (the `similar` title rule) is done, under way (`doing`) and held by someone else, or held by someone else, also waiting on its own approval, and added first, unless this one is already under way. Every copy folds the same board, so of two tasks approved in the same moment exactly one runs.
+
+A task that runs marks its item `doing` ("Approved; running as the owner"), so a twin approved later elsewhere sees it taken. A task that does not run notes its own item ("Approved, but not run: <who> holds #id …") and keeps it blocked; the owner's reply and the peko's inbox say the same, and the item's check-in brings it back to the peko to release or drop. In a DM, or when no item is found, the task runs as before. A failed board read runs it too (logged): the check prevents duplicate work, it is not a permission.
+
 ## 3. Alternatives considered
 
 - **Trust follows whoever started the turn.** Rejected: the owner's post does not change what the run reads. A member's injected line would reach a shell, with the group itself as the way out.
