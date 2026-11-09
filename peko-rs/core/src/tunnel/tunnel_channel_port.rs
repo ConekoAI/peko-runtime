@@ -589,12 +589,50 @@ impl TunnelChannelPort {
     }
 
     /// `recipient` confirmed the envelopes `request_ids`.
+    ///
+    /// A confirmed DM invite means the recipient now holds the channel.
+    /// Posts sent alongside it may have arrived first: the receiver
+    /// handles each message in its own task, and a post for a channel it
+    /// doesn't hold yet goes unacknowledged. Those posts go again now,
+    /// not after their backoff. Before this, a first message to a peko
+    /// whose computer had slept arrived a minute after it woke
+    /// (2026-11-09 collaboration benchmark).
     pub(crate) async fn confirm_delivery(
         &self,
         recipient_runtime_id: &str,
         request_ids: &[String],
     ) {
-        self.outbox.confirm(recipient_runtime_id, request_ids).await;
+        let confirmed = self.outbox.confirm(recipient_runtime_id, request_ids).await;
+        let invited: HashSet<&ChannelId> = confirmed
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.item,
+                    OutboxItem::Invite { .. } | OutboxItem::UserInvite { .. }
+                )
+            })
+            .map(|e| e.item.channel())
+            .collect();
+        if invited.is_empty() {
+            return;
+        }
+        let waiting: Vec<OutboxEntry> = self
+            .outbox
+            .pending_for(recipient_runtime_id)
+            .await
+            .into_iter()
+            .filter(|e| {
+                matches!(e.item, OutboxItem::Event { .. }) && invited.contains(e.item.channel())
+            })
+            .collect();
+        if !waiting.is_empty() {
+            debug!(
+                recipient = %recipient_runtime_id,
+                count = waiting.len(),
+                "channel outbox: DM invite confirmed; resending its channel's posts"
+            );
+            self.send_entries(waiting).await;
+        }
     }
 
     /// Wait up to `timeout` for every recipient to confirm message

@@ -308,8 +308,13 @@ impl ChannelOutbox {
         }
     }
 
-    /// `recipient` confirmed `request_ids`: forget them.
-    pub(crate) async fn confirm(&self, recipient_runtime_id: &str, request_ids: &[String]) {
+    /// `recipient` confirmed `request_ids`: forget them. Returns the
+    /// entries confirmed.
+    pub(crate) async fn confirm(
+        &self,
+        recipient_runtime_id: &str,
+        request_ids: &[String],
+    ) -> Vec<OutboxEntry> {
         let mut guard = self.state.lock().await;
         let entries = self.loaded(&mut guard).await;
         let done: Vec<u64> = entries
@@ -320,15 +325,18 @@ impl ChannelOutbox {
             })
             .map(|(seq, _)| *seq)
             .collect();
+        let mut confirmed = Vec::new();
         for seq in &done {
             if let Some(entry) = entries.remove(seq) {
                 let _ = tokio::fs::remove_file(self.file_for(&entry)).await;
+                confirmed.push(entry);
             }
         }
         drop(guard);
-        if !done.is_empty() {
+        if !confirmed.is_empty() {
             self.confirmed.notify_waiters();
         }
+        confirmed
     }
 
     /// The posts in `channel` some recipient has not confirmed yet, by

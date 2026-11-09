@@ -561,6 +561,60 @@ mod tests {
         assert!(error.to_string().contains("cannot be reached"), "{error}");
     }
 
+    /// A post sent with a DM's invite may reach the peko's runtime before
+    /// the invite is applied, and go unanswered there. When the invite is
+    /// confirmed, the channel's waiting posts go again at once, not after
+    /// their backoff.
+    #[tokio::test]
+    async fn a_confirmed_invite_sends_its_channels_posts_again() {
+        use peko_channel::port::PostMsg;
+        let mut f = fixture(true).await;
+        let dm = f.port.open_hub_dm(&f.hub_id, None).await.unwrap();
+        f.port
+            .post(
+                &dm.channel,
+                &ActorRef::User("local".into()),
+                PostMsg::root("hi"),
+            )
+            .await
+            .unwrap();
+        let sent: Vec<TunnelMessage> = std::iter::from_fn(|| f.sent.try_recv().ok()).collect();
+        let invite = sent
+            .iter()
+            .find_map(|m| match m {
+                TunnelMessage::TunnelChannelInvite { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            })
+            .expect("the invite went out");
+        let post_sends = |sent: &[TunnelMessage]| {
+            sent.iter()
+                .filter(|m| matches!(m, TunnelMessage::TunnelChannelEvent { .. }))
+                .count()
+        };
+        assert_eq!(
+            post_sends(&sent),
+            1,
+            "the post went out once with the invite"
+        );
+
+        // A receipt for something else resends nothing.
+        f.port
+            .confirm_delivery("did:key:zPekoRuntime", &["unrelated".to_string()])
+            .await;
+        assert!(f.sent.try_recv().is_err());
+
+        f.port
+            .confirm_delivery("did:key:zPekoRuntime", std::slice::from_ref(&invite))
+            .await;
+        let again: Vec<TunnelMessage> = std::iter::from_fn(|| f.sent.try_recv().ok()).collect();
+        assert_eq!(
+            post_sends(&again),
+            1,
+            "the waiting post goes again: {again:?}"
+        );
+        assert!(invites(&mut f.sent).is_empty());
+    }
+
     /// `@owner/name` resolves by handle (the owner lowercased), opens the
     /// same DM the Hub ID does, and refuses what PekoHub doesn't resolve.
     #[tokio::test]

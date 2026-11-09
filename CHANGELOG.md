@@ -4,6 +4,19 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: a first message to a sleeping peko arrives as soon as it wakes (2026-11-09)
+
+- A DM opened from a computer while the peko's computer slept queues an
+  invite and the post. On waking, both went out together. The peko's
+  runtime handles each message in its own task, so the post could arrive
+  before the invite had made its copy of the DM. The post then went
+  unanswered and waited out its 30–60 s backoff (the collaboration
+  benchmark: delivered 69 s after waking).
+- When a DM invite is confirmed, the outbox now sends that channel's
+  waiting posts to the same runtime at once. The receiver confirms an
+  invite only after its copy exists, so the resend lands. The dropped post
+  is now logged at debug level.
+
 ### Fix: the CLI finds your own private peko by `@owner/name` (2026-11-09)
 
 - `peko channel dm @maya/juno` looked the name up on PekoHub's public
