@@ -520,6 +520,21 @@ pub fn seed_default_roles(workspace: &std::path::Path) -> Result<Vec<&'static st
 /// A role file byte-identical to one of them was never edited, so it takes
 /// the current seed: a shorter or corrected seed reaches existing pekos,
 /// and an edited role is never touched.
+///
+/// **Changing a seed** (`resources/roles/<id>/ROLE.md`): add the value of
+/// its `CURRENT_*_SEED` to its `PREVIOUS_*_SEEDS`, then set `CURRENT_*_SEED`
+/// to the new file's SHA-256 (`shasum -a 256`). The test
+/// `seed_hashes_record_every_change` fails until both are done. Without the
+/// old hash, every peko seeded with it keeps that role for good
+/// (2026-11-09: four `conversation` seeds were missed this way).
+#[cfg(test)]
+const CURRENT_ROOT_SEED: &str = "1da56bd3f034ade18a2628b1caedf7340b695713944183ff2c73f92d9604d914";
+#[cfg(test)]
+const CURRENT_CONVERSATION_SEED: &str =
+    "7a5840053f3c6f6259eada69e5e36aaacf5faca6b8919194325da6d92f5ad4a9";
+#[cfg(test)]
+const CURRENT_WORKER_SEED: &str =
+    "e52f6481ce051722c32602540e7a7dcfde449c44c541370d809e5cb90dab4dec";
 const PREVIOUS_ROOT_SEEDS: &[&str] = &[
     "03d7e1bc59aff3318d60172fa77f33c4323389f614f1d9b6ffebe5f30f8dc79c",
     "089b6460434f123f50d1da68335e248758018bcf98414233bc5f17c4d1ec9d61",
@@ -548,7 +563,11 @@ const PREVIOUS_ROOT_SEEDS: &[&str] = &[
     "f9521c330b366a6346d1bb7f7dbcd5a1dc0fdd4fd532800d796553ab9cd89f1e",
 ];
 const PREVIOUS_CONVERSATION_SEEDS: &[&str] = &[
+    "0970aff3c47bfc7d6c283aaf8bf26071a0df46a74284278b5d74f199dedbfa68",
+    "1563af2725f1d29ab820f19c5590b9b28c7b1b3a079913864e8e512a528d6374",
     "5136ffd450c426d3042c03af8680242075a1f950b710c8076ab726c723519c13",
+    "6ba9932bf553e171ca4edc124d71c4a6c8a79d650ed1b14b610351f98526a665",
+    "775ffb635b6af13ec026f97881e890bb5575f1f75d7a0a8fcd0f3a6834b308e4",
     "8abe12e065789e7cfd71e29b3cbf55f6e3072ccb9066d27a184ac66505735cc1",
     "b80903f2dd5a1c895624aedb794ce681f67c82cca669702d3c86d679f4394bce",
     "e20a6531e91e4e79b9012820832bc22c94b07507a64a3ee361cde697273822eb",
@@ -1305,6 +1324,44 @@ mod tests {
         ] {
             let digest = format!("{:x}", Sha256::digest(current.as_bytes()));
             assert!(!previous.contains(&digest.as_str()));
+        }
+    }
+
+    /// Every seed change records the replaced seed's hash: otherwise pekos
+    /// seeded with it never get a newer role. See `CURRENT_ROOT_SEED`.
+    #[test]
+    fn seed_hashes_record_every_change() {
+        use sha2::{Digest, Sha256};
+        for (id, content, pinned, previous) in [
+            (
+                "root",
+                crate::principal::routers::root_role_seed_content(),
+                CURRENT_ROOT_SEED,
+                PREVIOUS_ROOT_SEEDS,
+            ),
+            (
+                "conversation",
+                crate::principal::child_turns::conversation_role_seed_content(),
+                CURRENT_CONVERSATION_SEED,
+                PREVIOUS_CONVERSATION_SEEDS,
+            ),
+            (
+                "worker",
+                include_str!("../resources/roles/worker/ROLE.md"),
+                CURRENT_WORKER_SEED,
+                PREVIOUS_WORKER_SEEDS,
+            ),
+        ] {
+            let digest = format!("{:x}", Sha256::digest(content.as_bytes()));
+            assert_eq!(
+                digest, pinned,
+                "the `{id}` seed changed: add {pinned} to its PREVIOUS_*_SEEDS and set its \
+                 CURRENT_*_SEED to {digest} (genesis.rs)"
+            );
+            assert!(
+                !previous.contains(&pinned),
+                "`{id}`: the current seed is not an earlier one"
+            );
         }
     }
 
