@@ -2544,6 +2544,14 @@ impl TunnelDispatcher {
                 )
                 .await?
             {
+                // Often a post that overtook its DM's invite: unanswered,
+                // the sender sends it again once the invite is confirmed.
+                debug!(
+                    request_id,
+                    channel_id,
+                    author = %payload.source_principal_did,
+                    "inbound TunnelChannelEvent: author is not a member of this copy (yet); leaving it unacknowledged"
+                );
                 return Ok(());
             }
         }
