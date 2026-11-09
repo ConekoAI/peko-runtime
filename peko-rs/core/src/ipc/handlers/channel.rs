@@ -759,13 +759,15 @@ impl ChannelHandler {
                         tracing::debug!(%channel, "remote DM catch-up skipped: {e}");
                     }
                 });
+                // `hub_id` may have been `@owner/name`: answer with the ID.
+                let resolved_id = dm.peer.hub_id.clone().unwrap_or_else(|| hub_id.to_string());
                 send_response(
                     sink,
                     ResponsePacket::ChannelRemoteDmOpened {
                         request_id,
                         channel: dm.channel,
                         peer: dm.peer.hub_address().unwrap_or(dm.peer.address),
-                        hub_id: hub_id.to_string(),
+                        hub_id: resolved_id,
                         name: dm.peer.name,
                         created: dm.created,
                     },

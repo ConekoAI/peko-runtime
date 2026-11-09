@@ -154,8 +154,8 @@ pub enum ChannelCommands {
     /// message to send it right away. Read replies with
     /// `peko channel peek <dm>`; post with `peko channel post <dm> me`.
     Dm {
-        /// `@owner/name` (a public peko), `peko:hub:<UUID>`, the bare
-        /// PekoHub ID, or a person as `user:hub:<account>`.
+        /// `@owner/name` (a public peko, or your own), `peko:hub:<UUID>`,
+        /// the bare PekoHub ID, or a person as `user:hub:<account>`.
         peko: String,
         /// Post this message right away.
         message: Option<String>,
@@ -803,7 +803,7 @@ pub async fn handle_channel(cmd: ChannelCommands, paths: &GlobalPaths) -> Result
                     };
                     (channel, peer, None, created)
                 } else {
-                    let hub_id = remote_peko_hub_id(paths, &peko).await?;
+                    let hub_id = remote_peko_target(&peko)?;
                     let resp = dm_request(RequestPacket::ChannelOpenRemoteDm {
                         request_id: 0,
                         hub_id,
@@ -1161,11 +1161,12 @@ async fn dm_request(packet: RequestPacket) -> Result<ResponsePacket> {
     Ok(resp)
 }
 
-/// The PekoHub ID of the peko `target` names: `peko:hub:<UUID>` (or the
-/// wire spelling `principal:hub:<UUID>`), a
-/// bare UUID, or `@owner/name` — a public peko, looked up on the Hub this
-/// runtime is registered with (`GET /v1/public/pekos/:owner/:name`).
-async fn remote_peko_hub_id(paths: &GlobalPaths, target: &str) -> Result<String> {
+/// How the daemon is asked for the peko `target` names: its PekoHub ID
+/// from `peko:hub:<UUID>` (or the wire spelling `principal:hub:<UUID>`) or
+/// a bare UUID, else `@owner/name` as given. The daemon looks a handle up
+/// on PekoHub as this runtime's person, so it finds public pekos and your
+/// own private ones.
+fn remote_peko_target(target: &str) -> Result<String> {
     let target = target.trim();
     let bare = target
         .strip_prefix("peko:hub:")
@@ -1174,45 +1175,15 @@ async fn remote_peko_hub_id(paths: &GlobalPaths, target: &str) -> Result<String>
     if uuid::Uuid::parse_str(bare).is_ok() {
         return Ok(bare.to_string());
     }
-    let Some((owner, name)) = target
+    let named = target
         .strip_prefix('@')
         .and_then(|rest| rest.split_once('/'))
-        .filter(|(owner, name)| !owner.is_empty() && !name.is_empty())
-    else {
-        anyhow::bail!("Name the peko as @owner/name or by its PekoHub ID, not {target:?}");
-    };
-    let credential =
-        peko_core::tunnel::PekoHubCredential::from_file(&paths.resolver().pekohub_config())
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "This runtime isn't registered with PekoHub: `peko runtime register` first"
-                )
-            })?;
-    let origin = peko_core::tunnel::hub_origin(&credential.url)
-        .ok_or_else(|| anyhow::anyhow!("the registration names no Hub origin"))?;
-    let url = format!(
-        "{}/v1/public/pekos/{}/{}",
-        origin.trim_end_matches('/'),
-        urlencoding::encode(&owner.to_lowercase()),
-        urlencoding::encode(name)
+        .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty());
+    anyhow::ensure!(
+        named,
+        "Name the peko as @owner/name or by its PekoHub ID, not {target:?}"
     );
-    let resp = reqwest::get(&url)
-        .await
-        .with_context(|| format!("Couldn't reach PekoHub at {origin}"))?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        anyhow::bail!(
-            "No public peko @{owner}/{name} on PekoHub. A private one is named by its PekoHub ID."
-        );
-    }
-    let body: serde_json::Value = resp
-        .error_for_status()
-        .context("PekoHub didn't answer the lookup")?
-        .json()
-        .await?;
-    body.pointer("/liveInstance/hubId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("@{owner}/{name} isn't online on PekoHub"))
+    Ok(target.to_string())
 }
 
 /// One board item as `peko channel board` prints it.
@@ -1477,35 +1448,20 @@ mod response_tests {
         );
     }
 
-    fn test_paths(tmp: &tempfile::TempDir) -> GlobalPaths {
-        GlobalPaths::new(
-            tmp.path().join("config"),
-            tmp.path().join("data"),
-            tmp.path().join("cache"),
-            "default".to_string(),
-        )
-    }
-
-    /// `peko channel dm` names a peko by its PekoHub ID in either form;
-    /// `@owner/name` needs a registered runtime to look it up.
-    #[tokio::test]
-    async fn a_dm_target_is_a_hub_id_or_an_owner_and_name() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let paths = test_paths(&tmp);
+    /// `peko channel dm` names a peko by its PekoHub ID in either form, or
+    /// as `@owner/name` (looked up by the daemon).
+    #[test]
+    fn a_dm_target_is_a_hub_id_or_an_owner_and_name() {
         let id = "704f080d-1453-408d-8349-f8657364c6f5";
-        assert_eq!(remote_peko_hub_id(&paths, id).await.unwrap(), id);
+        assert_eq!(remote_peko_target(id).unwrap(), id);
         assert_eq!(
-            remote_peko_hub_id(&paths, &format!("principal:hub:{id}"))
-                .await
-                .unwrap(),
+            remote_peko_target(&format!("principal:hub:{id}")).unwrap(),
             id
         );
-        let unregistered = remote_peko_hub_id(&paths, "@alice/ada").await.unwrap_err();
-        assert!(unregistered
-            .to_string()
-            .contains("isn't registered with PekoHub"));
-        for bad in ["ada", "@alice", "@/ada", "alice/ada"] {
-            assert!(remote_peko_hub_id(&paths, bad).await.is_err(), "{bad}");
+        assert_eq!(remote_peko_target(&format!("peko:hub:{id}")).unwrap(), id);
+        assert_eq!(remote_peko_target(" @alice/ada ").unwrap(), "@alice/ada");
+        for bad in ["ada", "@alice", "@/ada", "@alice/", "alice/ada"] {
+            assert!(remote_peko_target(bad).is_err(), "{bad}");
         }
     }
 

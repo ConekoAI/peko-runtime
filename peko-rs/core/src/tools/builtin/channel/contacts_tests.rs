@@ -325,6 +325,14 @@ impl AgentDirectory for Directory {
     ) -> Result<AgentResolution, DirectoryError> {
         self.handle(owner, name, Some(caller))
     }
+    async fn resolve_by_handle_for_user(
+        &self,
+        owner: &str,
+        name: &str,
+        _bearer: Option<&str>,
+    ) -> Result<AgentResolution, DirectoryError> {
+        self.handle(owner, name, None)
+    }
 }
 impl Directory {
     fn handle(

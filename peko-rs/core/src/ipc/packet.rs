@@ -926,11 +926,13 @@ pub enum RequestPacket {
     #[serde(rename = "channel_info")]
     ChannelInfo { request_id: u64, channel: String },
 
-    /// Open, or find, the local user's DM with the peko whose PekoHub ID
-    /// is `hub_id`, hosted on another runtime (ADR-090 D2). The runtime
-    /// resolves it through PekoHub — with `token`, the caller's PekoHub
-    /// access token, when given (needed for a private peko; used for that
-    /// one request and never stored) — and invites it over the tunnel.
+    /// Open, or find, the local user's DM with the peko named by `hub_id`,
+    /// hosted on another runtime (ADR-090 D2). `hub_id` is its PekoHub ID
+    /// or `@owner/name`; the answer's `hub_id` is always the ID. The
+    /// runtime resolves it through PekoHub — with `token`, the caller's
+    /// PekoHub access token, when given (used for that one request and
+    /// never stored), else with the runtime's own proof, which PekoHub
+    /// answers as the runtime's person — and invites it over the tunnel.
     /// Then post and read with `channel_post` / `channel_peek` /
     /// `channel_events_watch`. Local callers only. Answered with
     /// `channel_remote_dm_opened`.

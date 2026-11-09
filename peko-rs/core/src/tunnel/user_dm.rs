@@ -45,21 +45,39 @@ pub fn human_dm_channel_id(principal_key: &str, user_address: &str) -> ChannelId
     peko_channel::dm_channel_id(principal_key, user_address)
 }
 
+/// `@owner/name` as `(owner, name)`, the owner lowercased (PekoHub
+/// handles are lowercase). `None` for anything else.
+fn parse_handle(target: &str) -> Option<(String, &str)> {
+    let (owner, name) = target.strip_prefix('@')?.split_once('/')?;
+    let valid = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (valid(owner) && valid(name)).then(|| (owner.to_ascii_lowercase(), name))
+}
+
 impl TunnelChannelPort {
-    /// Open, or find, the local user's DM with the principal whose Hub ID
-    /// is `hub_id` (ADR-090 D2). `bearer` is the user's PekoHub access
-    /// token, used only to resolve a private peko and never stored.
+    /// Open, or find, the local user's DM with a principal hosted on
+    /// another runtime (ADR-090 D2), named by its Hub ID or as
+    /// `@owner/name`. `bearer` is the user's PekoHub access token, used only
+    /// to resolve a private peko and never stored. Without one, the
+    /// runtime's own proof stands in for its person. By handle, PekoHub
+    /// resolves a private peko only for its owner.
     ///
     /// # Errors
     ///
-    /// The runtime is unregistered or has no Hub connection set up; the
-    /// directory refuses or does not know the peko; the peko is hosted
-    /// here or local-only; or the directory cannot be reached and the DM
-    /// was never opened.
-    pub async fn open_hub_dm(&self, hub_id: &str, bearer: Option<&str>) -> anyhow::Result<HubDm> {
+    /// The target is neither form; the runtime is unregistered or has no
+    /// Hub connection set up; the directory refuses or does not know the
+    /// peko; the peko is hosted here or local-only; or the directory
+    /// cannot be reached and the DM was never opened (by handle, the DM
+    /// can't be found offline).
+    pub async fn open_hub_dm(&self, target: &str, bearer: Option<&str>) -> anyhow::Result<HubDm> {
+        let target = target.trim();
+        let handle = parse_handle(target);
         anyhow::ensure!(
-            uuid::Uuid::parse_str(hub_id).is_ok(),
-            "Expected a peko's PekoHub ID (a UUID), got {hub_id:?}"
+            handle.is_some() || uuid::Uuid::parse_str(target).is_ok(),
+            "Expected a peko's PekoHub ID (a UUID) or @owner/name, got {target:?}"
         );
         let user = self.local.actor_info(&ActorRef::User("local".into())).await;
         let user_address = user.hub_address().ok_or_else(|| {
@@ -71,17 +89,25 @@ impl TunnelChannelPort {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("This runtime has no PekoHub connection"))?;
-        let peer_subject = ActorRef::Principal(Route::hub(hub_id.to_string()));
 
-        let resolved = match ctx
-            .directory
-            .resolve_by_hub_id_for_user(hub_id, bearer)
-            .await
-        {
+        let lookup = match &handle {
+            Some((owner, name)) => {
+                ctx.directory
+                    .resolve_by_handle_for_user(owner, name, bearer)
+                    .await
+            }
+            None => {
+                ctx.directory
+                    .resolve_by_hub_id_for_user(target, bearer)
+                    .await
+            }
+        };
+        let resolved = match lookup {
             Ok(resolved) => resolved,
             // D2 step 4: offline, a DM opened before is still there.
-            Err(DirectoryError::Transport(e)) => {
-                tracing::warn!(hub_id, "PekoHub directory unreachable: {e}");
+            Err(DirectoryError::Transport(e)) if handle.is_none() => {
+                tracing::warn!(hub_id = target, "PekoHub directory unreachable: {e}");
+                let peer_subject = ActorRef::Principal(Route::hub(target.to_string()));
                 return self
                     .known_hub_dm(&peer_subject, &user_address)
                     .await
@@ -92,7 +118,14 @@ impl TunnelChannelPort {
                         )
                     });
             }
-            Err(DirectoryError::NotFound) => anyhow::bail!("No peko has PekoHub ID {hub_id}"),
+            Err(DirectoryError::Transport(e)) => {
+                anyhow::bail!("PekoHub cannot be reached to look up {target}: {e}")
+            }
+            Err(DirectoryError::NotFound) if handle.is_some() => anyhow::bail!(
+                "No peko {target} that you can reach on PekoHub. By name you find public pekos \
+                 and your own; name anyone else's private peko by its PekoHub ID"
+            ),
+            Err(DirectoryError::NotFound) => anyhow::bail!("No peko has PekoHub ID {target}"),
             Err(DirectoryError::Forbidden) => {
                 anyhow::bail!(
                     "PekoHub does not let you reach this peko (sign in, or ask its owner)"
@@ -101,9 +134,14 @@ impl TunnelChannelPort {
             Err(e) => return Err(e.into()),
         };
         anyhow::ensure!(
-            resolved.hub_id == hub_id,
+            handle.is_some() || resolved.hub_id == target,
             "Directory substituted a different Hub identity"
         );
+        anyhow::ensure!(
+            uuid::Uuid::parse_str(&resolved.hub_id).is_ok(),
+            "Directory returned no PekoHub ID for {target}"
+        );
+        let hub_id = resolved.hub_id.clone();
         anyhow::ensure!(
             !resolved.agent_did.is_empty() && !resolved.identity_key.is_empty(),
             "Directory returned no signing identity for this peko"
@@ -120,7 +158,7 @@ impl TunnelChannelPort {
             &ctx,
             &user,
             &ResolvedPeko {
-                hub_id: hub_id.to_string(),
+                hub_id,
                 signing_did: resolved.agent_did,
                 identity_key: resolved.identity_key,
                 name: resolved.name,
@@ -521,5 +559,40 @@ mod tests {
             .register_hub_id_err(&f.hub_id, DirectoryErrorKind::Transport("down".into()));
         let error = f.port.open_hub_dm(&f.hub_id, None).await.unwrap_err();
         assert!(error.to_string().contains("cannot be reached"), "{error}");
+    }
+
+    /// `@owner/name` resolves by handle (the owner lowercased), opens the
+    /// same DM the Hub ID does, and refuses what PekoHub doesn't resolve.
+    #[tokio::test]
+    async fn a_peko_is_named_by_its_owner_and_name() {
+        let mut f = fixture(true).await;
+        f.directory.register_handle(
+            "maya",
+            "juno",
+            resolution(&f.hub_id, "did:key:zPekoRuntime"),
+        );
+        let by_name = f.port.open_hub_dm("@Maya/juno", None).await.unwrap();
+        assert!(by_name.created);
+        assert_eq!(by_name.peer.hub_id.as_deref(), Some(f.hub_id.as_str()));
+        assert_eq!(invites(&mut f.sent).len(), 1);
+        let by_id = f.port.open_hub_dm(&f.hub_id, None).await.unwrap();
+        assert_eq!(by_id.channel, by_name.channel);
+        assert!(!by_id.created);
+
+        // Not resolvable for this person (someone else's private peko).
+        let error = f.port.open_hub_dm("@noah/otto", None).await.unwrap_err();
+        assert!(error.to_string().contains("by its PekoHub ID"), "{error}");
+        // Offline there is no ID to find a DM by.
+        f.directory.register_handle_err(
+            "maya",
+            "juno",
+            DirectoryErrorKind::Transport("down".into()),
+        );
+        let error = f.port.open_hub_dm("@maya/juno", None).await.unwrap_err();
+        assert!(error.to_string().contains("cannot be reached"), "{error}");
+        for bad in ["@maya", "@/juno", "@maya/", "@ma ya/juno"] {
+            let error = f.port.open_hub_dm(bad, None).await.unwrap_err();
+            assert!(error.to_string().contains("@owner/name"), "{bad}: {error}");
+        }
     }
 }
