@@ -3200,6 +3200,155 @@ mod tests {
         assert!(start["params"].get("as_owner").is_none(), "{start}");
     }
 
+    /// ADR-100 D5: two pekos asked for the same fix each hand it to their
+    /// owner. Approved in the same moment, the task whose twin was added
+    /// first does not run, and its item says why; an unrelated task runs
+    /// and its item turns `doing` (2026-11-09 benchmark: two branches
+    /// pushed for one fix).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn an_approved_owner_task_stands_down_when_its_work_is_taken() {
+        use crate::principal::policy_gate::{decide_request, Decision, PrincipalPolicyGate};
+        use crate::security::judge::{GatedCall, PolicyGate};
+        use peko_channel::port::{CreateOpts, PostMsg};
+        use peko_protocol::channel::{BoardOp, BoardState};
+        use peko_tools_core::{ActingFor, Compartment, Origin, Trust};
+        let (_temp, manager, adapter, id) = setup().await;
+        let principal = manager.get(id.clone()).await.unwrap();
+        let rival = create_test_principal(&manager, "rival").await;
+        let port = manager.channel_port().unwrap();
+        let group = port
+            .create(&id, CreateOpts::runtime("stats-team"))
+            .await
+            .unwrap();
+        port.invite(&group, &id, &ActorRef::from(&rival.id))
+            .await
+            .unwrap();
+        let board = |who: &PrincipalId, op: BoardOp| {
+            let port = port.clone();
+            let group = group.clone();
+            let who = ActorRef::from(who);
+            async move {
+                let msg_id = peko_channel::new_msg_id();
+                port.post(
+                    &group,
+                    &who,
+                    PostMsg::root(String::new())
+                        .with_board(op)
+                        .with_msg_id(msg_id.clone()),
+                )
+                .await
+                .unwrap();
+                msg_id
+            }
+        };
+        let take = |who: PrincipalId, title: &'static str| {
+            let board = &board;
+            async move {
+                let item = board(
+                    &who,
+                    BoardOp::Add {
+                        title: title.into(),
+                        for_member: None,
+                    },
+                )
+                .await;
+                board(
+                    &who,
+                    BoardOp::Claim {
+                        item: item.clone(),
+                        check_at: None,
+                    },
+                )
+                .await;
+                board(
+                    &who,
+                    BoardOp::Update {
+                        item: item.clone(),
+                        state: BoardState::Blocked,
+                        note: Some("waiting on the owner's approval".into()),
+                        check_at: None,
+                    },
+                )
+                .await;
+                item
+            }
+        };
+        let theirs = take(rival.id.clone(), "Fix even-length median, push a branch").await;
+        let mine = take(id.clone(), "Fix even-length median and push to a branch").await;
+        let unrelated = take(id.clone(), "Write the release notes").await;
+
+        let gate = PrincipalPolicyGate::new(Arc::downgrade(&manager));
+        let call = |item: &str, slug: &str| GatedCall {
+            call_id: Some(format!("call_{slug}")),
+            principal_id: id.0.clone(),
+            principal_name: None,
+            session_id: Some("group-session".into()),
+            agent_id: None,
+            workspace: None,
+            stamp: ActingFor {
+                actor: "user:local:owner".into(),
+                name: Some("Owner".into()),
+                trust: Trust::Untrusted,
+                compartment: Compartment::Conversation {
+                    channel: group.as_str().to_string(),
+                },
+                origin: Origin::Ingress { channel: None },
+                owner_request: true,
+            },
+            tool_name: "Agent".into(),
+            params: serde_json::json!({
+                "prompt": "Fix median and push a branch.",
+                "path": slug,
+                "as_owner": true,
+                "item": item,
+            }),
+        };
+        let state_of = |item: String| {
+            let port = port.clone();
+            let group = group.clone();
+            async move {
+                let board = port.board(&group).await.unwrap().unwrap();
+                let found = board.items.iter().find(|i| i.id == item).unwrap().clone();
+                (found.state, found.note.unwrap_or_default())
+            }
+        };
+
+        let request = gate
+            .ask_owner(&call(&mine, "fix"), "ignored")
+            .await
+            .unwrap();
+        let reply = decide_request(
+            &manager,
+            &principal,
+            &request,
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("It did not run"), "{reply}");
+        assert!(reply.contains(&theirs[4..10]), "names the twin: {reply}");
+        let (state, note) = state_of(mine.clone()).await;
+        assert_eq!(state, BoardState::Blocked);
+        assert!(note.starts_with("Approved, but not run"), "{note}");
+
+        adapter.queue_text("Notes written.");
+        let request = gate
+            .ask_owner(&call(&unrelated, "notes"), "ignored")
+            .await
+            .unwrap();
+        let reply = decide_request(
+            &manager,
+            &principal,
+            &request,
+            Decision::Approve { always: false },
+        )
+        .await
+        .unwrap();
+        assert!(reply.contains("Running it as you"), "{reply}");
+        assert_eq!(state_of(unrelated).await.0, BoardState::Doing);
+    }
+
     /// ADR-081 D8: a cron job's trust is re-derived when it fires and only
     /// lowered, so revoking a grant reaches jobs that already exist.
     #[tokio::test(flavor = "multi_thread")]

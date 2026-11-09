@@ -816,17 +816,38 @@ pub async fn decide_request_via(
             if always {
                 reply.push_str(&remember_allowance(principal, &record));
             }
-            match replay(manager, principal, &record).await {
-                Ok(task) if is_owner_task(&record.call) => reply.push_str(&format!(
-                    " Running it as you now (task {task}); its report goes back to the \
-                     conversation it was asked in."
-                )),
-                Ok(task) => reply.push_str(&format!(
-                    " Running it for {} now (task {task}); the result goes back to \
-                     their conversation.",
-                    record.call.stamp.actor
-                )),
-                Err(e) => reply.push_str(&format!(" It could not be started: {e:#}")),
+            // ADR-100 D5: work someone else has done or is doing meanwhile
+            // is not done twice.
+            let covered = if is_owner_task(&record.call) {
+                owner_task_board(manager, principal, &record).await.err()
+            } else {
+                None
+            };
+            if let Some(reason) = covered {
+                notify_requester(
+                    manager,
+                    &record,
+                    &format!(
+                        "The owner approved it, but it did not run: {reason}. Leave that work to \
+                         them: release or drop your item, and say so in one line only if \
+                         someone asked you for it."
+                    ),
+                )
+                .await;
+                reply.push_str(&format!(" It did not run: {reason}."));
+            } else {
+                match replay(manager, principal, &record).await {
+                    Ok(task) if is_owner_task(&record.call) => reply.push_str(&format!(
+                        " Running it as you now (task {task}); its report goes back to the \
+                         conversation it was asked in."
+                    )),
+                    Ok(task) => reply.push_str(&format!(
+                        " Running it for {} now (task {task}); the result goes back to \
+                         their conversation.",
+                        record.call.stamp.actor
+                    )),
+                    Err(e) => reply.push_str(&format!(" It could not be started: {e:#}")),
+                }
             }
             reply
         }
@@ -940,6 +961,88 @@ fn remember_allowance(principal: &Principal, record: &ApprovalRecord) -> String 
     }
 }
 
+/// ADR-100 D5: the board item a task handed to the owner serves in its
+/// group (its `item`, else the one item the peko is working on). `Err`
+/// names what already covers the work: the item is done or someone else's,
+/// or an item that looks like the same work is done, under way, or waiting
+/// on its own approval since earlier. Otherwise the item is marked `doing`,
+/// so a twin approved later on another computer sees it taken.
+async fn owner_task_board(
+    manager: &PrincipalManager,
+    principal: &Principal,
+    record: &ApprovalRecord,
+) -> std::result::Result<(), String> {
+    let Some(channel) = record
+        .call
+        .stamp
+        .compartment
+        .channel()
+        .and_then(peko_channel::ChannelId::parse)
+    else {
+        return Ok(());
+    };
+    let Some(port) = manager.channel_port() else {
+        return Ok(());
+    };
+    let me = ActorRef::from(&principal.id);
+    let reference = record.call.params["item"].as_str();
+    let served = match port.owner_task_item(&channel, reference, &me).await {
+        Ok(Some(served)) => served,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            tracing::warn!(%channel, "owner task: board check failed; running it: {e}");
+            return Ok(());
+        }
+    };
+    let mark = |state, note: String| {
+        peko_channel::PostMsg::root(String::new()).with_board(
+            peko_protocol::channel::BoardOp::Update {
+                item: served.item.id.clone(),
+                state,
+                note: Some(note),
+                check_at: None,
+            },
+        )
+    };
+    let Some(covered) = served.covered else {
+        let update = mark(
+            peko_protocol::channel::BoardState::Doing,
+            "Approved; running as the owner".into(),
+        );
+        if let Err(e) = port.post(&channel, &me, update).await {
+            tracing::warn!(%channel, "owner task: could not mark its item doing: {e}");
+        }
+        return Ok(());
+    };
+    let item = &covered.item;
+    let what = format!("#{} \u{201c}{}\u{201d}", item.short_id(), item.title);
+    let reason = if covered.done {
+        format!("{what} is already done")
+    } else {
+        let holder = match item.claimant.as_deref().map(str::parse::<ActorRef>) {
+            Some(Ok(actor)) => {
+                let info = port.actor_info(&actor).await;
+                info.name.unwrap_or(info.address)
+            }
+            _ => "someone else".to_string(),
+        };
+        format!("{holder} holds {what}")
+    };
+    // The board says so at once; the item's check-in brings it back to
+    // the peko, which drops or releases it. Its own item already done or
+    // someone else's is left as it is.
+    if served.item.id != item.id {
+        let update = mark(
+            peko_protocol::channel::BoardState::Blocked,
+            format!("Approved, but not run: {reason}"),
+        );
+        if let Err(e) = port.post(&channel, &me, update).await {
+            tracing::warn!(%channel, "owner task: could not note its item: {e}");
+        }
+    }
+    Err(reason)
+}
+
 /// Run an approved call as a background task acting for its requester;
 /// its completion wakes the session that asked.
 async fn replay(
@@ -1007,6 +1110,7 @@ fn owner_task_params(params: &serde_json::Value) -> serde_json::Value {
     let mut params = params.clone();
     if let Some(map) = params.as_object_mut() {
         map.remove("as_owner");
+        map.remove("item");
         let slug = map
             .get("path")
             .and_then(|p| p.as_str())

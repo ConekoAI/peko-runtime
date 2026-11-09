@@ -4,6 +4,20 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: two pekos approved for the same work don't both do it (2026-11-09)
+
+- In a collaboration benchmark run, juno and otto were asked for the same
+  fix, added an item each, and agreed that the first approved would do it.
+  Both owners approved in the same second, and both approved tasks pushed
+  a branch: an approved task runs from its brief alone.
+- `Agent` `as_owner` takes `item`, the board item the task serves; without
+  one it is the one item the peko is working on. Before an approved task
+  runs, the runtime checks the group's board (`Board::covered`): it
+  doesn't run when that work is done or someone else holds it, when a
+  similar item is done or under way elsewhere, or when someone else's
+  similar item also waits on approval and was added first. A task that
+  runs marks its item `doing`; one that doesn't notes why on its item and
+  tells the owner and the peko (ADR-100 D6).
 ### Fix: a first message to a sleeping peko arrives as soon as it wakes (2026-11-09)
 
 - A DM opened from a computer while the peko's computer slept queues an
