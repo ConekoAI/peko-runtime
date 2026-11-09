@@ -313,6 +313,10 @@ impl Daemon {
             Err(e) => warn!("Failed to start PekoHub tunnel: {}", e),
         }
 
+        // Hold off idle sleep while a peko works (`power.keep_awake`).
+        let _keep_awake =
+            crate::common::keep_awake::spawn(self.config.config_dir.join("config.toml"));
+
         // Start IPC server (replaces HTTP API per ADR-021)
         let ipc_shutdown_rx = app_state.subscribe_shutdown();
         let ipc_server = crate::ipc::IpcServer::new(app_state.clone())

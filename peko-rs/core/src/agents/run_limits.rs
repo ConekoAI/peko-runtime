@@ -82,14 +82,21 @@ impl AgentRunLimiter {
             });
         }
         state.active += 1;
-        Ok(AgentRunPermit(Arc::clone(self)))
+        Ok(AgentRunPermit(
+            Arc::clone(self),
+            crate::common::keep_awake::working(),
+        ))
     }
 }
 
 /// Releases admission on completion, failure, cancellation, timeout or unwind.
 #[derive(Debug)]
 #[must_use = "hold this permit until the agent execution future exits"]
-pub struct AgentRunPermit(Arc<AgentRunLimiter>);
+pub struct AgentRunPermit(
+    Arc<AgentRunLimiter>,
+    /// A live run keeps its computer awake (`common::keep_awake`).
+    crate::common::keep_awake::WorkGuard,
+);
 
 impl Drop for AgentRunPermit {
     fn drop(&mut self) {

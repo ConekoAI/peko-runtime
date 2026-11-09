@@ -328,6 +328,20 @@ impl ChannelTool {
             "note": "The group sees this change on the board. Mention it in your reply only if \
                      someone has to act on it.",
         });
+        // Finished work often leaves a step nobody holds (2026-11-09: a
+        // pushed branch nobody merged).
+        if matches!(
+            op,
+            BoardOp::Update {
+                state: BoardState::Done,
+                ..
+            }
+        ) {
+            result["note"] = json!(
+                "The group sees this change on the board. If finishing it leaves follow-up \
+                 work nobody holds (a merge, a release, a check), add an item for it."
+            );
+        }
         // Two pekos asked at once each add an item before they see the
         // other's: show the second one what is already there.
         if matches!(op, BoardOp::Add { .. } | BoardOp::Claim { .. }) {

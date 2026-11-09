@@ -475,6 +475,9 @@ impl AsyncExecutor {
                 let mut registry = registry_clone.write().await;
                 registry.update_status(&task_id_clone, AsyncTaskStatus::Running);
             }
+            // A background task (a long build, a test run) keeps its
+            // computer awake while it executes.
+            let _working = crate::common::keep_awake::working();
             // Execute the work with optional timeout enforcement.
             let outcome = match timeout_duration {
                 Some(duration) => {

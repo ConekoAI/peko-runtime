@@ -8,6 +8,7 @@ pub mod config_path;
 pub mod disruption;
 pub mod identifiers;
 pub mod json_utils;
+pub mod keep_awake;
 pub(crate) mod media;
 pub mod paths;
 pub mod process;

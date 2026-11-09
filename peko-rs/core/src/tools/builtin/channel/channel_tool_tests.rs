@@ -591,6 +591,19 @@ async fn the_board_is_changed_and_read_through_the_tool() {
         "{events:?}"
     );
 
+    // Finishing an item asks for the follow-up nobody holds.
+    let done = fx
+        .call(
+            json!({"action": "board", "channel": group, "op": "update", "item": item,
+            "state": "done", "note": "4 tests, 1 failed"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        done["note"].as_str().unwrap().contains("follow-up"),
+        "{done}"
+    );
+
     let dm = fx
         .port
         .ensure_dm(&fx.caller.id, &ActorRef::User("bob".into()), "/user-bob")
