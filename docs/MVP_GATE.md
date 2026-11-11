@@ -1,6 +1,6 @@
 # MVP Launch Gate
 
-**Status:** Draft — 2026-09-29; status re-verified 2026-10-22 on `master` @ `2471f6fd`
+**Status:** Draft — 2026-09-29; status re-verified 2026-11-11 on `master` @ `0616d2db` (`v0.1.0-rc.6`)
 **Purpose:** This repo has no definition of "done" for MVP. This document is the
 gate: every box below must be checked (or explicitly waived with a recorded
 reason) before the project stops using "pre-launch" as a license to break wire
@@ -9,18 +9,26 @@ formats, and before the first public release is cut.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
-## Status at a glance (2026-10-25, after rc.4)
+## Status at a glance (2026-11-11, after rc.6)
 
 | Gate | Done | Blocking now |
 |---|---|---|
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22; Windows revised 2026-11-03) |
-| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.5 is the latest candidate; the first with a Windows zip is still to come) |
+| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.6 is the latest candidate and the first with a Windows zip) |
 | 2. Version bookkeeping | 2 / 3 | No MVP version tag yet (rc tags only) |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 1 / 4 | Linux and Windows tiers and the real-LLM tier re-run on the release commit |
-| 5. Field test | 1 / 3 | Non-technical field test (last one 2026-08-13) |
+| 4. CI | 1 / 4 | Real-LLM tier re-run (last on `91f7e024`, 2026-10-25). The Linux and Windows tiers are green on the rc.6 commit and close if the MVP tag lands there |
+| 5. Field test | 1 / 3 | Non-technical field test (last one 2026-08-13). The benchmark suite is due a re-run: rc.6 differs from rc.4 in runtime code |
 | 6. Security | 2 / 2 | — |
 | **Total** | **19 / 26** | |
+
+2026-11-11: `v0.1.0-rc.6` (`0616d2db`, 2026-11-10) built all five artifacts
+and passed the smoke job on all five platforms, Windows included, and every
+CI tier is green on that commit. No box moved: the open ones wait for the
+MVP tag, a real-LLM re-run and the field test. Between rc.4 and rc.6 the
+work was again features and fixes (ADR-087 to ADR-101, #508 to #614), so
+the real-LLM tier and the benchmark suite have to be run again before the
+tag.
 
 2026-11-03: Windows moved into MVP scope (gate 0). Its CI tiers, release
 build and release smoke run are blocking now, so the gate 4 Windows item
@@ -56,7 +64,9 @@ reversed on 2026-11-03.
         gate used to name.
       - 2026-11-03: releases also build `peko-windows-x86_64.zip`
         (`install.ps1`, `peko update`). The release smoke test passed
-        locally on Windows 11; not yet seen on a CI runner.
+        locally on Windows 11.
+      - 2026-11-10: `v0.1.0-rc.6` built the Windows zip and passed the
+        Windows smoke job on the CI runner (run 42805304323).
 - [x] **pekohub-side enforcement shipped; nothing hub-side gates MVP**
       (decided 2026-10-22). This item used to read "out of MVP scope, ships
       unenforced". Both pieces have since landed in pekohub:
@@ -105,6 +115,11 @@ Currently the primary install path is dead: no release has ever been cut, and
       `.github/workflows/release.yml`; all five artifacts (linux x64/arm64,
       darwin x64/arm64, windows x64) build and publish successfully, and
       the smoke job passes on all five platforms.
+      *2026-11-10: `v0.1.0-rc.6` (`0616d2db`, run 42805304323) built and
+      published all five artifacts and passed the smoke job on all five
+      platforms. It is the first candidate with `peko-windows-x86_64.zip`.
+      The box still closes with the MVP version's own tag.*
+
       *2026-10-25: `v0.1.0-rc.4` (`c96f1564`, run 40164710554) built,
       published and passed the smoke job on all four platforms. It adds
       #506 and #507.*
@@ -221,7 +236,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       sets the date.*
 - [ ] **First git version tag exists.** *2026-10-25: release-candidate
       tags `v0.1.0-rc.1` to `v0.1.0-rc.4` exist. The MVP version's own tag
-      closes this item.*
+      closes this item. 2026-11-10: `v0.1.0-rc.6` is the latest.*
 
 ## 3. Docs tell the truth
 
@@ -273,10 +288,16 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 - [ ] **Linux tiers green** on the release commit: `lint`,
       `lint-workspace`, `unit-linux`, `integration` (mock-LLM Docker tier).
+      *2026-11-09: all four, and `native-linux`, green on `0616d2db` (run
+      42631820395), the commit tagged `v0.1.0-rc.6`. The box closes if the
+      MVP tag lands on that commit; otherwise re-check on the new one.*
       *2026-10-22: all four green on the latest master push (`2471f6fd`);
       no release commit yet.*
 - [ ] **Windows tiers green** on the release commit: `unit-windows` and
       `native-windows`, blocking since 2026-11-03 (gate 0).
+      *2026-11-09: both green on the CI runner on `0616d2db` (run
+      42631820395), and again on the 2026-11-10 scheduled run. Same
+      closing rule as the Linux tiers.*
       *2026-11-03: all of their suites pass on a local Windows 11 run as a
       non-elevated user (see gate 0); not yet seen on the CI runner, which
       runs elevated.*
@@ -290,6 +311,9 @@ Currently the primary install path is dead: no release has ever been cut, and
       `cli_providers` 2/2, `tunnel_integration` 6/6, and
       `daemon::e2e_tests::tunnel_e2e` 1/1 per format. Re-run on the release
       commit to close.*
+
+      *2026-11-11: not re-run since. `0616d2db` is about 100 commits past
+      `91f7e024`.*
 - [x] **`make docker-up && make test-integration && make docker-down`**
       passes from a clean clone using only documented steps (2026-10-25,
       v0.1.0-rc.4).
@@ -335,6 +359,12 @@ the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
       | `testing/py-write-tests` | 3/3 | 94 s |
 
       *Re-run it if the MVP tag differs from rc.4 in runtime code.*
+
+      *2026-11-11: rc.6 does differ (ADR-087 to ADR-101), so this run is
+      due again against the rc.6 artifact or the MVP tag. The two
+      collaboration use cases are scripted since 2026-11-09
+      (`peko-benchmark/runner/collab.py`); they are not part of this
+      item.*
 
       *2026-10-22: no run against a release artifact yet. The most recent
       runs used debug builds of master: the responsibility rerun 3
