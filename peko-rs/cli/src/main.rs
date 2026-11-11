@@ -11,6 +11,59 @@ use std::io::Write;
 /// here because the cli crate owns the user-facing version surface.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The release this binary was built as, for people to read: `0.1.0-rc.6`
+/// for a release candidate, where [`VERSION`] says only `0.1.0`.
+///
+/// The release workflow passes the tag as `PEKO_RELEASE_VERSION` at build
+/// time. A build without it (a source build) or with a value that doesn't
+/// belong to this crate version falls back to [`VERSION`]. Machine
+/// consumers (the daemon's `PEKO_VERSION=` line, IPC status, snapshot
+/// manifests) keep the crate version.
+pub fn release_version() -> &'static str {
+    release_version_from(option_env!("PEKO_RELEASE_VERSION"), VERSION)
+}
+
+fn release_version_from(tag: Option<&'static str>, crate_version: &'static str) -> &'static str {
+    let Some(tag) = tag else {
+        return crate_version;
+    };
+    let tag = tag.trim();
+    let tag = tag.strip_prefix('v').unwrap_or(tag);
+    // `0.1.0` or `0.1.0-<pre>` / `0.1.0+<build>`; anything else is not this version.
+    match tag.strip_prefix(crate_version) {
+        Some("") => crate_version,
+        Some(rest) if rest.starts_with('-') || rest.starts_with('+') => tag,
+        _ => crate_version,
+    }
+}
+
+#[cfg(test)]
+mod release_version_tests {
+    use super::release_version_from;
+
+    #[test]
+    fn a_candidate_tag_names_the_candidate() {
+        assert_eq!(
+            release_version_from(Some("v0.1.0-rc.6"), "0.1.0"),
+            "0.1.0-rc.6"
+        );
+        assert_eq!(
+            release_version_from(Some("0.1.0-rc.6"), "0.1.0"),
+            "0.1.0-rc.6"
+        );
+    }
+
+    #[test]
+    fn no_tag_or_a_foreign_tag_falls_back_to_the_crate_version() {
+        assert_eq!(release_version_from(None, "0.1.0"), "0.1.0");
+        assert_eq!(release_version_from(Some(""), "0.1.0"), "0.1.0");
+        assert_eq!(release_version_from(Some("v0.1.0"), "0.1.0"), "0.1.0");
+        assert_eq!(release_version_from(Some("v0.1.01"), "0.1.0"), "0.1.0");
+        assert_eq!(release_version_from(Some("v0.2.0-rc.1"), "0.1.0"), "0.1.0");
+        assert_eq!(release_version_from(Some("master"), "0.1.0"), "0.1.0");
+    }
+}
+
 use crate::commands::{
     audit, auth, channel, config, credential, daemon, from_cli, init_logging, log, model,
     principal, quota, runtime, send, stop, system, tunnel, update, vault, version, Cli, Commands,

@@ -14,6 +14,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Read at compile time by the CLI, so `peko --version` names the release
+  # (`0.1.0-rc.6`), not only the crate version (`0.1.0`).
+  PEKO_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.version }}
 
 jobs:
   # Build for Linux x86_64
@@ -226,8 +229,8 @@ jobs:
           ### Installation
           
           \`\`\`bash
-          # One-line installer
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash
+          # One-line installer, for this release
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash -s -- --version ${VERSION}
           
           # Or manually download for your platform:
           # Linux x86_64: peko-linux-x86_64.tar.gz
@@ -240,7 +243,7 @@ jobs:
           On Windows (PowerShell):
 
           \`\`\`powershell
-          irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1 | iex
+          & ([scriptblock]::Create((irm https://raw.githubusercontent.com/${{ github.repository }}/master/install.ps1))) -Version ${VERSION}
           \`\`\`
           
           ### Quick Start

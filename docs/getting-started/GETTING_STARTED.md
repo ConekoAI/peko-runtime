@@ -283,7 +283,8 @@ peko daemon start
 peko daemon status
 ```
 
-The daemon writes its log to `~/.peko/logs/daemon.log`.
+The daemon writes its log to `~/.peko/logs/daemon.log`, and keeps the
+previous run's as `daemon.log.1`.
 
 ### "no key for model '…'"
 
