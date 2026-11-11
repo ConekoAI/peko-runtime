@@ -10,8 +10,7 @@ between conversations, and runs in the background on your machine.
 
 - **macOS** (Apple silicon or Intel), **Linux** (x86_64 or arm64) with
   glibc 2.35 or newer, such as Ubuntu 22.04+ or Debian 12+, or **Windows**
-  10 or 11 (x64; Windows on Arm runs it emulated). Windows builds start with
-  the first release after 0.1.0-rc.5.
+  10 or 11 (x64; Windows on Arm runs it emulated).
 - `curl` and `tar` on macOS and Linux; PowerShell on Windows.
 - **An LLM endpoint** that speaks one of three wire formats:
   `anthropic_messages`, `openai_completions` or `openai_responses`. It can be
@@ -37,11 +36,10 @@ runtime home `~/.peko`. To install somewhere else, pass `--install-dir`:
 curl -fsSL https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.sh | bash -s -- --install-dir ~/.local/bin
 ```
 
-> **Before the first stable release**, only release candidates exist, and the
-> installer's default ("latest") does not pick them up. Name one with
-> `--version`, for example `bash -s -- --version 0.1.0-rc.2`. The
-> [releases page](https://github.com/ConekoAI/peko-runtime/releases) lists
-> them.
+The installer takes the newest release. To install a particular one, name
+it with `--version`, for example `bash -s -- --version 0.1.0`. The
+[releases page](https://github.com/ConekoAI/peko-runtime/releases) lists
+them.
 
 On Windows, run the PowerShell installer instead. It installs per user,
 without administrator rights, into `%LOCALAPPDATA%\Programs\peko\bin`, adds
