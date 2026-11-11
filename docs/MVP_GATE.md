@@ -17,18 +17,27 @@ wait for the rest.
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
 
-## Status at a glance (2026-11-11, after rc.6)
+## Status at a glance (2026-11-11, after 0.1.0)
 
 | Gate | Done | Blocking now |
 |---|---|---|
 | 0. Scope declarations | 4 / 4 | — (decided 2026-10-22; Windows revised 2026-11-03) |
-| 1. Distribution | 5 / 6 | The MVP version itself is not tagged yet (rc.6 is the latest candidate and the first with a Windows zip) |
-| 2. Version bookkeeping | 2 / 3 | No MVP version tag yet (rc tags only) |
+| 1. Distribution | 6 / 6 | — (`v0.1.0` released 2026-11-11) |
+| 2. Version bookkeeping | 3 / 3 | — |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 1 / 4 | Real-LLM tier re-run (last on `91f7e024`, 2026-10-25). The Linux and Windows tiers are green on the rc.6 commit and close if the MVP tag lands there |
-| 5. Field test | 1 / 3 | Non-technical field test on Peko Desktop, plus an agent's command-line run (last human session 2026-08-13). The benchmark suite is due a re-run: rc.6 differs from rc.4 in runtime code |
+| 4. CI | 1 / 4 | Real-LLM tier re-run (last on `91f7e024`, 2026-10-25). The Linux and Windows tiers have not run on the release commit `770e2324` itself: it is a docs-only commit, which CI skips. They were green on the last code change before it (#617) |
+| 5. Field test | 1 / 3 | Non-technical field test on Peko Desktop, plus an agent's command-line run (last human session 2026-08-13). The benchmark suite is due a re-run on `v0.1.0`, which differs from rc.4 in runtime code |
 | 6. Security | 2 / 2 | — |
-| **Total** | **19 / 26** | |
+| **Total** | **21 / 26** | |
+
+2026-11-11: **`v0.1.0` is released** (`770e2324`, run 42994203543), the
+first plain version and the start of the `0.1.x` preview line (ADR-102).
+All five archives built from the tag, and the smoke job passed on all five
+platforms. It was the first run of the new release flow: the `prepare` job
+made the tag from the version in the tree. `releases/latest` now answers
+`v0.1.0`, so the installer's default and `peko update` find it. Gates 1 and
+2 are closed. Still open: the CI tiers and the real-LLM tier on a release
+commit (gate 4), and the field test (gate 5).
 
 2026-11-11: `v0.1.0-rc.6` (`0616d2db`, 2026-11-10) built all five artifacts
 and passed the smoke job on all five platforms, Windows included, and every
@@ -119,10 +128,15 @@ reversed on 2026-11-03.
 Currently the primary install path is dead: no release has ever been cut, and
 `install.sh` downloads assets that don't exist.
 
-- [ ] **First release cut.** `git tag v<version>` triggers
+- [x] **First release cut** (2026-11-11, `v0.1.0`). `git tag v<version>` triggers
       `.github/workflows/release.yml`; all five artifacts (linux x64/arm64,
       darwin x64/arm64, windows x64) build and publish successfully, and
       the smoke job passes on all five platforms.
+      *2026-11-11: `v0.1.0` (`770e2324`, run 42994203543) built and
+      published all five artifacts and passed the smoke job on all five
+      platforms. Since ADR-102 the tag is made by `release.yml` from the
+      version in the tree, not pushed by hand.*
+
       *2026-11-10: `v0.1.0-rc.6` (`0616d2db`, run 42805304323) built and
       published all five artifacts and passed the smoke job on all five
       platforms. It is the first candidate with `peko-windows-x86_64.zip`.
@@ -242,7 +256,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       changes". The untagged 2026-03 to 2026-05 sections, two of them also
       labelled `[0.1.0]`, sit under "Pre-release history". The final tag
       sets the date.*
-- [ ] **First git version tag exists.** *2026-10-25: release-candidate
+- [x] **First git version tag exists** (2026-11-11, `v0.1.0`). *2026-10-25: release-candidate
       tags `v0.1.0-rc.1` to `v0.1.0-rc.4` exist. The MVP version's own tag
       closes this item. 2026-11-10: `v0.1.0-rc.6` is the latest.*
 
