@@ -4,6 +4,25 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Releases: plain version numbers, and a release is a version bump (ADR-102, 2026-11-11)
+
+- No more release candidates as the normal path. Releases are `0.1.0`,
+  `0.1.1`, `0.1.2`, so the installer's default and `peko update` find them.
+- A patch release breaks nothing a client depends on (IPC requests,
+  on-disk formats, tunnel wire types). A breaking change bumps the minor.
+- `python3 scripts/bump_version.py patch` sets the version in every
+  manifest and `Cargo.lock` and opens the release's section here. Merged
+  to `master`, it is the release: `release.yml` tags `v<version>`, builds
+  from the tag, publishes and smoke-tests. Running the workflow by hand
+  releases the tree's version if it is unreleased. The old
+  type-a-version manual release is gone.
+- CI checks that every manifest carries the same version.
+- Release notes keep their inline code. The words in backticks under
+  "Assets" were run as shell commands and came out blank (rc.6's notes read
+  "both binaries:  (CLI) and").
+- Peko Desktop no longer shares the runtime's tag. It names the runtime it
+  bundles and needs, and accepts any later one in the same minor line.
+
 ### Fix: what an agent's first run of the command line turned up (2026-11-11)
 
 A coding agent was asked to install `v0.1.0-rc.6` and use it, with goals

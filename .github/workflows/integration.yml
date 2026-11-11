@@ -137,6 +137,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'scripts/check_workspace_deps.py'
+              - 'scripts/bump_version.py'
             tests:
               # Phase 0.Z-D: tests/ moved to peko-rs/core/tests/.
               - 'peko-rs/core/tests/**'
@@ -207,6 +208,10 @@ jobs:
           python-version: '3.12'
       - name: Run workspace dep-graph check
         run: python3 scripts/check_workspace_deps.py
+      # A release is tagged from the version in the tree (ADR-102), so every
+      # manifest has to say the same one.
+      - name: Check every manifest has the same version
+        run: python3 scripts/bump_version.py --check
 
   # ── Tier 0c: Linux unit tests, every PR ───────────────────────────────
   # `Swatinem/rust-cache@v2` is used because `actions/cache@v4` doesn't
