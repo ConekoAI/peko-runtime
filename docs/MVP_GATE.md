@@ -25,10 +25,10 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | 1. Distribution | 6 / 6 | — (`v0.1.0` released 2026-11-11) |
 | 2. Version bookkeeping | 3 / 3 | — |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 3 / 4 | Real-LLM tier re-run on the release (last on `91f7e024`, 2026-10-25) |
+| 4. CI | 4 / 4 | — |
 | 5. Field test | 1 / 3 | Non-technical field test on Peko Desktop, plus an agent's command-line run (last human session 2026-08-13). The benchmark suite is due a re-run on `v0.1.0`, which differs from rc.4 in runtime code |
 | 6. Security | 2 / 2 | — |
-| **Total** | **23 / 26** | |
+| **Total** | **24 / 26** | |
 
 2026-11-11: **`v0.1.0` is released** (`770e2324`, run 42994203543), the
 first plain version and the start of the `0.1.x` preview line (ADR-102).
@@ -44,6 +44,10 @@ skips a docs-only commit, so the run was started by hand on `770e2324`
 (run 42996374733): both lints, the unit and native tiers on Linux and
 Windows, and the mock-LLM integration tier. The two CI boxes in gate 4 are
 closed.
+
+2026-11-11, later still: the real-LLM tier is green on all three wire
+formats on the `v0.1.0` code, against GLM-5.3-Flash. Gate 4 is closed.
+Only gate 5 is open: the field test and its P0 count.
 
 2026-11-11: `v0.1.0-rc.6` (`0616d2db`, 2026-11-10) built all five artifacts
 and passed the smoke job on all five platforms, Windows included, and every
@@ -116,8 +120,11 @@ reversed on 2026-11-03.
       | Format | Endpoint used | Real-LLM tier |
       |---|---|---|
       | `anthropic_messages` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/anthropic` | ✅ 2026-10-25, `91f7e024` |
+      | | GLM-5.3-Flash, `https://open.bigmodel.cn/api/anthropic` | ✅ 2026-11-11, `v0.1.0` |
       | `openai_completions` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/v1` | ✅ 2026-10-25, `91f7e024` |
+      | | GLM-5.3-Flash, `https://open.bigmodel.cn/api/paas/v4` | ✅ 2026-11-11, `v0.1.0` |
       | `openai_responses` | MiMo v2.6 Flash, `https://token-plan-cn.xiaomimimo.com/v1` | ✅ 2026-10-25, `91f7e024` |
+      | | GLM-5.3-Flash, `https://open.bigmodel.cn/api/v1` | ✅ 2026-11-11, `v0.1.0` |
 
       MiMo serves all three formats for the same model, so one account
       covers every adapter.
@@ -336,7 +343,7 @@ Currently the primary install path is dead: no release has ever been cut, and
       runs elevated.*
       *2026-10-22: resolved as out of scope (a non-blocking nightly);
       reopened when Windows moved into MVP scope.*
-- [ ] **Real-LLM tier green** (`make test-integration-llm`) on each of the
+- [x] **Real-LLM tier green** (2026-11-11, `v0.1.0`; `make test-integration-llm`) on each of the
       three wire formats against a real endpoint (gate 0), on the release
       commit.
 
@@ -345,8 +352,16 @@ Currently the primary install path is dead: no release has ever been cut, and
       `daemon::e2e_tests::tunnel_e2e` 1/1 per format. Re-run on the release
       commit to close.*
 
-      *2026-11-11: not re-run since. `0616d2db` is about 100 commits past
-      `91f7e024`.*
+      *2026-11-11: all three green on the `v0.1.0` code against Zhipu
+      GLM-5.3-Flash, which serves every format: `cli_providers` 2/2
+      (smoke and a native tool call), `tunnel_integration` 6/6, and
+      `daemon::e2e_tests::tunnel_e2e` 1/1 per format. Run on `master` at
+      `26a5e34b`, which differs from the `v0.1.0` tag only in this
+      document. `anthropic_messages` ran as the whole
+      `make test-integration-llm`; the two OpenAI formats ran its
+      real-LLM commands against the same Docker stack. GLM's Responses
+      stream ends with `response.completed` and no `[DONE]` line, and the
+      model thinks unasked on all three; neither tripped an adapter.*
 - [x] **`make docker-up && make test-integration && make docker-down`**
       passes from a clean clone using only documented steps (2026-10-25,
       v0.1.0-rc.4).
