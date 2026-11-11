@@ -39,7 +39,7 @@ use std::path::PathBuf;
 /// Global CLI structure
 #[derive(Parser)]
 #[command(name = "peko")]
-#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(version = crate::release_version())]
 #[command(about = "Peko: persistent AI agents (pekos) you own")]
 #[command(propagate_version = true)]
 #[command(after_help = "Examples:

@@ -96,7 +96,7 @@ pub async fn handle_system(
             }
         }
         SystemCommands::Info => {
-            println!("ℹ️  Peko {}", env!("CARGO_PKG_VERSION"));
+            println!("ℹ️  Peko {}", crate::release_version());
             println!("  Persistent AI agents (pekos) you own");
             Ok(())
         }

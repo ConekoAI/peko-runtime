@@ -4,6 +4,34 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fix: what an agent's first run of the command line turned up (2026-11-11)
+
+A coding agent was asked to install `v0.1.0-rc.6` and use it, with goals
+and no steps (peko-benchmark `reports/field-test/2026-11-11-agent-trial.md`).
+It got everything done; four things got in its way.
+
+- **A peko asked to learn a skill writes one.** Asked to "remember this
+  rule as a skill", the peko saved a memory note and said "Noted"; no skill
+  file was made. The `Skill` tool's description now says that a skill asked
+  for is written to `skills/<name>/SKILL.md`, and that a memory note is not
+  a skill.
+- **`peko --version` names the release.** A release candidate printed
+  `0.1.0`, so nothing said which candidate was installed. The release
+  workflow passes the tag at build time (`PEKO_RELEASE_VERSION`), and
+  `peko --version`, `peko version` and `peko system info` print
+  `0.1.0-rc.6`. `peko update` compares that, so a candidate is no longer
+  taken for the final version. `peko version --json` keeps `version` (the
+  crate version) and adds `release`. The daemon's `PEKO_VERSION=` line, IPC
+  status and snapshot manifests still carry the crate version; a source
+  build prints it too.
+- **A release's notes install that release.** The one-line installer in
+  the notes had no `--version`, and the installer's default never picks a
+  prerelease. The notes now pin the version, for `install.sh` and
+  `install.ps1`.
+- **Starting the daemon keeps the previous log.** `daemon.log` was
+  truncated on every start, so restarting after a crash erased what the
+  crash had logged. The last run's file is now kept as `daemon.log.1`.
+
 ### Fix: two pekos approved for the same work don't both do it (2026-11-09)
 
 - In a collaboration benchmark run, juno and otto were asked for the same

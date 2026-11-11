@@ -71,6 +71,8 @@ impl Tool for SkillTool {
     fn description(&self) -> String {
         r#"Run a skill: returns `{name, dir, body}`, its SKILL.md body with dynamic context resolved and arguments substituted. `name` is the skill's directory name; `args` are positional strings. Files the body mentions are relative to `dir`; its commands run in the workspace. An unknown name lists the available skills; an unreadable or invalid skill file is an error.
 
+Asked to learn a skill, or to do something the same way every time: write `skills/<name>/SKILL.md` in your workspace (frontmatter `name` and `description`, which says when to use it, then the instructions) and say you did. A memory note is not a skill.
+
 Writing a SKILL.md: `$ARGUMENTS` is all args joined by spaces; `$0`, `$1`, … are positional; `$name` maps by position to the frontmatter `arguments:` list (undeclared names stay as written; `\$` keeps a placeholder literal). `!` plus a backticked command, at a line start or after whitespace, or a fenced block opened with ```!, is replaced by the command's stdout in one pass; a failure appends `stderr: …`, and a command times out after 5000 ms. Frontmatter `allowed-tools: ["git *", …]` limits commands by globs anchored to the whole command (empty: all); `shell: bash` is the only shell."#
             .to_string()
     }

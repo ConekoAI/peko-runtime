@@ -23,11 +23,16 @@ pub struct VersionArgs {
 
 /// Handle `peko version`
 pub fn handle_version(args: &VersionArgs, _global_json: bool) -> anyhow::Result<()> {
-    let version = crate::VERSION;
+    // `version` stays the crate version for programs that compare it;
+    // `release` names the build (a release candidate, for example).
+    let release = crate::release_version();
     if args.json {
-        println!("{}", json!({ "version": version }));
+        println!(
+            "{}",
+            json!({ "version": crate::VERSION, "release": release })
+        );
     } else {
-        println!("{version}");
+        println!("{release}");
     }
     Ok(())
 }

@@ -421,9 +421,9 @@ impl DaemonProcessService {
             // dispatcher warnings + tracing output the daemon process
             // emits (see `peko-daemon/src/main.rs::init_tracing`) are
             // inspectable after a background `peko daemon start`,
-            // without forcing the user into `--foreground`. The file
-            // is truncated on each start; a startup banner line is
-            // prepended so the rotation boundary is visible. If the
+            // without forcing the user into `--foreground`. Each start
+            // begins a new file with a banner line, and the previous
+            // run's file is kept as `daemon.log.1`. If the
             // log can't be opened (e.g. permissions), fall back to
             // `/dev/null` rather than failing the spawn — the daemon
             // is still functional, just untraceable.
@@ -688,14 +688,35 @@ impl DaemonProcessService {
     /// `<config_dir>/logs/daemon.log` (creating the directory if
     /// needed) so dispatcher warnings and `tracing` output from the
     /// daemon process are inspectable after a background `peko daemon
-    /// start`. The file is truncated on each start; a startup banner
-    /// line records the rotation boundary.
+    /// start`. Each start begins a new file with a startup banner line.
+    /// The previous run's file is kept as `daemon.log.1` (one generation),
+    /// so restarting after a crash does not erase what the crash logged.
     ///
     /// On any open failure (missing dir, permission denied, etc) we
     /// fall back to `/dev/null` so the spawn still succeeds — the
     /// daemon is functional but its stderr is dropped. The fallback is
     /// silent because the failure is recoverable and the user can
     /// still attach `--foreground` for debugging.
+    /// Move the last run's `daemon.log` to `daemon.log.1`, replacing an
+    /// older one. Best effort: a failure leaves the file to be truncated,
+    /// as before. An empty or missing log is left alone, so a start that
+    /// logged nothing does not push out a useful previous file.
+    fn keep_previous_daemon_log(log_path: &std::path::Path) {
+        let has_content = std::fs::metadata(log_path).is_ok_and(|m| m.len() > 0);
+        if !has_content {
+            return;
+        }
+        let previous = log_path.with_extension("log.1");
+        // Windows refuses to rename onto an existing file.
+        let _ = std::fs::remove_file(&previous);
+        if let Err(e) = std::fs::rename(log_path, &previous) {
+            tracing::debug!(
+                "could not keep previous daemon log {}: {e}",
+                log_path.display()
+            );
+        }
+    }
+
     pub(crate) fn open_daemon_log_stdio(config_dir: &std::path::Path) -> std::process::Stdio {
         let log_dir = config_dir.join("logs");
         if let Err(e) = std::fs::create_dir_all(&log_dir) {
@@ -706,6 +727,7 @@ impl DaemonProcessService {
             return std::process::Stdio::null();
         }
         let log_path = log_dir.join("daemon.log");
+        Self::keep_previous_daemon_log(&log_path);
         match std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -925,6 +947,30 @@ fn spawn_without_inheriting_std_handles(cmd: &mut Command) -> std::io::Result<Ch
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn starting_again_keeps_the_previous_daemon_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let log = logs.join("daemon.log");
+        let previous = logs.join("daemon.log.1");
+
+        // Nothing to keep yet: no previous file appears.
+        drop(DaemonProcessService::open_daemon_log_stdio(dir.path()));
+        assert!(!previous.exists());
+
+        std::fs::write(&log, "first run\n").unwrap();
+        drop(DaemonProcessService::open_daemon_log_stdio(dir.path()));
+        assert_eq!(std::fs::read_to_string(&previous).unwrap(), "first run\n");
+        let fresh = std::fs::read_to_string(&log).unwrap();
+        assert!(fresh.starts_with("== peko-daemon started at "), "{fresh}");
+
+        // A second restart replaces the kept file with the newer run.
+        std::fs::write(&log, "second run\n").unwrap();
+        drop(DaemonProcessService::open_daemon_log_stdio(dir.path()));
+        assert_eq!(std::fs::read_to_string(&previous).unwrap(), "second run\n");
+    }
     use super::*;
 
     /// The last resort names this home's daemon and how to end it; it never

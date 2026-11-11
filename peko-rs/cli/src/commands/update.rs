@@ -8,7 +8,9 @@ const GITHUB_REPO: &str = "ConekoAI/peko-runtime";
 
 /// Handle update command
 pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
-    let current_version = crate::VERSION;
+    // The release this binary is, so a release candidate is not taken for
+    // the final version it leads up to.
+    let current_version = crate::release_version();
 
     println!("🔍 Checking for updates...");
     println!("   Current version: v{current_version}");
