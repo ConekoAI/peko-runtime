@@ -4,7 +4,15 @@
 **Purpose:** This repo has no definition of "done" for MVP. This document is the
 gate: every box below must be checked (or explicitly waived with a recorded
 reason) before the project stops using "pre-launch" as a license to break wire
-formats, and before the first public release is cut.
+formats.
+
+**2026-11-11 (ADR-102):** the first tag is no longer this gate's last step.
+`0.1.0` and the patch releases after it are a public preview: installable,
+and held to "nothing a client depends on breaks" within the `0.1.x` line. A
+breaking change bumps the minor. This gate now decides when a breaking
+change also needs a migration path. Gate 1's "first release cut" and gate
+2's "first git version tag" close when `v0.1.0` is released; they no longer
+wait for the rest.
 
 A gate item is verifiable: it names the artifact, the command, or the person
 who signs off. If an item can't be verified, it doesn't belong here.
@@ -438,7 +446,11 @@ avoid until the tag exists.
 
 ## Sign-off
 
-MVP launches when: gates 0–6 are checked or waived-in-writing above, the
-release artifact is the thing tested, and the version tag exists. After that,
-breaking wire changes require a migration path — "pre-launch, no compat shim"
-stops being available as a justification.
+MVP launches when: gates 0–6 are checked or waived-in-writing above, and a
+released version is the thing tested. After that, breaking wire changes
+require a migration path — "pre-launch, no compat shim" stops being
+available as a justification.
+
+Before that, releases follow ADR-102: a patch release (`0.1.x`) breaks
+nothing a client depends on, and a breaking change bumps the minor
+(`0.2.0`) with no migration path owed.
