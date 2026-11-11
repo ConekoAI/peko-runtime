@@ -18,7 +18,7 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | 2. Version bookkeeping | 2 / 3 | No MVP version tag yet (rc tags only) |
 | 3. Docs | 4 / 4 | — |
 | 4. CI | 1 / 4 | Real-LLM tier re-run (last on `91f7e024`, 2026-10-25). The Linux and Windows tiers are green on the rc.6 commit and close if the MVP tag lands there |
-| 5. Field test | 1 / 3 | Non-technical field test (last one 2026-08-13). The benchmark suite is due a re-run: rc.6 differs from rc.4 in runtime code |
+| 5. Field test | 1 / 3 | Non-technical field test on Peko Desktop, plus an agent's command-line run (last human session 2026-08-13). The benchmark suite is due a re-run: rc.6 differs from rc.4 in runtime code |
 | 6. Security | 2 / 2 | — |
 | **Total** | **19 / 26** | |
 
@@ -336,13 +336,30 @@ quiet ticks (ADR-083), goals as plans (ADR-084) and peer nudges (ADR-086).
 Field/capability testing now lives in
 the sibling `peko-benchmark` repo (curated graded tasks, harness adapters).
 
-- [ ] **One non-technical-user session** against the release artifact:
-      install → create peko → chat → set a reminder (cron) → receive it →
-      install a skill → use it. Report filed under
-      `peko-benchmark/reports/` (this repo no longer carries a field-test
-      harness).
-- [ ] **Zero P0 findings open** from that report (P0 = blocks the core loop:
-      can't install, can't converse, loses messages, crashes the daemon).
+- [ ] **One non-technical-user session** against the release artifact of
+      Peko Desktop: install the app → connect a model → create a peko →
+      chat → set a reminder → receive it → quit and come back. Report filed
+      under `peko-benchmark/reports/field-test/` (this repo no longer
+      carries a field-test harness).
+
+      *2026-11-11, decided by the owner: the human session is on the
+      desktop app only. The command line is the surface agents and scripts
+      use, so its first-time run is done by an agent. It is asked for
+      results, not given steps, and works from the tool's help, its
+      messages and the public docs: install → create peko → chat → set a
+      reminder (cron) → receive it → install a skill → use it. That run is part of this item
+      and goes in the same report. The skill step lives there because the
+      app has no screen for skills. Until this date the item asked for a
+      person to do the command-line loop; the kit for that was written on
+      2026-10-27 and never run.*
+
+      *Not ready yet: Peko Desktop `v0.1.0-rc.6` is a draft release, so a
+      tester can't download it, and its installers are not signed (macOS
+      refuses a downloaded copy until the user overrides it; Windows
+      SmartScreen warns).*
+- [ ] **Zero P0 findings open** from that report, from either run (P0 =
+      blocks the core loop: can't install, can't converse, loses messages,
+      crashes the daemon).
 - [x] **peko-benchmark suite run** (2026-10-25, v0.1.0-rc.4) against the release artifact: all tasks
       in the repo's `tasks/` pass (or failures are classified and waived
       in writing), per its README methodology (pinned model, n ≥ 3 reps).
