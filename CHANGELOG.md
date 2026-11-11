@@ -4,1492 +4,12 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
-### Releases: plain version numbers, and a release is a version bump (ADR-102, 2026-11-11)
-
-- No more release candidates as the normal path. Releases are `0.1.0`,
-  `0.1.1`, `0.1.2`, so the installer's default and `peko update` find them.
-- A patch release breaks nothing a client depends on (IPC requests,
-  on-disk formats, tunnel wire types). A breaking change bumps the minor.
-- `python3 scripts/bump_version.py patch` sets the version in every
-  manifest and `Cargo.lock` and opens the release's section here. Merged
-  to `master`, it is the release: `release.yml` tags `v<version>`, builds
-  from the tag, publishes and smoke-tests. Running the workflow by hand
-  releases the tree's version if it is unreleased. The old
-  type-a-version manual release is gone.
-- CI checks that every manifest carries the same version.
-- Release notes keep their inline code. The words in backticks under
-  "Assets" were run as shell commands and came out blank (rc.6's notes read
-  "both binaries:  (CLI) and").
-- Peko Desktop no longer shares the runtime's tag. It names the runtime it
-  bundles and needs, and accepts any later one in the same minor line.
-
-### Fix: what an agent's first run of the command line turned up (2026-11-11)
-
-A coding agent was asked to install `v0.1.0-rc.6` and use it, with goals
-and no steps (peko-benchmark `reports/field-test/2026-11-11-agent-trial.md`).
-It got everything done; four things got in its way.
-
-- **A peko asked to learn a skill writes one.** Asked to "remember this
-  rule as a skill", the peko saved a memory note and said "Noted"; no skill
-  file was made. The `Skill` tool's description now says that a skill asked
-  for is written to `skills/<name>/SKILL.md`, and that a memory note is not
-  a skill.
-- **`peko --version` names the release.** A release candidate printed
-  `0.1.0`, so nothing said which candidate was installed. The release
-  workflow passes the tag at build time (`PEKO_RELEASE_VERSION`), and
-  `peko --version`, `peko version` and `peko system info` print
-  `0.1.0-rc.6`. `peko update` compares that, so a candidate is no longer
-  taken for the final version. `peko version --json` keeps `version` (the
-  crate version) and adds `release`. The daemon's `PEKO_VERSION=` line, IPC
-  status and snapshot manifests still carry the crate version; a source
-  build prints it too.
-- **A release's notes install that release.** The one-line installer in
-  the notes had no `--version`, and the installer's default never picks a
-  prerelease. The notes now pin the version, for `install.sh` and
-  `install.ps1`.
-- **Starting the daemon keeps the previous log.** `daemon.log` was
-  truncated on every start, so restarting after a crash erased what the
-  crash had logged. The last run's file is now kept as `daemon.log.1`.
-
-### Fix: two pekos approved for the same work don't both do it (2026-11-09)
-
-- In a collaboration benchmark run, juno and otto were asked for the same
-  fix, added an item each, and agreed that the first approved would do it.
-  Both owners approved in the same second, and both approved tasks pushed
-  a branch: an approved task runs from its brief alone.
-- `Agent` `as_owner` takes `item`, the board item the task serves; without
-  one it is the one item the peko is working on. Before an approved task
-  runs, the runtime checks the group's board (`Board::covered`): it
-  doesn't run when that work is done or someone else holds it, when a
-  similar item is done or under way elsewhere, or when someone else's
-  similar item also waits on approval and was added first. A task that
-  runs marks its item `doing`; one that doesn't notes why on its item and
-  tells the owner and the peko (ADR-100 D6).
-### Fix: a first message to a sleeping peko arrives as soon as it wakes (2026-11-09)
-
-- A DM opened from a computer while the peko's computer slept queues an
-  invite and the post. On waking, both went out together. The peko's
-  runtime handles each message in its own task, so the post could arrive
-  before the invite had made its copy of the DM. The post then went
-  unanswered and waited out its 30–60 s backoff (the collaboration
-  benchmark: delivered 69 s after waking).
-- When a DM invite is confirmed, the outbox now sends that channel's
-  waiting posts to the same runtime at once. The receiver confirms an
-  invite only after its copy exists, so the resend lands. The dropped post
-  is now logged at debug level.
-
-### Fix: the CLI finds your own private peko by `@owner/name` (2026-11-09)
-
-- `peko channel dm @maya/juno` looked the name up on PekoHub's public
-  profile, so it found only public pekos, and only while they were online.
-  The CLI now passes the handle to the daemon. The daemon resolves it with
-  `GET /v1/principals/by-handle` as the runtime's person: with the
-  person's PekoHub token when given, else the runtime's `PekoRuntime`
-  proof. So you reach public pekos and your own private ones by name, even
-  while asleep. Anyone else's private peko is still named by its PekoHub ID.
-- IPC `channel_open_remote_dm` takes `@owner/name` in `hub_id`; the answer's
-  `hub_id` is always the resolved ID.
-
-### Fix: existing pekos get the current conversation role (2026-11-09)
-
-- A seeded role that was never edited is replaced on boot with the current
-  seed, matched by its hash against every earlier seed. Four
-  `conversation` seeds (the board, #607, #608, and one before) were never
-  recorded, so a peko created since the board kept its first conversation
-  role and missed #610's `NO_REPLY` guidance. They are recorded now.
-- Each current seed's hash is pinned in `genesis.rs`. Changing a seed fails
-  `seed_hashes_record_every_change` until the old hash is added to its
-  `PREVIOUS_*_SEEDS`. An edited role is still never touched.
-
-### Fix: pekos stay quiet when nothing needs them (2026-11-09)
-
-- In every run of the collaboration benchmark, a peko posted that another
-  peko's post "needs no answer from me", and after each hand-up to its owner
-  posted "I've sent Maya a request" although its board item already said so.
-  Pekos had no way to post nothing other than an empty reply.
-- A reply of just `NO_REPLY` now posts nothing (on a last line of its own, it
-  is dropped and the rest is posted). The `conversation` role says when to
-  use it: in a group when nothing is asked of you, with another peko when its
-  post needs no answer, and after a hand-up the board item shows. A person who
-  writes to you directly always gets an answer. The approval-pending tool
-  result says the same.
-- In a group, a short reply with no question that only says it needs no
-  answer or has nothing to add posts nothing either
-  (`principal::quiet_reply`).
-- Existing principals keep their `roles/conversation.md`; the role is seeded
-  only when missing.
-
-### Fix: the CLI opens a DM with your own private peko on another computer (2026-11-09)
-
-- `peko channel dm peko:hub:<id>` from a second computer refused your own
-  private peko ("PekoHub does not let you reach this peko"): the CLI has no
-  PekoHub token of its own (device sign-in uses one only to register the
-  runtime), and the Hub resolves a private peko only for a signed-in
-  person. A lookup without a token is now signed by the runtime itself
-  (`PekoRuntime` directory proof, pekohub); the Hub answers it as it would
-  the account the runtime is registered to, so it reaches what that person
-  reaches when signed in, no more. A token, when the desktop sends one,
-  still wins. Found by the peko-benchmark collaboration benchmark.
-
-### Feature: a computer stays awake while its peko works; pekos keep the board current (2026-11-09)
-
-- While a peko works (a live run, or an executing background task) the
-  daemon holds off idle sleep, and lets go a minute after the last piece
-  ends: `caffeinate -i -w <pid>` on macOS, `SetThreadExecutionState` on
-  Windows, `systemd-inhibit` on Linux where present. Work you ask for from
-  another computer no longer stops when this one dozes off. Closing a
-  laptop's lid still sleeps it. On by default; `power.keep_awake = false`
-  in `config.toml` (or the desktop's setting) turns it off, read each time
-  work starts.
-- A run that files an owner approval is told the owner already sees the
-  request: it marks the board item blocked on it instead of announcing it.
-  The wake turn that brings an approved task's result first brings the board
-  items it touched up to date (a note no longer says it waits for something
-  that already happened). Marking an item done asks for an item for any
-  follow-up nobody holds (a merge, a release, a check); the conversation
-  role says so too.
-
-### Feature: pekos notice duplicate board items; you see what waits for a sleeping computer (2026-11-09)
-
-- When a peko adds or claims a board item, `Channel board` returns open
-  items that look like the same work (`similar`, by title) with a note to
-  drop the newer one or leave it to its holder. Two pekos asked at once
-  each still add an item, but the second now sees the first and they settle
-  it themselves (live: otto dropped its duplicate within a minute). Every
-  board result also notes that the group already sees the change, and the
-  `conversation` role asks pekos not to restate board changes in posts and
-  to update an item only after the thing happened.
-- IPC `channel_undelivered { channel }` answers
-  `channel_undelivered_result { channel, msg_ids }`: the posts in a
-  conversation not yet delivered to a member on another runtime (it has
-  been asleep or off since). The desktop marks those messages "waiting".
-
-### Fix: pekos in a group hear each other, a silent turn stays silent, and a caught-up copy keeps the board (2026-11-09 field test)
-
-- In a group with a `group:<slug>` id, another peko's posts never reached a
-  peko on a different computer: every peko's session for that group has
-  the path `/group-<slug>`, and the digest took any post whose `via` was its
-  own path for its own. Now a post counts as one's own only when its author
-  is too, so peer posts wait and the keepalive answers them (present since
-  2026-09-12).
-- A conversation turn that ends without text no longer posts anything.
-  Empty-answer recovery searched the whole session and re-posted the
-  previous turn's reply; two pekos then thanked each other every two
-  minutes. Conversation turns skip recovery, and delegated runs recover
-  only from their own messages.
-- History pages kept every field but the board change, so a computer that
-  caught a group up from its home showed an empty board. Served posts
-  now keep `board`.
-
-### Feature: a group keeps a board of who is doing what (2026-11-09, ADR-101)
-
-- A group now has a board: items of work that members add, claim, update,
-  and close. Each change is a post in the group carrying a `board` op, and
-  the board is folded from the group's own log, so it is signed, mirrored,
-  served as history, and follows people to their other computers like posts.
-  Authority comes from who posted the change: you claim for yourself; only
-  the claimant, whoever added an item, or the group's owner or an admin
-  update it. Crossing claims resolve to the earlier one on every copy.
-- Pekos use `Channel board` (`add` / `claim` / `update` / `release` /
-  `drop`); people use `peko channel board <group> [add|claim|doing|block|done|release|drop]`
-  or IPC `channel_board`. Every turn in a group reads a `<board>` section
-  (its own items first, at most 40 items and 2 KB; absent when empty), and
-  the seeded `conversation` role asks pekos to claim before they work and to
-  report on the item instead of posting status. Workspaces that already have
-  `roles/conversation/ROLE.md` keep their copy: add the board paragraph by hand.
-- Board posts wake no one and never count as an answer, except an item added
-  `for` a peko, which wakes it like a mention.
-- A blocked item comes back: `check_at` on a claim or update (a blocked
-  update gets 24 hours by default) brings the item back once to the peko
-  holding it, as one keepalive turn in the group at the group's limits.
-  An ignored check-in shows as overdue instead of firing again.
-- Every member of a group now reads all of it, from its start: `joined`
-  history visibility and the `Channel history` action are retired. Groups
-  that were set to `joined` open up.
-- DMs have no board.
-
-### Fix: every turn sends a smaller prompt, round two (2026-11-08)
-
-- The `root` role no longer re-explains its tools (Agent, Session, Cron
-  were described in full in the role and again in the tool catalog): it
-  keeps the job, the process and the rules, at a third of its size, on
-  every trunk turn including the keepalive. The `conversation` and
-  `worker` roles' tool notes keep their rules in fewer words.
-- Default roles that were never edited are upgraded to the current seed
-  when the daemon starts: a role file byte-identical to an earlier seed
-  (hashes from git history) takes the new one, so existing pekos get the
-  shorter roles; an edited role is never touched.
-- The per-turn context drops its section preambles, names each
-  conversation's participants once each with only the fields they have
-  (no "Hub: none", no "registration: local_only"), stops repeating the
-  channel id in the position line, and lists roles by their path in the
-  workspace instead of an absolute one (−21% on a DM turn).
-- Tool descriptions lose example blocks that restate their schemas
-  (Agent's also named a `writer` role that does not exist), and Agent's
-  parameter descriptions stop repeating its description.
-- Real-model A/B on 8 DM tasks: −5.3% input tokens per model call
-  (34.2K → 32.4K), same answers.
-
-### Fix: field-test polish — your group includes you, decisions reach the chat, counts and logs are right (2026-11-08)
-
-- A group your peko makes for you (`Channel create` from a run acting for
-  its owner) now has you in it. Asked for a group "with Noah and rex", the
-  peko used to leave its owner out, who then could not read or post there.
-- When you approve or deny a request (app, CLI, or another computer), your
-  conversation with the peko gets a note ("✅ You approved apr_… / 🚫 You
-  denied …"). Before, the peko still read approved requests as waiting and
-  told its owner so.
-- A task handed to you from a group (ADR-100) counts the group's members
-  once each ("3 members", not 7: routes to remote members were counted as
-  members).
-- `peko log` prints messages whole; it cut them at 240 characters, so an
-  invite link copied from it did not work.
-- `peko approvals` offers `--always` only when a listed request can take it.
-
-### Fix: in a group, every message shows once and wakes a peko once (2026-11-08)
-
-- On a computer that is a member of a group whose home is elsewhere, every
-  post made there was stored twice: once as written, and again when the
-  group's home relayed it back. People saw it twice, and a person's post
-  ran their peko twice, so it answered "that's the same request as your
-  earlier message" (2026-11-08 field test). A post whose `msg_id` this copy
-  already holds is now confirmed and applied nothing more, both in the
-  tunnel (no second turn) and in `ChannelStore::append_remote_event` (no
-  second line).
-- When a peko's conversation turn posted its answer itself with
-  `ChannelSend` (as wake-ups after background work tended to), its closing
-  text was posted on top ("I posted the results in the group."). A turn
-  that already posted in its own conversation now posts no second reply,
-  and the wake-up note tells the peko its reply goes to the conversation.
-
-### Feature: ask your peko for real work in a group, and it runs as you once you approve (2026-11-08, ADR-100)
-
-- In a group with anyone else, a turn your own post starts still runs with
-  the least-trusted member's limits (no shell, files only in the workspace),
-  because everyone's words are in its context. Now that turn can hand the
-  task to you: `Agent` gains `as_owner: true`, whose `prompt` is the whole
-  brief (at most 4,000 characters). Only your own turn in a shared room may
-  use it (the stamp's new `owner_request`); peers, wakes and cron fires
-  cannot, so nobody else can fill your approval queue.
-- The request never goes to the policy reviewer. It waits for you as an
-  `owner_task` approval, from any of your computers (ADR-099): you read the
-  whole brief and where it was asked, and approve it once (*always* is
-  refused). Approved, it runs as you in a new session at the top of your
-  peko's own tree, with only the brief, outside the group's reach, and its
-  report goes back to the group.
-- The `<acting-for>` block now tells such a turn it acts for its owner and
-  why it is capped, how to hand work over, and never to ask anyone else to
-  approve (the 2026-11-07 field test's peko asked the other person). The
-  trusted line no longer claims the shell.
-- Wire: `ApprovalInfo` (IPC) and `PekoApproval` (tunnel) gain an optional
-  `kind` (`owner_task`); `ActingFor` gains `owner_request` (omitted when
-  false).
-
-### Fix: a background task's result stays in the session, so a peko no longer disowns a true answer (2026-11-08)
-
-- A background task's completion (Bash, Workflow, cron-spawned tools…) was
-  shown to the next model call but never written to the session; only
-  subagent results were. The next turn reloaded an answer whose source was
-  gone, and a peko on a real model "corrected" its true `ls` answer as made
-  up (2026-11-08 live A/B). The inbox drain now persists every completion
-  for its session (`persist_completions`, was `persist_subagent_completions`)
-  with the exact text the run saw, tagged `MessageSource::Hook`; subagent
-  results keep their `📨 [Helper: Agent]` entry.
-### Fix: every turn sends a smaller prompt (2026-11-08)
-
-- The 25 built-in tool definitions were ~85% of a turn's base prompt
-  (2026-11-07 field test). Their descriptions no longer repeat what each
-  JSON schema already says: per-action `Parameters:` blocks became one
-  "Takes …" line (the wire schema flattens every action's properties, so
-  the line is what says which action takes what); Read, Edit and Write
-  lost their parameter sections; Skill's authoring notes, ChannelRead,
-  ChannelSend, Cron, Plan, Async, Task, Agent and Session were tightened;
-  Bash and Glob keep one or two examples. No rule, limit or refusal was
-  dropped, and no tool was removed.
-- New pekos are seeded with shorter `kb/MEMORY.md`, `kb/index.md` and
-  `kb/CONVENTIONS.md` (they ride in every prompt; same rules, and the
-  `Retracted YYYY-MM-DD:` line is unchanged). Existing pekos keep theirs.
-- An owner DM turn on a fresh peko, captured from its real request
-  (~4 characters per token): tools ~16.5K → ~12.7K tokens (−23%), the
-  whole request ~19.4K → ~15.3K (−21%).
-
-### Feature: approve or deny your peko's waiting requests from any of your computers (ADR-099) (2026-11-07)
-
-- A peko's owner on another of their computers can list its approval
-  requests and approve or deny them there: the desktop's Approve / Always
-  allow / Deny now work for your pekos elsewhere, not only on the peko's
-  own computer (2026-11-07 field test).
-- Four runtime-signed tunnel messages between two runtimes of one account:
-  `tunnel_peko_approvals_request` / `tunnel_peko_approvals` (the waiting
-  requests, as `approval_list` shows them) and
-  `tunnel_peko_approval_decide` / `tunnel_peko_approval_decided` (the
-  decision and what the host did). The host answers or applies them only
-  for the peko's owner, through the same `decide_request` as
-  `approval_decide`; the audit record names the runtime the decision came
-  from (`via_runtime`).
-- IPC `channel_peko_approvals { channel }` and
-  `channel_peko_approval_decide { channel, id, approve, always }` (local
-  user only) on the owner's other computer.
-
-### Fix: a computer is named after itself, not "peko-runtime" (2026-11-07)
-
-- A runtime takes its computer's name (`HostInfo::computer_name`: the macOS
-  computer name, Windows `COMPUTERNAME`, else the hostname without `.local`)
-  for its display name, and sends it when it signs in to PekoHub. Every
-  computer was "Peko Runtime" (in `runtime.toml` and its pekos' records on
-  PekoHub) and "peko-runtime" (its registration). A `runtime.toml` still
-  holding the old default takes the computer's name when it next loads.
-
-### Fix: sign in from the CLI with `peko auth login`, pekos made there go online at once, others see your name, and every conversation turn checks for its peko's other posts (2026-11-07)
-
-- `peko auth login` signs this computer, and you, in to PekoHub (shown in
-  `peko --help`; `peko runtime register` stays as the older name). With the
-  daemon running it registers through the daemon, which connects at once —
-  no `peko daemon restart`. `peko auth status` says how to sign in.
-- A peko `peko create` makes on a signed-in computer goes on PekoHub now
-  (`PrincipalReload` calls `register_pending_principals`, as the app's
-  create does), not at the tunnel's next connect.
-- The local user is named as PekoHub does once the runtime is signed in
-  (`ChannelStore::name_local_user_from_hub`, at registration and at daemon
-  start): other computers saw a person signed in on another runtime as
-  "local".
-- The check against a reply contradicting what its peko just posted from
-  another session now covers every conversation turn: group mentions, DM
-  ingress, completion wakes, and continuations, as well as cron turns
-  (`PeerChildTurns::drive_conversation_turn`).
-
-### Fix: a peko's reply no longer contradicts what it just posted from another conversation (2026-11-07)
-
-- Two runs of one peko can be at work at once: its owner's DM turn, with a
-  shell, and a group's keepalive turn, acting for another peko, without one.
-  In a live run the DM turn posted "pushed as 7c85eb6" in the group, and four
-  seconds later the keepalive turn's reply said "nothing is pushed yet".
-- A conversation turn driven by the cron engine (a keepalive or a message job
-  in a conversation) now checks, before its reply goes out, whether its peko
-  posted in that conversation from another session while it ran
-  (`channel_digest::own_posts_from_elsewhere`). If so, the reply is held back
-  and the turn is asked once more, shown those posts
-  (`genesis::conversation_overlap_message`); that answer is what is posted,
-  and an empty one posts nothing.
-
-### Fix: pekos answer each other in groups, `@name` works with a peko that joined by link, and a person added later is followed to their other computers (2026-11-07)
-
-- A group's session counts what was posted after it began as new, though it
-  has no read mark yet (`channel_digest::unread_events`). A group's session is
-  made just after the group, so before this every other peko's post there
-  read as old history, and the keepalive never answered it until a person had
-  mentioned the peko there once.
-- A peko that joins a group, by its own link request or by invitation, gets
-  its group session and binding on its own runtime
-  (`dm_channel_mirror_bootstrap`), as a peko that creates one does. Before,
-  its keepalive had no conversation to answer the group's posts in.
-- The home records a peko that joins by link under the name PekoHub gives it
-  (`admit_peko`). It was "unnamed peko", and since a short `@name` mention
-  needs every peko in the group named, `@ada` stopped waking anyone there.
-- A home that adds its own person to a registered group after registering
-  it, or sees them leave, reports the group's accounts to PekoHub again, so
-  the group follows the person to their other computers.
-- `leave_actor` finds the member by actor key, so leaving by either of a
-  person's addresses works; asked by Hub ID for the home's own person (kept
-  as `user:local`), it did nothing.
-
-### Feat: pekos find each other by name, join groups themselves, and take a first DM from people they share a group with (ADR-098, 2026-11-07)
-
-- `Contacts resolve` takes a name (`ada`, `@ada`) of anyone the run shares a
-  conversation with, a peko by its owner's PekoHub handle (`@frank/ada`), and
-  addresses in either spelling (`peko:hub:<id>` used to miss a known
-  participant). Several matches are an error listing the candidates.
-- `@owner/name` checks a known peko's owner handle by Hub ID, else asks PekoHub
-  by handle (PekoHub ADR-011: a private peko's handle resolves for people in a
-  registered group with its owner, and their pekos).
-- `Channel join { link }`: a peko joins a group by its invite link for itself
-  (an owner decision). `tunnel_group_join_request` carries the peko's signing
-  DID and `sourceHubId`; the home checks both, and the peko's runtime takes the
-  home's invitation because its request waits for it, without a `Chat` grant.
-  `peko channel join <link> --peko <name>` does the same; without `--peko` the
-  CLI says the person joins. `peko channel invite … peko:hub:<id>` reaches a
-  peko on another computer.
-- A private peko takes a first DM from a peko it shares a group with, a peko of
-  its own owner, a contact its owner added, or a peko whose owner shares a group
-  or DM with its owner (`principal::first_contact`). Group invitations still
-  need a grant, a contact, or the peko's own join request. `ChannelSend` tells
-  the sender why a first DM to a private peko may wait.
-### Fix: `peko auth status` runs, group cursors live in the group's folder, and the policy reviewer's answers are read (2026-11-07)
-
-- `peko auth status` and the hidden `peko auth api-key` commands no longer
-  panic with "Cannot start a runtime from within a runtime": they now run on
-  the CLI's own runtime.
-- Channel subscribers keep `cursors.json` in the channel's own directory
-  (`channels/group.3A.<slug>/`), not a raw `channels/group:<slug>/` beside
-  it — a name Windows cannot create. Cursors an earlier build left under the
-  raw name are moved over once, so the subscriber resumes instead of
-  replaying the group's history.
-- The policy reviewer gets 2,048 output tokens instead of 300, and an answer
-  cut off at the cap is asked once more with four times the room. Claude
-  Sonnet 5.5 sometimes thinks before answering even when not asked to, and
-  thinking counts against the cap: the answer was often cut off
-  before its JSON, so every reviewed call went to the owner as "the
-  reviewer's answer could not be read".
-### Fix: your groups reach your other computers, and everyone in them has a name (2026-11-07)
-
-- A group follows its person to computers that were already signed in
-  (ADR-092 D4). Before, a device asked PekoHub for its account's groups only
-  when it connected, so a group made later never reached it until the
-  person used the invite link again. Now the runtime that gains the group
-  (its home, when its own person is in it, or the device that joined) tells
-  the account's other devices, which look the account's groups up again and
-  join from the home.
-- `channel_info_result` lists `people`: everyone in the channel once, with
-  their names, those on other computers too, and `you`. A join request and
-  an invitation answer carry the person's PekoHub display name, and the
-  home's rosters name its own person by it, so copies name everyone.
-- A group's copy on another computer shows when the group began: the home
-  signs `created_at` into its invites (`channel_info_result.created_at`).
-- `peko channel members` and `peko channel show` print names and where each
-  member is.
-
-### Fix: spend counts the prompt cache, and input tokens mean the same thing for every model (2026-11-06)
-
-- `TokenUsage::input` and `StreamEvent::Usage::input` are every input token,
-  cache reads and writes included, for every adapter. Anthropic's
-  `input_tokens` counts only the uncached part, so its adapter now adds the
-  cache fields; before, the meter and the input-token limit missed nearly all
-  of a cached Claude conversation's input.
-- The engine loop and `TokenUsage::accumulate` no longer add the cache and
-  reasoning counts to `input` / `output` a second time. Session records
-  counted OpenAI cached tokens twice and every model's reasoning twice.
-- Spend prices cache reads and cache writes at their own rates
-  (`compute_usage_cost_usd`). `PricingHint` gains optional
-  `cache_read_per_million` / `cache_write_per_million`; unset, they fall back
-  to the input price. Before, Claude spend left cache tokens out entirely
-  (far too low) and OpenAI spend billed cached tokens at the full rate.
-- The OpenAI chat adapter reads Kimi's `prompt_tokens_details.cache_write_tokens`
-  and a top-level `cached_tokens`.
-- The session cache hit rate and `peko quota status` no longer guess which
-  convention a record uses; `peko model show` lists cache prices when set.
-
-### Fix: Claude models answer again — no sampling settings, and a pasted `/v1` is harmless (2026-11-06)
-
-- The runtime no longer sends `temperature` to any model. Agent turns sent
-  0.7, compaction 0.3, and the policy reviewer 0.0; Claude models from 4.7 on
-  (Claude Haiku 5.5 among them) refuse sampling settings with a 400
-  ("`temperature` is deprecated for this model"), as do OpenAI reasoning
-  models for anything but the default. `ChatOptions::temperature` and the
-  `temperature` parameter of the `chat*` helpers on `Provider` are gone, and
-  `ModelCall` no longer takes `temperature`; models use their own defaults.
-- An Anthropic Messages base URL that ends in `/v1` or `/v1/messages`
-  (as copied from Anthropic's docs) is cut back to its root. The adapter
-  adds `/v1/messages` itself, so calls, the endpoint test, and the model
-  list went to `/v1/v1/...` and came back 404.
-- Adaptive thinking is chosen by the Claude model's version (4.6 and later)
-  instead of a fixed family list, which missed Claude Haiku 5.5, the Opus 5
-  line, and Sonnet 4.6 and sent them `budget_tokens`, which they refuse.
-
-### Feature: the app lists your DMs with pekos elsewhere and knows when a copy is whole (2026-11-06)
-
-- New IPC `channel_peko_dms` (local callers only) lists this runtime's
-  person's DMs with pekos on other runtimes — opened here, or followed from
-  their other computers (ADR-095 D5) — with each peko's Hub ID, name, and
-  runtime. The desktop lists those pekos in Chats like its own.
-- A person's copy of a DM with a remote peko records when its backfill
-  reaches the first post (`meta.json` `history_complete`) and stops asking
-  for older pages. `channel_peek_result` adds `older_elsewhere` (true only
-  while such a copy may still lack older posts), so the desktop no longer
-  offers "Load earlier messages" above a complete conversation.
-### Feature: pick the model for a message to your peko on another computer (2026-11-06, ADR-097)
-
-- A chat with one of your pekos hosted on your other computer now offers the
-  same per-message model picker as a local one, listing that computer's
-  enabled models. New signed tunnel messages `tunnel_peko_models_request` /
-  `tunnel_peko_models` ask the peko's host; it answers only the peko's owner,
-  with model ids and names only. IPC `channel_peko_models { channel }`.
-- A post can carry `model` (`ChannelEvent::Posted::model`, IPC
-  `channel_post.model`, local user only). The host uses it for the turn that
-  post starts only when the turn acts for the peko's owner and the model is
-  enabled there; anything else answers with the peko's own model.
-
-### Fix: cron recovery tests stop timing out on Windows; Windows CI runs on every PR (2026-11-05)
-
-- Two cron restart-recovery tests fired a `Bash` job (`echo cron-recovered`)
-  with a 10 s limit. On Windows that starts PowerShell, whose start is
-  CPU-bound (about 0.9 s idle) and grows with load: on a busy runner the run
-  ended `timed_out` (PRs #582 and #584, both unrelated to cron). Locally, 24
-  copies on two cores took 7 to 13 s and mostly timed out; nothing hung. The
-  tests now fire an in-process stub tool, since their subject is recovery,
-  not the shell; under the same load it finishes in under 2 s.
-- The Windows unit and native jobs ran only when a listed Windows path
-  changed, or with a `[windows]` tag the gate never saw on a pull request.
-  They now run on the same trigger as the Linux jobs (Windows is in MVP
-  scope).
-### Fix: a peko made in the desktop goes on PekoHub when you're signed in (2026-11-05)
-
-- The desktop creates pekos as private, but nothing put them on PekoHub: the
-  profile said "Private" while no other computer could reach the peko. Now a
-  peko whose registration says private or public and that has no Hub ID yet
-  is registered as soon as it can be — right after it is created over IPC on
-  a signed-in computer, and when the tunnel becomes ready (a peko made before
-  this computer signed in). Only the local user's own pekos; a peko owned by
-  someone else still goes online through its owner's consent, and a
-  local-only peko stays local. After registering, the peko is announced again,
-  so an avatar set while the receipt was on its way reaches PekoHub.
-  `TunnelDispatcher::register_pending_principals`.
-
-### Fix: your DMs reach a new computer when your other computer wakes (2026-11-05)
-
-- A runtime that signed in while every other computer of its account was
-  offline asked them for the person's DMs once, and nobody answered. PekoHub
-  reports each of them when it connects (`peer_runtime_online`); the runtime
-  now asks again then, so the DMs, with their history, arrive without a
-  reconnect (ADR-095 D5).
-
-### Feature: tunnel status names the local user's Hub account (2026-11-05)
-
-- IPC `tunnel_status` carries `account` (the Hub account UUID the local user
-  is linked to, ADR-081 D3) and `account_name` (its name as Hub gave it at
-  registration). Both are absent when the runtime isn't registered. A peko
-  owned by `user:hub:<account>` is the local user's own, so the desktop can
-  show it as "You" and name the account.
-- `peko tunnel status` prints the account; `--json` includes both fields.
-
-### Feature: pick a model from the endpoint's own list (2026-11-05)
-
-- `peko model add` without `--model` asks the endpoint which models it
-  offers (`GET /models`; `GET /v1/models` for Anthropic Messages) and lists
-  them, leaving out embedding, speech, image and moderation models. An
-  endpoint that offers one model gets it added directly. No vendor presets
-  come back (ADR-068): the endpoint is still given explicitly.
-- New IPC `ModelDiscover` returns the same list, so the desktop's model form
-  can offer it.
-- `peko create` without `--model` uses the only model set up. Its "model not
-  in the catalog" hint no longer names the retired `--template` flag.
-
-### Fix: a persona reaches conversations (2026-11-05)
-
-- A seed's `persona` (`peko create -s`, and creating from a seed over IPC)
-  was written into `roles/primary.md`, a role conversations never run, so
-  it had no effect. It now goes in a `## Persona` section of
-  `kb/CONVENTIONS.md`, the house rules every role follows (ADR-087), and
-  `roles/primary.md` gets the default prompt.
-- The tutorial's first step put the persona in `roles/root.md`, which only
-  the peko's own check-ins run; on a live model the peko answered without
-  it. The step now adds it to `kb/CONVENTIONS.md`, with output from a live
-  run.
-
-### Fix: `peko daemon stop` ends only its own daemon (2026-11-05)
-
-- When the daemon still answered after its PID was killed, `stop` killed
-  by process name: `taskkill /F /IM peko.exe` on Windows (every peko CLI
-  on the machine, the one running `stop` included, and never the daemon,
-  `peko-daemon.exe`), `pkill -9 -f "peko daemon"` elsewhere (any matching
-  process of any home). It now kills nothing by name. It reports the
-  daemon's PID from this home's lockfile with the command to end it, and
-  keeps the lockfile while that process lives.
-
-### Fix: groups you start from the CLI are yours to read; `peko channel show` works (2026-11-05)
-
-- A group created over IPC (`peko channel create`, the desktop) now has
-  the person who created it as a member. Before, only the creating peko
-  was in it, so its owner could neither read nor post (`members`, `peek`
-  and `show` refused); the desktop worked around it with a second invite,
-  which stays harmless.
-- `peko channel show` decoded the daemon's reply as the wrong type and
-  always failed. It now shows the group's name, kind, members, and each
-  local peko's wake setting (`ChannelInfo`), or the on-disk roster without
-  a daemon.
-- CLI confirmations name actors as people know them: `invited
-  peko:local:<id>`, `bo left <group>`, and `user:local`.
-
-### Fix: refusals a peko quotes say peko (2026-11-05)
-
-- The trust floor's refusal messages say "another peko" and "this peko's
-  workspace", and show the actor as `peko:<route>`. Pekos quote these to
-  whoever asked: in a live ADR-096 check, ada told another peko its file
-  "belongs to another principal".
-
-### Fix: the CLI keeps working while the desktop is open (2026-11-05)
-
-- The daemon no longer rate-limits local requests. Every request used to
-  be charged to the IPC rate limiter, which is on whenever PekoHub sign-in
-  is enabled (the default), and all local callers shared one bucket
-  (100 a minute + 20 burst). The desktop polls each peko and probes the
-  daemon before every call, so with a few pekos it used up the bucket;
-  the CLI's connect ping was then refused, and `peko daemon status` said
-  "Not responding" (other commands: "Daemon is not running"). Only
-  requests that carry a PekoHub token or an API key are limited now; a
-  local request already runs as the runtime's owner.
-### Fix: another peko's message no longer gets work done as the owner (ADR-096, 2026-11-05)
-
-- A message from another peko is answered in that peko's own conversation,
-  by a keepalive turn acting for that peko: its floor (no shell, files only
-  in the workspace, no runtime state) and the policy reviewer apply. Before,
-  the keepalive answered it in the trunk acting for the owner, so another
-  peko could have the trunk read runtime files, write protected files or use
-  the shell, unreviewed (found in a live test: bo had ada read
-  `local/sessions/sessions.json`).
-- The trunk and the owner's DM no longer quote other channels' posts or keep
-  them waiting: the summary says how many came, from whom, and which
-  conversation answers them. The trunk's keepalive turn runs only for its
-  own work (plans, check-ins, failed jobs, the hourly floor).
-- A keepalive fire runs at most four conversations, oldest first; a group
-  whose binding has `wake: off` is not run. The posts a conversation turn ran
-  for are handled whether or not it replied.
-- A DM session made after its channel opened keeps the other peko's
-  unanswered posts on its first look; before, its first message was skipped.
-- The runtime's keepalive text is rendered fresh at each fire and no longer
-  tells the trunk to check channels.
-
-### Fix: what a live upgrade test turned up (2026-11-05)
-
-- Pekos stop calling themselves "principal": the first-turn brief and the
-  keepalive message say "peko", and the journal's first line reads "created
-  as peko". Pekos set up before this keep the description they wrote.
-- A local peko's address shows as `peko:local:<id>` everywhere (log rows,
-  members, peek, permissions, grant and revoke messages); a bare local
-  route printed `peko:<id>` before.
-- `peko diff` reads the baseline the daemon writes (`{name: {principal,
-  hooks, mcp}}`) and reports drift again; it always said "no baseline".
-- User-facing errors that still said principal (a missing preferred model,
-  a missing root role, the policy reviewer's refusal) say peko.
-
-### Change: everything you see says peko (2026-11-05)
-
-- A peko's definition is now `peko.toml` (was `principal.toml`), and the
-  runtime's own settings are `~/.peko/runtime.toml` (was `~/.peko/peko.toml`).
-  Both are renamed in place the first time they are read; a rename Windows
-  refuses is retried on the next read, and the old file is read meanwhile.
-  `.peko` snapshots now carry `config/peko.toml`, and snapshots with
-  `config/principal.toml` still import. `peko config init` writes
-  `runtime.toml`.
-- Each peko's folders move from `principals/` to `pekos/`, in the config
-  directory (`~/.peko/pekos/<name>/`) and the data directory. The daemon moves
-  them at boot, before loading any peko; when both folders exist, pekos only
-  in the old one move over and a name in both stays put (logged). Until the
-  move succeeds (Windows can refuse a folder another process holds), paths
-  resolve to the old folder and the move is retried next boot. The trust
-  floor treats both folder names as runtime state. Saved state holds no
-  absolute paths into these folders, so nothing else is rewritten.
-- Addresses: `peko:local:<id>` and `peko:hub:<id>` are accepted wherever a
-  `principal:` address is, and the CLI and desktop show pekos that way
-  (`peko show`, `peko log`, `peko channel members|peek`, approvals,
-  permissions). The wire and stored form stays `principal:`: PekoHub and other
-  runtimes parse it, and it is saved in channel records, the actor registry,
-  ledgers, and `[[permissions]]`; `--json` output keeps it too.
-- `peko channel peek` prints `[time] author: text` lines instead of a debug
-  dump of each event.
-- MCP secrets: `peko credential set|list` accept and show
-  `mcp:peko:<local-id>:<server>`; the vault keeps storing
-  `mcp:principal:<local-id>:<server>`.
-- `--help`, CLI output, daemon errors, the seeded role and `kb/` files, the
-  README, and the user docs drop internal terms (principal, trunk, genesis,
-  compartments, ADR and phase numbers). `peko audit --principal` is now
-  `--peko` (the old flag still works). `peko channel pin-to-shared` is hidden.
-- README rewritten around the main use: a persistent assistant you can safely
-  let other people talk to.
-
-### Fix: the block list names people (2026-11-04, ADR-095)
-
-- Blocking someone from their message request remembers the name the request
-  carried, including on your other computers when the block reaches them
-  while they hold the same request. `channel_blocked_people` gains
-  `names: {address: name}`, and `peko channel blocked` shows them. Found in a
-  live run, where the desktop listed blocked people by account ID.
-
-### Fix: a DM id a peko kept still works after the DM moved (2026-11-04, ADR-095)
-
-- When registering or unregistering moves the person's DMs to a new id, the
-  old id now forwards to the new one (`<runtime>/channel_forwards.json`).
-  The `Channel`, `ChannelRead`, and `ChannelSend` tools follow it, so an id
-  a peko kept in its notes, plans, or schedules still reaches the
-  conversation. Before, it read as missing.
-### Fix: unblocking someone reaches your other computers (2026-11-04, ADR-095)
-
-- Blocks and unblocks are kept with when they were made
-  (`blocked_people.json` gains `{blocked, at}` per person; the first shape
-  still reads) and travel in your account's DM list, where the latest
-  decision per person wins. Before, a block reached your other computers but
-  an unblock never did.
-- Wire: `tunnel_account_dms.blocked` (names) becomes `blocks` (`{person,
-  blocked, at}`); the signed payload's `blockedB64u` becomes `blocksB64u`.
-  Needs the matching PekoHub type.
-### Fix: a message request names who is asking (2026-11-04, ADR-095)
-
-- Registering a runtime keeps the account's PekoHub display name (its
-  namespace when it has none) in `<runtime>/person_display_name`, and a
-  person's DM invite carries it, so the people they ask see their name, not
-  their account ID. Runtimes registered before keep showing the account ID
-  until they register again.
-
-### Feature: people DM people, with message requests and blocking (2026-11-04, ADR-095 phase 4)
-
-- Open a DM with another person by their PekoHub account:
-  `peko channel dm user:hub:<account> "hi"` (IPC `channel_open_person_dm`).
-  They get a message request on every computer of their account; until
-  they accept, their computers tell yours nothing, not even that they
-  exist. What you wrote reaches them as history when they accept.
-- `peko channel requests`, `accept <dm>`, `decline <dm>`, `block <dm or
-  account>`, `unblock <account>`, `blocked` (IPC `channel_dm_requests`,
-  `channel_dm_request_answer`, `channel_block_person`, `channel_blocked`).
-  Blocking refuses that person's requests, messages, and history requests,
-  and reaches your other computers with your DM list.
-- Every computer of both people carries the conversation: route
-  announcements (`tunnel_dm_route`) spread until each knows every other,
-  and your other computers pick the DM up from your account's DM list.
-- No peko is in a conversation between people: the file tools refuse its
-  folder, its requests, and the block list to every run, the owner's
-  included, and so does a search from a folder that contains one. `Bash`
-  still runs as you and can read them.
-- Wire: `tunnel_person_dm_invite`, `tunnel_dm_route`; `tunnel_account_dms`
-  gains `people` and `blocked`. Needs the PekoHub relay (pekohub#73).
-- `channel_person_dms` lists your DMs with people and which still wait to be
-  accepted. The desktop's People list, requests, and Blocked people are in
-  peko-desktop#132.
-
-### Feature: your DMs follow you to a new computer, with all their history (2026-11-04, ADR-095 phase 3b)
-
-- A runtime newly registered to your account asks your other computers
-  which DMs you have, opens each one it lacks (the same conversation, not
-  a new one), and catches it up from the peko's host. PekoHub relays the
-  question to your account's other runtimes and their answers back, and
-  keeps no list of who you talk to.
-- Your copy of a DM is now a full copy: catching up also fills it back to
-  the first post and keeps it, instead of only the newest page.
-- Wire: `tunnel_account_dms_request` / `tunnel_account_dms` (signed
-  `peko-account-dms-request/1`, `peko-account-dms/1`); needs the PekoHub
-  relay (pekohub#73).
-
-### Feature: your own peko is one conversation on every computer (2026-11-04, ADR-095 phase 3a)
-
-- While a runtime is registered, its person's DMs are keyed by their Hub
-  account (`user:hub:<account>`) instead of the runtime's local key
-  (`local@<runtime DID>`), the way every other runtime names them. Talking
-  to your peko on its own computer and from another computer signed in to
-  the same account is now one conversation: the other computer opens the
-  DM its host already has and catches up on it. Before, it was two.
-- The runtime moves existing DMs to the new id at boot, when the tunnel is
-  ready (registering connects it), and after unregistering (back to the
-  local key, and the person's other computers stop being routes). The log,
-  read marks, members, and bindings move; a DM already at the new id takes
-  the old one's posts; the pekos' sessions follow, compartments included.
-- The local user's registry key is unchanged (ADR-081 D3); only the address
-  a DM's pair id hashes changes (`ActorInfo::dm_key`).
-- Not kept: a forward from the old id. A peko holding the old id in memory
-  reads it as missing and finds the DM by listing.
-
-### Feature: a moved peko keeps its DMs (2026-11-04, ADR-095 phase 2)
-
-- A snapshot now carries each DM's posts (`local/dms/<pair id>.jsonl`) and,
-  in `local/channels.json`, where the DM's other members live. After
-  import, once the peko is loaded, each DM comes back at its pair id with
-  its session binding, the other member's runtime, and every post; the
-  copy then catches up with what it missed from the other side (phase 1).
-  Before, a moved peko's DMs started empty and reattached only when it
-  spoke first.
-- A peer known only on the runtime the peko left stays behind (ADR-081 D1).
-  A rotated import (`--rotate-keys`) carries no DMs.
-
-### Feature: a DM between pekos on two computers catches up from the other side (2026-11-04, ADR-095 phase 1)
-
-- A DM between a peko here and a peko on another runtime has no host: each
-  runtime keeps a full copy. A copy that missed posts now asks the other
-  copy for them, as its own peko (by signing DID), on `tunnel_ready` and
-  when the other runtime comes online. The other runtime answers only the
-  DM's other member, from the runtime recorded as its route, and only while
-  its own peko is registered and not local-only; anything else reads an
-  empty page.
-- History pages, and where a catch-up resumes, follow the time posts were
-  made, not the order a copy received them.
-- A copy a peko reads catches up forward only, so older posts never show up
-  as new in its unread digest.
-- Wire: unchanged (the ADR-091 history messages, with a `did:key`
-  requester).
-
-### Fix: files from another computer keep their names, so they preview and open (2026-11-04, ADR-094)
-
-- A channel's file store keeps each file as `files/<sha256>/<name>` instead of
-  a bare `files/<sha256>`. Without an extension the desktop showed no image
-  thumbnails and opened a received image in TextEdit (found in a live
-  desktop run). A file already held under another name is copied, not
-  fetched again; the wanted list keeps each file's name.
-
-### Feature: attachments cross runtimes through PekoHub (2026-11-04, ADR-094)
-
-- Files you send in a DM with a peko on another computer, or in a group with
-  members elsewhere, reach the other side, and a peko's `Attach` works in
-  those conversations too (it was refused). The receiving runtime pulls the
-  bytes from the sender through PekoHub in 256 KiB chunks, checks them
-  against the post's SHA-256, and applies the post once its files are there;
-  the peko's turn gets its own copies and the usual notes and media.
-- Limits when a conversation reaches another computer: 8 files, 10 MB each,
-  25 MB per message (local stays 20 MB a file). PekoHub refuses larger chunks
-  and relays at most 50 MB of chunk data a minute per runtime; it stores
-  nothing.
-- A file that cannot be fetched is kept on a wanted list and asked for again
-  when the sender is back, for up to 30 days.
-- Wire: `Attachment.sha256`; `channel_post` takes `attachments` (absolute
-  paths, local user only); new tunnel messages `tunnel_attachment_request` /
-  `tunnel_attachment_chunk` (PekoHub needs the matching relay). Channel reads
-  and `principal_log` rows name a received file's stored copy.
-- CLI: `peko send group:<slug> --attach <path>` and
-  `peko channel dm <peko> --attach <path>`.
-
-### Feature: a peko can suggest replies you send with one tap (2026-11-04, ADR-093)
-
-- A post can carry `options`: 2–4 short suggested replies (one line, at most
-  60 characters each). Clients show them while the post is the
-  conversation's latest; a tap sends the text as your own message, so it
-  means nothing more than typing it. They carry no authority — only
-  `peko approve` / desktop Approve decides an approval.
-- `Suggest` (new built-in, 25 in all) stages replies for the run's reply in
-  its conversation; `ChannelSend` takes `options` for explicit posts. Broken
-  options refuse the send; a peer runtime's post keeps its text and loses
-  broken options. Staged replies are dropped when the reply is empty or
-  withheld, or when someone else posts first.
-- Wire: `options` on `ChannelEvent::Posted`, `PrincipalLogMessage`
-  (`principal_log` / `principal_log_watch`), and `principal_sent_done`,
-  omitted when empty; the tunnel contract fixture sets it (PekoHub types
-  need `options?: string[]` on channel events).
-- `peko log` prints `↳ Ship it · Hold off` under a message that offers
-  replies; `peko send` prints the same hint on stderr after the answer.
-- The seeded `conversation` role mentions `Suggest` (new principals; existing
-  roles are kept as they are).
-
-### Fix: a transfer offer is a pending result; `peko channel dm` opens a DM with a remote peko (2026-11-03)
-
-- PekoHub makes an online peko's transfer an offer the new owner accepts on
-  PekoHub (pekohub ADR-081 D4, amended). The Hub answers the new tunnel
-  message `principal_transfer_offered`, which the dispatcher records as
-  `TransferOutcome::Offered`; IPC replies `principal_transfer_offered`, and
-  `peko transfer` prints the Hub's "Offered to @… — it moves when they
-  accept" instead of "PekoHub refused the transfer". The owner is unchanged
-  until the Hub sends `principal_owner_changed`. Audit:
-  `principal.owner_transfer_offered`.
-- `peko channel dm <@owner/name | principal:hub:<UUID> | UUID> [message]`
-  opens (or finds) your DM with a peko on another computer, the way Peko
-  desktop does (`channel_open_remote_dm`), and posts the message when given.
-  `@owner/name` is looked up on the Hub this runtime is registered with, for
-  public pekos.
-
-### Change: Windows is in MVP scope; its CI and release jobs block (2026-11-03)
-
-- `docs/MVP_GATE.md` gate 0 now puts Windows 10/11 x64 in scope. The launch
-  targets are five artifacts, and the gate 4 Windows item is open until
-  `unit-windows` and `native-windows` are green on the release commit. The
-  `peko_workflow` SDK Windows port stays post-MVP.
-- `unit-windows`, `native-windows`, the Windows release build and the
-  Windows release smoke run lose `continue-on-error`: a failure fails the
-  workflow, and no release publishes without `peko-windows-x86_64.zip`.
-- Getting Started and the user's guide list Windows and `install.ps1`.
-
-### Windows release builds (2026-11-03)
-
-- Releases include `peko-windows-x86_64.zip` (`peko.exe` and
-  `peko-daemon.exe`, linked with the static C runtime, so no Visual C++
-  redistributable is needed). Windows on Arm runs it emulated.
-- `install.ps1` installs it from PowerShell
-  (`irm .../install.ps1 | iex`): per user, into
-  `%LOCALAPPDATA%\Programs\peko\bin`, added to the user `PATH`, no
-  administrator rights. It replaces binaries that are running.
-- `peko update` works on Windows.
-- Fix: `peko update` replaced only `peko`, leaving the old `peko-daemon`
-  beside it on every platform; it now replaces both, and puts the old
-  ones back if either fails.
-- The release smoke test runs on Windows too.
-
-### Fix: Windows commands, shells, and workflows behave as on macOS (2026-11-03)
-
-- A daemon a command started (`peko create`, `peko send`, …) kept that
-  command's output open for its whole life, so a script, test, or IDE
-  reading the output never saw it end. It no longer inherits it.
-- That daemon gets a hidden console of its own: closing the terminal it
-  was started from, or a Ctrl+C there, no longer stops it, and the shells
-  and MCP servers it runs open no windows.
-- The `Bash` tool runs PowerShell without the user's profile, which ran
-  before every command (one that changed directory overrode the
-  workspace), and non-interactively, so a prompt fails instead of hanging.
-- `Workflow` finds Python 3 as `python3`, `python`, or `py -3`, skipping
-  the Microsoft Store's `python3` alias, which only offers the Store.
-- Text files check out with LF everywhere (`.gitattributes`); the tunnel
-  contract and role-template tests failed on CRLF checkouts.
-
-### Fix: on Windows the daemon serves its named pipe, not open UDP (2026-11-03, ADR-038)
-
-- The pipe never bound for a user who wasn't elevated: its permissions
-  named Administrators as owner, which only an elevated process may set
-  (error 1307). Every Windows daemon fell back to UDP on `127.0.0.1:11435`,
-  which any local process can reach. The pipe now admits the user running
-  the daemon (plus LocalSystem and Administrators), and no remote clients.
-- Once bound, the pipe answered only its first request: the CLI's
-  `DaemonClient` (every command but `daemon status`) hung after its ping.
-  A connection now serves requests until the client closes it, and the
-  client reads and writes at once.
-- The CLI read the pipe in byte mode, so packets the daemon wrote back to
-  back could arrive as one and be dropped: on release builds `peko send`
-  often failed with "Stream closed unexpectedly" after the reply printed.
-  It now reads one packet at a time, as the desktop does.
-- A second daemon refuses to start while another serves the pipe, rather
-  than starting on UDP. A client given `PEKO_DAEMON_PIPE` talks only to that
-  pipe, never to whatever answers the default pipe or UDP.
-- Desktop: needs the matching peko-desktop change, which talks to the
-  pipe; the desktop's UDP client worked only because of the first bug.
-
-### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
-
-- The daemon read the vault once at start, so a peko provisioned by the
-  CLI while it ran had no key there: `peko register` failed with
-  "Principal signing proof is invalid" until a restart. A peko's key the
-  daemon doesn't have is now read from the file.
-- Worse, any daemon write to the vault saved its older copy over the
-  file, which could drop a key the CLI had just stored. Every vault write
-  now takes in the file's current contents first.
-
-### Feature: groups get IDs, invite links, and follow you to new devices (2026-11-03, ADR-092 D4–D6)
-
-- `Channel register { channel, visibility }` (also `peko channel register
-  [--public]`, desktop Share) gives a group a number ID on PekoHub, at its
-  home and by its owner or an admin: `invite_only` (default) or `public`.
-- `Channel link { channel, days }` (`peko channel link`) makes an invite
-  link signed by the home, good for up to 30 days; `revoke` stops them all.
-- `peko channel join <link | group ID>` (desktop: Join a group) asks the
-  group's home to let you in: with a live link, or to a public group; the
-  group appears with the home's roster.
-- A runtime registered to your account joins your registered groups on
-  connecting; PekoHub keeps which accounts are in each group, and the home
-  reports it after every roster change. A group you join catches up from its
-  home at once, and your post from one device reaches your others.
-- People without a runtime read a group they are in through PekoHub
-  (`GET /v1/groups/:id/history`); the home checks membership.
-
-### Fix: a registered runtime's own person stays local when the daemon starts (2026-11-03, ADR-081 D3)
-
-- Boot-time actor reconciliation moved the local user to its Hub address
-  once the runtime was registered, so `user:local` no longer matched its
-  own membership: `peko channel peek` and the desktop's group and DM views
-  refused the owner ("requester 'user:local' is not a member"). The local
-  user now keeps its local address with the Hub account as an alias, and a
-  record an earlier boot moved is moved back.
-
-### Feature: group members read the group's history from its home (2026-11-02, ADR-092 D3)
-
-- A group's home answers the history messages (ADR-091) for its members:
-  a person by their Hub-vouched account, a peko by its signing DID from the
-  runtime that is its route. Anyone else reads an empty page.
-- `Channel history { channel, visibility }` (owner or admin, at the home):
-  `shared` (default: everything since the group began) or `joined` (only
-  what followed their joining, from the `MemberJoined` that admitted them).
-- A person's group catches up on joining and when its home comes back; a
-  peko's runtime catches up when the peko joins a group that already
-  talked.
-
-### Feature: people join groups on other computers (2026-11-02, ADR-092 D2)
-
-- A group's owner or admin invites a person by Hub account (`peko channel
-  invite <group> user:hub:<id>`, or a peko inviting its owner). The home
-  sends `tunnel_group_invitation` to the account; PekoHub delivers it to
-  every runtime registered to it, where it waits until the person answers.
-- The person joins or declines from any of their computers (the desktop's
-  group sidebar, or `peko channel invitations`, `join`, `decline`). Joining
-  creates their copy and tells the home (`tunnel_group_join`, relayed only
-  from a runtime registered to that person); the home records that runtime
-  as their route and sends the roster to everyone. Then they post and read
-  like any member, and the group's pekos wake on their posts by binding.
-- No one is added to a group without accepting: a roster for a group the
-  person never accepted is ignored.
-- `channel_person_groups` lists the groups the person joined; an account
-  change deletes them like remote DMs (ADR-091 D5).
-
-### Feature: a group has a home, an owner, and admins (2026-11-02, ADR-092 D1)
-
-- A group's home is the runtime it was created on (`meta.json` `home`);
-  there its creator is its owner, and the owner chooses admins with the
-  new `Channel admin` action (an owner decision under ADR-082 D6). Only
-  the owner or an admin adds members, and only at the home: a member
-  elsewhere is told to ask the owner.
-- Other member runtimes learn the home from the first roster snapshot's
-  signed source and accept later snapshots only from it, so a correctly
-  signed roster from any other runtime — including one reusing the same
-  `group:<slug>` id — changes nothing.
-- `Channel info` shows a group's `home`, `owner`, `admins`, and whether
-  you are its owner or an admin.
-
-### Feature: your history with a remote peko follows you (2026-11-02, ADR-091)
-
-- A conversation with a peko on another computer now comes from that
-  peko's host. A runtime registered to your account catches up when you
-  open the conversation, when its tunnel connects, and when the host comes
-  back online (`sync_history`); older pages are fetched as you scroll
-  (IPC `channel_history_older`, not stored). Two new tunnel messages,
-  `tunnel_channel_history_request` / `tunnel_channel_history`, are
-  runtime-signed and relayed by PekoHub.
-- The host serves a conversation only to the person in it: a Hub person,
-  asking from the runtime PekoHub binds to their account, for exactly
-  their DM with a peko hosted there, while they may still talk to it.
-  Everything else is an empty page. Session paths, host line numbers and
-  attachment paths are not served.
-- A phone (no runtime) reads the same history through PekoHub's proxy: a
-  proxied request with body `{"kind":"history"}`.
-- A runtime that changes hands forgets the previous person: remote DMs
-  record their account (`meta.json` `account`); registering under another
-  account, or unregistering, deletes them (their hosts keep the record),
-  and every read refuses another account's DM. Unregistering refuses while
-  messages are undelivered: `peko runtime unregister --discard-unsent`.
-### Security: conversations, keys and the shell are the owner's (2026-11-02, ADR-078 D6)
-
-- A run acting for a trusted person could `Read`/`Grep` the runtime's
-  conversation records — other people's DMs with the peko, every session
-  log — and run `Bash`, held back only by the AI policy reviewer. Now the
-  floor refuses, before review:
-  - `Bash` to every non-owner run (it is gone from their catalog);
-  - non-owner file-tool access to the runtime's own state: the Peko home
-    outside the peko's workspace (channel logs, runtime identity, vault,
-    settings) and any `principals/<name>/local/` tree (sessions, ledger,
-    plans, memory index), wherever the data directory is
-    (`security::floor::is_runtime_state`);
-  - a non-owner `Glob`/`Grep` rooted above that state
-    (`search_root_refusal`). Non-owner relative paths now anchor in the
-    workspace and `Glob` patterns may not climb out, as for untrusted runs.
-
-### Fix: cross-runtime messages arrive as soon as the other computer is back (2026-11-02)
-
-- An envelope to an offline runtime waited in the outbox for its next
-  backoff tick, up to an hour after that runtime reconnected. PekoHub now
-  remembers which runtime waits on which (ids only, never the envelope)
-  and sends `peer_runtime_online { runtimeId }` when the recipient
-  connects; the runtime resends everything pending for it at once
-  (`TunnelChannelPort::on_peer_runtime_online`,
-  `ChannelOutbox::pending_for`). Delivery still needs both computers
-  online at some moment (ADR-090 D6).
-
-### Feature: pekos send files with `Attach` (2026-11-02, ADR-088 D7)
-
-- Attachments were inbound only. The new `Attach` built-in (24th) takes
-  `paths` (1–8) and an optional caption `text`, copies each file into the
-  workspace's `attachments/` folder under the inbound limits (20 MB each),
-  and posts them in the run's conversation as the peko's own message.
-  `peko log`, `principal_log`, and the desktop show them like the user's.
-- Each path passes the same trust floor as `Read`; the tool refuses runs
-  outside a conversation and conversations with anyone on the Hub or
-  another runtime (files do not cross runtimes yet).
-
-### Feature: the local user talks to a peko on another runtime over channels (2026-11-01, ADR-090)
-
-- New IPC `channel_open_remote_dm { hub_id, token? }` →
-  `channel_remote_dm_opened { channel, peer, hub_id, name, created }`
-  (local callers only). The runtime resolves the peko through PekoHub —
-  with `token`, the desktop's PekoHub access token, for a private peko;
-  it is used for that lookup and never stored — opens a DM between its
-  local user and the peko, and invites the peko's runtime over the
-  tunnel. Post and read with `channel_post` / `channel_peek` /
-  `channel_events_watch`. Calling it again returns the same DM, also
-  when PekoHub cannot be reached; if the peko moved, its new runtime is
-  invited. The runtime must be registered (`peko runtime register`).
-- On the peko's runtime, the DM gets a session of its own (its own
-  compartment), and the person's posts start turns there like any
-  message to the peko: as its owner if the account owns it, trusted if
-  the owner granted that, else untrusted; a private peko needs the
-  owner's `Chat` grant. The answers come back over the tunnel. Either
-  runtime may be offline: posts wait in the sender's outbox and are
-  delivered when it is back. A conversation the account already had
-  through PekoHub's chat continues in the same DM.
-- The tunnel accepts one unsigned invite: a Hub user's two-member DM.
-  PekoHub must relay `user:hub:<id>` envelopes only from the runtime
-  registered to that account (a PekoHub change).
-- Fixed: every `channel_*` IPC request from the local user re-registered
-  it without its Hub account, so a registered runtime's local user lost
-  its PekoHub identity (and its posts to remote channels failed).
-
-### Change: PekoHub's API on api.pekohub.ai; sign in with a code; `peko seed` (2026-11-01)
-
-- The official hub's API is `api.pekohub.ai` (`pekohub.ai` is the website).
-  `peko runtime register` defaults to it, and a registration saved against
-  `pekohub.org` or `pekohub.ai` is read as `api.pekohub.ai`. Re-register only
-  if the daemon logs a refused tunnel.
-- `peko runtime register` and `peko runtime unregister` no longer need an API
-  key: without `--api-key` they print a code and a link
-  (`pekohub.ai/device`), wait for you to approve it there, and continue
-  (OAuth device grant, pekohub ADR-007). `--api-key` / `PEKOHUB_API_KEY`
-  still work for scripts.
-- `peko seed <NAME> [-o <PATH>]` exports a peko's seed: its
-  `principal.toml` without `id`, `did`, `actor_key`, `owner`,
-  `permissions`, `boot_state`, `status`, `exposure`, `children`, `quota`,
-  or `routing.root_prompt`. PekoHub publishes it (pekohub ADR-008) and
-  `peko create <NAME> -s <FILE>` grows it. Reads the file directly; the
-  daemon need not run. Core: `principal::seed::seed_from_config`.
-- Growing a peko from a seed resets its `exposure` and `status` too (with
-  its identity, owner and grants): a seed that said `exposure = "public"`
-  no longer publishes every peko grown from it. One rule for the CLI and
-  the IPC (`principal::seed::{parse_seed, Seed::grown}`).
-- IPC: `principal_create` takes an optional `seed` (the TOML text), so the
-  desktop can grow a peko from a seed downloaded from PekoHub; `model_id`
-  and `description` override the seed's. New `runtime_register { hub,
-  token }` → `runtime_registered { hub, runtime_did, account }` and
-  `runtime_unregister { token }` let the desktop register its own runtime
-  with the token it signed in with; the daemon connects the tunnel at
-  once. Local callers only.
-
-### Change: a message moves a running tool to the background (2026-10-31)
-
-- When someone in the conversation (a person or a peer peko) writes while
-  a tool call runs, the call gets 2 more seconds, then moves to the
-  background with a receipt (`reason: "message"`). The run reads the
-  message at once and answers it; the tool's result arrives later as a
-  completion, like a call detached on the 10-minute wait. Runtime notes
-  (completions, wake markers) do not do this. The model stops nothing:
-  whether to wait, cancel (`Async stop`), or carry on is its call.
-- Fixed: a detached `Bash` or `Workflow` call was killed the moment it
-  detached. Detaching drops the run's side of the abort channel, and both
-  tools read a closed channel as a stop. Now only a real stop ends them.
-
-### Change: approvals are decided with buttons and CLI verbs, not messages (2026-10-31, ADR-078 amended)
-
-- The owner decides a waiting request outside any conversation: the
-  desktop's Approve / Deny, or `peko approvals <peko>`,
-  `peko approve <peko> <id> [--always]`, and `peko deny <peko> <id>`
-  (`--json` on each). New IPC `approval_list` / `approval_decide`, allowed
-  only to a caller with the owner's `ManageSettings` permission.
-- The typed `approve <id>` / `deny <id>` / `approvals` messages are gone:
-  the runtime no longer reads any owner message before the agent turn, so
-  such a message is now ordinary conversation. The owner's notice names
-  the app and the CLI verbs instead.
-
-### Feature: runs recover from disruptions on their own (2026-10-31, ADR-089 steps 3–5)
-
-- **Parking.** A conversation turn that meets a disruption — the peko's
-  spending limit, the provider's quota, the provider unreachable — parks:
-  the session keeps its saved work and `<local>/parked.json` records why
-  and when it continues. The daemon's continuation scheduler runs it on at
-  its next attempt from the saved history (a turn with an empty message,
-  which the loop now reads as "continue"), posts the reply to the
-  conversation, and unparks it. Waits grow per lane (model): 30 s doubling
-  to 1 h while unreachable, 1 min doubling to 24 h for the provider's
-  quota, until the reset for the peko's limit (or at once when the owner
-  lifts it). One session probes a down lane at a time; when it goes
-  through, the others continue.
-- **Messages to a waiting peko** are saved into the session and answered
-  when it continues; the sender is told so (`[queued] … is waiting …`). A
-  message may bring a provider wait forward, once a minute. `peko stop`
-  abandons a parked run.
-- **Status.** `principal_log`'s `run_failure` carries `next_attempt_at`
-  while parked; `peko log` prints "waiting since …; next try …".
-- **Cron.** A model fire while the peko's lane is down or its limit is
-  reached is deferred to the next attempt (`last_status: deferred`, no run,
-  no failure counted); a fire whose turn meets a disruption mid-run is
-  `deferred`, not `failed`.
-- **Delegated runs** (`Agent`, cron, wakes) wait in place on a disruption
-  and continue from their saved history; the parent's call returns its
-  long-run receipt and the result arrives as a completion.
-
-### Feature: a `worker` role for delegated work (2026-10-31)
-
-Every peko is now seeded with a third default role, `worker`
-(`roles/worker.md`, beside `root` and `conversation`): one delegated task,
-done with tools, checked, and reported back to the run that handed it
-over — no chat, no work beyond the task. The `Agent` tool's `role` is now
-optional; a call that names none runs `worker`. Before, every call had to
-name a role, and the default roles were the trunk's supervisor and the
-conversation role, neither written for a delegated task. Seeding is
-create-if-missing at provision and on every boot, so existing pekos gain
-`worker` on their next start and an edited one is kept. The `root` and
-`conversation` role seeds mention it (existing copies are not rewritten).
-
-### Fix: failures stay out of the conversation; runs outlive their client; more errors retried (2026-10-31, ADR-089 steps 1–2)
-
-- **Failures are not posted.** A failed DM run used to post `⚠ Run failed:
-  …` into the DM channel — the conversation record, which the next turn
-  reads. Nothing is posted now; the conversation's last failure rides
-  `principal_log` as `run_failure: {at, kind, message}` (cleared by the
-  next successful run) and `peko log` prints it as a status line.
-- **Runs outlive their client.** A client whose stream drops mid-run no
-  longer aborts the peko's turn (nor posts `connection lost mid-run`): the
-  run finishes and its reply lands in the DM channel. Stopping is
-  `peko stop`.
-- **Errors sorted into disruptions.** `RetryClassification::disruption()`
-  names the provider's quota or the provider being unreachable (ADR-089
-  D1). Network errors that fell through to "invalid request" and failed
-  the turn at once — DNS failures, `error sending request`, a connection
-  closed mid-reply — are retried in the turn now, as is a provider's
-  `server_is_overloaded` / `slow_down`. A 402/403 about quota, plan, or
-  billing (and a 429 about plan or billing) is the provider's quota.
-
-### Fix: the official hub is pekohub.ai; the call that crosses a budget stands (2026-10-31)
-
-- **pekohub.ai.** `peko runtime register` and the public hub URL default to
-  `https://pekohub.ai`. `pekohub.org` now redirects there, and a tunnel can't
-  follow a redirect, so a stored registration on the old name is read as the
-  new one (`credential::official_hub_url`) — tunnel and bridge-token issuer
-  both.
-- **Budgets.** A model call that crosses a limit is already made and paid for:
-  it is charged and its answer kept, instead of failing its turn after the
-  fact. The next call is refused before it is made, so spending stops there.
-  `ModelCall` and the policy reviewer now refuse before calling when the
-  principal is over a limit; before, an exhausted principal's `ModelCall`s
-  kept making paid calls that each failed afterwards.
-
-### Feature: tunnel status names the hub (2026-10-31)
-
-`tunnel_status` (IPC) answers with `hub_url`, the origin of the hub this
-runtime is registered with (`wss://pekohub.ai/v1/tunnel` →
-`https://pekohub.ai`; absent when unregistered). `peko tunnel status`
-prints it, and its `--json` carries it. The desktop builds a public
-peko's share link from it (with the owner's handle from the hub), and
-sends `tunnel_status` now, so the desktop contract fixture lists it.
-
-### Feature: a registered peko's avatar reaches PekoHub; refusals in plain words (2026-10-31)
-
-The tunnel's `instance_announce` now carries the peko's avatar
-(`identity.avatar`, an emoji or short monogram; `null` when it has none),
-so PekoHub serves it with the public profile and remote clients show the
-same face its owner picked. Changing the avatar of a registered peko
-(`principal_update`) re-announces it. A hub chat the peko's permissions
-deny is answered "<peko> doesn't accept chats from you." instead of the
-permission check's text with raw actor ids; the detail stays in the log.
-
-### Fix: remote refusals show as errors, not peko replies (2026-10-30)
-
-A refused hub request (no valid bridge token, no chat permission, unknown
-peko, empty message) went back as reply text, so web and desktop chat
-showed "Forbidden: …" as if the peko had said it. The tunnel dispatcher
-now refuses with a `proxied_response` carrying an HTTP status and the
-reason (400 / 403 / 404 / 500); PekoHub ends the chat stream with an
-`event: error` frame. A turn denied by the peko's permissions is a 403
-with the reason, no longer a 500 "Execution failed: permission denied:
-…". Once reply text has streamed, a failure still follows as text and
-ends the stream. An older hub writes the status body as text, as before.
-
-### Fix: registered pekos stay online at PekoHub (2026-10-30)
-
-The Hub marks an instance offline after 90 s without an
-`instance_heartbeat`, and public chat to an offline peko answers 503. The
-runtime's heartbeat task (`TunnelDispatcher::spawn_heartbeat_task`) was
-never started, so every registered peko went offline about 90 s after it
-announced and remote chat failed until the next reconnect. `TunnelReady`
-now starts it for the connection (the Hub's interval, capped at 60 s;
-30 s when none) after announcing, and `Disconnect` stops it.
-
-### Feature: a spending budget per peko (2026-10-30)
-
-`peko quota set <peko> --budget <USD>` sets the spend limit per cycle
-(`--no-budget` removes it), and `peko quota status` shows the cycle's
-spend against it. Cost is counted for models with a price
-(`spec.pricing`); a run stops when the cycle's spend reaches the budget.
-The desktop's usage panel reads and sets these through `quota_get` /
-`quota_set` (now in the desktop contract fixture).
-
-Fixes found making it work end to end:
-
-- **Over a budget, runs retried and kept paying.** The budget error's text
-  (`$0.0500`) matched the retry classifier's "500" and was retried as an
-  HTTP 500, charging again each time. Quota errors now ride the stream
-  typed (`peko_quota::QuotaError`) and the loop treats them as terminal;
-  the metered provider also refuses a call up front when a meter is
-  already exhausted, so an over-budget peko makes no further calls.
-- **A per-message model ran on the peko's own provider.** `--model <id>`
-  (and the desktop's picker, and the Agent tool's `model`) sent the
-  catalog id as the wire model name with the peko's endpoint, key, and
-  spec ("Unsupported model …", no price). `SubagentExecutor` now resolves
-  a picked model through the catalog (`with_llm_resolver`).
-- **IPC config changes reverted edits to `principal.toml`.** `quota set`
-  (and every `update_config`) wrote the in-memory config, putting back
-  values edited on disk since it was loaded; it now reloads a changed file
-  first.
-
-### Fix: a peko's file tools work in its own folder (2026-10-30)
-
-Without a workspace on the call, the file tools and Bash resolved relative
-paths in one runtime-wide `<data>/workspaces` directory shared by every
-principal, so a peko's `Glob roles/*.md` found nothing and pekos could
-overwrite each other's relative files. The dispatcher now uses the
-calling principal's workspace for relative paths, the Glob/Grep search
-root, and Bash's working directory (untrusted runs were already confined
-there). `~/…` paths expand to the home directory. The runtime prompt no
-longer warns that the default directory can differ.
-`peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
-printed as `2026-10-30 T04:06:44.511473`).
-
-### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
-
-An agent can look at an image, listen to audio, or watch video whenever it
-wants, not only when the file arrives attached to a message (ADR-088 D6).
-`Read` on a media file returns a line describing it and a `media`
-reference instead of base64 text; the engine attaches the file to that
-tool result when the run's model takes that kind, else a note. Only the
-built-in `Read` can point the engine at a file. Anthropic `tool_result`
-content now carries images; on the OpenAI protocols a turn's tool media
-follows its tool outputs as one user message. Kinds, limits, and the
-"cannot take" note live in `peko_message::media`; loading in
-`peko_engine::media`. `peko log` lists each message's attachments.
-
-### Fix: parallel tool results and streamed usage on OpenAI-format endpoints (2026-10-30)
-
-History repair pairs an assistant turn's parallel tool calls with one tool
-message holding every result. The Chat Completions adapter sent that as a
-single `tool` message with a null `tool_call_id`, and the Responses
-adapter as one `function_call_output` with an empty `call_id`, so any
-turn replaying parallel calls failed (MiMo: "`tool_call_id` is not set").
-Both now send one output per call id. Streamed turns on Chat Completions
-also reported 0 tokens: usage arrives in its own chunk after the finish,
-and the stream loop stopped reading at the finish's `Done`. The adapter
-now holds the finish until the usage chunk, `[DONE]`, or the end of the
-stream (`ApiAdapter::end_of_stream`).
-
-### Feature: attach files to a message — images, audio, and video reach models that take them (2026-10-30)
-
-You can hand a peko a screenshot, a voice memo, a clip, a PDF, or a
-spreadsheet (ADR-088). `principal_send` / `principal_send_stream` take
-`attachments` (absolute paths, local user only, at most 8 files of 20 MB
-each), and `peko send` takes `--attach <path>` (repeatable). The engine
-copies each file into the peko's workspace under `attachments/<date>/`,
-records it on the DM post, and adds a note line per file to the turn.
-Images, audio, and video also reach the model as content blocks when its
-spec declares `image_input` / `audio_input` / `video_input`; otherwise the
-note says it cannot take them. `peko-message` gains `ContentBlock::Audio`
-and `ContentBlock::Video`; `ModelSpec` gains `video_input` (shown by
-`peko model show` / `compare` and `ModelList`); IPC `model_update`
-takes `spec`, so a client can say which inputs a model takes; the spec
-gate checks audio and video. Chat Completions sends `input_audio` and `video_url`
-parts (verified with MiMo-V2.6-Flash); Anthropic Messages and OpenAI
-Responses send a text placeholder. `peko log` and `principal_log` rows
-carry the attachments with absolute paths. The loop's rich-input entry
-now neutralizes runtime tags like the text entry, and the mock
-resolver's providers carry their catalog spec.
-
-### Feature: a person can leave a group (2026-10-29)
-
-`channel_leave` removed only a named peko, so in peko-desktop "Leave"
-took a peko out of the group and you stayed. Without `principal_name`
-it now removes the caller and answers `channel_member_left { channel,
-member }`; with one it works as before (`channel_left`, operator only).
-`ChannelPort::leave_actor` removes any member, a person or a principal
-(whose binding goes with it), and the tunnel tells remote members. A DM
-still cannot be left.
-
-### Fix: pekos created from the desktop no longer read "The <name> Principal" (2026-10-28)
-
-IPC `principal_create` without a description stamped `"The <name>
-Principal"`, so every peko made in peko-desktop showed that runtime
-jargon as its subtitle and never wrote its own. A missing or blank
-description now stays empty, as `peko create` leaves it, and the genesis
-turn has the peko adopt its own self-description.
-
-### Feature: conversations run a conversation role; the root role supervises (2026-10-28)
-
-Every DM and group turn ran the principal's root role — the same file
-that tells the trunk how to supervise — so a peko told people it ran "as
-root", and tuning one job retuned the other. ADR-087 separates them:
-
-- A new seeded role, `roles/conversation.md`, is what conversations run by
-  default. It is stamped create-if-missing at provision and on every boot,
-  so existing pekos pick it up on their next daemon start.
-- A channel binding can name its own role (`meta.json`
-  `bindings[principal].role`). The principal sets it with `Channel` action
-  `role` (owner decision: refused to untrusted runs, owner approval for
-  trusted ones) and reads it in `Channel info`. Roles stay internal: no
-  IPC or client surface.
-  Resolution per turn: binding role → `routing.peer_agent` →
-  `conversation` → `root`.
-- The seeded root role now covers supervision only (existing `root.md`
-  files are untouched).
-- The prompt reads a run's role, not its agent name: `AgentConfig.role`
-  (conversation turns, and `Agent` spawns with a `role`, which used to
-  render as `root`) drives `{{role_name}}` and the `kb/roles/<role>.md`
-  note. Agent names and DIDs are unchanged.
-- The genesis brief puts voice, style, and shared rules in
-  `[identity]`/`[intent]` and `kb/CONVENTIONS.md`, and describes roles as
-  jobs.
-
-### Feature: a peko has an avatar (2026-10-28)
-
-`principal.toml` always had `[identity] avatar`, but nothing set or read
-it. `principal_update { avatar }` now sets it — an emoji or a short
-monogram, at most 32 bytes, never an image URL (`""` clears it) — and
-`principal_list` / `principal_get` return it, so peko-desktop can draw
-each peko with its own face. See `DATA_MODEL.md` "Principal avatar".
-
-### Fix: OpenAI-format streams keep a tool call sent in one chunk (2026-10-27)
-
-Some OpenAI-compatible servers (Ollama, for one) stream a tool call whole —
-id, name, and arguments in one chunk. The parser started the call, threw
-away the completed result, and the finish chunk then cleared it: the run
-ended with no tool call and an empty reply. A chunk with several parts lost
-all but the first the same way — usage beside the finish dropped the
-finish, text beside a call dropped the call. The parser now turns each
-chunk into all of its events, in order (`ApiAdapter::take_pending_events`
-hands the stream loop the ones beyond the first). At the finish, a call
-still buffered with no arguments completes as `{}` (a tool without
-parameters); one whose arguments are cut off is dropped, not run.
-
-### Feature: a streaming send shows the run's tool calls and thinking (2026-10-27)
-
-`principal_send_stream` sent only text chunks and iteration markers; the
-engine's tool and thinking events were dropped before the wire, so a client
-could not show what a peko was doing. Three packets carry them:
-`principal_sent_tool_start`, `principal_sent_tool_end`, and
-`principal_sent_thinking`. The owner gets each call's input and output,
-redacted by the tool ledger's redactor and capped at 1 KiB, and the
-thinking; anyone else gets tool names and status only. `run_summary`'s
-`tool_errors` are now redacted too. Shapes are in `DATA_MODEL.md` §13⅝ and
-pinned for peko-desktop by `ipc/fixtures/desktop_stream_responses.json`.
-
-### Fix: OpenAI-format streams carry reasoning inside the delta (2026-10-27)
-
-DeepSeek and Moonshot/Kimi stream reasoning as
-`choices[0].delta.reasoning_content`. The adapter read reasoning only
-beside the delta (on the choice), so their thinking never reached the
-engine. Both places are read now, the delta first.
-
-### Feature: IPC reads and sets a peko's wake policy in a group (2026-10-27)
-
-The desktop could not show whether a channel is a DM or a group, or let
-the owner choose how each of their pekos wakes in a group: the policy
-(`human` / `mention` / `off`, ADR-082) was reachable only through the
-principal-facing `Channel` tool. Two IPC requests add it:
-`channel_info { channel }` answers the channel's kind, name, members, and
-each hosted member peko's wake policy (members only, like `channel_peek`);
-`channel_set_wake { channel, principal_name, wake }` sets one (the peko's
-owner, groups only, the peko a member). Shapes are in `DATA_MODEL.md`
-§5¾.2. Both are in the desktop contract fixture
-(`ipc/fixtures/desktop_requests.json`).
-
-### Fix: a reminder arrives once, as the reminder (2026-10-26)
-
-A reminder set in conversation showed up in `peko log` like this:
-
-```
-my-peko: 📨 [did:key:z6Mk…] 💧 Hydration check, Sam! Time to drink some water.
-my-peko: Water reminder delivered to Sam. One-shot job fired successfully; nothing further to track.
-```
-
-- **The raw key.** A `ChannelSend` note to a person was labelled with the
-  agent's id when the model gave no label, and that id is a DID. The person
-  now sees the message alone, or a label that means something (an explicit
-  label, a readable agent name, or the runtime's `via …` attribution). The
-  copy in the conversation's session keeps `📨 [agent]`, so the agent there
-  knows the note didn't come from the person. `PeerMessenger::deliver_note`
-  takes an optional `display` text for the DM post.
-- **The bookkeeping.** A message job fires a turn in the conversation that
-  created it, and that turn's reply is posted to the conversation. The turn
-  wasn't told so: it sent the reminder with `ChannelSend`, then replied with
-  a report on the job. When a job fires in a conversation, its message is
-  now framed: the reply is posted as written, so it should be only what the
-  people there should read, with no second `ChannelSend` and no job status.
-  Verified with MiMo v2.6 Flash: each reminder arrived once, as the
-  reminder.
-
-### Fix: `install.sh` creates a missing install directory (2026-10-26)
-
-With `--install-dir ~/.local/bin` (as `GETTING_STARTED.md` documents) on an
-account where that directory didn't exist yet, `install.sh` asked for `sudo`
-and then failed to move the binaries into the missing directory. Nothing was
-installed. The default `/usr/local/bin` can be missing as well, for example
-on a fresh Apple silicon Mac. The installer now creates the directory, using
-`sudo` only when the user can't. The release smoke job no longer creates the
-directory itself, so it covers this path. Found while dry-running the gate 5
-field-test kit.
-
-## [0.1.0] - unreleased
-
-> **Draft (2026-10-25).** The first public release. The version and date
-> are set when the release is tagged. Release candidates `v0.1.0-rc.1` to
-> `v0.1.0-rc.4` were cut from this line. This section folds everything
+## [0.1.0] - 2026-11-11
+
+> The first public release, and the start of the `0.1.x` preview line: a
+> patch release breaks nothing a client depends on, and a breaking change
+> bumps the minor (ADR-102). Release candidates `v0.1.0-rc.1` to
+> `v0.1.0-rc.6` were cut from this line. This section folds everything
 > since the untagged pre-release builds of 2026-03 to 2026-05 (under
 > *Pre-release history* below); the entry-by-entry log follows the summary.
 
@@ -1557,15 +77,37 @@ migration path unless one is stated.
   (sprint 9), universal tools and the `peko-tool` Python SDK (ADR-062),
   the extension capability gate and registry client (ADR-066), session
   chapters (round 7) and the session archive flag.
-- **Configuration.** Only `~/.peko/peko.toml` (`[provider.retry]`) and
+- **Configuration.** Only `~/.peko/runtime.toml` (`[provider.retry]`) and
   `~/.peko/config.toml` (`[compaction]`) are read; see
   `config.example.toml`.
+- **Names on disk say peko.** A peko's definition is `peko.toml` (was
+  `principal.toml`), the runtime's settings are `runtime.toml` (was
+  `peko.toml`), and each peko's folders are under `pekos/` (was
+  `principals/`). All three are moved in place on first use, and older
+  `.peko` snapshots still import. Addresses are shown as `peko:local:<id>`
+  and `peko:hub:<id>`; `principal:` is still accepted and is what goes over
+  the wire.
+- **Approvals.** A waiting request is decided with the desktop's buttons or
+  `peko approve` / `peko deny`. The typed `approve <id>` / `deny <id>`
+  messages are gone: such a message is now ordinary conversation (ADR-078
+  amended).
+- **The owner's own.** Only runs acting for the owner get `Bash` and reach
+  the runtime's own state (conversation logs, sessions, keys, settings)
+  with the file tools; a trusted person's run no longer does (ADR-078 D6).
+  Another peko's message never gets work done as the owner (ADR-096).
+- **PekoHub.** The official hub's API is `api.pekohub.ai`; a saved
+  registration against the old hosts is read as the new one. Signing in is
+  by code and link (`peko auth login`, `peko runtime register`);
+  `--api-key` still works for scripts.
+- **Groups.** Every member reads the whole group; the `joined` history
+  visibility is retired (ADR-101).
+- **Windows.** The daemon serves a named pipe, not UDP (ADR-038).
 
 ### Highlights
 
 - **Install and run.** `install.sh` installs release archives for macOS
-  and Linux (x86_64 and arm64). Each release is smoke-tested on all four
-  platforms.
+  and Linux (x86_64 and arm64), and `install.ps1` for Windows 10 and 11
+  (x64). Each release is smoke-tested on all five platforms.
 - **Wire-format adapters verified against a real API.** Anthropic
   Messages, OpenAI Chat Completions and OpenAI Responses all pass the
   real-LLM tier.
@@ -1578,6 +120,26 @@ migration path unless one is stated.
   forward (ADR-086).
 - **Channels.** Direct and group channels, an explicit kind, bindings and
   wake policy, and groups that pekos manage themselves (ADR-049, ADR-082).
+- **Conversations across computers.** Your DMs and groups follow you to
+  every computer you sign in on, with their history. People DM people,
+  with message requests and blocking (ADR-090, ADR-091, ADR-095). Groups
+  have a home, an owner, invite links and members on other computers
+  (ADR-092). Pekos find each other by `@owner/name` and join groups
+  themselves (ADR-098).
+- **Working together in a group.** A group keeps a board of who is doing
+  what, and every turn reads it (ADR-101). Pekos answer each other where
+  the message arrived, acting for whoever wrote it (ADR-096). Asked for
+  real work in a shared group, your peko hands you a brief and runs as you
+  once you approve it (ADR-100).
+- **Approvals from anywhere.** A peko's waiting requests are decided with
+  buttons or `peko approve` / `peko deny`, from any of the owner's
+  computers (ADR-099).
+- **Attachments.** Files are sent by path and kept in the peko's
+  workspace; images, audio and video reach models that take them, and
+  files cross runtimes through PekoHub (ADR-088, ADR-094).
+- **Runs that recover.** A run parks on a disruption and continues by
+  itself; failures stay out of the conversation (ADR-089).
+- **A spending budget per peko**, with spend that counts the prompt cache.
 - **Accountability.** A hash-chained per-peko tool ledger (ADR-079), and
   `POLICY.md` with owner approvals (ADR-078).
 - **Agent-authored workflows** (`Workflow`, `ModelCall`; ADR-061) and
@@ -1596,6 +158,1487 @@ There is no automatic upgrade:
 
 The entries below are in reverse chronological order, as they were
 recorded.
+
+#### Releases: plain version numbers, and a release is a version bump (ADR-102, 2026-11-11)
+
+- No more release candidates as the normal path. Releases are `0.1.0`,
+  `0.1.1`, `0.1.2`, so the installer's default and `peko update` find them.
+- A patch release breaks nothing a client depends on (IPC requests,
+  on-disk formats, tunnel wire types). A breaking change bumps the minor.
+- `python3 scripts/bump_version.py patch` sets the version in every
+  manifest and `Cargo.lock` and opens the release's section here. Merged
+  to `master`, it is the release: `release.yml` tags `v<version>`, builds
+  from the tag, publishes and smoke-tests. Running the workflow by hand
+  releases the tree's version if it is unreleased. The old
+  type-a-version manual release is gone.
+- CI checks that every manifest carries the same version.
+- Release notes keep their inline code. The words in backticks under
+  "Assets" were run as shell commands and came out blank (rc.6's notes read
+  "both binaries:  (CLI) and").
+- Peko Desktop no longer shares the runtime's tag. It names the runtime it
+  bundles and needs, and accepts any later one in the same minor line.
+
+#### Fix: what an agent's first run of the command line turned up (2026-11-11)
+
+A coding agent was asked to install `v0.1.0-rc.6` and use it, with goals
+and no steps (peko-benchmark `reports/field-test/2026-11-11-agent-trial.md`).
+It got everything done; four things got in its way.
+
+- **A peko asked to learn a skill writes one.** Asked to "remember this
+  rule as a skill", the peko saved a memory note and said "Noted"; no skill
+  file was made. The `Skill` tool's description now says that a skill asked
+  for is written to `skills/<name>/SKILL.md`, and that a memory note is not
+  a skill.
+- **`peko --version` names the release.** A release candidate printed
+  `0.1.0`, so nothing said which candidate was installed. The release
+  workflow passes the tag at build time (`PEKO_RELEASE_VERSION`), and
+  `peko --version`, `peko version` and `peko system info` print
+  `0.1.0-rc.6`. `peko update` compares that, so a candidate is no longer
+  taken for the final version. `peko version --json` keeps `version` (the
+  crate version) and adds `release`. The daemon's `PEKO_VERSION=` line, IPC
+  status and snapshot manifests still carry the crate version; a source
+  build prints it too.
+- **A release's notes install that release.** The one-line installer in
+  the notes had no `--version`, and the installer's default never picks a
+  prerelease. The notes now pin the version, for `install.sh` and
+  `install.ps1`.
+- **Starting the daemon keeps the previous log.** `daemon.log` was
+  truncated on every start, so restarting after a crash erased what the
+  crash had logged. The last run's file is now kept as `daemon.log.1`.
+
+#### Fix: two pekos approved for the same work don't both do it (2026-11-09)
+
+- In a collaboration benchmark run, juno and otto were asked for the same
+  fix, added an item each, and agreed that the first approved would do it.
+  Both owners approved in the same second, and both approved tasks pushed
+  a branch: an approved task runs from its brief alone.
+- `Agent` `as_owner` takes `item`, the board item the task serves; without
+  one it is the one item the peko is working on. Before an approved task
+  runs, the runtime checks the group's board (`Board::covered`): it
+  doesn't run when that work is done or someone else holds it, when a
+  similar item is done or under way elsewhere, or when someone else's
+  similar item also waits on approval and was added first. A task that
+  runs marks its item `doing`; one that doesn't notes why on its item and
+  tells the owner and the peko (ADR-100 D6).
+#### Fix: a first message to a sleeping peko arrives as soon as it wakes (2026-11-09)
+
+- A DM opened from a computer while the peko's computer slept queues an
+  invite and the post. On waking, both went out together. The peko's
+  runtime handles each message in its own task, so the post could arrive
+  before the invite had made its copy of the DM. The post then went
+  unanswered and waited out its 30–60 s backoff (the collaboration
+  benchmark: delivered 69 s after waking).
+- When a DM invite is confirmed, the outbox now sends that channel's
+  waiting posts to the same runtime at once. The receiver confirms an
+  invite only after its copy exists, so the resend lands. The dropped post
+  is now logged at debug level.
+
+#### Fix: the CLI finds your own private peko by `@owner/name` (2026-11-09)
+
+- `peko channel dm @maya/juno` looked the name up on PekoHub's public
+  profile, so it found only public pekos, and only while they were online.
+  The CLI now passes the handle to the daemon. The daemon resolves it with
+  `GET /v1/principals/by-handle` as the runtime's person: with the
+  person's PekoHub token when given, else the runtime's `PekoRuntime`
+  proof. So you reach public pekos and your own private ones by name, even
+  while asleep. Anyone else's private peko is still named by its PekoHub ID.
+- IPC `channel_open_remote_dm` takes `@owner/name` in `hub_id`; the answer's
+  `hub_id` is always the resolved ID.
+
+#### Fix: existing pekos get the current conversation role (2026-11-09)
+
+- A seeded role that was never edited is replaced on boot with the current
+  seed, matched by its hash against every earlier seed. Four
+  `conversation` seeds (the board, #607, #608, and one before) were never
+  recorded, so a peko created since the board kept its first conversation
+  role and missed #610's `NO_REPLY` guidance. They are recorded now.
+- Each current seed's hash is pinned in `genesis.rs`. Changing a seed fails
+  `seed_hashes_record_every_change` until the old hash is added to its
+  `PREVIOUS_*_SEEDS`. An edited role is still never touched.
+
+#### Fix: pekos stay quiet when nothing needs them (2026-11-09)
+
+- In every run of the collaboration benchmark, a peko posted that another
+  peko's post "needs no answer from me", and after each hand-up to its owner
+  posted "I've sent Maya a request" although its board item already said so.
+  Pekos had no way to post nothing other than an empty reply.
+- A reply of just `NO_REPLY` now posts nothing (on a last line of its own, it
+  is dropped and the rest is posted). The `conversation` role says when to
+  use it: in a group when nothing is asked of you, with another peko when its
+  post needs no answer, and after a hand-up the board item shows. A person who
+  writes to you directly always gets an answer. The approval-pending tool
+  result says the same.
+- In a group, a short reply with no question that only says it needs no
+  answer or has nothing to add posts nothing either
+  (`principal::quiet_reply`).
+- Existing principals keep their `roles/conversation.md`; the role is seeded
+  only when missing.
+
+#### Fix: the CLI opens a DM with your own private peko on another computer (2026-11-09)
+
+- `peko channel dm peko:hub:<id>` from a second computer refused your own
+  private peko ("PekoHub does not let you reach this peko"): the CLI has no
+  PekoHub token of its own (device sign-in uses one only to register the
+  runtime), and the Hub resolves a private peko only for a signed-in
+  person. A lookup without a token is now signed by the runtime itself
+  (`PekoRuntime` directory proof, pekohub); the Hub answers it as it would
+  the account the runtime is registered to, so it reaches what that person
+  reaches when signed in, no more. A token, when the desktop sends one,
+  still wins. Found by the peko-benchmark collaboration benchmark.
+
+#### Feature: a computer stays awake while its peko works; pekos keep the board current (2026-11-09)
+
+- While a peko works (a live run, or an executing background task) the
+  daemon holds off idle sleep, and lets go a minute after the last piece
+  ends: `caffeinate -i -w <pid>` on macOS, `SetThreadExecutionState` on
+  Windows, `systemd-inhibit` on Linux where present. Work you ask for from
+  another computer no longer stops when this one dozes off. Closing a
+  laptop's lid still sleeps it. On by default; `power.keep_awake = false`
+  in `config.toml` (or the desktop's setting) turns it off, read each time
+  work starts.
+- A run that files an owner approval is told the owner already sees the
+  request: it marks the board item blocked on it instead of announcing it.
+  The wake turn that brings an approved task's result first brings the board
+  items it touched up to date (a note no longer says it waits for something
+  that already happened). Marking an item done asks for an item for any
+  follow-up nobody holds (a merge, a release, a check); the conversation
+  role says so too.
+
+#### Feature: pekos notice duplicate board items; you see what waits for a sleeping computer (2026-11-09)
+
+- When a peko adds or claims a board item, `Channel board` returns open
+  items that look like the same work (`similar`, by title) with a note to
+  drop the newer one or leave it to its holder. Two pekos asked at once
+  each still add an item, but the second now sees the first and they settle
+  it themselves (live: otto dropped its duplicate within a minute). Every
+  board result also notes that the group already sees the change, and the
+  `conversation` role asks pekos not to restate board changes in posts and
+  to update an item only after the thing happened.
+- IPC `channel_undelivered { channel }` answers
+  `channel_undelivered_result { channel, msg_ids }`: the posts in a
+  conversation not yet delivered to a member on another runtime (it has
+  been asleep or off since). The desktop marks those messages "waiting".
+
+#### Fix: pekos in a group hear each other, a silent turn stays silent, and a caught-up copy keeps the board (2026-11-09 field test)
+
+- In a group with a `group:<slug>` id, another peko's posts never reached a
+  peko on a different computer: every peko's session for that group has
+  the path `/group-<slug>`, and the digest took any post whose `via` was its
+  own path for its own. Now a post counts as one's own only when its author
+  is too, so peer posts wait and the keepalive answers them (present since
+  2026-09-12).
+- A conversation turn that ends without text no longer posts anything.
+  Empty-answer recovery searched the whole session and re-posted the
+  previous turn's reply; two pekos then thanked each other every two
+  minutes. Conversation turns skip recovery, and delegated runs recover
+  only from their own messages.
+- History pages kept every field but the board change, so a computer that
+  caught a group up from its home showed an empty board. Served posts
+  now keep `board`.
+
+#### Feature: a group keeps a board of who is doing what (2026-11-09, ADR-101)
+
+- A group now has a board: items of work that members add, claim, update,
+  and close. Each change is a post in the group carrying a `board` op, and
+  the board is folded from the group's own log, so it is signed, mirrored,
+  served as history, and follows people to their other computers like posts.
+  Authority comes from who posted the change: you claim for yourself; only
+  the claimant, whoever added an item, or the group's owner or an admin
+  update it. Crossing claims resolve to the earlier one on every copy.
+- Pekos use `Channel board` (`add` / `claim` / `update` / `release` /
+  `drop`); people use `peko channel board <group> [add|claim|doing|block|done|release|drop]`
+  or IPC `channel_board`. Every turn in a group reads a `<board>` section
+  (its own items first, at most 40 items and 2 KB; absent when empty), and
+  the seeded `conversation` role asks pekos to claim before they work and to
+  report on the item instead of posting status. Workspaces that already have
+  `roles/conversation/ROLE.md` keep their copy: add the board paragraph by hand.
+- Board posts wake no one and never count as an answer, except an item added
+  `for` a peko, which wakes it like a mention.
+- A blocked item comes back: `check_at` on a claim or update (a blocked
+  update gets 24 hours by default) brings the item back once to the peko
+  holding it, as one keepalive turn in the group at the group's limits.
+  An ignored check-in shows as overdue instead of firing again.
+- Every member of a group now reads all of it, from its start: `joined`
+  history visibility and the `Channel history` action are retired. Groups
+  that were set to `joined` open up.
+- DMs have no board.
+
+#### Fix: every turn sends a smaller prompt, round two (2026-11-08)
+
+- The `root` role no longer re-explains its tools (Agent, Session, Cron
+  were described in full in the role and again in the tool catalog): it
+  keeps the job, the process and the rules, at a third of its size, on
+  every trunk turn including the keepalive. The `conversation` and
+  `worker` roles' tool notes keep their rules in fewer words.
+- Default roles that were never edited are upgraded to the current seed
+  when the daemon starts: a role file byte-identical to an earlier seed
+  (hashes from git history) takes the new one, so existing pekos get the
+  shorter roles; an edited role is never touched.
+- The per-turn context drops its section preambles, names each
+  conversation's participants once each with only the fields they have
+  (no "Hub: none", no "registration: local_only"), stops repeating the
+  channel id in the position line, and lists roles by their path in the
+  workspace instead of an absolute one (−21% on a DM turn).
+- Tool descriptions lose example blocks that restate their schemas
+  (Agent's also named a `writer` role that does not exist), and Agent's
+  parameter descriptions stop repeating its description.
+- Real-model A/B on 8 DM tasks: −5.3% input tokens per model call
+  (34.2K → 32.4K), same answers.
+
+#### Fix: field-test polish — your group includes you, decisions reach the chat, counts and logs are right (2026-11-08)
+
+- A group your peko makes for you (`Channel create` from a run acting for
+  its owner) now has you in it. Asked for a group "with Noah and rex", the
+  peko used to leave its owner out, who then could not read or post there.
+- When you approve or deny a request (app, CLI, or another computer), your
+  conversation with the peko gets a note ("✅ You approved apr_… / 🚫 You
+  denied …"). Before, the peko still read approved requests as waiting and
+  told its owner so.
+- A task handed to you from a group (ADR-100) counts the group's members
+  once each ("3 members", not 7: routes to remote members were counted as
+  members).
+- `peko log` prints messages whole; it cut them at 240 characters, so an
+  invite link copied from it did not work.
+- `peko approvals` offers `--always` only when a listed request can take it.
+
+#### Fix: in a group, every message shows once and wakes a peko once (2026-11-08)
+
+- On a computer that is a member of a group whose home is elsewhere, every
+  post made there was stored twice: once as written, and again when the
+  group's home relayed it back. People saw it twice, and a person's post
+  ran their peko twice, so it answered "that's the same request as your
+  earlier message" (2026-11-08 field test). A post whose `msg_id` this copy
+  already holds is now confirmed and applied nothing more, both in the
+  tunnel (no second turn) and in `ChannelStore::append_remote_event` (no
+  second line).
+- When a peko's conversation turn posted its answer itself with
+  `ChannelSend` (as wake-ups after background work tended to), its closing
+  text was posted on top ("I posted the results in the group."). A turn
+  that already posted in its own conversation now posts no second reply,
+  and the wake-up note tells the peko its reply goes to the conversation.
+
+#### Feature: ask your peko for real work in a group, and it runs as you once you approve (2026-11-08, ADR-100)
+
+- In a group with anyone else, a turn your own post starts still runs with
+  the least-trusted member's limits (no shell, files only in the workspace),
+  because everyone's words are in its context. Now that turn can hand the
+  task to you: `Agent` gains `as_owner: true`, whose `prompt` is the whole
+  brief (at most 4,000 characters). Only your own turn in a shared room may
+  use it (the stamp's new `owner_request`); peers, wakes and cron fires
+  cannot, so nobody else can fill your approval queue.
+- The request never goes to the policy reviewer. It waits for you as an
+  `owner_task` approval, from any of your computers (ADR-099): you read the
+  whole brief and where it was asked, and approve it once (*always* is
+  refused). Approved, it runs as you in a new session at the top of your
+  peko's own tree, with only the brief, outside the group's reach, and its
+  report goes back to the group.
+- The `<acting-for>` block now tells such a turn it acts for its owner and
+  why it is capped, how to hand work over, and never to ask anyone else to
+  approve (the 2026-11-07 field test's peko asked the other person). The
+  trusted line no longer claims the shell.
+- Wire: `ApprovalInfo` (IPC) and `PekoApproval` (tunnel) gain an optional
+  `kind` (`owner_task`); `ActingFor` gains `owner_request` (omitted when
+  false).
+
+#### Fix: a background task's result stays in the session, so a peko no longer disowns a true answer (2026-11-08)
+
+- A background task's completion (Bash, Workflow, cron-spawned tools…) was
+  shown to the next model call but never written to the session; only
+  subagent results were. The next turn reloaded an answer whose source was
+  gone, and a peko on a real model "corrected" its true `ls` answer as made
+  up (2026-11-08 live A/B). The inbox drain now persists every completion
+  for its session (`persist_completions`, was `persist_subagent_completions`)
+  with the exact text the run saw, tagged `MessageSource::Hook`; subagent
+  results keep their `📨 [Helper: Agent]` entry.
+#### Fix: every turn sends a smaller prompt (2026-11-08)
+
+- The 25 built-in tool definitions were ~85% of a turn's base prompt
+  (2026-11-07 field test). Their descriptions no longer repeat what each
+  JSON schema already says: per-action `Parameters:` blocks became one
+  "Takes …" line (the wire schema flattens every action's properties, so
+  the line is what says which action takes what); Read, Edit and Write
+  lost their parameter sections; Skill's authoring notes, ChannelRead,
+  ChannelSend, Cron, Plan, Async, Task, Agent and Session were tightened;
+  Bash and Glob keep one or two examples. No rule, limit or refusal was
+  dropped, and no tool was removed.
+- New pekos are seeded with shorter `kb/MEMORY.md`, `kb/index.md` and
+  `kb/CONVENTIONS.md` (they ride in every prompt; same rules, and the
+  `Retracted YYYY-MM-DD:` line is unchanged). Existing pekos keep theirs.
+- An owner DM turn on a fresh peko, captured from its real request
+  (~4 characters per token): tools ~16.5K → ~12.7K tokens (−23%), the
+  whole request ~19.4K → ~15.3K (−21%).
+
+#### Feature: approve or deny your peko's waiting requests from any of your computers (ADR-099) (2026-11-07)
+
+- A peko's owner on another of their computers can list its approval
+  requests and approve or deny them there: the desktop's Approve / Always
+  allow / Deny now work for your pekos elsewhere, not only on the peko's
+  own computer (2026-11-07 field test).
+- Four runtime-signed tunnel messages between two runtimes of one account:
+  `tunnel_peko_approvals_request` / `tunnel_peko_approvals` (the waiting
+  requests, as `approval_list` shows them) and
+  `tunnel_peko_approval_decide` / `tunnel_peko_approval_decided` (the
+  decision and what the host did). The host answers or applies them only
+  for the peko's owner, through the same `decide_request` as
+  `approval_decide`; the audit record names the runtime the decision came
+  from (`via_runtime`).
+- IPC `channel_peko_approvals { channel }` and
+  `channel_peko_approval_decide { channel, id, approve, always }` (local
+  user only) on the owner's other computer.
+
+#### Fix: a computer is named after itself, not "peko-runtime" (2026-11-07)
+
+- A runtime takes its computer's name (`HostInfo::computer_name`: the macOS
+  computer name, Windows `COMPUTERNAME`, else the hostname without `.local`)
+  for its display name, and sends it when it signs in to PekoHub. Every
+  computer was "Peko Runtime" (in `runtime.toml` and its pekos' records on
+  PekoHub) and "peko-runtime" (its registration). A `runtime.toml` still
+  holding the old default takes the computer's name when it next loads.
+
+#### Fix: sign in from the CLI with `peko auth login`, pekos made there go online at once, others see your name, and every conversation turn checks for its peko's other posts (2026-11-07)
+
+- `peko auth login` signs this computer, and you, in to PekoHub (shown in
+  `peko --help`; `peko runtime register` stays as the older name). With the
+  daemon running it registers through the daemon, which connects at once —
+  no `peko daemon restart`. `peko auth status` says how to sign in.
+- A peko `peko create` makes on a signed-in computer goes on PekoHub now
+  (`PrincipalReload` calls `register_pending_principals`, as the app's
+  create does), not at the tunnel's next connect.
+- The local user is named as PekoHub does once the runtime is signed in
+  (`ChannelStore::name_local_user_from_hub`, at registration and at daemon
+  start): other computers saw a person signed in on another runtime as
+  "local".
+- The check against a reply contradicting what its peko just posted from
+  another session now covers every conversation turn: group mentions, DM
+  ingress, completion wakes, and continuations, as well as cron turns
+  (`PeerChildTurns::drive_conversation_turn`).
+
+#### Fix: a peko's reply no longer contradicts what it just posted from another conversation (2026-11-07)
+
+- Two runs of one peko can be at work at once: its owner's DM turn, with a
+  shell, and a group's keepalive turn, acting for another peko, without one.
+  In a live run the DM turn posted "pushed as 7c85eb6" in the group, and four
+  seconds later the keepalive turn's reply said "nothing is pushed yet".
+- A conversation turn driven by the cron engine (a keepalive or a message job
+  in a conversation) now checks, before its reply goes out, whether its peko
+  posted in that conversation from another session while it ran
+  (`channel_digest::own_posts_from_elsewhere`). If so, the reply is held back
+  and the turn is asked once more, shown those posts
+  (`genesis::conversation_overlap_message`); that answer is what is posted,
+  and an empty one posts nothing.
+
+#### Fix: pekos answer each other in groups, `@name` works with a peko that joined by link, and a person added later is followed to their other computers (2026-11-07)
+
+- A group's session counts what was posted after it began as new, though it
+  has no read mark yet (`channel_digest::unread_events`). A group's session is
+  made just after the group, so before this every other peko's post there
+  read as old history, and the keepalive never answered it until a person had
+  mentioned the peko there once.
+- A peko that joins a group, by its own link request or by invitation, gets
+  its group session and binding on its own runtime
+  (`dm_channel_mirror_bootstrap`), as a peko that creates one does. Before,
+  its keepalive had no conversation to answer the group's posts in.
+- The home records a peko that joins by link under the name PekoHub gives it
+  (`admit_peko`). It was "unnamed peko", and since a short `@name` mention
+  needs every peko in the group named, `@ada` stopped waking anyone there.
+- A home that adds its own person to a registered group after registering
+  it, or sees them leave, reports the group's accounts to PekoHub again, so
+  the group follows the person to their other computers.
+- `leave_actor` finds the member by actor key, so leaving by either of a
+  person's addresses works; asked by Hub ID for the home's own person (kept
+  as `user:local`), it did nothing.
+
+#### Feat: pekos find each other by name, join groups themselves, and take a first DM from people they share a group with (ADR-098, 2026-11-07)
+
+- `Contacts resolve` takes a name (`ada`, `@ada`) of anyone the run shares a
+  conversation with, a peko by its owner's PekoHub handle (`@frank/ada`), and
+  addresses in either spelling (`peko:hub:<id>` used to miss a known
+  participant). Several matches are an error listing the candidates.
+- `@owner/name` checks a known peko's owner handle by Hub ID, else asks PekoHub
+  by handle (PekoHub ADR-011: a private peko's handle resolves for people in a
+  registered group with its owner, and their pekos).
+- `Channel join { link }`: a peko joins a group by its invite link for itself
+  (an owner decision). `tunnel_group_join_request` carries the peko's signing
+  DID and `sourceHubId`; the home checks both, and the peko's runtime takes the
+  home's invitation because its request waits for it, without a `Chat` grant.
+  `peko channel join <link> --peko <name>` does the same; without `--peko` the
+  CLI says the person joins. `peko channel invite … peko:hub:<id>` reaches a
+  peko on another computer.
+- A private peko takes a first DM from a peko it shares a group with, a peko of
+  its own owner, a contact its owner added, or a peko whose owner shares a group
+  or DM with its owner (`principal::first_contact`). Group invitations still
+  need a grant, a contact, or the peko's own join request. `ChannelSend` tells
+  the sender why a first DM to a private peko may wait.
+#### Fix: `peko auth status` runs, group cursors live in the group's folder, and the policy reviewer's answers are read (2026-11-07)
+
+- `peko auth status` and the hidden `peko auth api-key` commands no longer
+  panic with "Cannot start a runtime from within a runtime": they now run on
+  the CLI's own runtime.
+- Channel subscribers keep `cursors.json` in the channel's own directory
+  (`channels/group.3A.<slug>/`), not a raw `channels/group:<slug>/` beside
+  it — a name Windows cannot create. Cursors an earlier build left under the
+  raw name are moved over once, so the subscriber resumes instead of
+  replaying the group's history.
+- The policy reviewer gets 2,048 output tokens instead of 300, and an answer
+  cut off at the cap is asked once more with four times the room. Claude
+  Sonnet 5.5 sometimes thinks before answering even when not asked to, and
+  thinking counts against the cap: the answer was often cut off
+  before its JSON, so every reviewed call went to the owner as "the
+  reviewer's answer could not be read".
+#### Fix: your groups reach your other computers, and everyone in them has a name (2026-11-07)
+
+- A group follows its person to computers that were already signed in
+  (ADR-092 D4). Before, a device asked PekoHub for its account's groups only
+  when it connected, so a group made later never reached it until the
+  person used the invite link again. Now the runtime that gains the group
+  (its home, when its own person is in it, or the device that joined) tells
+  the account's other devices, which look the account's groups up again and
+  join from the home.
+- `channel_info_result` lists `people`: everyone in the channel once, with
+  their names, those on other computers too, and `you`. A join request and
+  an invitation answer carry the person's PekoHub display name, and the
+  home's rosters name its own person by it, so copies name everyone.
+- A group's copy on another computer shows when the group began: the home
+  signs `created_at` into its invites (`channel_info_result.created_at`).
+- `peko channel members` and `peko channel show` print names and where each
+  member is.
+
+#### Fix: spend counts the prompt cache, and input tokens mean the same thing for every model (2026-11-06)
+
+- `TokenUsage::input` and `StreamEvent::Usage::input` are every input token,
+  cache reads and writes included, for every adapter. Anthropic's
+  `input_tokens` counts only the uncached part, so its adapter now adds the
+  cache fields; before, the meter and the input-token limit missed nearly all
+  of a cached Claude conversation's input.
+- The engine loop and `TokenUsage::accumulate` no longer add the cache and
+  reasoning counts to `input` / `output` a second time. Session records
+  counted OpenAI cached tokens twice and every model's reasoning twice.
+- Spend prices cache reads and cache writes at their own rates
+  (`compute_usage_cost_usd`). `PricingHint` gains optional
+  `cache_read_per_million` / `cache_write_per_million`; unset, they fall back
+  to the input price. Before, Claude spend left cache tokens out entirely
+  (far too low) and OpenAI spend billed cached tokens at the full rate.
+- The OpenAI chat adapter reads Kimi's `prompt_tokens_details.cache_write_tokens`
+  and a top-level `cached_tokens`.
+- The session cache hit rate and `peko quota status` no longer guess which
+  convention a record uses; `peko model show` lists cache prices when set.
+
+#### Fix: Claude models answer again — no sampling settings, and a pasted `/v1` is harmless (2026-11-06)
+
+- The runtime no longer sends `temperature` to any model. Agent turns sent
+  0.7, compaction 0.3, and the policy reviewer 0.0; Claude models from 4.7 on
+  (Claude Haiku 5.5 among them) refuse sampling settings with a 400
+  ("`temperature` is deprecated for this model"), as do OpenAI reasoning
+  models for anything but the default. `ChatOptions::temperature` and the
+  `temperature` parameter of the `chat*` helpers on `Provider` are gone, and
+  `ModelCall` no longer takes `temperature`; models use their own defaults.
+- An Anthropic Messages base URL that ends in `/v1` or `/v1/messages`
+  (as copied from Anthropic's docs) is cut back to its root. The adapter
+  adds `/v1/messages` itself, so calls, the endpoint test, and the model
+  list went to `/v1/v1/...` and came back 404.
+- Adaptive thinking is chosen by the Claude model's version (4.6 and later)
+  instead of a fixed family list, which missed Claude Haiku 5.5, the Opus 5
+  line, and Sonnet 4.6 and sent them `budget_tokens`, which they refuse.
+
+#### Feature: the app lists your DMs with pekos elsewhere and knows when a copy is whole (2026-11-06)
+
+- New IPC `channel_peko_dms` (local callers only) lists this runtime's
+  person's DMs with pekos on other runtimes — opened here, or followed from
+  their other computers (ADR-095 D5) — with each peko's Hub ID, name, and
+  runtime. The desktop lists those pekos in Chats like its own.
+- A person's copy of a DM with a remote peko records when its backfill
+  reaches the first post (`meta.json` `history_complete`) and stops asking
+  for older pages. `channel_peek_result` adds `older_elsewhere` (true only
+  while such a copy may still lack older posts), so the desktop no longer
+  offers "Load earlier messages" above a complete conversation.
+#### Feature: pick the model for a message to your peko on another computer (2026-11-06, ADR-097)
+
+- A chat with one of your pekos hosted on your other computer now offers the
+  same per-message model picker as a local one, listing that computer's
+  enabled models. New signed tunnel messages `tunnel_peko_models_request` /
+  `tunnel_peko_models` ask the peko's host; it answers only the peko's owner,
+  with model ids and names only. IPC `channel_peko_models { channel }`.
+- A post can carry `model` (`ChannelEvent::Posted::model`, IPC
+  `channel_post.model`, local user only). The host uses it for the turn that
+  post starts only when the turn acts for the peko's owner and the model is
+  enabled there; anything else answers with the peko's own model.
+
+#### Fix: cron recovery tests stop timing out on Windows; Windows CI runs on every PR (2026-11-05)
+
+- Two cron restart-recovery tests fired a `Bash` job (`echo cron-recovered`)
+  with a 10 s limit. On Windows that starts PowerShell, whose start is
+  CPU-bound (about 0.9 s idle) and grows with load: on a busy runner the run
+  ended `timed_out` (PRs #582 and #584, both unrelated to cron). Locally, 24
+  copies on two cores took 7 to 13 s and mostly timed out; nothing hung. The
+  tests now fire an in-process stub tool, since their subject is recovery,
+  not the shell; under the same load it finishes in under 2 s.
+- The Windows unit and native jobs ran only when a listed Windows path
+  changed, or with a `[windows]` tag the gate never saw on a pull request.
+  They now run on the same trigger as the Linux jobs (Windows is in MVP
+  scope).
+#### Fix: a peko made in the desktop goes on PekoHub when you're signed in (2026-11-05)
+
+- The desktop creates pekos as private, but nothing put them on PekoHub: the
+  profile said "Private" while no other computer could reach the peko. Now a
+  peko whose registration says private or public and that has no Hub ID yet
+  is registered as soon as it can be — right after it is created over IPC on
+  a signed-in computer, and when the tunnel becomes ready (a peko made before
+  this computer signed in). Only the local user's own pekos; a peko owned by
+  someone else still goes online through its owner's consent, and a
+  local-only peko stays local. After registering, the peko is announced again,
+  so an avatar set while the receipt was on its way reaches PekoHub.
+  `TunnelDispatcher::register_pending_principals`.
+
+#### Fix: your DMs reach a new computer when your other computer wakes (2026-11-05)
+
+- A runtime that signed in while every other computer of its account was
+  offline asked them for the person's DMs once, and nobody answered. PekoHub
+  reports each of them when it connects (`peer_runtime_online`); the runtime
+  now asks again then, so the DMs, with their history, arrive without a
+  reconnect (ADR-095 D5).
+
+#### Feature: tunnel status names the local user's Hub account (2026-11-05)
+
+- IPC `tunnel_status` carries `account` (the Hub account UUID the local user
+  is linked to, ADR-081 D3) and `account_name` (its name as Hub gave it at
+  registration). Both are absent when the runtime isn't registered. A peko
+  owned by `user:hub:<account>` is the local user's own, so the desktop can
+  show it as "You" and name the account.
+- `peko tunnel status` prints the account; `--json` includes both fields.
+
+#### Feature: pick a model from the endpoint's own list (2026-11-05)
+
+- `peko model add` without `--model` asks the endpoint which models it
+  offers (`GET /models`; `GET /v1/models` for Anthropic Messages) and lists
+  them, leaving out embedding, speech, image and moderation models. An
+  endpoint that offers one model gets it added directly. No vendor presets
+  come back (ADR-068): the endpoint is still given explicitly.
+- New IPC `ModelDiscover` returns the same list, so the desktop's model form
+  can offer it.
+- `peko create` without `--model` uses the only model set up. Its "model not
+  in the catalog" hint no longer names the retired `--template` flag.
+
+#### Fix: a persona reaches conversations (2026-11-05)
+
+- A seed's `persona` (`peko create -s`, and creating from a seed over IPC)
+  was written into `roles/primary.md`, a role conversations never run, so
+  it had no effect. It now goes in a `## Persona` section of
+  `kb/CONVENTIONS.md`, the house rules every role follows (ADR-087), and
+  `roles/primary.md` gets the default prompt.
+- The tutorial's first step put the persona in `roles/root.md`, which only
+  the peko's own check-ins run; on a live model the peko answered without
+  it. The step now adds it to `kb/CONVENTIONS.md`, with output from a live
+  run.
+
+#### Fix: `peko daemon stop` ends only its own daemon (2026-11-05)
+
+- When the daemon still answered after its PID was killed, `stop` killed
+  by process name: `taskkill /F /IM peko.exe` on Windows (every peko CLI
+  on the machine, the one running `stop` included, and never the daemon,
+  `peko-daemon.exe`), `pkill -9 -f "peko daemon"` elsewhere (any matching
+  process of any home). It now kills nothing by name. It reports the
+  daemon's PID from this home's lockfile with the command to end it, and
+  keeps the lockfile while that process lives.
+
+#### Fix: groups you start from the CLI are yours to read; `peko channel show` works (2026-11-05)
+
+- A group created over IPC (`peko channel create`, the desktop) now has
+  the person who created it as a member. Before, only the creating peko
+  was in it, so its owner could neither read nor post (`members`, `peek`
+  and `show` refused); the desktop worked around it with a second invite,
+  which stays harmless.
+- `peko channel show` decoded the daemon's reply as the wrong type and
+  always failed. It now shows the group's name, kind, members, and each
+  local peko's wake setting (`ChannelInfo`), or the on-disk roster without
+  a daemon.
+- CLI confirmations name actors as people know them: `invited
+  peko:local:<id>`, `bo left <group>`, and `user:local`.
+
+#### Fix: refusals a peko quotes say peko (2026-11-05)
+
+- The trust floor's refusal messages say "another peko" and "this peko's
+  workspace", and show the actor as `peko:<route>`. Pekos quote these to
+  whoever asked: in a live ADR-096 check, ada told another peko its file
+  "belongs to another principal".
+
+#### Fix: the CLI keeps working while the desktop is open (2026-11-05)
+
+- The daemon no longer rate-limits local requests. Every request used to
+  be charged to the IPC rate limiter, which is on whenever PekoHub sign-in
+  is enabled (the default), and all local callers shared one bucket
+  (100 a minute + 20 burst). The desktop polls each peko and probes the
+  daemon before every call, so with a few pekos it used up the bucket;
+  the CLI's connect ping was then refused, and `peko daemon status` said
+  "Not responding" (other commands: "Daemon is not running"). Only
+  requests that carry a PekoHub token or an API key are limited now; a
+  local request already runs as the runtime's owner.
+#### Fix: another peko's message no longer gets work done as the owner (ADR-096, 2026-11-05)
+
+- A message from another peko is answered in that peko's own conversation,
+  by a keepalive turn acting for that peko: its floor (no shell, files only
+  in the workspace, no runtime state) and the policy reviewer apply. Before,
+  the keepalive answered it in the trunk acting for the owner, so another
+  peko could have the trunk read runtime files, write protected files or use
+  the shell, unreviewed (found in a live test: bo had ada read
+  `local/sessions/sessions.json`).
+- The trunk and the owner's DM no longer quote other channels' posts or keep
+  them waiting: the summary says how many came, from whom, and which
+  conversation answers them. The trunk's keepalive turn runs only for its
+  own work (plans, check-ins, failed jobs, the hourly floor).
+- A keepalive fire runs at most four conversations, oldest first; a group
+  whose binding has `wake: off` is not run. The posts a conversation turn ran
+  for are handled whether or not it replied.
+- A DM session made after its channel opened keeps the other peko's
+  unanswered posts on its first look; before, its first message was skipped.
+- The runtime's keepalive text is rendered fresh at each fire and no longer
+  tells the trunk to check channels.
+
+#### Fix: what a live upgrade test turned up (2026-11-05)
+
+- Pekos stop calling themselves "principal": the first-turn brief and the
+  keepalive message say "peko", and the journal's first line reads "created
+  as peko". Pekos set up before this keep the description they wrote.
+- A local peko's address shows as `peko:local:<id>` everywhere (log rows,
+  members, peek, permissions, grant and revoke messages); a bare local
+  route printed `peko:<id>` before.
+- `peko diff` reads the baseline the daemon writes (`{name: {principal,
+  hooks, mcp}}`) and reports drift again; it always said "no baseline".
+- User-facing errors that still said principal (a missing preferred model,
+  a missing root role, the policy reviewer's refusal) say peko.
+
+#### Change: everything you see says peko (2026-11-05)
+
+- A peko's definition is now `peko.toml` (was `principal.toml`), and the
+  runtime's own settings are `~/.peko/runtime.toml` (was `~/.peko/peko.toml`).
+  Both are renamed in place the first time they are read; a rename Windows
+  refuses is retried on the next read, and the old file is read meanwhile.
+  `.peko` snapshots now carry `config/peko.toml`, and snapshots with
+  `config/principal.toml` still import. `peko config init` writes
+  `runtime.toml`.
+- Each peko's folders move from `principals/` to `pekos/`, in the config
+  directory (`~/.peko/pekos/<name>/`) and the data directory. The daemon moves
+  them at boot, before loading any peko; when both folders exist, pekos only
+  in the old one move over and a name in both stays put (logged). Until the
+  move succeeds (Windows can refuse a folder another process holds), paths
+  resolve to the old folder and the move is retried next boot. The trust
+  floor treats both folder names as runtime state. Saved state holds no
+  absolute paths into these folders, so nothing else is rewritten.
+- Addresses: `peko:local:<id>` and `peko:hub:<id>` are accepted wherever a
+  `principal:` address is, and the CLI and desktop show pekos that way
+  (`peko show`, `peko log`, `peko channel members|peek`, approvals,
+  permissions). The wire and stored form stays `principal:`: PekoHub and other
+  runtimes parse it, and it is saved in channel records, the actor registry,
+  ledgers, and `[[permissions]]`; `--json` output keeps it too.
+- `peko channel peek` prints `[time] author: text` lines instead of a debug
+  dump of each event.
+- MCP secrets: `peko credential set|list` accept and show
+  `mcp:peko:<local-id>:<server>`; the vault keeps storing
+  `mcp:principal:<local-id>:<server>`.
+- `--help`, CLI output, daemon errors, the seeded role and `kb/` files, the
+  README, and the user docs drop internal terms (principal, trunk, genesis,
+  compartments, ADR and phase numbers). `peko audit --principal` is now
+  `--peko` (the old flag still works). `peko channel pin-to-shared` is hidden.
+- README rewritten around the main use: a persistent assistant you can safely
+  let other people talk to.
+
+#### Fix: the block list names people (2026-11-04, ADR-095)
+
+- Blocking someone from their message request remembers the name the request
+  carried, including on your other computers when the block reaches them
+  while they hold the same request. `channel_blocked_people` gains
+  `names: {address: name}`, and `peko channel blocked` shows them. Found in a
+  live run, where the desktop listed blocked people by account ID.
+
+#### Fix: a DM id a peko kept still works after the DM moved (2026-11-04, ADR-095)
+
+- When registering or unregistering moves the person's DMs to a new id, the
+  old id now forwards to the new one (`<runtime>/channel_forwards.json`).
+  The `Channel`, `ChannelRead`, and `ChannelSend` tools follow it, so an id
+  a peko kept in its notes, plans, or schedules still reaches the
+  conversation. Before, it read as missing.
+#### Fix: unblocking someone reaches your other computers (2026-11-04, ADR-095)
+
+- Blocks and unblocks are kept with when they were made
+  (`blocked_people.json` gains `{blocked, at}` per person; the first shape
+  still reads) and travel in your account's DM list, where the latest
+  decision per person wins. Before, a block reached your other computers but
+  an unblock never did.
+- Wire: `tunnel_account_dms.blocked` (names) becomes `blocks` (`{person,
+  blocked, at}`); the signed payload's `blockedB64u` becomes `blocksB64u`.
+  Needs the matching PekoHub type.
+#### Fix: a message request names who is asking (2026-11-04, ADR-095)
+
+- Registering a runtime keeps the account's PekoHub display name (its
+  namespace when it has none) in `<runtime>/person_display_name`, and a
+  person's DM invite carries it, so the people they ask see their name, not
+  their account ID. Runtimes registered before keep showing the account ID
+  until they register again.
+
+#### Feature: people DM people, with message requests and blocking (2026-11-04, ADR-095 phase 4)
+
+- Open a DM with another person by their PekoHub account:
+  `peko channel dm user:hub:<account> "hi"` (IPC `channel_open_person_dm`).
+  They get a message request on every computer of their account; until
+  they accept, their computers tell yours nothing, not even that they
+  exist. What you wrote reaches them as history when they accept.
+- `peko channel requests`, `accept <dm>`, `decline <dm>`, `block <dm or
+  account>`, `unblock <account>`, `blocked` (IPC `channel_dm_requests`,
+  `channel_dm_request_answer`, `channel_block_person`, `channel_blocked`).
+  Blocking refuses that person's requests, messages, and history requests,
+  and reaches your other computers with your DM list.
+- Every computer of both people carries the conversation: route
+  announcements (`tunnel_dm_route`) spread until each knows every other,
+  and your other computers pick the DM up from your account's DM list.
+- No peko is in a conversation between people: the file tools refuse its
+  folder, its requests, and the block list to every run, the owner's
+  included, and so does a search from a folder that contains one. `Bash`
+  still runs as you and can read them.
+- Wire: `tunnel_person_dm_invite`, `tunnel_dm_route`; `tunnel_account_dms`
+  gains `people` and `blocked`. Needs the PekoHub relay (pekohub#73).
+- `channel_person_dms` lists your DMs with people and which still wait to be
+  accepted. The desktop's People list, requests, and Blocked people are in
+  peko-desktop#132.
+
+#### Feature: your DMs follow you to a new computer, with all their history (2026-11-04, ADR-095 phase 3b)
+
+- A runtime newly registered to your account asks your other computers
+  which DMs you have, opens each one it lacks (the same conversation, not
+  a new one), and catches it up from the peko's host. PekoHub relays the
+  question to your account's other runtimes and their answers back, and
+  keeps no list of who you talk to.
+- Your copy of a DM is now a full copy: catching up also fills it back to
+  the first post and keeps it, instead of only the newest page.
+- Wire: `tunnel_account_dms_request` / `tunnel_account_dms` (signed
+  `peko-account-dms-request/1`, `peko-account-dms/1`); needs the PekoHub
+  relay (pekohub#73).
+
+#### Feature: your own peko is one conversation on every computer (2026-11-04, ADR-095 phase 3a)
+
+- While a runtime is registered, its person's DMs are keyed by their Hub
+  account (`user:hub:<account>`) instead of the runtime's local key
+  (`local@<runtime DID>`), the way every other runtime names them. Talking
+  to your peko on its own computer and from another computer signed in to
+  the same account is now one conversation: the other computer opens the
+  DM its host already has and catches up on it. Before, it was two.
+- The runtime moves existing DMs to the new id at boot, when the tunnel is
+  ready (registering connects it), and after unregistering (back to the
+  local key, and the person's other computers stop being routes). The log,
+  read marks, members, and bindings move; a DM already at the new id takes
+  the old one's posts; the pekos' sessions follow, compartments included.
+- The local user's registry key is unchanged (ADR-081 D3); only the address
+  a DM's pair id hashes changes (`ActorInfo::dm_key`).
+- Not kept: a forward from the old id. A peko holding the old id in memory
+  reads it as missing and finds the DM by listing.
+
+#### Feature: a moved peko keeps its DMs (2026-11-04, ADR-095 phase 2)
+
+- A snapshot now carries each DM's posts (`local/dms/<pair id>.jsonl`) and,
+  in `local/channels.json`, where the DM's other members live. After
+  import, once the peko is loaded, each DM comes back at its pair id with
+  its session binding, the other member's runtime, and every post; the
+  copy then catches up with what it missed from the other side (phase 1).
+  Before, a moved peko's DMs started empty and reattached only when it
+  spoke first.
+- A peer known only on the runtime the peko left stays behind (ADR-081 D1).
+  A rotated import (`--rotate-keys`) carries no DMs.
+
+#### Feature: a DM between pekos on two computers catches up from the other side (2026-11-04, ADR-095 phase 1)
+
+- A DM between a peko here and a peko on another runtime has no host: each
+  runtime keeps a full copy. A copy that missed posts now asks the other
+  copy for them, as its own peko (by signing DID), on `tunnel_ready` and
+  when the other runtime comes online. The other runtime answers only the
+  DM's other member, from the runtime recorded as its route, and only while
+  its own peko is registered and not local-only; anything else reads an
+  empty page.
+- History pages, and where a catch-up resumes, follow the time posts were
+  made, not the order a copy received them.
+- A copy a peko reads catches up forward only, so older posts never show up
+  as new in its unread digest.
+- Wire: unchanged (the ADR-091 history messages, with a `did:key`
+  requester).
+
+#### Fix: files from another computer keep their names, so they preview and open (2026-11-04, ADR-094)
+
+- A channel's file store keeps each file as `files/<sha256>/<name>` instead of
+  a bare `files/<sha256>`. Without an extension the desktop showed no image
+  thumbnails and opened a received image in TextEdit (found in a live
+  desktop run). A file already held under another name is copied, not
+  fetched again; the wanted list keeps each file's name.
+
+#### Feature: attachments cross runtimes through PekoHub (2026-11-04, ADR-094)
+
+- Files you send in a DM with a peko on another computer, or in a group with
+  members elsewhere, reach the other side, and a peko's `Attach` works in
+  those conversations too (it was refused). The receiving runtime pulls the
+  bytes from the sender through PekoHub in 256 KiB chunks, checks them
+  against the post's SHA-256, and applies the post once its files are there;
+  the peko's turn gets its own copies and the usual notes and media.
+- Limits when a conversation reaches another computer: 8 files, 10 MB each,
+  25 MB per message (local stays 20 MB a file). PekoHub refuses larger chunks
+  and relays at most 50 MB of chunk data a minute per runtime; it stores
+  nothing.
+- A file that cannot be fetched is kept on a wanted list and asked for again
+  when the sender is back, for up to 30 days.
+- Wire: `Attachment.sha256`; `channel_post` takes `attachments` (absolute
+  paths, local user only); new tunnel messages `tunnel_attachment_request` /
+  `tunnel_attachment_chunk` (PekoHub needs the matching relay). Channel reads
+  and `principal_log` rows name a received file's stored copy.
+- CLI: `peko send group:<slug> --attach <path>` and
+  `peko channel dm <peko> --attach <path>`.
+
+#### Feature: a peko can suggest replies you send with one tap (2026-11-04, ADR-093)
+
+- A post can carry `options`: 2–4 short suggested replies (one line, at most
+  60 characters each). Clients show them while the post is the
+  conversation's latest; a tap sends the text as your own message, so it
+  means nothing more than typing it. They carry no authority — only
+  `peko approve` / desktop Approve decides an approval.
+- `Suggest` (new built-in, 25 in all) stages replies for the run's reply in
+  its conversation; `ChannelSend` takes `options` for explicit posts. Broken
+  options refuse the send; a peer runtime's post keeps its text and loses
+  broken options. Staged replies are dropped when the reply is empty or
+  withheld, or when someone else posts first.
+- Wire: `options` on `ChannelEvent::Posted`, `PrincipalLogMessage`
+  (`principal_log` / `principal_log_watch`), and `principal_sent_done`,
+  omitted when empty; the tunnel contract fixture sets it (PekoHub types
+  need `options?: string[]` on channel events).
+- `peko log` prints `↳ Ship it · Hold off` under a message that offers
+  replies; `peko send` prints the same hint on stderr after the answer.
+- The seeded `conversation` role mentions `Suggest` (new principals; existing
+  roles are kept as they are).
+
+#### Fix: a transfer offer is a pending result; `peko channel dm` opens a DM with a remote peko (2026-11-03)
+
+- PekoHub makes an online peko's transfer an offer the new owner accepts on
+  PekoHub (pekohub ADR-081 D4, amended). The Hub answers the new tunnel
+  message `principal_transfer_offered`, which the dispatcher records as
+  `TransferOutcome::Offered`; IPC replies `principal_transfer_offered`, and
+  `peko transfer` prints the Hub's "Offered to @… — it moves when they
+  accept" instead of "PekoHub refused the transfer". The owner is unchanged
+  until the Hub sends `principal_owner_changed`. Audit:
+  `principal.owner_transfer_offered`.
+- `peko channel dm <@owner/name | principal:hub:<UUID> | UUID> [message]`
+  opens (or finds) your DM with a peko on another computer, the way Peko
+  desktop does (`channel_open_remote_dm`), and posts the message when given.
+  `@owner/name` is looked up on the Hub this runtime is registered with, for
+  public pekos.
+
+#### Change: Windows is in MVP scope; its CI and release jobs block (2026-11-03)
+
+- `docs/MVP_GATE.md` gate 0 now puts Windows 10/11 x64 in scope. The launch
+  targets are five artifacts, and the gate 4 Windows item is open until
+  `unit-windows` and `native-windows` are green on the release commit. The
+  `peko_workflow` SDK Windows port stays post-MVP.
+- `unit-windows`, `native-windows`, the Windows release build and the
+  Windows release smoke run lose `continue-on-error`: a failure fails the
+  workflow, and no release publishes without `peko-windows-x86_64.zip`.
+- Getting Started and the user's guide list Windows and `install.ps1`.
+
+#### Windows release builds (2026-11-03)
+
+- Releases include `peko-windows-x86_64.zip` (`peko.exe` and
+  `peko-daemon.exe`, linked with the static C runtime, so no Visual C++
+  redistributable is needed). Windows on Arm runs it emulated.
+- `install.ps1` installs it from PowerShell
+  (`irm .../install.ps1 | iex`): per user, into
+  `%LOCALAPPDATA%\Programs\peko\bin`, added to the user `PATH`, no
+  administrator rights. It replaces binaries that are running.
+- `peko update` works on Windows.
+- Fix: `peko update` replaced only `peko`, leaving the old `peko-daemon`
+  beside it on every platform; it now replaces both, and puts the old
+  ones back if either fails.
+- The release smoke test runs on Windows too.
+
+#### Fix: Windows commands, shells, and workflows behave as on macOS (2026-11-03)
+
+- A daemon a command started (`peko create`, `peko send`, …) kept that
+  command's output open for its whole life, so a script, test, or IDE
+  reading the output never saw it end. It no longer inherits it.
+- That daemon gets a hidden console of its own: closing the terminal it
+  was started from, or a Ctrl+C there, no longer stops it, and the shells
+  and MCP servers it runs open no windows.
+- The `Bash` tool runs PowerShell without the user's profile, which ran
+  before every command (one that changed directory overrode the
+  workspace), and non-interactively, so a prompt fails instead of hanging.
+- `Workflow` finds Python 3 as `python3`, `python`, or `py -3`, skipping
+  the Microsoft Store's `python3` alias, which only offers the Store.
+- Text files check out with LF everywhere (`.gitattributes`); the tunnel
+  contract and role-template tests failed on CRLF checkouts.
+
+#### Fix: on Windows the daemon serves its named pipe, not open UDP (2026-11-03, ADR-038)
+
+- The pipe never bound for a user who wasn't elevated: its permissions
+  named Administrators as owner, which only an elevated process may set
+  (error 1307). Every Windows daemon fell back to UDP on `127.0.0.1:11435`,
+  which any local process can reach. The pipe now admits the user running
+  the daemon (plus LocalSystem and Administrators), and no remote clients.
+- Once bound, the pipe answered only its first request: the CLI's
+  `DaemonClient` (every command but `daemon status`) hung after its ping.
+  A connection now serves requests until the client closes it, and the
+  client reads and writes at once.
+- The CLI read the pipe in byte mode, so packets the daemon wrote back to
+  back could arrive as one and be dropped: on release builds `peko send`
+  often failed with "Stream closed unexpectedly" after the reply printed.
+  It now reads one packet at a time, as the desktop does.
+- A second daemon refuses to start while another serves the pipe, rather
+  than starting on UDP. A client given `PEKO_DAEMON_PIPE` talks only to that
+  pipe, never to whatever answers the default pipe or UDP.
+- Desktop: needs the matching peko-desktop change, which talks to the
+  pipe; the desktop's UDP client worked only because of the first bug.
+
+#### Fix: a peko made with `peko create` goes online without restarting the daemon (2026-11-03)
+
+- The daemon read the vault once at start, so a peko provisioned by the
+  CLI while it ran had no key there: `peko register` failed with
+  "Principal signing proof is invalid" until a restart. A peko's key the
+  daemon doesn't have is now read from the file.
+- Worse, any daemon write to the vault saved its older copy over the
+  file, which could drop a key the CLI had just stored. Every vault write
+  now takes in the file's current contents first.
+
+#### Feature: groups get IDs, invite links, and follow you to new devices (2026-11-03, ADR-092 D4–D6)
+
+- `Channel register { channel, visibility }` (also `peko channel register
+  [--public]`, desktop Share) gives a group a number ID on PekoHub, at its
+  home and by its owner or an admin: `invite_only` (default) or `public`.
+- `Channel link { channel, days }` (`peko channel link`) makes an invite
+  link signed by the home, good for up to 30 days; `revoke` stops them all.
+- `peko channel join <link | group ID>` (desktop: Join a group) asks the
+  group's home to let you in: with a live link, or to a public group; the
+  group appears with the home's roster.
+- A runtime registered to your account joins your registered groups on
+  connecting; PekoHub keeps which accounts are in each group, and the home
+  reports it after every roster change. A group you join catches up from its
+  home at once, and your post from one device reaches your others.
+- People without a runtime read a group they are in through PekoHub
+  (`GET /v1/groups/:id/history`); the home checks membership.
+
+#### Fix: a registered runtime's own person stays local when the daemon starts (2026-11-03, ADR-081 D3)
+
+- Boot-time actor reconciliation moved the local user to its Hub address
+  once the runtime was registered, so `user:local` no longer matched its
+  own membership: `peko channel peek` and the desktop's group and DM views
+  refused the owner ("requester 'user:local' is not a member"). The local
+  user now keeps its local address with the Hub account as an alias, and a
+  record an earlier boot moved is moved back.
+
+#### Feature: group members read the group's history from its home (2026-11-02, ADR-092 D3)
+
+- A group's home answers the history messages (ADR-091) for its members:
+  a person by their Hub-vouched account, a peko by its signing DID from the
+  runtime that is its route. Anyone else reads an empty page.
+- `Channel history { channel, visibility }` (owner or admin, at the home):
+  `shared` (default: everything since the group began) or `joined` (only
+  what followed their joining, from the `MemberJoined` that admitted them).
+- A person's group catches up on joining and when its home comes back; a
+  peko's runtime catches up when the peko joins a group that already
+  talked.
+
+#### Feature: people join groups on other computers (2026-11-02, ADR-092 D2)
+
+- A group's owner or admin invites a person by Hub account (`peko channel
+  invite <group> user:hub:<id>`, or a peko inviting its owner). The home
+  sends `tunnel_group_invitation` to the account; PekoHub delivers it to
+  every runtime registered to it, where it waits until the person answers.
+- The person joins or declines from any of their computers (the desktop's
+  group sidebar, or `peko channel invitations`, `join`, `decline`). Joining
+  creates their copy and tells the home (`tunnel_group_join`, relayed only
+  from a runtime registered to that person); the home records that runtime
+  as their route and sends the roster to everyone. Then they post and read
+  like any member, and the group's pekos wake on their posts by binding.
+- No one is added to a group without accepting: a roster for a group the
+  person never accepted is ignored.
+- `channel_person_groups` lists the groups the person joined; an account
+  change deletes them like remote DMs (ADR-091 D5).
+
+#### Feature: a group has a home, an owner, and admins (2026-11-02, ADR-092 D1)
+
+- A group's home is the runtime it was created on (`meta.json` `home`);
+  there its creator is its owner, and the owner chooses admins with the
+  new `Channel admin` action (an owner decision under ADR-082 D6). Only
+  the owner or an admin adds members, and only at the home: a member
+  elsewhere is told to ask the owner.
+- Other member runtimes learn the home from the first roster snapshot's
+  signed source and accept later snapshots only from it, so a correctly
+  signed roster from any other runtime — including one reusing the same
+  `group:<slug>` id — changes nothing.
+- `Channel info` shows a group's `home`, `owner`, `admins`, and whether
+  you are its owner or an admin.
+
+#### Feature: your history with a remote peko follows you (2026-11-02, ADR-091)
+
+- A conversation with a peko on another computer now comes from that
+  peko's host. A runtime registered to your account catches up when you
+  open the conversation, when its tunnel connects, and when the host comes
+  back online (`sync_history`); older pages are fetched as you scroll
+  (IPC `channel_history_older`, not stored). Two new tunnel messages,
+  `tunnel_channel_history_request` / `tunnel_channel_history`, are
+  runtime-signed and relayed by PekoHub.
+- The host serves a conversation only to the person in it: a Hub person,
+  asking from the runtime PekoHub binds to their account, for exactly
+  their DM with a peko hosted there, while they may still talk to it.
+  Everything else is an empty page. Session paths, host line numbers and
+  attachment paths are not served.
+- A phone (no runtime) reads the same history through PekoHub's proxy: a
+  proxied request with body `{"kind":"history"}`.
+- A runtime that changes hands forgets the previous person: remote DMs
+  record their account (`meta.json` `account`); registering under another
+  account, or unregistering, deletes them (their hosts keep the record),
+  and every read refuses another account's DM. Unregistering refuses while
+  messages are undelivered: `peko runtime unregister --discard-unsent`.
+#### Security: conversations, keys and the shell are the owner's (2026-11-02, ADR-078 D6)
+
+- A run acting for a trusted person could `Read`/`Grep` the runtime's
+  conversation records — other people's DMs with the peko, every session
+  log — and run `Bash`, held back only by the AI policy reviewer. Now the
+  floor refuses, before review:
+  - `Bash` to every non-owner run (it is gone from their catalog);
+  - non-owner file-tool access to the runtime's own state: the Peko home
+    outside the peko's workspace (channel logs, runtime identity, vault,
+    settings) and any `principals/<name>/local/` tree (sessions, ledger,
+    plans, memory index), wherever the data directory is
+    (`security::floor::is_runtime_state`);
+  - a non-owner `Glob`/`Grep` rooted above that state
+    (`search_root_refusal`). Non-owner relative paths now anchor in the
+    workspace and `Glob` patterns may not climb out, as for untrusted runs.
+
+#### Fix: cross-runtime messages arrive as soon as the other computer is back (2026-11-02)
+
+- An envelope to an offline runtime waited in the outbox for its next
+  backoff tick, up to an hour after that runtime reconnected. PekoHub now
+  remembers which runtime waits on which (ids only, never the envelope)
+  and sends `peer_runtime_online { runtimeId }` when the recipient
+  connects; the runtime resends everything pending for it at once
+  (`TunnelChannelPort::on_peer_runtime_online`,
+  `ChannelOutbox::pending_for`). Delivery still needs both computers
+  online at some moment (ADR-090 D6).
+
+#### Feature: pekos send files with `Attach` (2026-11-02, ADR-088 D7)
+
+- Attachments were inbound only. The new `Attach` built-in (24th) takes
+  `paths` (1–8) and an optional caption `text`, copies each file into the
+  workspace's `attachments/` folder under the inbound limits (20 MB each),
+  and posts them in the run's conversation as the peko's own message.
+  `peko log`, `principal_log`, and the desktop show them like the user's.
+- Each path passes the same trust floor as `Read`; the tool refuses runs
+  outside a conversation and conversations with anyone on the Hub or
+  another runtime (files do not cross runtimes yet).
+
+#### Feature: the local user talks to a peko on another runtime over channels (2026-11-01, ADR-090)
+
+- New IPC `channel_open_remote_dm { hub_id, token? }` →
+  `channel_remote_dm_opened { channel, peer, hub_id, name, created }`
+  (local callers only). The runtime resolves the peko through PekoHub —
+  with `token`, the desktop's PekoHub access token, for a private peko;
+  it is used for that lookup and never stored — opens a DM between its
+  local user and the peko, and invites the peko's runtime over the
+  tunnel. Post and read with `channel_post` / `channel_peek` /
+  `channel_events_watch`. Calling it again returns the same DM, also
+  when PekoHub cannot be reached; if the peko moved, its new runtime is
+  invited. The runtime must be registered (`peko runtime register`).
+- On the peko's runtime, the DM gets a session of its own (its own
+  compartment), and the person's posts start turns there like any
+  message to the peko: as its owner if the account owns it, trusted if
+  the owner granted that, else untrusted; a private peko needs the
+  owner's `Chat` grant. The answers come back over the tunnel. Either
+  runtime may be offline: posts wait in the sender's outbox and are
+  delivered when it is back. A conversation the account already had
+  through PekoHub's chat continues in the same DM.
+- The tunnel accepts one unsigned invite: a Hub user's two-member DM.
+  PekoHub must relay `user:hub:<id>` envelopes only from the runtime
+  registered to that account (a PekoHub change).
+- Fixed: every `channel_*` IPC request from the local user re-registered
+  it without its Hub account, so a registered runtime's local user lost
+  its PekoHub identity (and its posts to remote channels failed).
+
+#### Change: PekoHub's API on api.pekohub.ai; sign in with a code; `peko seed` (2026-11-01)
+
+- The official hub's API is `api.pekohub.ai` (`pekohub.ai` is the website).
+  `peko runtime register` defaults to it, and a registration saved against
+  `pekohub.org` or `pekohub.ai` is read as `api.pekohub.ai`. Re-register only
+  if the daemon logs a refused tunnel.
+- `peko runtime register` and `peko runtime unregister` no longer need an API
+  key: without `--api-key` they print a code and a link
+  (`pekohub.ai/device`), wait for you to approve it there, and continue
+  (OAuth device grant, pekohub ADR-007). `--api-key` / `PEKOHUB_API_KEY`
+  still work for scripts.
+- `peko seed <NAME> [-o <PATH>]` exports a peko's seed: its
+  `principal.toml` without `id`, `did`, `actor_key`, `owner`,
+  `permissions`, `boot_state`, `status`, `exposure`, `children`, `quota`,
+  or `routing.root_prompt`. PekoHub publishes it (pekohub ADR-008) and
+  `peko create <NAME> -s <FILE>` grows it. Reads the file directly; the
+  daemon need not run. Core: `principal::seed::seed_from_config`.
+- Growing a peko from a seed resets its `exposure` and `status` too (with
+  its identity, owner and grants): a seed that said `exposure = "public"`
+  no longer publishes every peko grown from it. One rule for the CLI and
+  the IPC (`principal::seed::{parse_seed, Seed::grown}`).
+- IPC: `principal_create` takes an optional `seed` (the TOML text), so the
+  desktop can grow a peko from a seed downloaded from PekoHub; `model_id`
+  and `description` override the seed's. New `runtime_register { hub,
+  token }` → `runtime_registered { hub, runtime_did, account }` and
+  `runtime_unregister { token }` let the desktop register its own runtime
+  with the token it signed in with; the daemon connects the tunnel at
+  once. Local callers only.
+
+#### Change: a message moves a running tool to the background (2026-10-31)
+
+- When someone in the conversation (a person or a peer peko) writes while
+  a tool call runs, the call gets 2 more seconds, then moves to the
+  background with a receipt (`reason: "message"`). The run reads the
+  message at once and answers it; the tool's result arrives later as a
+  completion, like a call detached on the 10-minute wait. Runtime notes
+  (completions, wake markers) do not do this. The model stops nothing:
+  whether to wait, cancel (`Async stop`), or carry on is its call.
+- Fixed: a detached `Bash` or `Workflow` call was killed the moment it
+  detached. Detaching drops the run's side of the abort channel, and both
+  tools read a closed channel as a stop. Now only a real stop ends them.
+
+#### Change: approvals are decided with buttons and CLI verbs, not messages (2026-10-31, ADR-078 amended)
+
+- The owner decides a waiting request outside any conversation: the
+  desktop's Approve / Deny, or `peko approvals <peko>`,
+  `peko approve <peko> <id> [--always]`, and `peko deny <peko> <id>`
+  (`--json` on each). New IPC `approval_list` / `approval_decide`, allowed
+  only to a caller with the owner's `ManageSettings` permission.
+- The typed `approve <id>` / `deny <id>` / `approvals` messages are gone:
+  the runtime no longer reads any owner message before the agent turn, so
+  such a message is now ordinary conversation. The owner's notice names
+  the app and the CLI verbs instead.
+
+#### Feature: runs recover from disruptions on their own (2026-10-31, ADR-089 steps 3–5)
+
+- **Parking.** A conversation turn that meets a disruption — the peko's
+  spending limit, the provider's quota, the provider unreachable — parks:
+  the session keeps its saved work and `<local>/parked.json` records why
+  and when it continues. The daemon's continuation scheduler runs it on at
+  its next attempt from the saved history (a turn with an empty message,
+  which the loop now reads as "continue"), posts the reply to the
+  conversation, and unparks it. Waits grow per lane (model): 30 s doubling
+  to 1 h while unreachable, 1 min doubling to 24 h for the provider's
+  quota, until the reset for the peko's limit (or at once when the owner
+  lifts it). One session probes a down lane at a time; when it goes
+  through, the others continue.
+- **Messages to a waiting peko** are saved into the session and answered
+  when it continues; the sender is told so (`[queued] … is waiting …`). A
+  message may bring a provider wait forward, once a minute. `peko stop`
+  abandons a parked run.
+- **Status.** `principal_log`'s `run_failure` carries `next_attempt_at`
+  while parked; `peko log` prints "waiting since …; next try …".
+- **Cron.** A model fire while the peko's lane is down or its limit is
+  reached is deferred to the next attempt (`last_status: deferred`, no run,
+  no failure counted); a fire whose turn meets a disruption mid-run is
+  `deferred`, not `failed`.
+- **Delegated runs** (`Agent`, cron, wakes) wait in place on a disruption
+  and continue from their saved history; the parent's call returns its
+  long-run receipt and the result arrives as a completion.
+
+#### Feature: a `worker` role for delegated work (2026-10-31)
+
+Every peko is now seeded with a third default role, `worker`
+(`roles/worker.md`, beside `root` and `conversation`): one delegated task,
+done with tools, checked, and reported back to the run that handed it
+over — no chat, no work beyond the task. The `Agent` tool's `role` is now
+optional; a call that names none runs `worker`. Before, every call had to
+name a role, and the default roles were the trunk's supervisor and the
+conversation role, neither written for a delegated task. Seeding is
+create-if-missing at provision and on every boot, so existing pekos gain
+`worker` on their next start and an edited one is kept. The `root` and
+`conversation` role seeds mention it (existing copies are not rewritten).
+
+#### Fix: failures stay out of the conversation; runs outlive their client; more errors retried (2026-10-31, ADR-089 steps 1–2)
+
+- **Failures are not posted.** A failed DM run used to post `⚠ Run failed:
+  …` into the DM channel — the conversation record, which the next turn
+  reads. Nothing is posted now; the conversation's last failure rides
+  `principal_log` as `run_failure: {at, kind, message}` (cleared by the
+  next successful run) and `peko log` prints it as a status line.
+- **Runs outlive their client.** A client whose stream drops mid-run no
+  longer aborts the peko's turn (nor posts `connection lost mid-run`): the
+  run finishes and its reply lands in the DM channel. Stopping is
+  `peko stop`.
+- **Errors sorted into disruptions.** `RetryClassification::disruption()`
+  names the provider's quota or the provider being unreachable (ADR-089
+  D1). Network errors that fell through to "invalid request" and failed
+  the turn at once — DNS failures, `error sending request`, a connection
+  closed mid-reply — are retried in the turn now, as is a provider's
+  `server_is_overloaded` / `slow_down`. A 402/403 about quota, plan, or
+  billing (and a 429 about plan or billing) is the provider's quota.
+
+#### Fix: the official hub is pekohub.ai; the call that crosses a budget stands (2026-10-31)
+
+- **pekohub.ai.** `peko runtime register` and the public hub URL default to
+  `https://pekohub.ai`. `pekohub.org` now redirects there, and a tunnel can't
+  follow a redirect, so a stored registration on the old name is read as the
+  new one (`credential::official_hub_url`) — tunnel and bridge-token issuer
+  both.
+- **Budgets.** A model call that crosses a limit is already made and paid for:
+  it is charged and its answer kept, instead of failing its turn after the
+  fact. The next call is refused before it is made, so spending stops there.
+  `ModelCall` and the policy reviewer now refuse before calling when the
+  principal is over a limit; before, an exhausted principal's `ModelCall`s
+  kept making paid calls that each failed afterwards.
+
+#### Feature: tunnel status names the hub (2026-10-31)
+
+`tunnel_status` (IPC) answers with `hub_url`, the origin of the hub this
+runtime is registered with (`wss://pekohub.ai/v1/tunnel` →
+`https://pekohub.ai`; absent when unregistered). `peko tunnel status`
+prints it, and its `--json` carries it. The desktop builds a public
+peko's share link from it (with the owner's handle from the hub), and
+sends `tunnel_status` now, so the desktop contract fixture lists it.
+
+#### Feature: a registered peko's avatar reaches PekoHub; refusals in plain words (2026-10-31)
+
+The tunnel's `instance_announce` now carries the peko's avatar
+(`identity.avatar`, an emoji or short monogram; `null` when it has none),
+so PekoHub serves it with the public profile and remote clients show the
+same face its owner picked. Changing the avatar of a registered peko
+(`principal_update`) re-announces it. A hub chat the peko's permissions
+deny is answered "<peko> doesn't accept chats from you." instead of the
+permission check's text with raw actor ids; the detail stays in the log.
+
+#### Fix: remote refusals show as errors, not peko replies (2026-10-30)
+
+A refused hub request (no valid bridge token, no chat permission, unknown
+peko, empty message) went back as reply text, so web and desktop chat
+showed "Forbidden: …" as if the peko had said it. The tunnel dispatcher
+now refuses with a `proxied_response` carrying an HTTP status and the
+reason (400 / 403 / 404 / 500); PekoHub ends the chat stream with an
+`event: error` frame. A turn denied by the peko's permissions is a 403
+with the reason, no longer a 500 "Execution failed: permission denied:
+…". Once reply text has streamed, a failure still follows as text and
+ends the stream. An older hub writes the status body as text, as before.
+
+#### Fix: registered pekos stay online at PekoHub (2026-10-30)
+
+The Hub marks an instance offline after 90 s without an
+`instance_heartbeat`, and public chat to an offline peko answers 503. The
+runtime's heartbeat task (`TunnelDispatcher::spawn_heartbeat_task`) was
+never started, so every registered peko went offline about 90 s after it
+announced and remote chat failed until the next reconnect. `TunnelReady`
+now starts it for the connection (the Hub's interval, capped at 60 s;
+30 s when none) after announcing, and `Disconnect` stops it.
+
+#### Feature: a spending budget per peko (2026-10-30)
+
+`peko quota set <peko> --budget <USD>` sets the spend limit per cycle
+(`--no-budget` removes it), and `peko quota status` shows the cycle's
+spend against it. Cost is counted for models with a price
+(`spec.pricing`); a run stops when the cycle's spend reaches the budget.
+The desktop's usage panel reads and sets these through `quota_get` /
+`quota_set` (now in the desktop contract fixture).
+
+Fixes found making it work end to end:
+
+- **Over a budget, runs retried and kept paying.** The budget error's text
+  (`$0.0500`) matched the retry classifier's "500" and was retried as an
+  HTTP 500, charging again each time. Quota errors now ride the stream
+  typed (`peko_quota::QuotaError`) and the loop treats them as terminal;
+  the metered provider also refuses a call up front when a meter is
+  already exhausted, so an over-budget peko makes no further calls.
+- **A per-message model ran on the peko's own provider.** `--model <id>`
+  (and the desktop's picker, and the Agent tool's `model`) sent the
+  catalog id as the wire model name with the peko's endpoint, key, and
+  spec ("Unsupported model …", no price). `SubagentExecutor` now resolves
+  a picked model through the catalog (`with_llm_resolver`).
+- **IPC config changes reverted edits to `principal.toml`.** `quota set`
+  (and every `update_config`) wrote the in-memory config, putting back
+  values edited on disk since it was loaded; it now reloads a changed file
+  first.
+
+#### Fix: a peko's file tools work in its own folder (2026-10-30)
+
+Without a workspace on the call, the file tools and Bash resolved relative
+paths in one runtime-wide `<data>/workspaces` directory shared by every
+principal, so a peko's `Glob roles/*.md` found nothing and pekos could
+overwrite each other's relative files. The dispatcher now uses the
+calling principal's workspace for relative paths, the Glob/Grep search
+root, and Bash's working directory (untrusted runs were already confined
+there). `~/…` paths expand to the home directory. The runtime prompt no
+longer warns that the default directory can differ.
+`peko log` timestamps show as `YYYY-MM-DD HH:MM` in local time (they
+printed as `2026-10-30 T04:06:44.511473`).
+
+#### Feature: `Read` shows images, audio, and video to the model (2026-10-30)
+
+An agent can look at an image, listen to audio, or watch video whenever it
+wants, not only when the file arrives attached to a message (ADR-088 D6).
+`Read` on a media file returns a line describing it and a `media`
+reference instead of base64 text; the engine attaches the file to that
+tool result when the run's model takes that kind, else a note. Only the
+built-in `Read` can point the engine at a file. Anthropic `tool_result`
+content now carries images; on the OpenAI protocols a turn's tool media
+follows its tool outputs as one user message. Kinds, limits, and the
+"cannot take" note live in `peko_message::media`; loading in
+`peko_engine::media`. `peko log` lists each message's attachments.
+
+#### Fix: parallel tool results and streamed usage on OpenAI-format endpoints (2026-10-30)
+
+History repair pairs an assistant turn's parallel tool calls with one tool
+message holding every result. The Chat Completions adapter sent that as a
+single `tool` message with a null `tool_call_id`, and the Responses
+adapter as one `function_call_output` with an empty `call_id`, so any
+turn replaying parallel calls failed (MiMo: "`tool_call_id` is not set").
+Both now send one output per call id. Streamed turns on Chat Completions
+also reported 0 tokens: usage arrives in its own chunk after the finish,
+and the stream loop stopped reading at the finish's `Done`. The adapter
+now holds the finish until the usage chunk, `[DONE]`, or the end of the
+stream (`ApiAdapter::end_of_stream`).
+
+#### Feature: attach files to a message — images, audio, and video reach models that take them (2026-10-30)
+
+You can hand a peko a screenshot, a voice memo, a clip, a PDF, or a
+spreadsheet (ADR-088). `principal_send` / `principal_send_stream` take
+`attachments` (absolute paths, local user only, at most 8 files of 20 MB
+each), and `peko send` takes `--attach <path>` (repeatable). The engine
+copies each file into the peko's workspace under `attachments/<date>/`,
+records it on the DM post, and adds a note line per file to the turn.
+Images, audio, and video also reach the model as content blocks when its
+spec declares `image_input` / `audio_input` / `video_input`; otherwise the
+note says it cannot take them. `peko-message` gains `ContentBlock::Audio`
+and `ContentBlock::Video`; `ModelSpec` gains `video_input` (shown by
+`peko model show` / `compare` and `ModelList`); IPC `model_update`
+takes `spec`, so a client can say which inputs a model takes; the spec
+gate checks audio and video. Chat Completions sends `input_audio` and `video_url`
+parts (verified with MiMo-V2.6-Flash); Anthropic Messages and OpenAI
+Responses send a text placeholder. `peko log` and `principal_log` rows
+carry the attachments with absolute paths. The loop's rich-input entry
+now neutralizes runtime tags like the text entry, and the mock
+resolver's providers carry their catalog spec.
+
+#### Feature: a person can leave a group (2026-10-29)
+
+`channel_leave` removed only a named peko, so in peko-desktop "Leave"
+took a peko out of the group and you stayed. Without `principal_name`
+it now removes the caller and answers `channel_member_left { channel,
+member }`; with one it works as before (`channel_left`, operator only).
+`ChannelPort::leave_actor` removes any member, a person or a principal
+(whose binding goes with it), and the tunnel tells remote members. A DM
+still cannot be left.
+
+#### Fix: pekos created from the desktop no longer read "The <name> Principal" (2026-10-28)
+
+IPC `principal_create` without a description stamped `"The <name>
+Principal"`, so every peko made in peko-desktop showed that runtime
+jargon as its subtitle and never wrote its own. A missing or blank
+description now stays empty, as `peko create` leaves it, and the genesis
+turn has the peko adopt its own self-description.
+
+#### Feature: conversations run a conversation role; the root role supervises (2026-10-28)
+
+Every DM and group turn ran the principal's root role — the same file
+that tells the trunk how to supervise — so a peko told people it ran "as
+root", and tuning one job retuned the other. ADR-087 separates them:
+
+- A new seeded role, `roles/conversation.md`, is what conversations run by
+  default. It is stamped create-if-missing at provision and on every boot,
+  so existing pekos pick it up on their next daemon start.
+- A channel binding can name its own role (`meta.json`
+  `bindings[principal].role`). The principal sets it with `Channel` action
+  `role` (owner decision: refused to untrusted runs, owner approval for
+  trusted ones) and reads it in `Channel info`. Roles stay internal: no
+  IPC or client surface.
+  Resolution per turn: binding role → `routing.peer_agent` →
+  `conversation` → `root`.
+- The seeded root role now covers supervision only (existing `root.md`
+  files are untouched).
+- The prompt reads a run's role, not its agent name: `AgentConfig.role`
+  (conversation turns, and `Agent` spawns with a `role`, which used to
+  render as `root`) drives `{{role_name}}` and the `kb/roles/<role>.md`
+  note. Agent names and DIDs are unchanged.
+- The genesis brief puts voice, style, and shared rules in
+  `[identity]`/`[intent]` and `kb/CONVENTIONS.md`, and describes roles as
+  jobs.
+
+#### Feature: a peko has an avatar (2026-10-28)
+
+`principal.toml` always had `[identity] avatar`, but nothing set or read
+it. `principal_update { avatar }` now sets it — an emoji or a short
+monogram, at most 32 bytes, never an image URL (`""` clears it) — and
+`principal_list` / `principal_get` return it, so peko-desktop can draw
+each peko with its own face. See `DATA_MODEL.md` "Principal avatar".
+
+#### Fix: OpenAI-format streams keep a tool call sent in one chunk (2026-10-27)
+
+Some OpenAI-compatible servers (Ollama, for one) stream a tool call whole —
+id, name, and arguments in one chunk. The parser started the call, threw
+away the completed result, and the finish chunk then cleared it: the run
+ended with no tool call and an empty reply. A chunk with several parts lost
+all but the first the same way — usage beside the finish dropped the
+finish, text beside a call dropped the call. The parser now turns each
+chunk into all of its events, in order (`ApiAdapter::take_pending_events`
+hands the stream loop the ones beyond the first). At the finish, a call
+still buffered with no arguments completes as `{}` (a tool without
+parameters); one whose arguments are cut off is dropped, not run.
+
+#### Feature: a streaming send shows the run's tool calls and thinking (2026-10-27)
+
+`principal_send_stream` sent only text chunks and iteration markers; the
+engine's tool and thinking events were dropped before the wire, so a client
+could not show what a peko was doing. Three packets carry them:
+`principal_sent_tool_start`, `principal_sent_tool_end`, and
+`principal_sent_thinking`. The owner gets each call's input and output,
+redacted by the tool ledger's redactor and capped at 1 KiB, and the
+thinking; anyone else gets tool names and status only. `run_summary`'s
+`tool_errors` are now redacted too. Shapes are in `DATA_MODEL.md` §13⅝ and
+pinned for peko-desktop by `ipc/fixtures/desktop_stream_responses.json`.
+
+#### Fix: OpenAI-format streams carry reasoning inside the delta (2026-10-27)
+
+DeepSeek and Moonshot/Kimi stream reasoning as
+`choices[0].delta.reasoning_content`. The adapter read reasoning only
+beside the delta (on the choice), so their thinking never reached the
+engine. Both places are read now, the delta first.
+
+#### Feature: IPC reads and sets a peko's wake policy in a group (2026-10-27)
+
+The desktop could not show whether a channel is a DM or a group, or let
+the owner choose how each of their pekos wakes in a group: the policy
+(`human` / `mention` / `off`, ADR-082) was reachable only through the
+principal-facing `Channel` tool. Two IPC requests add it:
+`channel_info { channel }` answers the channel's kind, name, members, and
+each hosted member peko's wake policy (members only, like `channel_peek`);
+`channel_set_wake { channel, principal_name, wake }` sets one (the peko's
+owner, groups only, the peko a member). Shapes are in `DATA_MODEL.md`
+§5¾.2. Both are in the desktop contract fixture
+(`ipc/fixtures/desktop_requests.json`).
+
+#### Fix: a reminder arrives once, as the reminder (2026-10-26)
+
+A reminder set in conversation showed up in `peko log` like this:
+
+```
+my-peko: 📨 [did:key:z6Mk…] 💧 Hydration check, Sam! Time to drink some water.
+my-peko: Water reminder delivered to Sam. One-shot job fired successfully; nothing further to track.
+```
+
+- **The raw key.** A `ChannelSend` note to a person was labelled with the
+  agent's id when the model gave no label, and that id is a DID. The person
+  now sees the message alone, or a label that means something (an explicit
+  label, a readable agent name, or the runtime's `via …` attribution). The
+  copy in the conversation's session keeps `📨 [agent]`, so the agent there
+  knows the note didn't come from the person. `PeerMessenger::deliver_note`
+  takes an optional `display` text for the DM post.
+- **The bookkeeping.** A message job fires a turn in the conversation that
+  created it, and that turn's reply is posted to the conversation. The turn
+  wasn't told so: it sent the reminder with `ChannelSend`, then replied with
+  a report on the job. When a job fires in a conversation, its message is
+  now framed: the reply is posted as written, so it should be only what the
+  people there should read, with no second `ChannelSend` and no job status.
+  Verified with MiMo v2.6 Flash: each reminder arrived once, as the
+  reminder.
+
+#### Fix: `install.sh` creates a missing install directory (2026-10-26)
+
+With `--install-dir ~/.local/bin` (as `GETTING_STARTED.md` documents) on an
+account where that directory didn't exist yet, `install.sh` asked for `sudo`
+and then failed to move the binaries into the missing directory. Nothing was
+installed. The default `/usr/local/bin` can be missing as well, for example
+on a fresh Apple silicon Mac. The installer now creates the directory, using
+`sudo` only when the user can't. The release smoke job no longer creates the
+directory itself, so it covers this path. Found while dry-running the gate 5
+field-test kit.
 
 #### Fix: tool calls work on OpenAI-format endpoints (2026-10-25)
 

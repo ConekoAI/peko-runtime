@@ -55,13 +55,11 @@ irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 |
 ```
 
 It puts `peko.exe` and `peko-daemon.exe` in `%LOCALAPPDATA%\Programs\peko\bin`
-and adds that directory to your user `PATH`. Windows builds start with the
-first release after 0.1.0-rc.5.
+and adds that directory to your user `PATH`.
 
 On macOS and Linux, the installer puts `peko` and `peko-daemon` in
 `/usr/local/bin`; `--install-dir <dir>` picks another directory and
-`--version <version>` a specific release. Before the first stable release,
-pass a release candidate's version, such as `--version 0.1.0-rc.2`.
+`--version <version>` a specific release; without it you get the newest.
 
 Optional: Python 3 (`python3` on `PATH`) for the `Workflow` tool, which
 runs workflows the peko writes. Without it, `Workflow` returns an error and

@@ -7,7 +7,7 @@ choose. It remembers what matters, follows up on what it promised, and handles
 messages from the people you let in. It follows your rules, and when it isn't
 sure, it asks you first.
 
-> **Version:** 0.1.0 (release candidates) · **License:** MIT ·
+> **Version:** 0.1.x (preview) · **License:** MIT ·
 > macOS, Linux, Windows
 
 ---
@@ -66,9 +66,9 @@ On Windows, in PowerShell (per user, no administrator rights):
 irm https://raw.githubusercontent.com/ConekoAI/peko-runtime/master/install.ps1 | iex
 ```
 
-Until 0.1.0 is final, name a release candidate:
-`... | bash -s -- --version 0.1.0-rc.5` (PowerShell: set
-`$env:PEKO_VERSION = '0.1.0-rc.5'` first).
+That installs the newest release. `peko update` moves to a newer one
+later. Releases in the `0.1.x` line don't break each other; a change that
+does starts `0.2.0`.
 
 Connect a model, create a peko, and say hello. Take the base URL from your
 provider's docs (most say "OpenAI-compatible": `openai_completions`); leave
@@ -176,7 +176,7 @@ runtime itself:
 [`config.example.toml`](config.example.toml) documents both. The daemon has
 no web server; the CLI and the desktop app talk to it on this computer only.
 
-> Upgrading from an earlier release candidate? Your pekos move from
+> Upgrading from a release candidate (`0.1.0-rc.N`)? Your pekos move from
 > `~/.peko/principals/` to `~/.peko/pekos/` the next time the daemon starts. A
 > peko's `principal.toml` becomes `peko.toml`, and `~/.peko/peko.toml` becomes
 > `~/.peko/runtime.toml`, the first time Peko reads them. `.peko` backups made
