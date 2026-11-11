@@ -25,10 +25,10 @@ who signs off. If an item can't be verified, it doesn't belong here.
 | 1. Distribution | 6 / 6 | — (`v0.1.0` released 2026-11-11) |
 | 2. Version bookkeeping | 3 / 3 | — |
 | 3. Docs | 4 / 4 | — |
-| 4. CI | 1 / 4 | Real-LLM tier re-run (last on `91f7e024`, 2026-10-25). The Linux and Windows tiers have not run on the release commit `770e2324` itself: it is a docs-only commit, which CI skips. They were green on the last code change before it (#617) |
+| 4. CI | 3 / 4 | Real-LLM tier re-run on the release (last on `91f7e024`, 2026-10-25) |
 | 5. Field test | 1 / 3 | Non-technical field test on Peko Desktop, plus an agent's command-line run (last human session 2026-08-13). The benchmark suite is due a re-run on `v0.1.0`, which differs from rc.4 in runtime code |
 | 6. Security | 2 / 2 | — |
-| **Total** | **21 / 26** | |
+| **Total** | **23 / 26** | |
 
 2026-11-11: **`v0.1.0` is released** (`770e2324`, run 42994203543), the
 first plain version and the start of the `0.1.x` preview line (ADR-102).
@@ -36,8 +36,14 @@ All five archives built from the tag, and the smoke job passed on all five
 platforms. It was the first run of the new release flow: the `prepare` job
 made the tag from the version in the tree. `releases/latest` now answers
 `v0.1.0`, so the installer's default and `peko update` find it. Gates 1 and
-2 are closed. Still open: the CI tiers and the real-LLM tier on a release
-commit (gate 4), and the field test (gate 5).
+2 are closed. Still open: the real-LLM tier on the release (gate 4), and
+the field test (gate 5).
+
+2026-11-11, later: every CI tier is green on the release commit itself. CI
+skips a docs-only commit, so the run was started by hand on `770e2324`
+(run 42996374733): both lints, the unit and native tiers on Linux and
+Windows, and the mock-LLM integration tier. The two CI boxes in gate 4 are
+closed.
 
 2026-11-11: `v0.1.0-rc.6` (`0616d2db`, 2026-11-10) built all five artifacts
 and passed the smoke job on all five platforms, Windows included, and every
@@ -308,15 +314,20 @@ Currently the primary install path is dead: no release has ever been cut, and
 
 ## 4. CI is green on every tier in scope
 
-- [ ] **Linux tiers green** on the release commit: `lint`,
+- [x] **Linux tiers green** (2026-11-11, `v0.1.0`) on the release commit: `lint`,
       `lint-workspace`, `unit-linux`, `integration` (mock-LLM Docker tier).
+      *2026-11-11: all four, and `native-linux`, green on `770e2324`, the
+      commit tagged `v0.1.0` (run 42996374733, started by hand because CI
+      skips a docs-only commit).*
       *2026-11-09: all four, and `native-linux`, green on `0616d2db` (run
       42631820395), the commit tagged `v0.1.0-rc.6`. The box closes if the
       MVP tag lands on that commit; otherwise re-check on the new one.*
       *2026-10-22: all four green on the latest master push (`2471f6fd`);
       no release commit yet.*
-- [ ] **Windows tiers green** on the release commit: `unit-windows` and
+- [x] **Windows tiers green** (2026-11-11, `v0.1.0`) on the release commit: `unit-windows` and
       `native-windows`, blocking since 2026-11-03 (gate 0).
+      *2026-11-11: both green on the CI runner on `770e2324`, the commit
+      tagged `v0.1.0` (run 42996374733).*
       *2026-11-09: both green on the CI runner on `0616d2db` (run
       42631820395), and again on the 2026-11-10 scheduled run. Same
       closing rule as the Linux tiers.*
