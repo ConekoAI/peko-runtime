@@ -21,6 +21,7 @@
   {"type": "principal_stop", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": null, "main": false},
   {"type": "principal_stop", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": null, "main": true},
   {"type": "principal_setup_status", "protocol_version": 1, "request_id": 1, "name": "alice"},
+  {"type": "principal_setup_run", "protocol_version": 1, "request_id": 1, "name": "alice"},
   {"type": "principal_send", "protocol_version": 1, "request_id": 1, "name": "alice", "message": "hello"},
   {"type": "principal_log", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": {"kind": "user", "id": "local"}, "limit": 100, "since_secs": null, "cursor": null},
   {"type": "principal_log_watch", "protocol_version": 1, "request_id": 1, "name": "alice", "peer": {"kind": "user", "id": "local"}, "since_cursor": null},

@@ -4,6 +4,26 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **`peko setup <name>` runs a peko's setup steps again (ADR-106).** The
+  peko checks each step, carries out those that do not work yet, and
+  reports step by step. Use it after a step failed, after editing the
+  `setup` list, or on a new computer. `--status` only shows how each step
+  stands. IPC: `principal_setup_run`.
+- **Setup results per step (ADR-106).** `principal_setup_status` now
+  returns `results` (each step as `ready`, `failed` or `pending`, with the
+  peko's note) and `setup_state` (`none`, `pending`, `running`, `done`).
+  `peko create` ends with the same list.
+
+### Changed
+
+- **Setup steps run in a turn of their own, after the first turn
+  (ADR-106).** They used to be part of the first turn. Stopping setup no
+  longer cuts the peko's own organizing short, and a first turn you stop
+  leaves the steps for `peko setup`. The peko now writes `kb/setup.md` as
+  one line per step.
+
 ### Fixed
 
 - **A peko made in Peko Desktop now sets itself up right away (ADR-105).**

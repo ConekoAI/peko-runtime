@@ -238,27 +238,44 @@ setup = [
 
 `peko create my-peko -s my.seed.toml` shows the steps and asks before it
 creates anything, because the peko will run commands and download code on
-your computer, as you. In a script, `--yes` accepts them. On its first turn
-the peko carries out each step, checks that it works, and writes the result
-to `kb/setup.md`, which `peko create` prints when the turn ends. A step that
-needs an administrator password is not attempted: the report gives you the
-command to run yourself.
+your computer, as you. In a script, `--yes` accepts them.
 
-There is no limit on how many steps you list or how long they take.
-`peko create` waits until the first turn is done and prints each thing the
-peko does as it does it. Ctrl-C stops the waiting, not the peko. To stop the
-peko itself, from another terminal:
+The peko first sets itself up (its first turn), then goes through the setup
+steps in a turn of their own. It checks each step, carries it out if it does
+not work yet, and checks again. `peko create` prints what it does and ends
+with each step and how it went:
+
+```text
+  ✓ 1. Get the release-notes skill from https://example.com/skills/release-notes
+       ready: `Skill` loads it by name
+  ✗ 2. Add the Playwright MCP server (https://github.com/microsoft/playwright-mcp)
+       failed: Node is not installed; run `brew install node`
+  ✓ 3. Install ripgrep
+       ready: `rg --version` prints 14.1.0
+```
+
+A step that needs an administrator password is not attempted: its line gives
+you the command to run yourself.
+
+There is no limit on how many steps you list or how long they take. Ctrl-C
+stops the waiting, not the peko. To stop the peko itself, from another
+terminal:
 
 ```bash
 peko stop my-peko --main
 ```
 
-It stops after the step it is on, keeps what it has done, and does not start
-setup again. `peko audit ledger my-peko --follow` shows the same progress at
-any time.
+It stops after the step it is on and keeps what it has done.
 
-The steps run once. Editing `setup` later does nothing: to add a tool to a
-peko that already exists, ask it.
+To run the steps again, after fixing what a step needed, editing the `setup`
+list in `peko.toml`, or moving the peko to another computer:
+
+```bash
+peko setup my-peko
+```
+
+Steps that already work are only checked. `peko setup my-peko --status`
+shows how each step stands without running anything.
 
 Leave `id`, `did`, `actor_key` and `[owner]` alone: they are the peko's
 identity: the daemon keeps their loaded values until it restarts. Other

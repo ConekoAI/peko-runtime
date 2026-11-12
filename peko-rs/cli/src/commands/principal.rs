@@ -136,6 +136,23 @@ pub enum PrincipalCommands {
         output: Option<String>,
     },
 
+    /// Run a peko's setup steps again, or show how they stand
+    ///
+    /// Setup steps are the `setup` list under `[intent]` in its
+    /// `peko.toml`: skills, MCP servers and tools it should have ready.
+    /// The peko checks each one, carries out those that do not work
+    /// yet, and reports step by step. Use it after a step failed, after
+    /// you edited the list, or on a new computer. Ctrl-C stops the
+    /// watching, not the peko; `peko stop <name> --main` stops the peko.
+    Setup {
+        /// Peko name
+        name: String,
+
+        /// Only show how each step stands; run nothing
+        #[arg(long)]
+        status: bool,
+    },
+
     /// Export a peko's seed: its definition without its identity,
     /// owner, permissions, or memory
     ///
@@ -345,6 +362,7 @@ pub async fn handle_principal(
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
         PrincipalCommands::Seed { name, output } => export_seed(&name, output, paths),
+        PrincipalCommands::Setup { name, status } => setup_principal(&name, status, paths).await,
         PrincipalCommands::Import {
             file_path,
             name,
@@ -601,22 +619,100 @@ fn accept_setup(name: &str, steps: &[String], yes: bool, interactive: bool) -> R
     confirm_prompt("Let it carry these out?")
 }
 
-/// What to print about setup once the first turn is done (ADR-104): the
-/// peko's own report, or a line saying it wrote none.
-fn setup_report(workspace: &std::path::Path, steps: &[String]) -> Option<String> {
-    if steps.is_empty() {
-        return None;
-    }
-    let path = workspace.join(peko_core::principal::seed::SETUP_REPORT_PATH);
-    Some(match std::fs::read_to_string(&path) {
-        Ok(report) if !report.trim().is_empty() => {
-            format!("Setup report ({}):\n{}", path.display(), report.trim_end())
+/// One line per setup step, with how it stands (ADR-106).
+fn setup_result_lines(results: &[peko_core::ipc::packet::SetupResultInfo]) -> Vec<String> {
+    results
+        .iter()
+        .enumerate()
+        .map(|(index, result)| {
+            let mark = match result.status.as_str() {
+                "ready" => "✓",
+                "failed" => "✗",
+                _ => "·",
+            };
+            let tail = match (result.status.as_str(), result.note.as_deref()) {
+                ("pending", _) => " (not done)".to_string(),
+                (status, Some(note)) => format!("\n       {status}: {note}"),
+                (status, None) => format!("\n       {status}"),
+            };
+            format!("  {mark} {}. {}{tail}", index + 1, result.step)
+        })
+        .collect()
+}
+
+/// `peko setup <name>`: run the setup steps again (unless `status`),
+/// watch the turn, and print how each step stands.
+async fn setup_principal(name: &str, status_only: bool, paths: &GlobalPaths) -> Result<()> {
+    ensure_daemon(paths).await?;
+    let client = DaemonClient::connect().await?;
+    if !status_only {
+        match client.principal_setup_run(name).await? {
+            ResponsePacket::Done { success: true, .. } => println!(
+                "'{name}' is going through its setup steps. Ctrl-C stops the watching, \
+                 not the peko; to stop the peko: peko stop {name} --main"
+            ),
+            ResponsePacket::Done { error, .. } => {
+                anyhow::bail!(error.unwrap_or_else(|| "setup could not be started".into()))
+            }
+            ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+            other => anyhow::bail!("unexpected daemon response: {other:?}"),
         }
-        _ => format!(
-            "The peko wrote no setup report at {}. Ask it which setup steps are ready.",
-            path.display()
-        ),
-    })
+    }
+    let results = watch_setup(name, paths, &client, !status_only, None).await?;
+    if results.is_empty() {
+        println!("'{name}' lists no setup steps.");
+    }
+    for line in setup_result_lines(&results) {
+        println!("{line}");
+    }
+    if results.iter().any(|r| r.status != "ready") {
+        println!("Run the steps that are not ready again with: peko setup {name}");
+    }
+    Ok(())
+}
+
+/// Follow a peko's setup turn until none is scheduled or running,
+/// printing what it does when `follow`, and return each step's result.
+async fn watch_setup(
+    name: &str,
+    paths: &GlobalPaths,
+    client: &DaemonClient,
+    follow: bool,
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<peko_core::ipc::packet::SetupResultInfo>> {
+    let ledger_dir = paths.principal_layout(name).local.ledger_dir;
+    let mut shown = FirstTurnProgress::default();
+    if follow {
+        // What it did before this turn is not this turn's progress.
+        shown.new_steps(&ledger_dir);
+    }
+    loop {
+        let (state, results) = match client.principal_setup_status(name).await? {
+            ResponsePacket::PrincipalSetupStatus {
+                setup_state,
+                results,
+                ..
+            } => (setup_state, results),
+            ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+            other => anyhow::bail!("unexpected daemon response: {other:?}"),
+        };
+        if follow {
+            for line in shown.new_steps(&ledger_dir) {
+                println!("  · {line}");
+            }
+        }
+        if !follow || state != "running" {
+            return Ok(results);
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
+            anyhow::bail!(
+                "'{name}' has not finished its setup steps in the time given. It goes on \
+                 in the daemon. See how it stands: peko setup {name} --status. Stop it: \
+                 peko stop {name} --main"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
 
 /// `peko create` (ADR-054, ADR-105): decide what to create, have the
@@ -883,9 +979,18 @@ async fn wait_for_first_turn(
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
-    let workspace = paths.resolver().principal_layout(name).shared.root;
-    if let Some(report) = setup_report(&workspace, &setup) {
-        println!("{report}");
+    // ADR-106: the setup steps run in a turn of their own, after the
+    // first one.
+    if !setup.is_empty() {
+        println!("'{name}' is going through its setup steps…");
+        let client = DaemonClient::connect().await?;
+        let results = watch_setup(name, paths, &client, true, deadline).await?;
+        for line in setup_result_lines(&results) {
+            println!("{line}");
+        }
+        if results.iter().any(|r| r.status != "ready") {
+            println!("Run the steps that are not ready again with: peko setup {name}");
+        }
     }
     println!(
         "🎉 Peko '{name}' is ready. \
@@ -2532,27 +2637,48 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         assert!(refused.to_string().contains("--yes"), "{refused}");
     }
 
-    /// ADR-104: `create` ends by showing the peko's own setup report.
+    /// ADR-106: each setup step is printed with how it stands.
     #[test]
-    fn create_shows_the_setup_report() {
-        let workspace = tempfile::tempdir().unwrap();
-        let steps = vec!["Install ripgrep".to_string()];
-        assert!(setup_report(workspace.path(), &[]).is_none());
-        let missing = setup_report(workspace.path(), &steps).unwrap();
-        assert!(missing.contains("wrote no setup report"), "{missing}");
-
-        std::fs::create_dir_all(workspace.path().join("kb")).unwrap();
-        std::fs::write(
-            workspace.path().join("kb/setup.md"),
-            "- ripgrep: ready (`rg --version`)\n",
-        )
-        .unwrap();
-        let report = setup_report(workspace.path(), &steps).unwrap();
-        assert!(report.starts_with("Setup report ("), "{report}");
-        assert!(
-            report.ends_with("- ripgrep: ready (`rg --version`)"),
-            "{report}"
+    fn setup_results_print_one_step_at_a_time() {
+        use peko_core::ipc::packet::SetupResultInfo;
+        let result = |step: &str, status: &str, note: Option<&str>| SetupResultInfo {
+            step: step.to_string(),
+            status: status.to_string(),
+            note: note.map(str::to_string),
+        };
+        let lines = setup_result_lines(&[
+            result(
+                "Install ripgrep",
+                "ready",
+                Some("`rg --version` prints 14.1"),
+            ),
+            result(
+                "Add Playwright",
+                "failed",
+                Some("Node is missing; run `brew install node`"),
+            ),
+            result("Add the notes skill", "pending", None),
+        ]);
+        assert_eq!(
+            lines,
+            [
+                "  ✓ 1. Install ripgrep\n       ready: `rg --version` prints 14.1",
+                "  ✗ 2. Add Playwright\n       failed: Node is missing; run `brew install node`",
+                "  · 3. Add the notes skill (not done)",
+            ]
         );
+    }
+
+    #[test]
+    fn setup_parses_its_status_flag() {
+        let cli = Cli::try_parse_from(["peko", "setup", "scout", "--status"]).unwrap();
+        match cli.command {
+            Commands::Peko(PrincipalCommands::Setup { name, status }) => {
+                assert_eq!(name, "scout");
+                assert!(status);
+            }
+            _other => panic!("expected the setup command"),
+        }
     }
 
     /// Bug 2 regression: a second `create` against an existing workspace

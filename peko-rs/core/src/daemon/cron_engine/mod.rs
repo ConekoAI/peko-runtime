@@ -899,6 +899,25 @@ impl CronEngine {
             if let Some(manager) = &self.principal_manager {
                 if let Some(principal) = resolve_principal(manager, &job.principal_id).await {
                     let name = principal.name().await;
+                    // ADR-106: the creator's setup steps run next, in a
+                    // turn of their own. Scheduled before `organized` is
+                    // stamped, so whoever waits on that stamp finds the
+                    // job. Not after a first turn the owner stopped:
+                    // they start setup themselves (`peko setup`).
+                    if status == "success" {
+                        let config = principal.config.read().await.clone();
+                        match crate::principal::setup_status::start(
+                            &scheduler,
+                            &config,
+                            &principal.workspace_path,
+                        ) {
+                            Ok(true) => info!("🧰 Scheduled the setup turn for '{name}'"),
+                            Ok(false) => {}
+                            Err(e) => {
+                                warn!("could not schedule the setup turn for '{name}': {e:#}")
+                            }
+                        }
+                    }
                     manager
                         .persist_boot_state(&name, crate::principal::config::BootState::Organized)
                         .await?;
@@ -2401,6 +2420,7 @@ mod tests {
         ] {
             let mut config = test_config(name);
             config.preferred_model_id = Some(model.into());
+            config.intent.setup = vec!["Install ripgrep".into()];
             let principal = manager.create(config).await.unwrap();
             crate::principal::genesis::seed_boot_defaults(&manager, &paths)
                 .await
@@ -2422,6 +2442,16 @@ mod tests {
                 .unwrap()
                 .is_none());
             assert_eq!(principal.config.read().await.boot_state(), expected_state);
+            // ADR-106: the setup steps get a turn of their own, right
+            // after a first turn that succeeded, and only then.
+            assert_eq!(
+                scheduler
+                    .get_job(crate::principal::genesis::SETUP_JOB_ID)
+                    .unwrap()
+                    .is_some(),
+                expected_status == "success",
+                "{name}"
+            );
             let persisted: PrincipalConfig = toml::from_str(
                 &std::fs::read_to_string(principal.workspace_path.join("peko.toml")).unwrap(),
             )
@@ -2459,6 +2489,7 @@ mod tests {
         );
         let mut config = test_config("halted");
         config.preferred_model_id = Some("mock".into());
+        config.intent.setup = vec!["Install ripgrep".into()];
         let principal = manager.create(config).await.unwrap();
         assert!(!principal.main_run.stop(), "nothing runs yet");
         crate::principal::genesis::seed_boot_defaults(&manager, &paths)
@@ -2503,6 +2534,11 @@ mod tests {
             !report.genesis_seeded.contains(&"halted".to_string()),
             "a stopped first turn is not run again"
         );
+        // ADR-106: the owner stopped the peko; setup waits for them.
+        assert!(scheduler
+            .get_job(crate::principal::genesis::SETUP_JOB_ID)
+            .unwrap()
+            .is_none());
         assert_eq!(
             peko_cron::status_resets_failures(peko_cron::STOPPED_STATUS),
             None
