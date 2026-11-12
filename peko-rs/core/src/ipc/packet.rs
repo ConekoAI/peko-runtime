@@ -590,6 +590,14 @@ pub enum RequestPacket {
     #[serde(rename = "principal_setup_status")]
     PrincipalSetupStatus { request_id: u64, name: String },
 
+    /// Run a peko's setup steps again (ADR-106): a setup turn that
+    /// checks each step and carries out the ones that do not work yet.
+    /// Owner (or operator) only. Answers `done`; `success: false` when
+    /// the peko lists no steps, a setup turn is already scheduled, or it
+    /// is still on its first turn.
+    #[serde(rename = "principal_setup_run")]
+    PrincipalSetupRun { request_id: u64, name: String },
+
     /// The owner's decision on approval request `id`: approve (with
     /// `always`, also add an always-allow rule to `POLICY.md`) or deny.
     /// The owner's own action — the desktop's buttons, `peko approve` /
@@ -1214,6 +1222,7 @@ impl RequestPacket {
             | Self::PrincipalStop { request_id, .. }
             | Self::ApprovalList { request_id, .. }
             | Self::PrincipalSetupStatus { request_id, .. }
+            | Self::PrincipalSetupRun { request_id, .. }
             | Self::ApprovalDecide { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
@@ -1346,6 +1355,18 @@ pub struct ToolErrorEntry {
 
 /// Schema version carried on every `PrincipalLogMessage` row.
 pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
+
+/// One setup step and how it stands (ADR-106).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupResultInfo {
+    pub step: String,
+    /// `ready` | `failed` | `pending`.
+    pub status: String,
+    /// The peko's one line about it: how it checked, or why it failed
+    /// and what the owner must do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
 
 /// One tool call of a peko's first turn (ADR-104 D4), as a person reads
 /// it: the tool, its action, and the one argument that says what it is
@@ -2424,6 +2445,16 @@ pub enum ResponsePacket {
         /// at most 16 KiB.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         report: Option<String>,
+        /// Where setup stands (ADR-106): `none` (no steps listed),
+        /// `pending` (some steps not reported, nothing scheduled),
+        /// `running` (a setup turn is scheduled or running), `done`
+        /// (every step reported).
+        #[serde(default)]
+        setup_state: String,
+        /// Each setup step with its result, in order, read from the
+        /// report.
+        #[serde(default)]
+        results: Vec<SetupResultInfo>,
     },
 
     /// The approval requests waiting for the owner, oldest first.
@@ -3495,8 +3526,23 @@ mod tests {
                 outcome: None,
             }],
             report: None,
+            setup_state: "running".to_string(),
+            results: vec![SetupResultInfo {
+                step: "Install ripgrep".to_string(),
+                status: "pending".to_string(),
+                note: None,
+            }],
         };
+        let run = RequestPacket::PrincipalSetupRun {
+            request_id: 8,
+            name: "scout".to_string(),
+        };
+        assert!(String::from_utf8(run.to_bytes().unwrap())
+            .unwrap()
+            .contains("\"principal_setup_run\""));
         let value: serde_json::Value = serde_json::from_slice(&resp.to_bytes().unwrap()).unwrap();
+        assert_eq!(value["setup_state"], "running");
+        assert_eq!(value["results"][0]["status"], "pending");
         assert_eq!(value["type"], "principal_setup_status");
         assert_eq!(value["boot_state"], "genesis_pending");
         assert_eq!(value["running"], true);

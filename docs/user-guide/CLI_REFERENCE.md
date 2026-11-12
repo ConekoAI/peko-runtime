@@ -17,6 +17,7 @@ Commands:
   show           Show a peko's configuration and roles
   remove         Remove a peko and all its data
   export         Save a peko to a `.peko` file, to back it up or move it
+  setup          Run a peko's setup steps again, or show how they stand
   seed           Export a peko's seed: its definition without its identity, owner, permissions, or memory
   import         Import a peko from a `.peko` package
   permit         Grant a permission on a peko
@@ -176,6 +177,24 @@ Arguments:
 Options:
   -o, --output <OUTPUT>
           Output file path (defaults to `<name>.peko`)
+```
+
+## `peko setup`
+
+```text
+Run a peko's setup steps again, or show how they stand
+
+Setup steps are the `setup` list under `[intent]` in its `peko.toml`: skills, MCP servers and tools it should have ready. The peko checks each one, carries out those that do not work yet, and reports step by step. Use it after a step failed, after you edited the list, or on a new computer. Ctrl-C stops the watching, not the peko; `peko stop <name> --main` stops the peko.
+
+Usage: peko setup [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Peko name
+
+Options:
+      --status
+          Only show how each step stands; run nothing
 ```
 
 ## `peko seed`

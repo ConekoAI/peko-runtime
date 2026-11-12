@@ -281,6 +281,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalStop { .. }
                 | RequestPacket::ApprovalList { .. }
                 | RequestPacket::PrincipalSetupStatus { .. }
+                | RequestPacket::PrincipalSetupRun { .. }
                 | RequestPacket::ApprovalDecide { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
@@ -393,7 +394,29 @@ impl RequestHandler for PrincipalHandler {
                         request_id,
                         message,
                     },
-                    Ok(principal) => setup_status(request_id, name, &principal).await,
+                    Ok(principal) => {
+                        let schedule = host.path_resolver().cron_schedule(&name);
+                        setup_status(request_id, name, &principal, &schedule).await
+                    }
+                };
+                send_response(sink, response).await?;
+            }
+
+            RequestPacket::PrincipalSetupRun { request_id, name } => {
+                let response = match owner_principal(host, &name, caller).await {
+                    Err(message) => ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                    Ok(principal) => {
+                        let schedule = host.path_resolver().cron_schedule(&name);
+                        let error = setup_run_refusal(&name, &principal, &schedule).await;
+                        ResponsePacket::Done {
+                            request_id,
+                            success: error.is_none(),
+                            error,
+                        }
+                    }
                 };
                 send_response(sink, response).await?;
             }
@@ -4457,20 +4480,39 @@ async fn run_principal_log_watch(
 /// Most tool calls `principal_setup_status` returns: the newest ones.
 const SETUP_STATUS_STEPS: usize = 30;
 
-/// A peko's first turn so far (ADR-104 D4), for its owner.
-async fn setup_status(request_id: u64, name: String, principal: &Principal) -> ResponsePacket {
+/// A peko's first turn and setup so far (ADR-104 D4, ADR-106), for its
+/// owner.
+async fn setup_status(
+    request_id: u64,
+    name: String,
+    principal: &Principal,
+    schedule: &std::path::Path,
+) -> ResponsePacket {
     use crate::principal::setup_status;
     let (boot_state, setup) = {
         let config = principal.config.read().await;
-        (config.boot_state(), config.intent.setup.clone())
+        (
+            config.boot_state(),
+            crate::principal::seed::tidy_setup(&config.intent.setup),
+        )
     };
     let ledger_dir = crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
     let workspace = principal.workspace_path.clone();
-    let (steps, report) = tokio::task::spawn_blocking(move || {
+    let schedule = schedule.to_path_buf();
+    let steps_listed = setup.clone();
+    let (steps, report, results, scheduled) = tokio::task::spawn_blocking(move || {
         let mut steps = setup_status::steps(&ledger_dir);
         let skip = steps.len().saturating_sub(SETUP_STATUS_STEPS);
         steps.drain(..skip);
-        (steps, setup_status::report(&workspace))
+        let scheduled = peko_cron::CronScheduler::new(&schedule)
+            .and_then(|s| s.get_job(crate::principal::genesis::SETUP_JOB_ID))
+            .is_ok_and(|job| job.is_some());
+        (
+            steps,
+            setup_status::report(&workspace),
+            setup_status::results(&workspace, &steps_listed),
+            scheduled,
+        )
     })
     .await
     .unwrap_or_default();
@@ -4493,6 +4535,46 @@ async fn setup_status(request_id: u64, name: String, principal: &Principal) -> R
             })
             .collect(),
         report,
+        setup_state: setup_status::state(&results, scheduled)
+            .as_str()
+            .to_string(),
+        results: results
+            .into_iter()
+            .map(|result| crate::ipc::packet::SetupResultInfo {
+                step: result.step,
+                status: result.status.as_str().to_string(),
+                note: result.note,
+            })
+            .collect(),
+    }
+}
+
+/// Schedule a setup turn for `principal` (ADR-106), or say why not.
+async fn setup_run_refusal(
+    name: &str,
+    principal: &Principal,
+    schedule: &std::path::Path,
+) -> Option<String> {
+    let config = principal.config.read().await.clone();
+    if config.boot_state() != crate::principal::config::BootState::Organized {
+        return Some(format!(
+            "peko '{name}' is still on its first turn; setup runs after it"
+        ));
+    }
+    if crate::principal::seed::tidy_setup(&config.intent.setup).is_empty() {
+        return Some(format!(
+            "peko '{name}' lists no setup steps (`[intent] setup` in its peko.toml)"
+        ));
+    }
+    let started = peko_cron::CronScheduler::new(schedule).and_then(|scheduler| {
+        crate::principal::setup_status::start(&scheduler, &config, &principal.workspace_path)
+    });
+    match started {
+        Ok(true) => None,
+        Ok(false) => Some(format!(
+            "a setup turn is already scheduled for peko '{name}'"
+        )),
+        Err(e) => Some(format!("could not schedule the setup turn: {e:#}")),
     }
 }
 

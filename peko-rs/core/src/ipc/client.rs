@@ -472,6 +472,19 @@ impl DaemonClient {
         .await
     }
 
+    /// Run a peko's setup steps again (ADR-106).
+    pub async fn principal_setup_run(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::PrincipalSetupRun {
+            request_id,
+            name: name.into(),
+        })
+        .await
+    }
+
     /// The approval requests waiting for a principal's owner (ADR-078 D7).
     pub async fn approval_list(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
