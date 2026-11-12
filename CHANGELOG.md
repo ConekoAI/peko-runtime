@@ -4,6 +4,8 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-12
+
 ### Added
 
 - **A seed can list setup steps (ADR-104).** `[intent] setup = ["…"]` in a

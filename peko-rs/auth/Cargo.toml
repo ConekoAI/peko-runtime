@@ -1,6 +1,6 @@
 [package]
 name = "peko-auth"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Authentication and authorization (Phase 4 of the post-migration cleanup). Owns the canonical auth domain: ApiKey/ApiKeyStore, CallerContext, JwtValidator, RateLimiter, Permission, Resource, Action, AuthError, plus the Exposure enum lifted from principal/config. Trait ports (RuntimePaths, PrincipalResourceView) abstract root-only deps so peko-auth stays a leaf crate. Re-exports Subject from peko-subject for ergonomic access."

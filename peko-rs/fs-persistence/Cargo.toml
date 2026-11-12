@@ -1,6 +1,6 @@
 [package]
 name = "peko-fs-persistence"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Append-only file persistence utilities used by peko-session, peko-channel, and peko-plan (Phase 5 of the post-migration cleanup). Owns FileLock / LockManager / append_bytes_durable and the associated timeout constants. Replaces root `src/common/persistence/` (no callers remain after Phase 5)."
