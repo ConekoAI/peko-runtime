@@ -96,8 +96,8 @@ fn principal_create_list_show() {
     // Create requires `--model` and validates it against the catalog.
     common::agent::seed_mock_provider_in_catalog(cli.home(), "http://127.0.0.1:9/v1");
 
-    // Create a Principal — provisions the workspace, `agents/primary.md`,
-    // the kb scaffold (ADR-055), identity, and `peko.toml`; the
+    // Create a Principal — the daemon lays down the workspace, the seeded
+    // roles, the kb scaffold (ADR-055), identity, and `peko.toml`; the
     // `--detach` form returns once the daemon sidecar has the principal.
     // 30s budget: with no daemon up, create spawns the sidecar first.
     let (create_res, _, _) = run_with_timeout(

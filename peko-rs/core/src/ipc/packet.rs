@@ -130,11 +130,10 @@ pub enum RequestPacket {
     #[serde(rename = "principal_get")]
     PrincipalGet { request_id: u64, name: String },
 
-    /// Create a new Principal on disk + in-memory manager. The handler
-    /// writes `agents/primary.md` before invoking `manager.create`
-    /// (the manager scans `agents/` on load) and assigns ownership to
-    /// the calling subject. Mirrors `peko principal create <name>` but
-    /// without dropping the caller to the CLI.
+    /// Create a new peko (ADR-105). The daemon lays down its folder,
+    /// registers it, and schedules its first turn
+    /// (`principal::provision`); the caller owns it. `peko create` and
+    /// Peko Desktop both send this.
     ///
     /// `model_id` is the configured model the principal pins at
     /// creation. It is required: every principal must be created with
@@ -3762,6 +3761,7 @@ mod tests {
                 avatar: None,
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
+                boot_state: None,
             }],
         };
         let bytes = resp.to_bytes().unwrap();
@@ -3796,6 +3796,7 @@ mod tests {
                 avatar: None,
                 agent_prompt_count: 2,
                 workspace_path: "/tmp/helper".to_string(),
+                boot_state: None,
             }),
         };
         let bytes = resp.to_bytes().unwrap();
@@ -4248,6 +4249,7 @@ mod tests {
                 avatar: None,
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
+                boot_state: None,
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -4305,6 +4307,7 @@ mod tests {
                 avatar: None,
                 agent_prompt_count: 1,
                 workspace_path: "/tmp/alice".to_string(),
+                boot_state: None,
             },
         };
         let bytes = resp.to_bytes().unwrap();
@@ -4862,6 +4865,7 @@ mod tests {
                 avatar: None,
                 agent_prompt_count: 0,
                 workspace_path: "/tmp/helper".to_string(),
+                boot_state: None,
             },
         };
         assert_eq!(resp_principal_updated.request_id(), 12);

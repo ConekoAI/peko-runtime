@@ -45,6 +45,7 @@ pub mod peer_children;
 pub(crate) mod peer_dm;
 pub(crate) mod plan_prompt;
 pub mod policy_gate;
+pub mod provision;
 pub(crate) mod quiet_reply;
 pub(crate) mod quiet_tick;
 pub(crate) mod reply_options;
@@ -265,6 +266,7 @@ impl Principal {
             preferred_model_id: config.preferred_model_id.clone(),
             agent_prompt_count: self.agent_prompts.len(),
             workspace_path: self.workspace_path.display().to_string(),
+            boot_state: Some(config.boot_state()),
         }
     }
 }
@@ -293,6 +295,10 @@ pub struct PrincipalSummary {
     pub preferred_model_id: Option<String>,
     pub agent_prompt_count: usize,
     pub workspace_path: String,
+    /// Where the peko is in its first-turn pipeline (ADR-054). Anything
+    /// but `organized` means it is still setting itself up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_state: Option<crate::principal::config::BootState>,
 }
 
 fn synthetic_local_did(name: &str, id: &PrincipalId) -> PrincipalDID {
