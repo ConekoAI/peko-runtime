@@ -1410,33 +1410,10 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
 
-                // 2. Materialize the workspace + default agent prompt
-                //    BEFORE invoking `manager.create`. The manager
-                //    scans `agents/` on load (`discover_role_prompts`),
-                //    so the prompt file must exist first. Mirrors
-                //    `peko principal new` in commands/principal.rs.
-                //
-                //    `default_principal_config` / `default_agent_prompt`
-                //    are private to `commands::principal`; we inline
-                //    equivalent logic here (smallest diff) — see the
-                //    T-105 plan's verified-facts section.
-                //
-                // Phase A: the principal's agents dir is the typed
-                // Shared-layout path. Use the resolver so we agree
-                // with `PrincipalManager::create` and the IPC
-                // `load_principal` helper on the exact same path.
-                let roles_dir = host
-                    .path_resolver()
-                    .principal_layout(&name)
-                    .shared
-                    .roles_dir;
-                // ADR-066 D9: ownership gate. The principal doesn't
-                // exist yet — we use the name-keyed variant
-                // `shared_roles_dir_write_for_name` because the
-                // `PrincipalId` is generated inside
-                // `PrincipalManager::create`. The operator may create
-                // principals; a principal-typed actor may not create
-                // other principals (fail closed).
+                // ADR-066 D9: ownership gate. The peko doesn't exist
+                // yet, so the name-keyed variant is used. The operator
+                // may create pekos; a peko may not create other pekos
+                // (fail closed).
                 if let Err(e) = host
                     .authority_for(caller)
                     .shared_roles_dir_write_for_name(&name)
@@ -1450,63 +1427,24 @@ impl RequestHandler for PrincipalHandler {
                     send_response(sink, response).await?;
                     return Ok(());
                 }
-                if let Err(e) = tokio::fs::create_dir_all(&roles_dir).await {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("create agents dir: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                    return Ok(());
-                }
-                let persona = seed.as_ref().and_then(|seed| seed.persona.clone());
-                let prompt_body = format!(
-                    "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
-                     You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
-                     {{{{memory}}}}\n"
-                );
-                // A seed's persona joins the house rules every role
-                // follows (`kb/CONVENTIONS.md`), not a role.
-                if let Some(body) = &persona {
-                    let workspace = roles_dir.parent().unwrap_or(&roles_dir).to_path_buf();
-                    if let Err(e) = crate::principal::seed::add_persona(&workspace, body) {
-                        let response = ResponsePacket::Error {
-                            request_id,
-                            message: format!("write persona: {e}"),
-                        };
-                        send_response(sink, response).await?;
-                        return Ok(());
-                    }
-                }
-                if let Err(e) = tokio::fs::write(roles_dir.join("primary.md"), prompt_body).await {
-                    let response = ResponsePacket::Error {
-                        request_id,
-                        message: format!("write prompt: {e}"),
-                    };
-                    send_response(sink, response).await?;
-                    return Ok(());
-                }
 
-                // 3. Build the config inline. Ownership is the
-                //    *caller*, not a hardcoded `ActorRef::User("default")`
-                //    — the CLI's hardcoded owner was a deliberate
-                //    choice for an interactive terminal where every
-                //    local user is the same identity; for an IPC call
-                //    we honour the request's subject.
-                let config = match seed {
-                    Some(seed) => {
-                        let mut config = seed.grown(&name, caller.subject().clone());
-                        config.preferred_model_id = Some(model_id);
-                        if let Some(description) = description.filter(|d| !d.trim().is_empty()) {
-                            config.identity.description = Some(description);
-                        }
-                        config
-                    }
-                    None => {
-                        ipc_create_config(&name, description, caller.subject().clone(), model_id)
-                    }
+                // ADR-105: the one place a peko is created. It lays down
+                // the folder, registers the peko, and schedules its
+                // first turn. The caller owns it.
+                let new = crate::principal::provision::NewPeko {
+                    name: name.clone(),
+                    owner: caller.subject().clone(),
+                    model_id,
+                    description,
+                    seed,
                 };
-
-                match host.principal_manager().create(config).await {
+                let created = crate::principal::provision::provision(
+                    host.principal_manager(),
+                    &host.path_resolver(),
+                    new,
+                )
+                .await;
+                match created {
                     Ok(principal) => {
                         let summary = principal.summary_in(host.principal_manager()).await;
                         let response = ResponsePacket::PrincipalCreated {
@@ -4516,11 +4454,6 @@ async fn run_principal_log_watch(
     }
 }
 
-/// The config IPC `principal_create` writes: the caller owns it, the
-/// display name is its name, and a missing or blank description stays
-/// empty, as `peko create` leaves it. The genesis turn then has the peko
-/// adopt its own description instead of showing people
-/// "The <name> Principal".
 /// Most tool calls `principal_setup_status` returns: the newest ones.
 const SETUP_STATUS_STEPS: usize = 30;
 
@@ -4579,40 +4512,6 @@ fn setup_refusal(seed: Option<&crate::principal::seed::Seed>, accepted: bool) ->
         steps.len(),
         crate::principal::seed::setup_listing(steps)
     ))
-}
-
-fn ipc_create_config(
-    name: &str,
-    description: Option<String>,
-    owner: ActorRef,
-    model_id: String,
-) -> crate::principal::config::PrincipalConfig {
-    use crate::principal::config::{
-        Exposure, PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig,
-        PrincipalIntentConfig, PrincipalRoutingConfig,
-    };
-    PrincipalConfig {
-        actor_key: None,
-        name: name.to_string(),
-        id: None,
-        did: None,
-        owner,
-        identity: PrincipalIdentityConfig {
-            display_name: Some(name.to_string()),
-            description: description.filter(|d| !d.trim().is_empty()),
-            avatar: None,
-        },
-        intent: PrincipalIntentConfig::default(),
-        governance: PrincipalGovernanceConfig::default(),
-        routing: PrincipalRoutingConfig::default(),
-        exposure: Exposure::Private,
-        status: None,
-        boot_state: None,
-        permissions: Vec::new(),
-        preferred_model_id: Some(model_id),
-        quota: None,
-        children: Default::default(),
-    }
 }
 
 #[cfg(test)]
@@ -5032,27 +4931,36 @@ mod tests {
     fn ipc_create_leaves_a_missing_description_for_the_peko() {
         let owner = ActorRef::User("local".into());
         for given in [None, Some(String::new()), Some("   ".into())] {
-            let config = super::ipc_create_config("juno", given, owner.clone(), "mock".into());
+            let config = crate::principal::provision::default_config(
+                "juno",
+                given,
+                owner.clone(),
+                "mock".into(),
+            );
             assert_eq!(config.identity.description, None);
             assert_eq!(config.identity.display_name.as_deref(), Some("juno"));
             assert_eq!(config.owner, owner);
             assert_eq!(config.preferred_model_id.as_deref(), Some("mock"));
         }
-        let config =
-            super::ipc_create_config("juno", Some("Plans my week".into()), owner, "mock".into());
+        let config = crate::principal::provision::default_config(
+            "juno",
+            Some("Plans my week".into()),
+            owner,
+            "mock".into(),
+        );
         assert_eq!(
             config.identity.description.as_deref(),
             Some("Plans my week")
         );
-        assert!(
-            crate::principal::genesis::genesis_brief(&super::ipc_create_config(
+        assert!(crate::principal::genesis::genesis_brief(
+            &crate::principal::provision::default_config(
                 "juno",
                 None,
                 ActorRef::User("local".into()),
                 "m".into()
-            ))
-            .contains("no description recorded")
-        );
+            )
+        )
+        .contains("no description recorded"));
     }
 
     // ─── Phase 11: read_principal_log reads the peer DM channel ──────

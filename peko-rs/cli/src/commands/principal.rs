@@ -16,10 +16,7 @@ use peko_auth::ActorRef;
 use peko_core::common::authority::TierPath;
 use peko_core::common::paths::PathResolver;
 use peko_core::ipc::{DaemonClient, ResponsePacket};
-use peko_core::principal::config::{
-    PrincipalConfig, PrincipalGovernanceConfig, PrincipalIdentityConfig, PrincipalIntentConfig,
-    PrincipalRoutingConfig,
-};
+use peko_core::principal::config::PrincipalConfig;
 use peko_core::principal::{
     factory::{DefaultPrincipalMemoryFactory, DefaultPrincipalRouterFactory},
     PrincipalManager,
@@ -578,13 +575,6 @@ fn definition_hashes(
         .collect()
 }
 
-/// Load a `--seed` file (`peko.toml` plus an optional `persona`), so
-/// exports round-trip: `peko seed` → edit → `peko create -s`.
-fn load_seed(path: &str) -> Result<peko_core::principal::seed::Seed> {
-    let content = std::fs::read_to_string(path).with_context(|| format!("read seed {}", path))?;
-    peko_core::principal::seed::parse_seed(&content).with_context(|| format!("seed {path}"))
-}
-
 /// Whether the seed's setup steps are accepted (ADR-104). The new peko
 /// carries them out on its first turn, running commands and downloading
 /// code as this OS user, so they are always shown; `--yes` accepts them,
@@ -629,9 +619,12 @@ fn setup_report(workspace: &std::path::Path, steps: &[String]) -> Option<String>
     })
 }
 
-/// `peko create` — the full genesis pipeline (ADR-054):
-/// provision (P0) + definition (P1) + boot (P2 seeding, daemon ensure,
-/// blocking genesis wait unless `--detach`).
+/// `peko create` (ADR-054, ADR-105): decide what to create, have the
+/// daemon create it, and (unless `--detach`) wait for its first turn.
+///
+/// The daemon is the only thing that creates a peko. This command reads
+/// the seed, gets the setup steps accepted, picks the model, and asks.
+#[allow(clippy::too_many_arguments)]
 async fn create_principal(
     name: &str,
     model_id: Option<&str>,
@@ -642,106 +635,123 @@ async fn create_principal(
     wait_timeout: Option<u64>,
     paths: &GlobalPaths,
 ) -> Result<()> {
-    let manager = match provision_principal(name, model_id, seed_path, force, yes, paths).await? {
-        Some(m) => m,
-        None => return Ok(()), // cancelled at the --force confirmation
+    let Some(plan) = plan_create(name, model_id, seed_path, force, yes, paths).await? else {
+        println!("Create cancelled.");
+        return Ok(());
     };
-    boot_principal(name, &manager, paths, detach, wait_timeout).await
+    ensure_daemon(paths).await?;
+    let client = DaemonClient::connect()
+        .await
+        .context("the daemon is running but its IPC socket would not connect")?;
+
+    if plan.replace {
+        match client.principal_remove(name).await? {
+            peko_core::ipc::ResponsePacket::Error { message, .. } => anyhow::bail!(
+                "destructive re-create failed; the existing peko may be partially removed: \
+                 {message}"
+            ),
+            _ => println!("Removed the existing peko '{name}'"),
+        }
+    }
+
+    let response = client
+        .request_response(peko_core::ipc::RequestPacket::PrincipalCreate {
+            request_id: 0,
+            name: name.to_string(),
+            description: None,
+            model_id: plan.model_id.clone(),
+            seed: plan.seed,
+            accept_setup: plan.accept_setup,
+        })
+        .await?;
+    match response {
+        peko_core::ipc::ResponsePacket::PrincipalCreated { principal, .. } => println!(
+            "Created peko '{name}' at {} (model: {})",
+            principal.workspace_path, plan.model_id
+        ),
+        peko_core::ipc::ResponsePacket::Error { message, .. } => {
+            anyhow::bail!("could not create peko '{name}': {message}")
+        }
+        other => anyhow::bail!("unexpected daemon response to create: {other:?}"),
+    }
+    wait_for_first_turn(name, paths, detach, wait_timeout).await
 }
 
-/// Provision half of `create`: overwrite guard, seed/defaults
-/// composition, model-pin validation, root agent prompt, and
-/// `PrincipalManager::create`. Returns the CLI-local manager with the
-/// new principal registered. Unit tests stop here — the boot half
-/// (`boot_principal`) touches the daemon.
-async fn provision_principal(
+/// What `peko create` asks the daemon for.
+#[derive(Debug)]
+struct CreatePlan {
+    model_id: String,
+    /// The seed's text, as the daemon parses it.
+    seed: Option<String>,
+    /// The seed lists setup steps and they were accepted (ADR-104 D3).
+    accept_setup: bool,
+    /// `--force`: an existing peko of this name is removed first.
+    replace: bool,
+}
+
+/// Everything `create` decides before the daemon is involved: the
+/// overwrite guard, the seed and the acceptance of its setup steps, and
+/// the model. Writes nothing. `None` means the person said no at a
+/// prompt.
+async fn plan_create(
     name: &str,
     model_id: Option<&str>,
     seed_path: Option<&str>,
     force: bool,
     yes: bool,
     paths: &GlobalPaths,
-) -> Result<Option<PrincipalManager>> {
-    // `None` = the user cancelled at the destructive `--force` prompt.
+) -> Result<Option<CreatePlan>> {
     use peko_providers::catalog::ModelCatalog;
 
     // The seed is read and its setup steps accepted before anything is
     // written or wiped (ADR-104).
-    let seed = seed_path.map(load_seed).transpose()?;
+    let seed_text = seed_path
+        .map(|path| std::fs::read_to_string(path).with_context(|| format!("read seed {path}")))
+        .transpose()?;
+    let seed = match (&seed_text, seed_path) {
+        (Some(text), Some(path)) => Some(
+            peko_core::principal::seed::parse_seed(text).with_context(|| format!("seed {path}"))?,
+        ),
+        _ => None,
+    };
+    let mut accept = false;
     if let Some(seed) = &seed {
         if !accept_setup(name, seed.setup(), yes, std::io::stdin().is_terminal())? {
-            println!("Create cancelled.");
+            return Ok(None);
+        }
+        accept = !seed.setup().is_empty();
+    }
+
+    // Refuse to silently overwrite an existing peko (Bug 2 in
+    // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md).
+    // `--force` is the explicit destructive override: the existing peko
+    // is removed, with its folder, roles, memory and conversations,
+    // before the new one is created. There is no undo.
+    let shared_layout = paths.resolver().principal_layout(name).shared;
+    let exists = shared_layout.config_file.exists();
+    if exists && !force {
+        anyhow::bail!(
+            "peko '{name}' already exists at {}.\n\
+             Refusing to overwrite an existing peko.\n\
+             To replace it, pass --force (destructive; see --help) or remove it first:\n  \
+             peko remove {name}\n  \
+             peko create {name} --model <MODEL_ID>",
+            shared_layout.root.display()
+        );
+    }
+    if exists && !yes && std::io::stdin().is_terminal() {
+        let prompt = format!(
+            "DESTRUCTIVE: re-create peko '{name}'? This wipes its folder, \
+             roles/, memory, and conversations. There is no undo. Proceed?"
+        );
+        if !confirm_prompt(&prompt)? {
             return Ok(None);
         }
     }
 
-    // Refuse to silently overwrite an existing principal — see Bug 2 in
-    // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
-    // Without this guard, a non-technical user running
-    //   peko create scout --model …
-    // a second time wipes identity, agents, memory, and session history
-    // without any prompt.
-    //
-    // `--force` is the explicit destructive override: the existing
-    // principal is removed (wiping workspace, roles/, memory/, and
-    // session history) before the new one is written. The user is
-    // prompted to confirm interactively unless `--yes` is set or
-    // stdin is not a TTY. There is no undo.
-    let shared_layout = paths.resolver().principal_layout(name).shared;
-    if shared_layout.config_file.exists() {
-        if !force {
-            anyhow::bail!(
-                "peko '{name}' already exists at {}.\n\
-                 Refusing to overwrite an existing peko.\n\
-                 To replace it, pass --force (destructive; see --help) or remove it first:\n  \
-                 peko remove {name}\n  \
-                 peko create {name} --model <MODEL_ID>",
-                shared_layout.root.display()
-            );
-        }
-
-        // Destructive --force: confirm unless --yes or non-interactive.
-        if !yes && std::io::stdin().is_terminal() {
-            let prompt = format!(
-                "DESTRUCTIVE: re-create peko '{name}'? This wipes its folder, \
-                 roles/, memory, and conversations. There is no undo. Proceed?"
-            );
-            if !confirm_prompt(&prompt)? {
-                println!("Create cancelled.");
-                return Ok(None);
-            }
-        }
-
-        // Load first so the manager has the principal in memory; remove
-        // is a no-op on an unregistered principal. Then wipe.
-        let manager = build_manager(paths);
-        let _ = load_principal(name, &manager, paths).await?;
-        manager
-            .remove(name)
-            .await
-            .context("destructive re-create failed; the existing peko may be partially removed")?;
-    }
-
-    // ── P1 definition: seed or defaults ─────────────────────────────
-    let (mut config, persona) = match seed {
-        Some(seed) => {
-            let persona = seed.persona.clone();
-            // The CLI arg names the principal; a seed `name` is
-            // overridden. A fresh identity, always, and no authority:
-            // the creating local user owns what grows from it (ADR-060,
-            // ADR-081 D4).
-            (seed.grown(name, ActorRef::User("local".into())), persona)
-        }
-        None => {
-            // Bare create: empty `[identity]`/`[intent]` is the honest
-            // on-disk state — the genesis turn adopts a working
-            // self-description (the brief tells it to).
-            (default_principal_config(name), None)
-        }
-    };
-
-    let manager = build_manager(paths);
-
+    let seed_model = seed
+        .as_ref()
+        .and_then(|seed| seed.config.preferred_model_id.clone());
     // Enforce the model pin at creation: there is no runtime default
     // model, so an unpinned principal would fail every send with
     // "no model configured". `--model` overrides the seed value; with
@@ -750,10 +760,7 @@ async fn provision_principal(
     // fails here instead of at first use.
     let cat_path = paths.config_dir.join(ModelCatalog::FILENAME);
     let catalog = ModelCatalog::load_or_init(&cat_path).await?;
-    let model_id = match model_id
-        .map(str::to_string)
-        .or_else(|| config.preferred_model_id.clone())
-    {
+    let model_id = match model_id.map(str::to_string).or_else(|| seed_model.clone()) {
         Some(m) => m,
         None => {
             let enabled: Vec<String> = catalog
@@ -778,7 +785,6 @@ async fn provision_principal(
             }
         }
     };
-    config.preferred_model_id = Some(model_id.clone());
     if catalog.get_enabled(&model_id).await.is_none() {
         anyhow::bail!(
             "model '{model_id}' is not in the catalog (or is disabled).\n\
@@ -787,164 +793,57 @@ async fn provision_principal(
         );
     }
 
-    // Prepare the workspace and root agent prompt before registering the
-    // Principal, because `PrincipalManager::create` loads and validates the
-    // agent prompts immediately.
-    //
-    // Phase B: agents live in the Shared tier
-    // (`{config_dir}/principals/{name}/roles/`). The CLI resolves
-    // via the typed `SharedLayout` — the `RuntimeAuthority` accessor
-    // requires a `PrincipalId`, but at create time the principal
-    // doesn't exist yet, so we use the resolver directly. The CLI
-    // operates from `ActorRef::User`, which is entitled to write its
-    // own principal's shared state.
-    let roles_dir = paths.resolver().principal_layout(name).shared.roles_dir;
-    tokio::fs::create_dir_all(&roles_dir).await?;
-    let prompt_path = roles_dir.join("primary.md");
-    tokio::fs::write(&prompt_path, default_agent_prompt(name)).await?;
-
-    // ── P0 provision: seed the kb scaffold (ADR-055) ────────────────
-    // The persistent-knowledge floor: `kb/` with the pinned hot set
-    // (`MEMORY.md`, `index.md`, `CONVENTIONS.md`) and the
-    // people/groups/roles/dreams conventions. Create-if-missing only — for a
-    // `--force` re-create the fresh workspace is empty, so this lays
-    // down the full floor.
-    let kb_created = peko_core::principal::kb::seed_kb_scaffold(&shared_layout.root)?;
-    // A seed's persona joins the house rules every role follows.
-    if let Some(body) = &persona {
-        peko_core::principal::seed::add_persona(&shared_layout.root, body)?;
-    }
-    // ADR-078 D7: the owner's plain-language policy for everyone else.
-    peko_core::security::policy::seed(&shared_layout.root)?;
-
-    // ── P0 provision: stamp the root role + journal birth entry ─────
-    // The root role prompt has NO render-time fallback: the trunk
-    // resolves `roles/root.md` and fails loudly when absent, so
-    // provision stamps the compiled-in default as the starting file
-    // (create-if-missing). The journal's first entry records the birth.
-    let root_role_path = shared_layout.root.join("roles").join("root.md");
-    let root_role_seeded = if root_role_path.exists() {
-        false
-    } else {
-        tokio::fs::create_dir_all(root_role_path.parent().expect("roles dir parent")).await?;
-        tokio::fs::write(
-            &root_role_path,
-            peko_core::principal::routers::root_role_seed_content(),
-        )
-        .await?;
-        true
-    };
-    let journal_entry = peko_core::principal::kb::seed_journal_birth_entry(
-        &shared_layout.root,
-        name,
-        chrono::Utc::now(),
-    )?;
-
-    // ── P0 provision ────────────────────────────────────────────────
-    let principal = manager.create(config).await?;
-    println!(
-        "Created peko '{}' at {} (model: {model_id})",
-        name,
-        principal.workspace_path.display()
-    );
-    if !kb_created.is_empty() {
-        println!("  kb scaffold: {} files seeded", kb_created.len());
-    }
-    if root_role_seeded {
-        println!("  root role: roles/root.md seeded");
-    }
-    if journal_entry.is_some() {
-        println!("  kb journal: birth entry seeded");
-    }
-
-    Ok(Some(manager))
+    Ok(Some(CreatePlan {
+        model_id,
+        seed: seed_text,
+        accept_setup: accept,
+        replace: exists,
+    }))
 }
 
-/// Boot half of `create`: make sure a daemon knows the principal, seed
-/// the genesis + keepalive jobs, and (unless `detach`) block until the
-/// one-shot genesis turn finalizes.
-async fn boot_principal(
+/// Make sure a daemon is running: it is what creates the peko and runs
+/// its first turn.
+async fn ensure_daemon(paths: &GlobalPaths) -> Result<()> {
+    let service = peko_core::common::services::DaemonProcessService::new(paths.resolver().clone());
+    if service.is_daemon_running().await.unwrap_or(false) {
+        return Ok(());
+    }
+    println!("Starting the daemon…");
+    // Same defaults as `peko daemon start` (interval 5s, 50 reconnect
+    // attempts — see the Start command).
+    service
+        .spawn_daemon_with(5, 50, false)
+        .await
+        .context("failed to spawn the daemon sidecar")?;
+    // The IPC socket binds only after the boot scan.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let ready = match DaemonClient::connect().await {
+            Ok(client) => client.ping().await.is_ok(),
+            Err(_) => false,
+        };
+        if ready {
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("daemon did not become ready within 30s");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+/// Unless `detach`, block until the peko's first turn is over, showing
+/// what it does.
+async fn wait_for_first_turn(
     name: &str,
-    manager: &PrincipalManager,
     paths: &GlobalPaths,
     detach: bool,
     wait_timeout: Option<u64>,
 ) -> Result<()> {
-    // ── Make sure the daemon knows this principal ───────────────────
-    // The cron engine enumerates LOADED principals, so a principal
-    // created while a daemon is running must be handed to that
-    // daemon's manager (idempotent IPC reload); with no daemon up, we
-    // spawn one — its boot scan loads the freshly written workspace.
-    let service = peko_core::common::services::DaemonProcessService::new(paths.resolver().clone());
-    if service.is_daemon_running().await.unwrap_or(false) {
-        let client = DaemonClient::connect()
-            .await
-            .context("daemon is running but the IPC socket would not connect")?;
-        match client
-            .request_response(peko_core::ipc::RequestPacket::PrincipalReload {
-                request_id: 0,
-                name: name.to_string(),
-            })
-            .await
-        {
-            Ok(peko_core::ipc::ResponsePacket::PrincipalLoaded { .. }) => {
-                println!("Daemon: peko '{name}' loaded");
-            }
-            Ok(peko_core::ipc::ResponsePacket::Error { message, .. }) => {
-                anyhow::bail!("daemon refused to load peko '{name}': {message}");
-            }
-            Ok(other) => {
-                anyhow::bail!("unexpected daemon response to reload: {other:?}");
-            }
-            Err(e) => {
-                anyhow::bail!("daemon reload failed: {e}");
-            }
-        }
-    } else {
-        println!("Starting the daemon…");
-        // Same defaults as `peko daemon start` (interval 5s, 50
-        // reconnect attempts — see the Start command).
-        service
-            .spawn_daemon_with(5, 50, false)
-            .await
-            .context("failed to spawn the daemon sidecar")?;
-        // The IPC socket binds only after the boot scan loaded every
-        // principal, so a successful connect implies 'loaded'.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let ready = match DaemonClient::connect().await {
-                Ok(client) => client.ping().await.is_ok(),
-                Err(_) => false,
-            };
-            if ready {
-                println!("Daemon: ready (peko '{name}' loaded at boot)");
-                break;
-            }
-            if std::time::Instant::now() > deadline {
-                anyhow::bail!("daemon did not become ready within 30s");
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-    }
-
-    // ── P2 seed: genesis + keepalive jobs ───────────────────────────
-    let report = peko_core::principal::genesis::seed_boot_defaults(manager, paths.resolver())
-        .await
-        .context("failed to seed the genesis pipeline jobs")?;
-    if !report.is_empty() {
-        tracing::debug!("setup: {report}");
-    }
-
-    let state = match manager.get_by_name(name).await {
-        Some(p) => p.config.read().await.boot_state(),
-        None => peko_core::principal::config::BootState::GenesisPending,
-    };
-
     if detach {
-        let _ = state;
         println!(
             "Peko '{name}' is created and will set itself up shortly; \
-             watch it with `peko log {name}`"
+             watch it with `peko audit ledger {name} --follow`"
         );
         return Ok(());
     }
@@ -1359,7 +1258,13 @@ fn export_seed(name: &str, output: Option<String>, paths: &GlobalPaths) -> Resul
             config_path.display()
         )
     })?;
-    let seed = peko_core::principal::seed::seed_from_config(&config)?;
+    // The persona a seed gave this peko lives in its conventions; the
+    // exported seed carries it again.
+    let conventions = config_path
+        .parent()
+        .map(|root| root.join("kb").join("CONVENTIONS.md"))
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    let seed = peko_core::principal::seed::seed_from_workspace(&config, conventions.as_deref())?;
     match output {
         Some(path) => {
             let path = absolute_from_cwd(&path)?;
@@ -1916,49 +1821,6 @@ fn build_manager(paths: &GlobalPaths) -> PrincipalManager {
     )
 }
 
-fn default_principal_config(name: &str) -> PrincipalConfig {
-    PrincipalConfig {
-        actor_key: None,
-        name: name.to_string(),
-        id: None,
-        did: None,
-        owner: ActorRef::User("local".into()),
-        // ADR-054: leave `[identity]` empty on the bare-create
-        // defaults path — the genesis turn adopts a working
-        // self-description (the brief tells it to). No
-        // placeholder description: an absent definition is the honest
-        // on-disk state, and the identity prompt section renders
-        // nothing until there is one.
-        identity: PrincipalIdentityConfig::default(),
-        intent: PrincipalIntentConfig::default(),
-        governance: PrincipalGovernanceConfig::default(),
-        routing: PrincipalRoutingConfig::default(),
-        exposure: peko_auth::Exposure::Private,
-        status: None,
-        boot_state: None,
-        permissions: Vec::new(),
-        // Principals must be created with a configured model. The CLI
-        // `peko create` path requires `--model` and sets
-        // this field; a default of `None` is only used by legacy tests.
-        preferred_model_id: None,
-        quota: None,
-        children: Default::default(),
-    }
-}
-
-fn default_agent_prompt(name: &str) -> String {
-    // The `{{{{...}}}}` quadruple-braces emit the literal `{{memory}}`
-    // placeholder, which the prompt renderer fills with the principal's
-    // budgeted `kb/MEMORY.md`. Doubled braces are needed because
-    // `format!` treats `{...}` as a substitution argument and `{{` as
-    // a literal `{`.
-    format!(
-        "---\nname: primary\ndescription: \"Default assistant for {name}\"\n---\n\n\
-        You are {name}, a helpful AI assistant. Respond to the caller's message concisely.\n\n\
-        {{{{memory}}}}\n"
-    )
-}
-
 /// JSON envelope for `peko list --json`. Empty list is `[]`
 /// (never "No pekos found."), matching `log --json` / `show --json`.
 fn render_list_principals_json(names: &[String]) -> serde_json::Result<String> {
@@ -2031,7 +1893,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let scheduler = peko_cron::CronScheduler::new(temp.path().join("cron.json")).unwrap();
         let job = peko_core::principal::genesis::genesis_job(
-            &default_principal_config("seedling"),
+            &peko_core::principal::provision::default_config(
+                "seedling",
+                None,
+                ActorRef::User("local".into()),
+                "m".into(),
+            ),
             chrono::Utc::now(),
         )
         .unwrap();
@@ -2380,29 +2247,6 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_prompt_contains_name() {
-        let prompt = default_agent_prompt("spot");
-        assert!(prompt.contains("spot"));
-        // The strict agent adapter requires both `name` and `description`
-        // in the frontmatter; the generated default must parse cleanly.
-        assert!(
-            prompt.contains("name: primary"),
-            "default agent prompt frontmatter must include a name; got: {prompt}"
-        );
-        assert!(
-            prompt.contains("description:"),
-            "default agent prompt frontmatter must include a description; got: {prompt}"
-        );
-        // The default supervisor template must opt in to the
-        // `{{memory}}` placeholder so casual users see their MEMORY.md
-        // content without authoring a custom template.
-        assert!(
-            prompt.contains("{{memory}}"),
-            "default agent prompt must include the {{memory}} placeholder; got: {prompt}"
-        );
-    }
-
-    #[test]
     fn principal_create_model_pin_precedence() {
         // `--model` is optional only when the `--seed` pins
         // `preferred_model_id`; the flag overrides the seed value.
@@ -2502,8 +2346,7 @@ mod tests {
         // Empty catalog → any model id is rejected at creation, before
         // the workspace is written. `detach` keeps the test off the
         // daemon-spawn path (the model check fails first anyway).
-        let result =
-            provision_principal("alice", Some("no-such-model"), None, false, false, &paths).await;
+        let result = plan_create("alice", Some("no-such-model"), None, false, false, &paths).await;
         let err = match result {
             Err(e) => e,
             Ok(_) => panic!("unknown model must fail creation"),
@@ -2528,7 +2371,7 @@ mod tests {
             "list",
         ]);
         let paths = from_cli(&cli);
-        let err = match provision_principal("alice", None, None, false, false, &paths).await {
+        let err = match plan_create("alice", None, None, false, false, &paths).await {
             Err(e) => format!("{e:#}"),
             Ok(_) => panic!("no model must fail creation"),
         };
@@ -2548,7 +2391,7 @@ mod tests {
             m.requires_key = false;
             cat.upsert(m).await.unwrap();
         }
-        let err = match provision_principal("alice", None, None, false, false, &paths).await {
+        let err = match plan_create("alice", None, None, false, false, &paths).await {
             Err(e) => format!("{e:#}"),
             Ok(_) => panic!("two models must ask which"),
         };
@@ -2648,8 +2491,10 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         )
         .unwrap();
 
-        // `--yes` accepts the seed's setup steps (ADR-104).
-        let manager = provision_principal(
+        // `--yes` accepts the seed's setup steps (ADR-104). The plan
+        // carries the seed as written; the daemon grows the peko from it
+        // (`principal::provision` drops the seed's owner and grants).
+        let plan = plan_create(
             "sprout",
             Some("demo-model"),
             Some(seed.to_str().unwrap()),
@@ -2658,14 +2503,22 @@ granted_by = { kind = "user", id = "hub:seed-author" }
             &paths,
         )
         .await
-        .expect("seeded create should succeed")
-        .expect("seeded create returns a manager");
-        let principal = manager.get_by_name("sprout").await.unwrap();
-        let config = principal.config.read().await;
-        assert_eq!(config.owner, ActorRef::User("local".into()));
-        assert!(config.permissions.is_empty(), "{:?}", config.permissions);
-        // The steps reach the definition the genesis brief is built from.
-        assert_eq!(config.intent.setup, ["Install ripgrep".to_string()]);
+        .expect("a seeded create is planned")
+        .expect("nothing was declined");
+        assert_eq!(plan.model_id, "demo-model");
+        assert!(plan.accept_setup, "the steps were accepted");
+        assert!(!plan.replace);
+        assert_eq!(
+            plan.seed.as_deref(),
+            Some(std::fs::read_to_string(&seed).unwrap().as_str())
+        );
+        // Planning writes nothing.
+        assert!(!paths
+            .resolver()
+            .principal_layout("sprout")
+            .shared
+            .root
+            .exists());
     }
 
     /// ADR-104: setup steps are accepted by `--yes` or at a terminal;
@@ -2748,26 +2601,18 @@ updated_at = "2026-01-01T00:00:00Z"
         )
         .unwrap();
 
-        // First create: success.
-        provision_principal("scout", Some("demo-model"), None, false, false, &paths)
-            .await
-            .expect("first create should succeed")
-            .expect("first create should return a manager");
-
-        // Capture a sentinel file inside the workspace that the
-        // overwrite (if it happened) would destroy. This proves the
-        // refusal is real and not a "succeeded silently" trap.
+        // A peko of this name exists, with a sentinel file the
+        // overwrite (if it happened) would destroy.
         let shared = paths.resolver().principal_layout("scout").shared;
+        std::fs::create_dir_all(&shared.roles_dir).unwrap();
+        std::fs::write(&shared.config_file, "name = \"scout\"\n").unwrap();
         std::fs::write(shared.roles_dir.join("sentinel.md"), "do-not-delete")
             .expect("write sentinel");
-        assert!(shared.roles_dir.join("sentinel.md").exists());
 
-        // Second create without --force: must refuse.
-        let err = match provision_principal("scout", Some("demo-model"), None, false, false, &paths)
-            .await
-        {
+        // Without --force: refused.
+        let err = match plan_create("scout", Some("demo-model"), None, false, false, &paths).await {
             Err(e) => e,
-            Ok(_) => panic!("second create without --force must fail"),
+            Ok(_) => panic!("a create without --force must fail"),
         };
         let msg = format!("{err:#}");
         assert!(
@@ -2775,33 +2620,16 @@ updated_at = "2026-01-01T00:00:00Z"
             "error must name the guard + the recovery path: {msg}"
         );
 
-        // Sentinel must still exist — nothing was overwritten.
+        // With --force and --yes the plan says to replace it. Planning
+        // itself removes nothing: the daemon does, when asked.
+        let plan = plan_create("scout", Some("demo-model"), None, true, true, &paths)
+            .await
+            .expect("create with --force --yes is planned")
+            .expect("nothing was declined");
+        assert!(plan.replace, "--force replaces the existing peko");
         assert!(
             shared.roles_dir.join("sentinel.md").exists(),
-            "overwrite guard must not destroy workspace data"
-        );
-
-        // With --force and --yes (non-TTY test env): the existing
-        // principal is removed (wiping the sentinel) and the new one
-        // is written. This is the destructive re-create flow that
-        // closes the 2026-08-01 follow-up "Known follow-up: --force
-        // does not actually destroy the existing principal".
-        provision_principal("scout", Some("demo-model"), None, true, true, &paths)
-            .await
-            .expect("create with --force --yes should succeed and destroy the prior principal")
-            .expect("force path returns a manager");
-
-        // Sentinel must be gone — the destructive re-create wiped it.
-        assert!(
-            !shared.roles_dir.join("sentinel.md").exists(),
-            "destructive --force must remove the prior peko's on-disk state"
-        );
-
-        // And a fresh peko.toml must be in place — the new
-        // principal really did get created.
-        assert!(
-            shared.config_file.exists(),
-            "destructive --force must end with a fresh peko.toml"
+            "planning must not destroy workspace data"
         );
     }
 

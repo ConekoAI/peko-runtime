@@ -36,8 +36,33 @@ const LOCAL_KEYS: &[&str] = &["quota"];
 /// # Errors
 /// When the text is not TOML.
 pub fn seed_from_config(principal_toml: &str) -> Result<String> {
+    seed_from_workspace(principal_toml, None)
+}
+
+/// The persona a seed gave a peko, read back from its conventions: the
+/// body of the `## Persona` section [`add_persona`] wrote, up to the
+/// next `## ` heading.
+#[must_use]
+pub fn persona_in(conventions: &str) -> Option<String> {
+    let mut lines = conventions.lines();
+    lines.by_ref().find(|line| line.trim() == "## Persona")?;
+    let body: Vec<&str> = lines.take_while(|line| !line.starts_with("## ")).collect();
+    let body = body.join("\n").trim().to_string();
+    (!body.is_empty()).then_some(body)
+}
+
+/// A seed from a peko's `peko.toml` and its `kb/CONVENTIONS.md`, so the
+/// persona it was grown with travels again (`peko seed` → `peko create
+/// -s` round-trips it).
+///
+/// # Errors
+/// When `principal_toml` is not TOML.
+pub fn seed_from_workspace(principal_toml: &str, conventions: Option<&str>) -> Result<String> {
     let mut doc: toml::Table =
         toml::from_str(principal_toml).context("peko.toml is not valid TOML")?;
+    if let Some(persona) = conventions.and_then(persona_in) {
+        doc.insert("persona".into(), toml::Value::String(persona));
+    }
     for key in EXISTENCE_KEYS.iter().chain(LOCAL_KEYS) {
         doc.remove(*key);
     }
@@ -189,6 +214,34 @@ mod tests {
         assert!(!ws.path().join("roles").exists(), "no role is written");
     }
     use super::*;
+
+    /// The persona a seed gave a peko is in the seed exported from it.
+    #[test]
+    fn an_exported_seed_carries_the_persona_again() {
+        let ws = tempfile::tempdir().unwrap();
+        add_persona(
+            ws.path(),
+            "Your name is Mochi.\n\nSign replies \"— Mochi\".",
+        )
+        .unwrap();
+        let mut conventions = std::fs::read_to_string(ws.path().join("kb/CONVENTIONS.md")).unwrap();
+        assert_eq!(
+            persona_in(&conventions).as_deref(),
+            Some("Your name is Mochi.\n\nSign replies \"— Mochi\".")
+        );
+        // A later section is not part of it.
+        conventions.push_str("\n## Learned\n\n- Be brief.\n");
+        let seed = seed_from_workspace(CONFIG, Some(&conventions)).unwrap();
+        let back = parse_seed(&seed).unwrap();
+        assert_eq!(
+            back.persona.as_deref(),
+            Some("Your name is Mochi.\n\nSign replies \"— Mochi\".")
+        );
+        assert_eq!(back.config.identity.display_name.as_deref(), Some("Ada"));
+        // No persona section, no persona key.
+        assert!(persona_in("# Conventions\n\n- Be kind.\n").is_none());
+        assert!(!seed_from_config(CONFIG).unwrap().contains("persona"));
+    }
 
     const CONFIG: &str = r#"
 name = "ada"

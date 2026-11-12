@@ -100,7 +100,6 @@ roles:
 - `roles/root.md`: how it looks after its ongoing work: plans, schedules,
   and check-ins.
 - `roles/worker.md`: how it carries out a task it hands to a helper.
-- `roles/primary.md`: a general-purpose assistant role.
 
 Edit a role to change how your peko does that job; the edit applies on its
 next turn.

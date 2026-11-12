@@ -1,6 +1,6 @@
 # Peko CLI Reference
 
-Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.1.0). Regenerate it after changing any command; `peko <command> --help` shows the same text.
+Generated from the CLI's own `--help` output by `scripts/gen_cli_reference.py` (peko 0.1.1). Regenerate it after changing any command; `peko <command> --help` shows the same text.
 
 ## `peko`
 

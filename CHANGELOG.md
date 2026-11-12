@@ -4,6 +4,27 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A peko made in Peko Desktop now sets itself up right away (ADR-105).**
+  The daemon's `principal_create` did not schedule the first turn, lay down
+  the `kb/` scaffold, or write the journal's first entry, so such a peko
+  only ran its first turn after the daemon was restarted. `peko create` and
+  the daemon now share one create (`principal::provision`), and
+  `peko create` asks the daemon instead of writing the folder itself.
+- **Clients can see that a peko is still setting itself up.** The peko
+  summary in `principal_list` / `principal_get` / `principal_created` now
+  carries `boot_state`.
+- **A seed exported with `peko seed` carries the persona again.** The
+  persona a seed gave a peko lives in its `kb/CONVENTIONS.md`; the export
+  reads it back into `persona`.
+
+### Removed
+
+- **`roles/primary.md` is no longer written for a new peko.** Nothing used
+  it: a peko runs `root`, `conversation` and `worker`. Existing pekos keep
+  their file.
+
 ## [0.1.1] - 2026-11-12
 
 ### Added
