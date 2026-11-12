@@ -35,6 +35,7 @@ pub(crate) mod first_contact;
 pub mod genesis;
 pub mod identity_prompt;
 pub mod kb;
+pub mod main_run;
 pub mod manager;
 pub mod memory;
 pub mod messenger;
@@ -51,6 +52,7 @@ pub mod router;
 pub mod routers;
 pub mod run_failure;
 pub mod seed;
+pub mod setup_status;
 // Phase 4 of `feature/multi-model-subagents` (plan:
 // `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`
@@ -135,6 +137,9 @@ pub struct Principal {
     /// Its runs parked by a disruption, waiting to continue (ADR-089
     /// D2–D4); saved in `<local>/parked.json`.
     pub parking: parking::Parking,
+    /// The turn running in its main session, so the owner can stop it
+    /// (ADR-104 D5).
+    pub main_run: main_run::MainRun,
 }
 
 /// What [`Principal::reload_config_if_changed`] compares to notice an

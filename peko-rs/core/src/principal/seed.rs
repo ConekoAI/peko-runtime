@@ -55,6 +55,35 @@ pub fn seed_from_config(principal_toml: &str) -> Result<String> {
     ))
 }
 
+/// Where the genesis turn records how each setup step went, relative to
+/// the workspace.
+pub const SETUP_REPORT_PATH: &str = "kb/setup.md";
+
+/// The setup steps as a seed may carry them: each on one line, blank
+/// ones dropped. There is no limit on how many or how long: the creator
+/// reads them before accepting, and can watch and stop the turn that
+/// carries them out.
+#[must_use]
+pub fn tidy_setup(steps: &[String]) -> Vec<String> {
+    steps
+        .iter()
+        .map(|step| step.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|step| !step.is_empty())
+        .collect()
+}
+
+/// The setup steps as a numbered list, for the person who must accept
+/// them before the peko is created.
+#[must_use]
+pub fn setup_listing(steps: &[String]) -> String {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| format!("  {}. {step}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A seed read back: the definition plus its optional inline `persona`
 /// (Markdown added to the grown peko's `kb/CONVENTIONS.md`; see
 /// [`add_persona`]).
@@ -74,7 +103,9 @@ pub fn parse_seed(text: &str) -> Result<Seed> {
     struct Extras {
         persona: Option<String>,
     }
-    let config: PrincipalConfig = toml::from_str(text).context("parse the seed as peko.toml")?;
+    let mut config: PrincipalConfig =
+        toml::from_str(text).context("parse the seed as peko.toml")?;
+    config.intent.setup = tidy_setup(&config.intent.setup);
     let extras: Extras = toml::from_str(text).context("parse the seed's persona")?;
     Ok(Seed {
         config,
@@ -107,6 +138,15 @@ pub fn add_persona(workspace: &std::path::Path, persona: &str) -> Result<()> {
 }
 
 impl Seed {
+    /// The setup steps the grown peko will carry out on its first turn
+    /// (ADR-104). They run commands and download code as the owner's OS
+    /// user, so every create surface shows them and has them accepted
+    /// before it grows the peko.
+    #[must_use]
+    pub fn setup(&self) -> &[String] {
+        &self.config.intent.setup
+    }
+
     /// The config of a new peko grown from this seed: named `name`, owned
     /// by `owner`, with a fresh identity and no grants (ADR-060, ADR-081
     /// D4). Lifecycle and deployment state never carry over — a seed that
@@ -216,6 +256,38 @@ granted_by = { kind = "user", id = "local" }
         assert!(grown.permissions.is_empty());
         assert_eq!(grown.owner, ActorRef::User("local".into()));
         assert_eq!(grown.preferred_model_id.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    /// ADR-104: setup steps travel with the definition, each on one line.
+    #[test]
+    fn a_seed_carries_setup_steps() {
+        let text = format!(
+            "{CONFIG}\n[intent]\nsetup = [\"  Get the notes skill\\n from https://example.com/notes  \", \"\", \"Install ripgrep\"]\n"
+        )
+        .replacen("[intent]\ngoals = [\"Help with research\"]\n", "", 1);
+        let seed = parse_seed(&text).unwrap();
+        assert_eq!(
+            seed.setup(),
+            [
+                "Get the notes skill from https://example.com/notes".to_string(),
+                "Install ripgrep".to_string()
+            ]
+        );
+        assert_eq!(
+            setup_listing(seed.setup()),
+            "  1. Get the notes skill from https://example.com/notes\n  2. Install ripgrep"
+        );
+        // The steps stay in the grown peko's definition and in its seed.
+        let grown = seed.grown("ada-2", ActorRef::User("local".into()));
+        assert_eq!(grown.intent.setup.len(), 2);
+        let exported = seed_from_config(&toml::to_string(&grown).unwrap()).unwrap();
+        assert_eq!(parse_seed(&exported).unwrap().setup().len(), 2);
+
+        // No limit on how many steps or how long.
+        let many = vec!["x".repeat(5_000); 40];
+        assert_eq!(tidy_setup(&many).len(), 40);
+        // A definition without setup writes no `setup` key.
+        assert!(!seed_from_config(CONFIG).unwrap().contains("setup"));
     }
 
     #[test]

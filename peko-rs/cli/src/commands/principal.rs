@@ -59,6 +59,11 @@ pub enum PrincipalCommands {
         /// identity; `id`, `did`, and `boot_state` in the seed are
         /// ignored. TOML note: top-level keys (`preferred_model_id`,
         /// `persona`) must come BEFORE the first `[table]` header.
+        /// A seed may list `setup` steps under `[intent]` (skills, MCP
+        /// servers, command-line tools to get ready). The new peko
+        /// carries them out on its first turn, running commands on this
+        /// computer as you, so they are shown and you are asked first;
+        /// `--yes` accepts them.
         #[arg(short = 's', long = "seed", value_name = "SEED_TOML")]
         seed: Option<String>,
 
@@ -74,9 +79,9 @@ pub enum PrincipalCommands {
         #[arg(long)]
         force: bool,
 
-        /// Skip the destructive confirmation prompt (use with
-        /// `--force` in scripts or CI). Has no effect without
-        /// `--force`.
+        /// Answer yes to what `create` would ask: the destructive
+        /// `--force` confirmation, and accepting a seed's `setup`
+        /// steps. For scripts and CI.
         #[arg(long)]
         yes: bool,
 
@@ -85,11 +90,13 @@ pub enum PrincipalCommands {
         #[arg(long)]
         detach: bool,
 
-        /// How long to wait for the peko's first turn, in seconds. The
-        /// peko is created either way; if this runs out, it finishes
-        /// setting up the next time the daemon starts.
-        #[arg(long, value_name = "SECS", default_value_t = 300)]
-        wait_timeout: u64,
+        /// Stop waiting for the peko's first turn after this many
+        /// seconds. Without it, `create` waits until the turn is done
+        /// and shows what the peko is doing; Ctrl-C stops the waiting,
+        /// not the peko. The peko is created either way, and its first
+        /// turn goes on in the daemon.
+        #[arg(long, value_name = "SECS")]
+        wait_timeout: Option<u64>,
     },
 
     /// Put a peko online on PekoHub (private by default)
@@ -578,6 +585,50 @@ fn load_seed(path: &str) -> Result<peko_core::principal::seed::Seed> {
     peko_core::principal::seed::parse_seed(&content).with_context(|| format!("seed {path}"))
 }
 
+/// Whether the seed's setup steps are accepted (ADR-104). The new peko
+/// carries them out on its first turn, running commands and downloading
+/// code as this OS user, so they are always shown; `--yes` accepts them,
+/// a terminal asks, and anything else refuses.
+fn accept_setup(name: &str, steps: &[String], yes: bool, interactive: bool) -> Result<bool> {
+    if steps.is_empty() {
+        return Ok(true);
+    }
+    println!(
+        "This seed asks '{name}' to set up {} thing(s) on its first turn. It will run \
+         commands and download code on this computer, as you:\n{}",
+        steps.len(),
+        peko_core::principal::seed::setup_listing(steps)
+    );
+    if yes {
+        return Ok(true);
+    }
+    if !interactive {
+        anyhow::bail!(
+            "the seed's setup steps were not accepted. Read them above, then pass --yes \
+             to accept them, or remove `setup` from the seed's [intent]."
+        );
+    }
+    confirm_prompt("Let it carry these out?")
+}
+
+/// What to print about setup once the first turn is done (ADR-104): the
+/// peko's own report, or a line saying it wrote none.
+fn setup_report(workspace: &std::path::Path, steps: &[String]) -> Option<String> {
+    if steps.is_empty() {
+        return None;
+    }
+    let path = workspace.join(peko_core::principal::seed::SETUP_REPORT_PATH);
+    Some(match std::fs::read_to_string(&path) {
+        Ok(report) if !report.trim().is_empty() => {
+            format!("Setup report ({}):\n{}", path.display(), report.trim_end())
+        }
+        _ => format!(
+            "The peko wrote no setup report at {}. Ask it which setup steps are ready.",
+            path.display()
+        ),
+    })
+}
+
 /// `peko create` — the full genesis pipeline (ADR-054):
 /// provision (P0) + definition (P1) + boot (P2 seeding, daemon ensure,
 /// blocking genesis wait unless `--detach`).
@@ -588,7 +639,7 @@ async fn create_principal(
     force: bool,
     yes: bool,
     detach: bool,
-    wait_timeout: u64,
+    wait_timeout: Option<u64>,
     paths: &GlobalPaths,
 ) -> Result<()> {
     let manager = match provision_principal(name, model_id, seed_path, force, yes, paths).await? {
@@ -613,6 +664,16 @@ async fn provision_principal(
 ) -> Result<Option<PrincipalManager>> {
     // `None` = the user cancelled at the destructive `--force` prompt.
     use peko_providers::catalog::ModelCatalog;
+
+    // The seed is read and its setup steps accepted before anything is
+    // written or wiped (ADR-104).
+    let seed = seed_path.map(load_seed).transpose()?;
+    if let Some(seed) = &seed {
+        if !accept_setup(name, seed.setup(), yes, std::io::stdin().is_terminal())? {
+            println!("Create cancelled.");
+            return Ok(None);
+        }
+    }
 
     // Refuse to silently overwrite an existing principal — see Bug 2 in
     // scripts/e2e/reports/2026-08-01-non-technical-user-field-test.md.
@@ -662,9 +723,8 @@ async fn provision_principal(
     }
 
     // ── P1 definition: seed or defaults ─────────────────────────────
-    let (mut config, persona) = match seed_path {
-        Some(path) => {
-            let seed = load_seed(path)?;
+    let (mut config, persona) = match seed {
+        Some(seed) => {
             let persona = seed.persona.clone();
             // The CLI arg names the principal; a seed `name` is
             // overridden. A fresh identity, always, and no authority:
@@ -808,7 +868,7 @@ async fn boot_principal(
     manager: &PrincipalManager,
     paths: &GlobalPaths,
     detach: bool,
-    wait_timeout: u64,
+    wait_timeout: Option<u64>,
 ) -> Result<()> {
     // ── Make sure the daemon knows this principal ───────────────────
     // The cron engine enumerates LOADED principals, so a principal
@@ -890,11 +950,20 @@ async fn boot_principal(
     }
 
     // ── P2 wait: block until the genesis turn is done ───────────────
-    println!("Waiting for '{name}' to set itself up (its first turn)…");
+    println!(
+        "Waiting for '{name}' to set itself up (its first turn). Ctrl-C stops the \
+         waiting, not the peko; to stop the peko: peko stop {name} --main"
+    );
+    let ledger_dir = paths.principal_layout(name).local.ledger_dir;
+    let mut shown = FirstTurnProgress::default();
     let schedule_path = paths.resolver().cron_schedule(name);
     let config_path = paths.resolver().principal_layout(name).shared.config_file;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_timeout);
-    loop {
+    let deadline =
+        wait_timeout.map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
+    let setup = loop {
+        for line in shown.new_steps(&ledger_dir) {
+            println!("  · {line}");
+        }
         let scheduler = peko_cron::CronScheduler::new(&schedule_path)
             .with_context(|| format!("open cron schedule for '{name}'"))?;
         if genesis_completed(&scheduler)? {
@@ -902,17 +971,22 @@ async fn boot_principal(
             // Wait for both persisted writes, not this CLI's stale cache.
             let config: PrincipalConfig = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
             if config.boot_state() == peko_core::principal::config::BootState::Organized {
-                break;
+                break config.intent.setup;
             }
         }
-        if std::time::Instant::now() > deadline {
+        if deadline.is_some_and(|deadline| std::time::Instant::now() > deadline) {
             anyhow::bail!(
-                "'{name}' did not finish setting up within {wait_timeout}s. The peko \
-                 is created and finishes setting up the next time the daemon \
-                 starts; watch with `peko log {name}`"
+                "'{name}' did not finish setting up within {}s. The peko is created \
+                 and its first turn goes on in the daemon. Watch it: \
+                 peko audit ledger {name} --follow. Stop it: peko stop {name} --main",
+                wait_timeout.unwrap_or_default()
             );
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    let workspace = paths.resolver().principal_layout(name).shared.root;
+    if let Some(report) = setup_report(&workspace, &setup) {
+        println!("{report}");
     }
     println!(
         "🎉 Peko '{name}' is ready. \
@@ -922,6 +996,25 @@ async fn boot_principal(
     Ok(())
 }
 
+/// What `create` has already printed of the peko's first turn: one line
+/// per tool call, read from its tool ledger (ADR-079).
+#[derive(Default)]
+struct FirstTurnProgress {
+    seen: std::collections::HashSet<String>,
+}
+
+impl FirstTurnProgress {
+    /// Lines for the calls started since the last look. A ledger that
+    /// does not exist yet, or cannot be read, shows nothing.
+    fn new_steps(&mut self, ledger_dir: &std::path::Path) -> Vec<String> {
+        peko_core::principal::setup_status::steps(ledger_dir)
+            .into_iter()
+            .filter(|step| self.seen.insert(step.call_id.clone()))
+            .map(|step| step.line)
+            .collect()
+    }
+}
+
 /// One-shot jobs are reaped even on failure. Only a finalized run is
 /// evidence of initialization; a missing job without history is pending.
 fn genesis_completed(scheduler: &peko_cron::CronScheduler) -> Result<bool> {
@@ -929,7 +1022,11 @@ fn genesis_completed(scheduler: &peko_cron::CronScheduler) -> Result<bool> {
     let Some(run) = runs.first().filter(|run| run.finished_at.is_some()) else {
         return Ok(false);
     };
-    if run.status == "success" {
+    // Done, or stopped by its owner (ADR-104 D5): either way it is over.
+    if peko_core::principal::genesis::genesis_is_over(&run.status) {
+        if run.status == peko_cron::STOPPED_STATUS {
+            println!("The first turn was stopped before it finished.");
+        }
         return Ok(true);
     }
     anyhow::bail!(
@@ -2329,7 +2426,7 @@ mod tests {
                 assert!(!yes);
                 assert!(seed.is_none());
                 assert!(!detach);
-                assert_eq!(wait_timeout, 300);
+                assert_eq!(wait_timeout, None, "no limit unless asked");
             }
             _other => panic!("expected flattened top-level create command"),
         }
@@ -2539,6 +2636,9 @@ updated_at = "2026-01-01T00:00:00Z"
 name = "ignored"
 owner = { kind = "user", id = "hub:seed-author" }
 
+[intent]
+setup = ["Install ripgrep"]
+
 [[permissions]]
 subject = { kind = "user", id = "hub:friend" }
 permission = "trusted"
@@ -2548,12 +2648,13 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         )
         .unwrap();
 
+        // `--yes` accepts the seed's setup steps (ADR-104).
         let manager = provision_principal(
             "sprout",
             Some("demo-model"),
             Some(seed.to_str().unwrap()),
             false,
-            false,
+            true,
             &paths,
         )
         .await
@@ -2563,6 +2664,42 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         let config = principal.config.read().await;
         assert_eq!(config.owner, ActorRef::User("local".into()));
         assert!(config.permissions.is_empty(), "{:?}", config.permissions);
+        // The steps reach the definition the genesis brief is built from.
+        assert_eq!(config.intent.setup, ["Install ripgrep".to_string()]);
+    }
+
+    /// ADR-104: setup steps are accepted by `--yes` or at a terminal;
+    /// a script that did not pass `--yes` is refused.
+    #[test]
+    fn setup_steps_must_be_accepted_before_create() {
+        let steps = vec!["Install ripgrep".to_string()];
+        assert!(accept_setup("scout", &[], false, false).unwrap());
+        assert!(accept_setup("scout", &steps, true, false).unwrap());
+        let refused = accept_setup("scout", &steps, false, false).unwrap_err();
+        assert!(refused.to_string().contains("--yes"), "{refused}");
+    }
+
+    /// ADR-104: `create` ends by showing the peko's own setup report.
+    #[test]
+    fn create_shows_the_setup_report() {
+        let workspace = tempfile::tempdir().unwrap();
+        let steps = vec!["Install ripgrep".to_string()];
+        assert!(setup_report(workspace.path(), &[]).is_none());
+        let missing = setup_report(workspace.path(), &steps).unwrap();
+        assert!(missing.contains("wrote no setup report"), "{missing}");
+
+        std::fs::create_dir_all(workspace.path().join("kb")).unwrap();
+        std::fs::write(
+            workspace.path().join("kb/setup.md"),
+            "- ripgrep: ready (`rg --version`)\n",
+        )
+        .unwrap();
+        let report = setup_report(workspace.path(), &steps).unwrap();
+        assert!(report.starts_with("Setup report ("), "{report}");
+        assert!(
+            report.ends_with("- ripgrep: ready (`rg --version`)"),
+            "{report}"
+        );
     }
 
     /// Bug 2 regression: a second `create` against an existing workspace

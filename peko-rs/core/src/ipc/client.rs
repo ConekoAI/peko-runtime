@@ -438,8 +438,38 @@ impl DaemonClient {
             request_id,
             name: name.into(),
             peer,
+            main: false,
         };
         self.request_response(packet).await
+    }
+
+    /// Stop the turn in a peko's main session (ADR-104 D5): its
+    /// first-turn setup, keepalive, or scheduled work. Owner only.
+    pub async fn principal_stop_main(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::PrincipalStop {
+            request_id,
+            name: name.into(),
+            peer: None,
+            main: true,
+        };
+        self.request_response(packet).await
+    }
+
+    /// How a peko's first turn is going (ADR-104 D4).
+    pub async fn principal_setup_status(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::PrincipalSetupStatus {
+            request_id,
+            name: name.into(),
+        })
+        .await
     }
 
     /// The approval requests waiting for a principal's owner (ADR-078 D7).
@@ -688,6 +718,7 @@ impl DaemonClient {
             description,
             model_id: model_id.into(),
             seed: None,
+            accept_setup: false,
         };
         self.request_response(packet).await
     }

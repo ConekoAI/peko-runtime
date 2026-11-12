@@ -6,6 +6,23 @@ All notable changes to Peko.
 
 ### Added
 
+- **A seed can list setup steps (ADR-104).** `[intent] setup = ["…"]` in a
+  seed names what the new peko should get ready: skills, MCP servers,
+  command-line tools. On its first turn the peko carries out each step,
+  checks that it works, and writes the result to `kb/setup.md`, which
+  `peko create` prints. The steps run commands on your computer, so
+  `peko create -s` shows them and asks first (`--yes` accepts them in a
+  script), and the IPC `principal_create` request refuses such a seed with
+  `[setup_not_accepted]` unless it carries the new optional `accept_setup`.
+  `--yes` on `peko create` now also covers this, not only `--force`.
+- **A peko's first turn can be watched and stopped (ADR-104).** `peko create`
+  prints each tool call of the first turn as it happens.
+  `peko stop <name> --main` stops what a peko is doing on its own: its
+  first turn, or scheduled work (IPC `principal_stop` with the new optional
+  `main`). A first turn you stop is not run again. The new IPC request
+  `principal_setup_status` gives a client the same progress and the setup
+  report.
+
 - **`Fetch` built-in tool (ADR-103).** A peko can read one public web page
   or text file by URL and get it as plain text. It is a plain request, not
   a browser: it does not read pages that need JavaScript or a sign-in, or
@@ -14,6 +31,13 @@ All notable changes to Peko.
   computer or a private network. A call by a run that acts for someone
   other than the owner goes to the policy reviewer first. The built-in
   count is now 26.
+
+### Changed
+
+- **`peko create` waits until the first turn is done.** It used to stop
+  waiting after 300 seconds. `--wait-timeout <SECS>` still sets a limit, and
+  `--detach` does not wait. A script that relied on the old default should
+  pass one of them.
 
 ## [0.1.0] - 2026-11-11
 

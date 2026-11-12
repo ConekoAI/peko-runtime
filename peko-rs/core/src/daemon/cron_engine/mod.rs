@@ -739,6 +739,11 @@ impl CronEngine {
                 "⏭️  Cron job '{}' (run {}) skipped: its previous work is still in flight",
                 job.name, run_id
             );
+        } else if status == peko_cron::STOPPED_STATUS {
+            info!(
+                "⏹ Cron job '{}' (run {}) stopped by the owner",
+                job.name, run_id
+            );
         } else if status != "success" && status != "running" {
             warn!(
                 "⚠️ Cron job '{}' (run {}) finished with status '{}': {}",
@@ -884,7 +889,9 @@ impl CronEngine {
         // Finalize history and retire the one-shot before handing cadence
         // to the principal. A crash before this stamp is recoverable from
         // history; an organized principal cannot retain a due genesis job.
-        if status == "success"
+        // A first turn the owner stopped is over too (ADR-104 D5): it is
+        // not run again at the next boot.
+        if (status == "success" || status == peko_cron::STOPPED_STATUS)
             && job.id == crate::principal::genesis::GENESIS_JOB_ID
             && job.origin_session.is_none()
             && matches!(job.action, CronJobAction::Send { .. })
@@ -1030,10 +1037,18 @@ impl CronEngine {
             }
         }
 
-        match pm
+        let result = pm
             .receive_trunk(principal.id.clone(), message, model, acting_for)
-            .await
-        {
+            .await;
+        // ADR-104 D5: the owner stopped this turn. Whatever the loop
+        // returned on its way out, the fire is recorded as stopped.
+        if principal.main_run.take_stopped() {
+            return Ok((
+                peko_cron::STOPPED_STATUS.to_string(),
+                Some("Stopped by the owner.".to_string()),
+            ));
+        }
+        match result {
             Ok(response) => Ok(("success".to_string(), Some(response.content))),
             Err(e) => Ok((
                 "failed".to_string(),
@@ -2421,6 +2436,77 @@ mod tests {
                 expected_status == "failed"
             );
         }
+    }
+
+    /// ADR-104 D5: the owner stops a first turn. The fire is recorded as
+    /// stopped, the peko is organized, and genesis is not run again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_first_turn_the_owner_stops_is_over() {
+        peko_identity::init_test_env();
+        let tmp = TempDir::new().unwrap();
+        let manager = setup_principal_manager(&tmp).await;
+        let paths = PathResolver::with_dirs(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("cache"),
+        );
+        let engine = CronEngine::new(
+            paths.clone(),
+            Arc::new(IdleDetector::new()),
+            Arc::new(Observability::new("daemon")),
+            Some(manager.clone()),
+            Weak::new(),
+        );
+        let mut config = test_config("halted");
+        config.preferred_model_id = Some("mock".into());
+        let principal = manager.create(config).await.unwrap();
+        assert!(!principal.main_run.stop(), "nothing runs yet");
+        crate::principal::genesis::seed_boot_defaults(&manager, &paths)
+            .await
+            .unwrap();
+        let scheduler = CronScheduler::new(paths.cron_schedule("halted")).unwrap();
+        let job = scheduler
+            .get_job(crate::principal::genesis::GENESIS_JOB_ID)
+            .unwrap()
+            .unwrap();
+
+        // Stop the turn the moment it is in flight.
+        let stopper = {
+            let principal = Arc::clone(&principal);
+            tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while !principal.main_run.stop() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the turn never started"
+                    );
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        engine.execute_job(job).await.unwrap();
+        stopper.await.unwrap();
+
+        let runs = scheduler
+            .get_run_history(crate::principal::genesis::GENESIS_JOB_ID, 1)
+            .unwrap();
+        assert_eq!(runs[0].status, peko_cron::STOPPED_STATUS, "{:?}", runs[0]);
+        assert!(!principal.main_run.is_running());
+        assert_eq!(
+            principal.config.read().await.boot_state(),
+            crate::principal::config::BootState::Organized
+        );
+        let report = crate::principal::genesis::seed_boot_defaults(&manager, &paths)
+            .await
+            .unwrap();
+        assert!(
+            !report.genesis_seeded.contains(&"halted".to_string()),
+            "a stopped first turn is not run again"
+        );
+        assert_eq!(
+            peko_cron::status_resets_failures(peko_cron::STOPPED_STATUS),
+            None
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

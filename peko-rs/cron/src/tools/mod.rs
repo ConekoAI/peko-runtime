@@ -324,13 +324,17 @@ pub const SKIPPED_STATUS: &str = "skipped";
 /// toward the retry budget.
 pub const DEFERRED_STATUS: &str = "deferred";
 
+/// Run status for a fire whose turn the peko's owner stopped (ADR-104
+/// D5). It neither resets nor counts toward the retry budget.
+pub const STOPPED_STATUS: &str = "stopped";
+
 /// How a run's status moves the job's consecutive-failure count:
 /// `Some(true)` resets it, `Some(false)` bumps it, `None` leaves it.
 #[must_use]
 pub fn status_resets_failures(status: &str) -> Option<bool> {
     match status {
         "success" => Some(true),
-        INTERRUPTED_STATUS | SKIPPED_STATUS | DEFERRED_STATUS => None,
+        INTERRUPTED_STATUS | SKIPPED_STATUS | DEFERRED_STATUS | STOPPED_STATUS => None,
         _ => Some(false),
     }
 }

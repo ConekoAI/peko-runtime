@@ -581,6 +581,7 @@ impl PrincipalManager {
             parking: crate::principal::parking::Parking::load(
                 layout.local.root.join("parked.json"),
             ),
+            main_run: Default::default(),
             workspace_path: layout.shared.root.clone(),
             memory,
             router,
@@ -737,6 +738,7 @@ impl PrincipalManager {
             parking: crate::principal::parking::Parking::load(
                 layout.local.root.join("parked.json"),
             ),
+            main_run: Default::default(),
             workspace_path,
             memory,
             router,
@@ -1937,7 +1939,14 @@ impl PrincipalManager {
         let inbox_key = peko_session::inbox_key(&principal.id.0, &session_id);
         match self.inbox_registry.try_acquire_run(&inbox_key).await {
             Some(_permit) => {
-                let decision = principal.router.route(ctx).await;
+                // The owner can stop this turn (ADR-104 D5); with no
+                // event sink, `route_streaming` is `route` plus a cancel
+                // token.
+                let (cancel, _running) = principal.main_run.begin();
+                let decision = principal
+                    .router
+                    .route_streaming(ctx, Box::new(|_| {}), Some(cancel))
+                    .await;
                 if let Some(detector) = idle_detector {
                     detector.record_activity(&principal.id.0).await;
                 }

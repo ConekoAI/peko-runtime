@@ -214,11 +214,52 @@ The fields you are most likely to change:
 - **`preferred_model_id`**: the configured model the peko runs on (see
   `peko model list`). `peko send --model <id>` overrides it for one message.
 - **`[intent]`**: its goals, values and preferences, in plain language.
+  In a seed it may also carry `setup`: what the peko should get ready on
+  its first turn (see below).
 - **`[governance]`**: how long its tool ledger is kept, and how many agents
   it may run at once.
 - **`permissions`**: who may do what. Change them with `peko permit` and
   `peko revoke` rather than by hand (see
   [Other people and other pekos](#other-people-and-other-pekos)).
+
+### Starting a peko with its tools ready
+
+A seed can list what the new peko should get ready before it starts work:
+skills, MCP servers, command-line tools. Write one plain instruction per
+entry, with a link where there is one:
+
+```toml
+[intent]
+setup = [
+  "Get the release-notes skill from https://example.com/skills/release-notes",
+  "Add the Playwright MCP server (https://github.com/microsoft/playwright-mcp)",
+  "Install ripgrep",
+]
+```
+
+`peko create my-peko -s my.seed.toml` shows the steps and asks before it
+creates anything, because the peko will run commands and download code on
+your computer, as you. In a script, `--yes` accepts them. On its first turn
+the peko carries out each step, checks that it works, and writes the result
+to `kb/setup.md`, which `peko create` prints when the turn ends. A step that
+needs an administrator password is not attempted: the report gives you the
+command to run yourself.
+
+There is no limit on how many steps you list or how long they take.
+`peko create` waits until the first turn is done and prints each thing the
+peko does as it does it. Ctrl-C stops the waiting, not the peko. To stop the
+peko itself, from another terminal:
+
+```bash
+peko stop my-peko --main
+```
+
+It stops after the step it is on, keeps what it has done, and does not start
+setup again. `peko audit ledger my-peko --follow` shows the same progress at
+any time.
+
+The steps run once. Editing `setup` later does nothing: to add a tool to a
+peko that already exists, ask it.
 
 Leave `id`, `did`, `actor_key` and `[owner]` alone: they are the peko's
 identity: the daemon keeps their loaded values until it restarts. Other

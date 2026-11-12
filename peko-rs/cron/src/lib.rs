@@ -47,7 +47,7 @@ pub use tools::{
     set_global_runtime, status_resets_failures, CronJob, CronJobAction, CronRuntime, CronTool,
     FireWhen, JobPatch, ScheduleKind, ATTENTION_MAX_QUIET_MS, DEFAULT_MAX_RETRIES, DEFERRED_STATUS,
     INTERRUPTED_STATUS, QUIET_MAX_WAIT_MS, QUIET_STATUS, QUIET_STRETCH_MS, SEEDED_JOB_IDS,
-    SKIPPED_STATUS,
+    SKIPPED_STATUS, STOPPED_STATUS,
 };
 
 pub use idle::IdleDetector;
