@@ -58,6 +58,8 @@ This is the same position as snapshot import, which prints hook and MCP definiti
 
 `peko create` no longer stops waiting after 300 seconds. It waits until the first turn ends and prints one line per tool call the peko makes, read from its tool ledger (ADR-079), so the arguments shown are already redacted. `--wait-timeout <SECS>` sets a limit for scripts; `--detach` does not wait at all. Ctrl-C ends the waiting, not the turn.
 
+A client that cannot read the peko's folder asks the daemon: IPC `principal_setup_status` (owner only) returns the peko's boot state, whether a main-session turn is running, the setup steps its definition lists, its 30 most recent tool calls as the same short lines, and `kb/setup.md` once written (at most 16 KiB).
+
 When the turn ends, `peko create` prints `kb/setup.md`, or says the peko wrote none. Otherwise the report is in the peko's workspace, and `peko audit ledger <name> --follow` shows the turn as it runs.
 
 ### D5. The owner can stop the first turn
@@ -78,5 +80,5 @@ A first turn the owner stops is over. The peko is marked `organized` and genesis
 - Setup makes the first turn longer, with no bound from the runtime. The bound is the owner, who sees each step and can stop the turn.
 - `peko create` in a script that relied on the 300-second limit now waits until the turn ends; pass `--wait-timeout` or `--detach`.
 - A peko stopped during its first turn is `organized` with whatever it had done; its `kb/setup.md` may be missing or partial.
-- Peko Desktop must show a seed's steps and send `accept_setup`; until it does, creating from a seed with setup steps is refused there with the steps in the error. It shows the first turn's progress from the daemon's `tool.call` audit events and stops it with `principal_stop` `main`.
+- Peko Desktop must show a seed's steps and send `accept_setup`; until it does, creating from a seed with setup steps is refused there with the steps in the error. It shows the first turn's progress from `principal_setup_status` and stops it with `principal_stop` `main`.
 - PekoHub publishes seeds. A published seed's setup steps are instructions to run code on someone else's computer; the acceptance in D3 is the only check on them here.

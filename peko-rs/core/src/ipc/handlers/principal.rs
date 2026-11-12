@@ -280,6 +280,7 @@ impl RequestHandler for PrincipalHandler {
                 | RequestPacket::PrincipalSendStream { .. }
                 | RequestPacket::PrincipalStop { .. }
                 | RequestPacket::ApprovalList { .. }
+                | RequestPacket::PrincipalSetupStatus { .. }
                 | RequestPacket::ApprovalDecide { .. }
                 | RequestPacket::PrincipalLog { .. }
                 | RequestPacket::PrincipalLogWatch { .. }
@@ -384,6 +385,17 @@ impl RequestHandler for PrincipalHandler {
                     return Ok(());
                 }
                 handle_principal_stop(request_id, &name, peer, caller, host, sink).await?;
+            }
+
+            RequestPacket::PrincipalSetupStatus { request_id, name } => {
+                let response = match owner_principal(host, &name, caller).await {
+                    Err(message) => ResponsePacket::Error {
+                        request_id,
+                        message,
+                    },
+                    Ok(principal) => setup_status(request_id, name, &principal).await,
+                };
+                send_response(sink, response).await?;
             }
 
             RequestPacket::ApprovalList { request_id, name } => {
@@ -4509,6 +4521,48 @@ async fn run_principal_log_watch(
 /// empty, as `peko create` leaves it. The genesis turn then has the peko
 /// adopt its own description instead of showing people
 /// "The <name> Principal".
+/// Most tool calls `principal_setup_status` returns: the newest ones.
+const SETUP_STATUS_STEPS: usize = 30;
+
+/// A peko's first turn so far (ADR-104 D4), for its owner.
+async fn setup_status(request_id: u64, name: String, principal: &Principal) -> ResponsePacket {
+    use crate::principal::setup_status;
+    let (boot_state, setup) = {
+        let config = principal.config.read().await;
+        (config.boot_state(), config.intent.setup.clone())
+    };
+    let ledger_dir = crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
+    let workspace = principal.workspace_path.clone();
+    let (steps, report) = tokio::task::spawn_blocking(move || {
+        let mut steps = setup_status::steps(&ledger_dir);
+        let skip = steps.len().saturating_sub(SETUP_STATUS_STEPS);
+        steps.drain(..skip);
+        (steps, setup_status::report(&workspace))
+    })
+    .await
+    .unwrap_or_default();
+    ResponsePacket::PrincipalSetupStatus {
+        request_id,
+        name,
+        boot_state: serde_json::to_value(boot_state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default(),
+        running: principal.main_run.is_running(),
+        setup,
+        steps: steps
+            .into_iter()
+            .map(|step| crate::ipc::packet::SetupStepInfo {
+                call_id: step.call_id,
+                tool: step.tool,
+                line: step.line,
+                outcome: step.outcome,
+            })
+            .collect(),
+        report,
+    }
+}
+
 /// Why a create is refused over its seed's setup steps (ADR-104): the
 /// seed carries some and the caller did not say the person accepted
 /// them. The message lists the steps, so a client can show them and

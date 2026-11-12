@@ -52,6 +52,7 @@ pub mod router;
 pub mod routers;
 pub mod run_failure;
 pub mod seed;
+pub mod setup_status;
 // Phase 4 of `feature/multi-model-subagents` (plan:
 // `/Users/rlsn/.claude/plans/goofy-humming-wall.md`).
 // `seen_models.json` persistence + the `PrincipalContext::mark_model_seen`

@@ -19,7 +19,9 @@ All notable changes to Peko.
   prints each tool call of the first turn as it happens.
   `peko stop <name> --main` stops what a peko is doing on its own: its
   first turn, or scheduled work (IPC `principal_stop` with the new optional
-  `main`). A first turn you stop is not run again.
+  `main`). A first turn you stop is not run again. The new IPC request
+  `principal_setup_status` gives a client the same progress and the setup
+  report.
 
 - **`Fetch` built-in tool (ADR-103).** A peko can read one public web page
   or text file by URL and get it as plain text. It is a plain request, not

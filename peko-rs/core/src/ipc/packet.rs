@@ -585,6 +585,12 @@ pub enum RequestPacket {
     #[serde(rename = "approval_list")]
     ApprovalList { request_id: u64, name: String },
 
+    /// How a peko's first turn is going (ADR-104 D4): whether it is
+    /// still setting itself up, what it has done so far, and its setup
+    /// report once written. Owner (or operator) only.
+    #[serde(rename = "principal_setup_status")]
+    PrincipalSetupStatus { request_id: u64, name: String },
+
     /// The owner's decision on approval request `id`: approve (with
     /// `always`, also add an always-allow rule to `POLICY.md`) or deny.
     /// The owner's own action — the desktop's buttons, `peko approve` /
@@ -1208,6 +1214,7 @@ impl RequestPacket {
             | Self::PrincipalRevokeInvite { request_id, .. }
             | Self::PrincipalStop { request_id, .. }
             | Self::ApprovalList { request_id, .. }
+            | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecide { request_id, .. }
             | Self::QuotaGet { request_id, .. }
             | Self::QuotaSet { request_id, .. }
@@ -1340,6 +1347,19 @@ pub struct ToolErrorEntry {
 
 /// Schema version carried on every `PrincipalLogMessage` row.
 pub const PRINCIPAL_LOG_SCHEMA_VERSION: u8 = 1;
+
+/// One tool call of a peko's first turn (ADR-104 D4), as a person reads
+/// it: the tool, its action, and the one argument that says what it is
+/// doing. The arguments are the tool ledger's, so secrets are redacted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetupStepInfo {
+    pub call_id: String,
+    pub tool: String,
+    pub line: String,
+    /// `None` while the call is running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
 
 /// One approval request waiting for the owner (ADR-078 D7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2386,6 +2406,27 @@ pub enum ResponsePacket {
         run_failure: Option<RunFailureInfo>,
     },
 
+    /// A peko's first turn so far (ADR-104 D4).
+    #[serde(rename = "principal_setup_status")]
+    PrincipalSetupStatus {
+        request_id: u64,
+        name: String,
+        /// `provisioned` | `defined` | `genesis_pending` | `organized`.
+        /// Anything but `organized` means the first turn is not over.
+        boot_state: String,
+        /// Whether a turn is running in the main session right now, so
+        /// `principal_stop` with `main` has something to stop.
+        running: bool,
+        /// The setup steps its definition lists (`[intent] setup`).
+        setup: Vec<String>,
+        /// Its most recent tool calls, oldest first, at most 30.
+        steps: Vec<SetupStepInfo>,
+        /// The peko's own report (`kb/setup.md`), once it wrote one;
+        /// at most 16 KiB.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report: Option<String>,
+    },
+
     /// The approval requests waiting for the owner, oldest first.
     #[serde(rename = "approval_list")]
     ApprovalList {
@@ -3138,6 +3179,7 @@ impl ResponsePacket {
             | Self::PrincipalLog { request_id, .. }
             | Self::PrincipalLogAppended { request_id, .. }
             | Self::ApprovalList { request_id, .. }
+            | Self::PrincipalSetupStatus { request_id, .. }
             | Self::ApprovalDecided { request_id, .. }
             | Self::PrincipalExported { request_id, .. }
             | Self::PrincipalImported { request_id, .. }
@@ -3241,6 +3283,7 @@ impl ResponsePacket {
             Self::PrincipalLog { .. } => "PrincipalLog",
             Self::PrincipalLogAppended { .. } => "PrincipalLogAppended",
             Self::ApprovalList { .. } => "ApprovalList",
+            Self::PrincipalSetupStatus { .. } => "PrincipalSetupStatus",
             Self::ApprovalDecided { .. } => "ApprovalDecided",
             Self::PrincipalExported { .. } => "PrincipalExported",
             Self::PrincipalImported { .. } => "PrincipalImported",
@@ -3424,6 +3467,46 @@ mod tests {
             }
             _ => panic!("Wrong variant"),
         }
+    }
+
+    /// ADR-104 D4: the wire names a client reads the first turn by.
+    #[test]
+    fn test_principal_setup_status_roundtrip() {
+        let req = RequestPacket::PrincipalSetupStatus {
+            request_id: 7,
+            name: "scout".to_string(),
+        };
+        let json = String::from_utf8(req.to_bytes().unwrap()).unwrap();
+        assert!(json.contains("\"principal_setup_status\""), "{json}");
+        assert!(matches!(
+            RequestPacket::from_bytes(json.as_bytes()).unwrap(),
+            RequestPacket::PrincipalSetupStatus { request_id: 7, .. }
+        ));
+
+        let resp = ResponsePacket::PrincipalSetupStatus {
+            request_id: 7,
+            name: "scout".to_string(),
+            boot_state: "genesis_pending".to_string(),
+            running: true,
+            setup: vec!["Install ripgrep".to_string()],
+            steps: vec![SetupStepInfo {
+                call_id: "call_1".to_string(),
+                tool: "Bash".to_string(),
+                line: "Bash: brew install ripgrep".to_string(),
+                outcome: None,
+            }],
+            report: None,
+        };
+        let value: serde_json::Value = serde_json::from_slice(&resp.to_bytes().unwrap()).unwrap();
+        assert_eq!(value["type"], "principal_setup_status");
+        assert_eq!(value["boot_state"], "genesis_pending");
+        assert_eq!(value["running"], true);
+        assert_eq!(value["steps"][0]["line"], "Bash: brew install ripgrep");
+        assert!(
+            value["steps"][0].get("outcome").is_none(),
+            "running: no outcome"
+        );
+        assert!(value.get("report").is_none(), "no report yet");
     }
 
     #[test]

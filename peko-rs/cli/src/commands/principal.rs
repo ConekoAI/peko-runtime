@@ -1007,53 +1007,12 @@ impl FirstTurnProgress {
     /// Lines for the calls started since the last look. A ledger that
     /// does not exist yet, or cannot be read, shows nothing.
     fn new_steps(&mut self, ledger_dir: &std::path::Path) -> Vec<String> {
-        let today = chrono::Utc::now().date_naive();
-        let since = today.pred_opt().unwrap_or(today);
-        let Ok(calls) = peko_core::security::ledger::read::load_calls(ledger_dir, Some(since))
-        else {
-            return Vec::new();
-        };
-        calls
-            .iter()
-            .filter(|call| self.seen.insert(call.call_id.clone()))
-            .filter_map(|call| call.start.as_ref().map(progress_line))
+        peko_core::principal::setup_status::steps(ledger_dir)
+            .into_iter()
+            .filter(|step| self.seen.insert(step.call_id.clone()))
+            .map(|step| step.line)
             .collect()
     }
-}
-
-/// One tool call as a short line: the tool, its action, and the one
-/// argument that says what it is doing. Arguments are the ledger's, so
-/// secrets are already redacted.
-fn progress_line(start: &serde_json::Value) -> String {
-    let tool = start["tool"].as_str().unwrap_or("tool");
-    let params = &start["params"];
-    let detail = [
-        "command",
-        "url",
-        "file_path",
-        "path",
-        "name",
-        "server",
-        "pattern",
-        "title",
-    ]
-    .iter()
-    .find_map(|key| params[*key].as_str())
-    .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "));
-    let mut line = tool.to_string();
-    if let Some(action) = params["action"].as_str() {
-        line.push(' ');
-        line.push_str(action);
-    }
-    if let Some(detail) = detail {
-        let short: String = detail.chars().take(100).collect();
-        line.push_str(": ");
-        line.push_str(&short);
-        if detail.chars().count() > 100 {
-            line.push('…');
-        }
-    }
-    line
 }
 
 /// One-shot jobs are reaped even on failure. Only a finalized run is
@@ -2718,31 +2677,6 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         assert!(accept_setup("scout", &steps, true, false).unwrap());
         let refused = accept_setup("scout", &steps, false, false).unwrap_err();
         assert!(refused.to_string().contains("--yes"), "{refused}");
-    }
-
-    /// ADR-104 D5: `create` shows each tool call of the first turn once.
-    #[test]
-    fn first_turn_progress_is_one_short_line_per_call() {
-        use serde_json::json;
-        assert_eq!(
-            progress_line(&json!({"tool": "Bash", "params": {"command": "npm  install\n -g x"}})),
-            "Bash: npm install -g x"
-        );
-        assert_eq!(
-            progress_line(&json!({"tool": "MCP", "params": {"action": "status"}})),
-            "MCP status"
-        );
-        assert_eq!(
-            progress_line(&json!({"tool": "Fetch", "params": {"url": "https://example.com/a"}})),
-            "Fetch: https://example.com/a"
-        );
-        let long = progress_line(&json!({"tool": "Bash", "params": {"command": "x".repeat(300)}}));
-        assert!(long.ends_with('…') && long.chars().count() < 120, "{long}");
-        // No ledger yet: nothing to show, no error.
-        let missing = tempfile::tempdir().unwrap();
-        assert!(FirstTurnProgress::default()
-            .new_steps(&missing.path().join("ledger"))
-            .is_empty());
     }
 
     /// ADR-104: `create` ends by showing the peko's own setup report.

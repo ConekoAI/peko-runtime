@@ -459,6 +459,19 @@ impl DaemonClient {
         self.request_response(packet).await
     }
 
+    /// How a peko's first turn is going (ADR-104 D4).
+    pub async fn principal_setup_status(
+        &self,
+        name: impl Into<String>,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        self.request_response(RequestPacket::PrincipalSetupStatus {
+            request_id,
+            name: name.into(),
+        })
+        .await
+    }
+
     /// The approval requests waiting for a principal's owner (ADR-078 D7).
     pub async fn approval_list(&self, name: impl Into<String>) -> anyhow::Result<ResponsePacket> {
         let request_id = self.next_id();
