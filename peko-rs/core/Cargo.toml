@@ -277,6 +277,8 @@ jsonwebtoken = "9"
 # JSON Schema validation for tool arg validation (F32b). Lifted from
 # `peko-extension-host` Cargo.toml in Phase F2 foldback.
 jsonschema = { version = "0.48", default-features = false }
+html2text = "0.17"
+encoding_rs = "0.8"
 
 # ADR-058 D6: per-message peer-uid check (SO_PASSCRED + SCM_CREDENTIALS)
 # on the Linux Unix-datagram IPC transport. `nix` 0.26.4 is already in

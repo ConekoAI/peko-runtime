@@ -3,6 +3,7 @@
 pub mod async_control;
 pub mod bash;
 pub mod channel;
+pub mod fetch;
 pub mod fs;
 pub mod messaging;
 pub mod paths;
@@ -27,6 +28,7 @@ pub mod workflow;
 pub use async_control::{AsyncRuntime, AsyncTool, SharedAsyncRuntime};
 pub use bash::BashTool;
 pub use channel::{AttachTool, ChannelReadTool, ChannelSendTool, SuggestTool};
+pub use fetch::{FetchTool, FETCH_TOOL_NAME};
 pub use fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use messaging::{
     AgentTool, SharedSubagentRuntime, SpawnAuditEvent, SpawnRequest, SubagentRuntime,
