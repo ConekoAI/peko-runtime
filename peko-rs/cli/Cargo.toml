@@ -1,6 +1,6 @@
 [package]
 name = "peko-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Peko CLI binary (Phase 0.Z-B — extracted from `peko-rs/core/`). Owns the on-disk `peko` binary and the `commands/` composition tree. Depends on the `peko_core` lib for the CLI composition surface (`Cli`/`Commands`/`GlobalPaths`/`init_logging`). The CLI is a sink; no other workspace crate depends on it."

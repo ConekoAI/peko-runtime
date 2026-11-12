@@ -1,6 +1,6 @@
 [package]
 name = "peko-identity"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "DID identity + key storage + runtime identity (Phase 3 of the post-migration cleanup). Owns the canonical Identity/DIDDocument/KeyPair/KeyStorage/RuntimeIdentity/RuntimeMetadata domain. Trait ports (`RuntimePaths`, `IdentityVault`, `IdentityDataDir`) abstract root-only deps so peko-identity stays a leaf crate."
