@@ -36,7 +36,7 @@ const LOCAL_KEYS: &[&str] = &["quota"];
 /// # Errors
 /// When the text is not TOML.
 pub fn seed_from_config(principal_toml: &str) -> Result<String> {
-    seed_from_workspace(principal_toml, None)
+    seed_from_workspace(principal_toml, None, &[])
 }
 
 /// The persona a seed gave a peko, read back from its conventions: the
@@ -51,17 +51,29 @@ pub fn persona_in(conventions: &str) -> Option<String> {
     (!body.is_empty()).then_some(body)
 }
 
-/// A seed from a peko's `peko.toml` and its `kb/CONVENTIONS.md`, so the
-/// persona it was grown with travels again (`peko seed` → `peko create
-/// -s` round-trips it).
+/// A seed from a peko's `peko.toml`, its `kb/CONVENTIONS.md` (so the
+/// persona it was grown with travels again) and the capability files to
+/// carry ([`collect_files`]). `peko seed` → `peko create -s` round-trips
+/// all three.
 ///
 /// # Errors
 /// When `principal_toml` is not TOML.
-pub fn seed_from_workspace(principal_toml: &str, conventions: Option<&str>) -> Result<String> {
+pub fn seed_from_workspace(
+    principal_toml: &str,
+    conventions: Option<&str>,
+    files: &[SeedFile],
+) -> Result<String> {
     let mut doc: toml::Table =
         toml::from_str(principal_toml).context("peko.toml is not valid TOML")?;
     if let Some(persona) = conventions.and_then(persona_in) {
         doc.insert("persona".into(), toml::Value::String(persona));
+    }
+    if !files.is_empty() {
+        let table: toml::Table = files
+            .iter()
+            .map(|file| (file.path.clone(), toml::Value::String(file.content.clone())))
+            .collect();
+        doc.insert("files".into(), toml::Value::Table(table));
     }
     for key in EXISTENCE_KEYS.iter().chain(LOCAL_KEYS) {
         doc.remove(*key);
@@ -109,13 +121,210 @@ pub fn setup_listing(steps: &[String]) -> String {
         .join("\n")
 }
 
+/// The workspace folders a seed's files may go in (ADR-107): the plain
+/// files a peko's capabilities are made of (ADR-050). Hooks are left
+/// out: they run on every tool call.
+pub const SEED_FILE_DIRS: &[&str] = &["roles", "skills", "workflows", "mcp"];
+
+/// Most bytes of file content one seed may carry. A seed stays one
+/// small text file.
+pub const SEED_FILES_MAX_BYTES: usize = 64 * 1024;
+
+/// Most files one seed may carry.
+pub const SEED_FILES_MAX_COUNT: usize = 64;
+
+/// One file a seed carries: a path inside the new peko's workspace and
+/// its text (ADR-107).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedFile {
+    pub path: String,
+    pub content: String,
+}
+
+impl SeedFile {
+    /// Whether the file names something this computer will run: an MCP
+    /// server's command, or a workflow script. The person accepting the
+    /// seed is shown such a file in full.
+    #[must_use]
+    pub fn runs_commands(&self) -> bool {
+        self.path.starts_with("mcp/") || self.path.starts_with("workflows/")
+    }
+}
+
+/// Why `path` may not be a seed file's path, if it may not: it must be
+/// a relative path of plain names, at least two deep, under one of
+/// [`SEED_FILE_DIRS`].
+fn path_refusal(path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    if path.len() > 200 || parts.len() < 2 || !parts.iter().all(|part| plain(part)) {
+        return Some(format!(
+            "`{path}` is not a plain relative path (letters, digits, `.`, `_`, `-`; no \
+             leading dots)"
+        ));
+    }
+    if !SEED_FILE_DIRS.contains(&parts[0]) {
+        return Some(format!(
+            "`{path}` is outside the folders a seed may fill: {}",
+            SEED_FILE_DIRS.join(", ")
+        ));
+    }
+    None
+}
+
+/// The files of a seed's `[files]` table, checked: every key a path
+/// under [`SEED_FILE_DIRS`], every value text, within the count and
+/// size limits. In path order.
+fn checked_files(table: Option<toml::Table>) -> Result<Vec<SeedFile>> {
+    let mut files = Vec::new();
+    for (path, value) in table.unwrap_or_default() {
+        if let Some(refusal) = path_refusal(&path) {
+            anyhow::bail!("seed file {refusal}");
+        }
+        let toml::Value::String(content) = value else {
+            anyhow::bail!("seed file `{path}` must be text (a TOML string)");
+        };
+        files.push(SeedFile { path, content });
+    }
+    anyhow::ensure!(
+        files.len() <= SEED_FILES_MAX_COUNT,
+        "a seed carries at most {SEED_FILES_MAX_COUNT} files; this one has {}",
+        files.len()
+    );
+    let bytes: usize = files.iter().map(|file| file.content.len()).sum();
+    anyhow::ensure!(
+        bytes <= SEED_FILES_MAX_BYTES,
+        "a seed's files may hold at most {} KB together; these hold {} KB",
+        SEED_FILES_MAX_BYTES / 1024,
+        bytes.div_ceil(1024)
+    );
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// The files a seed carries, for the person who must accept them: each
+/// path and size, and the full text of the ones that name something
+/// this computer will run.
+#[must_use]
+pub fn files_listing(files: &[SeedFile]) -> String {
+    let mut lines = Vec::new();
+    for file in files {
+        lines.push(format!("  {} ({} bytes)", file.path, file.content.len()));
+        if file.runs_commands() {
+            lines.extend(
+                file.content
+                    .trim_end()
+                    .lines()
+                    .map(|line| format!("      {line}")),
+            );
+        }
+    }
+    lines.join("\n")
+}
+
+/// Write a seed's files into a new peko's workspace (ADR-107). Paths
+/// were checked when the seed was parsed; they are checked again here,
+/// since this is where they touch the disk.
+///
+/// # Errors
+/// When a path is refused or a file cannot be written.
+pub fn write_files(workspace: &std::path::Path, files: &[SeedFile]) -> Result<()> {
+    for file in files {
+        if let Some(refusal) = path_refusal(&file.path) {
+            anyhow::bail!("seed file {refusal}");
+        }
+        let target = workspace.join(&file.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        std::fs::write(&target, &file.content)
+            .with_context(|| format!("write {}", target.display()))?;
+    }
+    Ok(())
+}
+
+/// The capability files of a peko's workspace, for its exported seed
+/// (ADR-107): everything under `roles/`, `skills/` and `workflows/`,
+/// and `mcp/` too when `with_mcp`. An MCP server's file may hold
+/// tokens, so it is carried only when asked for. Roles still identical
+/// to the runtime's defaults are left out, as every peko gets them.
+/// Files that are not UTF-8 text are skipped and named in the second
+/// value.
+///
+/// # Errors
+/// When the files exceed what a seed may carry, or cannot be read.
+pub fn collect_files(
+    workspace: &std::path::Path,
+    with_mcp: bool,
+) -> Result<(Vec<SeedFile>, Vec<String>)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                walk(root, &path, out);
+            } else if kind.is_file() {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    out.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    let defaults = crate::principal::genesis::default_role_files();
+    let mut paths = Vec::new();
+    for dir in SEED_FILE_DIRS {
+        if *dir == "mcp" && !with_mcp {
+            continue;
+        }
+        walk(workspace, &workspace.join(dir), &mut paths);
+    }
+    paths.sort();
+    let (mut files, mut skipped) = (Vec::new(), Vec::new());
+    for path in paths {
+        if path_refusal(&path).is_some() {
+            skipped.push(path);
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(workspace.join(&path)) else {
+            skipped.push(path);
+            continue;
+        };
+        if defaults
+            .iter()
+            .any(|(default_path, default)| *default_path == path && *default == content)
+        {
+            continue;
+        }
+        files.push(SeedFile { path, content });
+    }
+    let table: toml::Table = files
+        .iter()
+        .map(|file| (file.path.clone(), toml::Value::String(file.content.clone())))
+        .collect();
+    Ok((checked_files(Some(table))?, skipped))
+}
+
 /// A seed read back: the definition plus its optional inline `persona`
 /// (Markdown added to the grown peko's `kb/CONVENTIONS.md`; see
-/// [`add_persona`]).
+/// [`add_persona`]) and the capability files it carries (`[files]`,
+/// ADR-107).
 #[derive(Debug, Clone)]
 pub struct Seed {
     pub config: PrincipalConfig,
     pub persona: Option<String>,
+    pub files: Vec<SeedFile>,
 }
 
 /// Parse a seed. It IS a `peko.toml` (plus a tolerated `persona`),
@@ -127,14 +336,16 @@ pub fn parse_seed(text: &str) -> Result<Seed> {
     #[derive(serde::Deserialize)]
     struct Extras {
         persona: Option<String>,
+        files: Option<toml::Table>,
     }
     let mut config: PrincipalConfig =
         toml::from_str(text).context("parse the seed as peko.toml")?;
     config.intent.setup = tidy_setup(&config.intent.setup);
-    let extras: Extras = toml::from_str(text).context("parse the seed's persona")?;
+    let extras: Extras = toml::from_str(text).context("parse the seed's persona and files")?;
     Ok(Seed {
         config,
         persona: extras.persona,
+        files: checked_files(extras.files)?,
     })
 }
 
@@ -170,6 +381,36 @@ impl Seed {
     #[must_use]
     pub fn setup(&self) -> &[String] {
         &self.config.intent.setup
+    }
+
+    /// Whether the person creating a peko from this seed must accept
+    /// something first (ADR-104 D3, ADR-107): setup steps it will carry
+    /// out, or files that will be written into its workspace.
+    #[must_use]
+    pub fn needs_acceptance(&self) -> bool {
+        !self.setup().is_empty() || !self.files.is_empty()
+    }
+
+    /// What the person accepts, as text: the numbered setup steps and
+    /// the files. Empty when there is nothing to accept.
+    #[must_use]
+    pub fn acceptance_listing(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.setup().is_empty() {
+            parts.push(format!(
+                "Setup steps it will carry out, running commands and downloading code on \
+                 this computer:\n{}",
+                setup_listing(self.setup())
+            ));
+        }
+        if !self.files.is_empty() {
+            parts.push(format!(
+                "Files written into its folder (an MCP server or workflow file names \
+                 something this computer will run):\n{}",
+                files_listing(&self.files)
+            ));
+        }
+        parts.join("\n")
     }
 
     /// The config of a new peko grown from this seed: named `name`, owned
@@ -215,6 +456,103 @@ mod tests {
     }
     use super::*;
 
+    /// ADR-107: a seed's `[files]` are text files under the capability
+    /// folders, written into the new peko's workspace and exported again.
+    #[test]
+    fn a_seed_carries_capability_files() {
+        let text = r#"
+name = "ada"
+
+[files]
+"roles/researcher.md" = "---\nname: researcher\ndescription: Reads papers\n---\nCite sources.\n"
+"mcp/echo/server.json" = '''
+{ "command": "/usr/bin/true" }
+'''
+"skills/greet/SKILL.md" = "---\nname: greet\ndescription: Greets\n---\nHello $ARGUMENTS\n"
+"#;
+        let seed = parse_seed(text).unwrap();
+        assert_eq!(
+            seed.files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "mcp/echo/server.json",
+                "roles/researcher.md",
+                "skills/greet/SKILL.md"
+            ]
+        );
+        assert!(seed.needs_acceptance());
+        let listing = seed.acceptance_listing();
+        assert!(listing.contains("  roles/researcher.md ("), "{listing}");
+        // A file that names a command is shown in full; a prompt is not.
+        assert!(
+            listing.contains("      { \"command\": \"/usr/bin/true\" }"),
+            "{listing}"
+        );
+        assert!(!listing.contains("Cite sources."), "{listing}");
+
+        let ws = tempfile::tempdir().unwrap();
+        write_files(ws.path(), &seed.files).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("skills/greet/SKILL.md")).unwrap(),
+            "---\nname: greet\ndescription: Greets\n---\nHello $ARGUMENTS\n"
+        );
+
+        // Exported again: MCP files only when asked for, and binary files
+        // are skipped and named.
+        std::fs::write(ws.path().join("skills/greet/logo.bin"), [0xff, 0xfe, 0x00]).unwrap();
+        std::fs::create_dir_all(ws.path().join("hooks/x")).unwrap();
+        std::fs::write(ws.path().join("hooks/x/hook.toml"), "x = 1").unwrap();
+        let (files, skipped) = collect_files(ws.path(), false).unwrap();
+        assert_eq!(
+            files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            ["roles/researcher.md", "skills/greet/SKILL.md"]
+        );
+        assert_eq!(skipped, ["skills/greet/logo.bin"]);
+        let (with_mcp, _) = collect_files(ws.path(), true).unwrap();
+        assert_eq!(with_mcp.len(), 3);
+        let exported = seed_from_workspace("name = \"ada\"\n", None, &with_mcp).unwrap();
+        assert_eq!(parse_seed(&exported).unwrap().files, seed.files);
+
+        // Nothing to accept in a plain seed.
+        let plain = parse_seed("name = \"ada\"\n").unwrap();
+        assert!(!plain.needs_acceptance() && plain.acceptance_listing().is_empty());
+    }
+
+    /// ADR-107: a seed's files stay inside the capability folders.
+    #[test]
+    fn seed_files_outside_the_capability_folders_are_refused() {
+        for (path, needle) in [
+            ("peko.toml", "not a plain relative path"),
+            ("POLICY.md", "not a plain relative path"),
+            ("kb/MEMORY.md", "outside the folders"),
+            ("hooks/x/hook.toml", "outside the folders"),
+            ("roles/../peko.toml", "not a plain relative path"),
+            ("/etc/passwd", "not a plain relative path"),
+            ("roles/.hidden", "not a plain relative path"),
+            ("roles/a b.md", "not a plain relative path"),
+            ("roles", "not a plain relative path"),
+        ] {
+            let text = format!("name = \"ada\"\n[files]\n\"{path}\" = \"x\"\n");
+            let error = format!("{:#}", parse_seed(&text).unwrap_err());
+            assert!(error.contains(needle), "{path}: {error}");
+            let file = SeedFile {
+                path: path.to_string(),
+                content: "x".into(),
+            };
+            let ws = tempfile::tempdir().unwrap();
+            assert!(write_files(ws.path(), &[file]).is_err(), "{path}");
+        }
+        let not_text = "name = \"ada\"\n[files]\n\"roles/a.md\" = 3\n";
+        assert!(format!("{:#}", parse_seed(not_text).unwrap_err()).contains("must be text"));
+        let big = format!(
+            "name = \"ada\"\n[files]\n\"roles/a.md\" = \"{}\"\n",
+            "x".repeat(SEED_FILES_MAX_BYTES + 1)
+        );
+        assert!(format!("{:#}", parse_seed(&big).unwrap_err()).contains("at most 64 KB"));
+    }
+
     /// The persona a seed gave a peko is in the seed exported from it.
     #[test]
     fn an_exported_seed_carries_the_persona_again() {
@@ -231,7 +569,7 @@ mod tests {
         );
         // A later section is not part of it.
         conventions.push_str("\n## Learned\n\n- Be brief.\n");
-        let seed = seed_from_workspace(CONFIG, Some(&conventions)).unwrap();
+        let seed = seed_from_workspace(CONFIG, Some(&conventions), &[]).unwrap();
         let back = parse_seed(&seed).unwrap();
         assert_eq!(
             back.persona.as_deref(),

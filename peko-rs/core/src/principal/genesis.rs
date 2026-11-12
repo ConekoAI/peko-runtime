@@ -611,6 +611,33 @@ pub fn seed_default_worker_role(workspace: &std::path::Path) -> Result<bool> {
     )
 }
 
+/// The roles every peko is seeded with, as workspace paths and their
+/// current text. An exported seed leaves out a role still identical to
+/// its default (ADR-107).
+#[must_use]
+pub fn default_role_files() -> Vec<(String, &'static str)> {
+    vec![
+        (
+            "roles/root.md".to_string(),
+            crate::principal::routers::root::root_role_seed_content(),
+        ),
+        (
+            format!(
+                "roles/{}.md",
+                crate::principal::child_turns::CONVERSATION_ROLE
+            ),
+            crate::principal::child_turns::conversation_role_seed_content(),
+        ),
+        (
+            format!(
+                "roles/{}.md",
+                crate::tools::builtin::messaging::agent::DEFAULT_ROLE
+            ),
+            include_str!("../resources/roles/worker/ROLE.md"),
+        ),
+    ]
+}
+
 /// Seed the roles every principal starts with: `root` (the trunk),
 /// `conversation` (ADR-087), and `worker` (delegated tasks). Returns the
 /// ids written.

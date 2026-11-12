@@ -56,11 +56,14 @@ pub enum PrincipalCommands {
         /// identity; `id`, `did`, and `boot_state` in the seed are
         /// ignored. TOML note: top-level keys (`preferred_model_id`,
         /// `persona`) must come BEFORE the first `[table]` header.
+        /// A seed may carry files under `[files]` (`"roles/x.md" =
+        /// "…"`), written into the new peko's `roles/`, `skills/`,
+        /// `workflows/` or `mcp/`.
         /// A seed may list `setup` steps under `[intent]` (skills, MCP
         /// servers, command-line tools to get ready). The new peko
-        /// carries them out on its first turn, running commands on this
-        /// computer as you, so they are shown and you are asked first;
-        /// `--yes` accepts them.
+        /// carries them out after its first turn, running commands on
+        /// this computer as you. Steps and files are shown and you are
+        /// asked first; `--yes` accepts them.
         #[arg(short = 's', long = "seed", value_name = "SEED_TOML")]
         seed: Option<String>,
 
@@ -156,7 +159,9 @@ pub enum PrincipalCommands {
     /// Export a peko's seed: its definition without its identity,
     /// owner, permissions, or memory
     ///
-    /// Share it on PekoHub, or start a new peko from it with
+    /// The seed carries its persona and, under `[files]`, its roles,
+    /// skills and workflows (text files, 64 KB together at most). Share
+    /// it on PekoHub, or start a new peko from it with
     /// `peko create <name> -s <file>`. The new peko is its own peko,
     /// not a copy.
     Seed {
@@ -166,6 +171,12 @@ pub enum PrincipalCommands {
         /// Write the seed here (prints it when omitted)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Also carry its MCP server files (`mcp/`). Left out by
+        /// default: they may hold tokens. Read the seed before you share
+        /// it
+        #[arg(long)]
+        with_mcp: bool,
     },
 
     /// Import a peko from a `.peko` package
@@ -361,7 +372,11 @@ pub async fn handle_principal(
         PrincipalCommands::Show { name } => show_principal(&name, paths, json).await,
         PrincipalCommands::Remove { name, yes } => remove_principal(&name, yes, paths, json).await,
         PrincipalCommands::Export { name, output } => export_principal(&name, output).await,
-        PrincipalCommands::Seed { name, output } => export_seed(&name, output, paths),
+        PrincipalCommands::Seed {
+            name,
+            output,
+            with_mcp,
+        } => export_seed(&name, output, with_mcp, paths),
         PrincipalCommands::Setup { name, status } => setup_principal(&name, status, paths).await,
         PrincipalCommands::Import {
             file_path,
@@ -593,30 +608,34 @@ fn definition_hashes(
         .collect()
 }
 
-/// Whether the seed's setup steps are accepted (ADR-104). The new peko
-/// carries them out on its first turn, running commands and downloading
-/// code as this OS user, so they are always shown; `--yes` accepts them,
-/// a terminal asks, and anything else refuses.
-fn accept_setup(name: &str, steps: &[String], yes: bool, interactive: bool) -> Result<bool> {
-    if steps.is_empty() {
+/// Whether what the seed brings is accepted (ADR-104 D3, ADR-107): the
+/// setup steps the new peko will carry out, and the files written into
+/// its folder. They change this computer as this OS user, so they are
+/// always shown; `--yes` accepts them, a terminal asks, and anything
+/// else refuses.
+fn accept_setup(
+    name: &str,
+    seed: &peko_core::principal::seed::Seed,
+    yes: bool,
+    interactive: bool,
+) -> Result<bool> {
+    if !seed.needs_acceptance() {
         return Ok(true);
     }
     println!(
-        "This seed asks '{name}' to set up {} thing(s) on its first turn. It will run \
-         commands and download code on this computer, as you:\n{}",
-        steps.len(),
-        peko_core::principal::seed::setup_listing(steps)
+        "This seed changes this computer when '{name}' is created.\n{}",
+        seed.acceptance_listing()
     );
     if yes {
         return Ok(true);
     }
     if !interactive {
         anyhow::bail!(
-            "the seed's setup steps were not accepted. Read them above, then pass --yes \
-             to accept them, or remove `setup` from the seed's [intent]."
+            "what the seed brings was not accepted. Read it above, then pass --yes to \
+             accept it, or remove `setup` from the seed's [intent] and its [files]."
         );
     }
-    confirm_prompt("Let it carry these out?")
+    confirm_prompt("Go ahead with this?")
 }
 
 /// One line per setup step, with how it stands (ADR-106).
@@ -812,10 +831,10 @@ async fn plan_create(
     };
     let mut accept = false;
     if let Some(seed) = &seed {
-        if !accept_setup(name, seed.setup(), yes, std::io::stdin().is_terminal())? {
+        if !accept_setup(name, seed, yes, std::io::stdin().is_terminal())? {
             return Ok(None);
         }
-        accept = !seed.setup().is_empty();
+        accept = seed.needs_acceptance();
     }
 
     // Refuse to silently overwrite an existing peko (Bug 2 in
@@ -1354,7 +1373,12 @@ async fn export_principal(name: &str, output: Option<String>) -> Result<()> {
 
 /// `peko seed` — reads the peko's `peko.toml` directly; the daemon
 /// need not be running.
-fn export_seed(name: &str, output: Option<String>, paths: &GlobalPaths) -> Result<()> {
+fn export_seed(
+    name: &str,
+    output: Option<String>,
+    with_mcp: bool,
+    paths: &GlobalPaths,
+) -> Result<()> {
     let config_path =
         peko_core::common::paths::peko_config_path(&paths.principals_root_dir().join(name));
     let config = std::fs::read_to_string(&config_path).with_context(|| {
@@ -1369,7 +1393,17 @@ fn export_seed(name: &str, output: Option<String>, paths: &GlobalPaths) -> Resul
         .parent()
         .map(|root| root.join("kb").join("CONVENTIONS.md"))
         .and_then(|path| std::fs::read_to_string(path).ok());
-    let seed = peko_core::principal::seed::seed_from_workspace(&config, conventions.as_deref())?;
+    // ADR-107: its roles, skills and workflows travel in the seed; its
+    // MCP server files only when asked for, since they may hold tokens.
+    let (files, skipped) = match config_path.parent() {
+        Some(root) => peko_core::principal::seed::collect_files(root, with_mcp)?,
+        None => (Vec::new(), Vec::new()),
+    };
+    for path in &skipped {
+        eprintln!("  left out (not a plain text file a seed can carry): {path}");
+    }
+    let seed =
+        peko_core::principal::seed::seed_from_workspace(&config, conventions.as_deref(), &files)?;
     match output {
         Some(path) => {
             let path = absolute_from_cwd(&path)?;
@@ -2630,9 +2664,15 @@ granted_by = { kind = "user", id = "hub:seed-author" }
     /// a script that did not pass `--yes` is refused.
     #[test]
     fn setup_steps_must_be_accepted_before_create() {
-        let steps = vec!["Install ripgrep".to_string()];
-        assert!(accept_setup("scout", &[], false, false).unwrap());
+        let seed = |text: &str| peko_core::principal::seed::parse_seed(text).unwrap();
+        let plain = seed("name = \"x\"\n");
+        let steps = seed("name = \"x\"\n[intent]\nsetup = [\"Install ripgrep\"]\n");
+        let files = seed("name = \"x\"\n[files]\n\"roles/a.md\" = \"A role\"\n");
+        assert!(accept_setup("scout", &plain, false, false).unwrap());
         assert!(accept_setup("scout", &steps, true, false).unwrap());
+        // ADR-107: files alone need accepting too.
+        assert!(accept_setup("scout", &files, false, false).is_err());
+        assert!(accept_setup("scout", &files, true, false).unwrap());
         let refused = accept_setup("scout", &steps, false, false).unwrap_err();
         assert!(refused.to_string().contains("--yes"), "{refused}");
     }

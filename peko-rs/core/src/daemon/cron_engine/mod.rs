@@ -910,6 +910,9 @@ impl CronEngine {
                             &scheduler,
                             &config,
                             &principal.workspace_path,
+                            &crate::principal::setup_status::local_root(
+                                &principal.memory.sessions_dir(),
+                            ),
                         ) {
                             Ok(true) => info!("🧰 Scheduled the setup turn for '{name}'"),
                             Ok(false) => {}
