@@ -198,6 +198,7 @@ pub(crate) fn builtin_tools(backends: &Backends, fakes: &Fakes) -> Vec<Arc<dyn T
         Arc::new(ChannelReadTool::new(backends.channels.clone())),
         Arc::new(AttachTool::new(backends.channels.clone())),
         Arc::new(SuggestTool::new(backends.channels.clone())),
+        Arc::new(FetchTool::new()),
         Arc::new(channel::contacts::ContactsTool::new(
             backends.channels.clone(),
             Weak::new(),
@@ -548,7 +549,8 @@ mod tests {
         // PrincipalManager and must fail closed rather than run
         // unattributed; Attach and Suggest need a conversation, and the default
         // caller works in the internal tree (its success path is covered
-        // in `channel::attach`).
+        // in `channel::attach`). Fetch reaches no local address, and tests
+        // use no other (its success path is covered in `fetch`).
         let fails_closed: Vec<(&str, Value, &str)> = vec![
             ("ModelCall", json!({"prompt":"hi"}), "rincipal"),
             ("Workflow", json!({"path":"flow.py"}), "rincipal"),
@@ -561,6 +563,11 @@ mod tests {
                 "Suggest",
                 json!({"replies":["Yes", "Not yet"]}),
                 "not in a conversation",
+            ),
+            (
+                "Fetch",
+                json!({"url":"http://127.0.0.1:9/"}),
+                "not a public internet address",
             ),
         ];
 

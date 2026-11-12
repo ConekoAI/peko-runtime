@@ -4,6 +4,17 @@ All notable changes to Peko.
 
 ## [Unreleased]
 
+### Added
+
+- **`Fetch` built-in tool (ADR-103).** A peko can read one public web page
+  or text file by URL and get it as plain text. It is a plain request, not
+  a browser: it does not read pages that need JavaScript or a sign-in, or
+  sites that block automated requests, and its description and every
+  failure tell the peko so. It reaches public addresses only, never this
+  computer or a private network. A call by a run that acts for someone
+  other than the owner goes to the policy reviewer first. The built-in
+  count is now 26.
+
 ## [0.1.0] - 2026-11-11
 
 > The first public release, and the start of the `0.1.x` preview line: a

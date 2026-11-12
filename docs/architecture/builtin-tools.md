@@ -1,6 +1,6 @@
 # Built-in Tools Catalog
 
-Peko exposes **25 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
+Peko exposes **26 built-in tool names**, all in PascalCase. Task, Plan, Cron, Async, Contacts, and Channel each require an explicit `action`; no former per-action tool names are aliases. Session also rejects fields irrelevant to the selected action. This reference
 describes the compiled Tool implementations; the emitted descriptions and
 JSON Schemas in source are the executable contract. MCP and workspace tools
 have their own names and schemas and are outside this inventory.
@@ -34,11 +34,11 @@ values, and parameter names retain their existing spelling.
 ## Registration and lifetimes
 
 [installation.rs](../../peko-rs/core/src/tools/installation.rs) owns the factories,
-installation phases, and the 25-name inventory. The complete inventory derives from its manifest.
+installation phases, and the 26-name inventory. The complete inventory derives from its manifest.
 
 | Lifetime | Tools | Installation |
 |---|---|---|
-| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest | Runtime startup; fill missing defaults without replacing configured instances |
+| Runtime defaults | Read/Write/Edit/Glob/Grep/Bash, Cron, ChannelRead, Attach, Suggest, Fetch | Runtime startup; fill missing defaults without replacing configured instances |
 | Daemon services | ModelCall, Workflow, caller-aware Session and Agent | After PrincipalManager and daemon services exist |
 | Principal workspace | Skill, RoleCatalog | Once per principal; RoleCatalog scans current role files on invocation |
 | Principal services | Task, Plan, ChannelSend, Contacts, ModelList, Async, MCP, ToolLog | When their session storage, plan, caller identity/channel, or inbox bindings become available |
@@ -448,6 +448,28 @@ Offer suggested replies with the run's reply (ADR-093 D3) — a few short answer
 A conversation's reply is the run's final text, posted after the run, so `Suggest` posts nothing: it stages 2–4 replies (one line, at most 60 characters each, no duplicates, trimmed) for the run's conversation ([reply_options.rs](../../peko-rs/core/src/principal/reply_options.rs)), and the reply post carries them as `options`. A later call replaces the earlier one. The staged replies are dropped when the reply is empty or withheld by the policy reviewer, and when anyone else posted in the conversation after the call, so a run that never replied cannot hand them to a later reply. Returns `{success, channel, replies}`.
 
 Refused outside a conversation (cron, internal work) and for a run that is not the conversation's bound session (an `Agent` worker shares the compartment but reports back). Exempt from the policy reviewer: the replies are text the person may choose to send, and a tap carries no authority — no message decides an approval (ADR-078).
+
+## Web
+
+### Fetch
+
+Read one public web page or text file by URL (ADR-103). A plain GET, not a browser.
+
+[Implementation](../../peko-rs/core/src/tools/builtin/fetch.rs)
+
+| Parameter | Type | Required | Schema default / bounds |
+|---|---|---|---|
+| `url` | string | yes | `http` or `https`, no user or password |
+| `raw` | boolean | no | false; true returns an HTML page's source |
+| `max_chars` | integer | no | 40000; 1000–200000 |
+
+Returns `{url, status, content_type, text, total_chars, truncated}`, plus `final_url` after a redirect, `title` for an HTML page, and a `note` when the text was cut or the page looks drawn by JavaScript. HTML is rendered to plain text with its links kept; plain text, JSON, XML and similar types come back unchanged; a charset declared in the header or the page is decoded. At most 2 MB is read, the call takes at most 30 seconds, and up to 5 redirects are followed.
+
+**Limits the model is told.** The description says that `Fetch` reads only part of the internet: not pages that need JavaScript or a sign-in, not sites that block automated requests, not PDFs, images or other files, and it does not search. Every failure names its reason (bot check, refusal, rate limit, not text, timeout) and tells the model not to retry the URL. It identifies itself as `Peko/<version>` and does not imitate a browser.
+
+**Addresses.** Every hop, redirects included, must resolve to public addresses only, and the request is pinned to the address that was checked. Loopback, private, link-local, carrier-NAT and reserved ranges are refused for every run, owner runs included (an owner run has `Bash` for local services).
+
+**Trust.** Every run gets it. A non-owner run's call goes to the policy reviewer first, as `Read` does. Returned text has runtime tags defused and is to be treated as data. Calls may run in parallel.
 
 ## Inference and workflows
 
@@ -902,12 +924,13 @@ observe the behavior.
 | Harness | [`ToolHarness`](../../peko-rs/core/src/tools/builtin/test_harness.rs) | `cargo test --lib` | Dispatch semantics (validation, workspace injection, audit), multi-tool flows, caller/principal scoping |
 | Daemon | [`cli_tools.rs`](../../peko-rs/core/tests/cli_tools.rs) | `make test-cli-tools` (mock LLM) | Daemon wiring only: workspace resolution, process spawning, result persistence |
 
-`ToolHarness::new()` registers all 23 tools behind the production dispatcher,
+`ToolHarness::new()` registers every built-in behind the production dispatcher,
 with the harness principal's tool ledger bound,
 backed by tempdir storage where it is cheap (workspace files, ChannelStore,
 CronScheduler, ModelCatalog, AsyncExecutor) and fakes where the real backend
 is a daemon (Task, Plan, Agent, Session). ModelCall and Workflow stay unbound
-and fail closed. Its smoke test must cover the installation manifest, so a new
+and fail closed; Fetch reaches no local address, so its pages are served in its
+own unit tests. Its smoke test must cover the installation manifest, so a new
 built-in fails until it has a backend and a smoke case. Cron actions take an
 explicit runtime through `CronTool::with_runtime`; `peko_cron::testing` provides
 `FileCronRuntime` behind the `test-support` feature.
