@@ -359,7 +359,30 @@ impl RequestHandler for PrincipalHandler {
                 request_id,
                 name,
                 peer,
+                main,
             } => {
+                if main {
+                    // ADR-104 D5: the owner stops the main session's
+                    // turn; the cron engine records the fire as stopped.
+                    let response = match owner_principal(host, &name, caller).await {
+                        Err(message) => ResponsePacket::Error {
+                            request_id,
+                            message,
+                        },
+                        Ok(principal) => {
+                            let stopped = principal.main_run.stop();
+                            ResponsePacket::Done {
+                                request_id,
+                                success: stopped,
+                                error: (!stopped).then(|| {
+                                    format!("no running turn in the main session of peko '{name}'")
+                                }),
+                            }
+                        }
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
                 handle_principal_stop(request_id, &name, peer, caller, host, sink).await?;
             }
 
@@ -1335,6 +1358,7 @@ impl RequestHandler for PrincipalHandler {
                 description,
                 model_id,
                 seed,
+                accept_setup,
             } => {
                 use crate::common::identifiers::validate_agent_name;
 
@@ -1362,6 +1386,17 @@ impl RequestHandler for PrincipalHandler {
                     }
                     None => None,
                 };
+                // ADR-104: setup steps run commands as the owner's OS
+                // user on the peko's first turn, so the person accepts
+                // them first. Nothing is written until they have.
+                if let Some(refusal) = setup_refusal(seed.as_ref(), accept_setup) {
+                    let response = ResponsePacket::Error {
+                        request_id,
+                        message: refusal,
+                    };
+                    send_response(sink, response).await?;
+                    return Ok(());
+                }
 
                 // 2. Materialize the workspace + default agent prompt
                 //    BEFORE invoking `manager.create`. The manager
@@ -4474,6 +4509,24 @@ async fn run_principal_log_watch(
 /// empty, as `peko create` leaves it. The genesis turn then has the peko
 /// adopt its own description instead of showing people
 /// "The <name> Principal".
+/// Why a create is refused over its seed's setup steps (ADR-104): the
+/// seed carries some and the caller did not say the person accepted
+/// them. The message lists the steps, so a client can show them and
+/// send the request again with `accept_setup`.
+fn setup_refusal(seed: Option<&crate::principal::seed::Seed>, accepted: bool) -> Option<String> {
+    let steps = seed.map(crate::principal::seed::Seed::setup)?;
+    if steps.is_empty() || accepted {
+        return None;
+    }
+    Some(format!(
+        "[setup_not_accepted] this seed asks the new peko to set up {} thing(s) on its first \
+         turn, running commands and downloading code on this computer:\n{}\nCreate it again \
+         with the steps accepted to go ahead.",
+        steps.len(),
+        crate::principal::seed::setup_listing(steps)
+    ))
+}
+
 fn ipc_create_config(
     name: &str,
     description: Option<String>,
@@ -4511,6 +4564,27 @@ fn ipc_create_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-104: a seed's setup steps are refused until accepted, and the
+    /// refusal carries them.
+    #[test]
+    fn a_seed_with_setup_steps_must_be_accepted() {
+        let seed = crate::principal::seed::parse_seed(
+            "name = \"ada\"\n[intent]\nsetup = [\"Install ripgrep\", \"Add the notes skill\"]\n",
+        )
+        .unwrap();
+        let refusal = setup_refusal(Some(&seed), false).expect("refused");
+        assert!(refusal.starts_with("[setup_not_accepted]"), "{refusal}");
+        assert!(
+            refusal.contains("  1. Install ripgrep\n  2. Add the notes skill"),
+            "{refusal}"
+        );
+        assert!(setup_refusal(Some(&seed), true).is_none());
+
+        let plain = crate::principal::seed::parse_seed("name = \"ada\"\n").unwrap();
+        assert!(setup_refusal(Some(&plain), false).is_none());
+        assert!(setup_refusal(None, false).is_none());
+    }
 
     /// ADR-088 D3: a log row carries the post's attachments with paths
     /// made absolute against the principal's workspace.

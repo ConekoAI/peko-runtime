@@ -151,6 +151,13 @@ pub enum RequestPacket {
         /// caller. `model_id` and `description` override the seed's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seed: Option<String>,
+        /// The caller showed the seed's setup steps to the person and
+        /// they accepted them (ADR-104). A seed that carries setup steps
+        /// is refused with `[setup_not_accepted]` and the steps unless
+        /// this is true: the new peko runs them on its first turn, as
+        /// the owner's OS user.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        accept_setup: bool,
     },
 
     /// Load (or no-op when already loaded) a principal that exists on
@@ -565,6 +572,12 @@ pub enum RequestPacket {
         name: String,
         /// None means "the principal's owner" (default thread).
         peer: Option<peko_auth::ActorRef>,
+        /// Stop the turn in the peko's main session instead of a
+        /// conversation (ADR-104 D5): its first-turn setup, its
+        /// keepalive, or scheduled work. Owner only; `peer` is ignored.
+        /// A stopped first turn is over: it is not run again.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        main: bool,
     },
 
     /// The approval requests waiting for a principal's owner (ADR-078 D7).
@@ -3420,6 +3433,7 @@ mod tests {
             request_id: 1,
             name: "scout".to_string(),
             peer: None,
+            main: false,
         };
         let bytes = req.to_bytes().unwrap();
         // The on-wire payload must be the snake_case `principal_stop`
@@ -3436,7 +3450,9 @@ mod tests {
                 request_id,
                 name,
                 peer,
+                main,
             } => {
+                assert!(!main && !json.contains("main"), "absent unless set");
                 assert_eq!(request_id, 1);
                 assert_eq!(name, "scout");
                 assert!(peer.is_none());
@@ -3453,6 +3469,7 @@ mod tests {
             request_id: 2,
             name: "scout".to_string(),
             peer: Some(peko_auth::ActorRef::User("alice".into())),
+            main: true,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3461,7 +3478,9 @@ mod tests {
                 request_id,
                 name,
                 peer,
+                main,
             } => {
+                assert!(main);
                 assert_eq!(request_id, 2);
                 assert_eq!(name, "scout");
                 assert_eq!(peer, Some(peko_auth::ActorRef::User("alice".into())));
@@ -3974,6 +3993,7 @@ mod tests {
             description: Some("personal assistant".to_string()),
             model_id: "gpt-4o".to_string(),
             seed: Some("name = \"ada\"\n".to_string()),
+            accept_setup: true,
         };
         let bytes = req.to_bytes().unwrap();
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
@@ -3984,7 +4004,9 @@ mod tests {
                 description,
                 model_id,
                 seed,
+                accept_setup,
             } => {
+                assert!(accept_setup);
                 assert_eq!(request_id, 302);
                 assert_eq!(name, "alice");
                 assert_eq!(description.as_deref(), Some("personal assistant"));
@@ -4003,10 +4025,12 @@ mod tests {
             description: None,
             model_id: "claude-sonnet-4-5".to_string(),
             seed: None,
+            accept_setup: false,
         };
         let bytes = minimal.to_bytes().unwrap();
         // Older daemons never see a `seed` key they don't know.
         assert!(!String::from_utf8_lossy(&bytes).contains("seed"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("accept_setup"));
         let decoded = RequestPacket::from_bytes(&bytes).unwrap();
         match decoded {
             RequestPacket::PrincipalCreate {
@@ -4015,7 +4039,9 @@ mod tests {
                 description,
                 model_id,
                 seed,
+                accept_setup,
             } => {
+                assert!(!accept_setup, "absent means not accepted");
                 assert_eq!(request_id, 303);
                 assert!(seed.is_none());
                 assert_eq!(name, "bob");

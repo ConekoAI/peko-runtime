@@ -298,6 +298,14 @@ pub struct PrincipalIntentConfig {
     pub values: Vec<String>,
     #[serde(default)]
     pub preferences: Vec<String>,
+    /// What the creator wants ready before the peko starts work
+    /// (ADR-104): skills, MCP servers, command-line tools. One plain
+    /// instruction per entry. The genesis turn carries each out and
+    /// checks it; nothing reads them afterwards. A seed may carry them,
+    /// and whoever grows a peko from it accepts them first
+    /// (`principal::seed`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

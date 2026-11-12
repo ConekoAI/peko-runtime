@@ -32,7 +32,7 @@ Commands:
   send           Send a message to a peko
   stop           Stop what a peko is doing in your conversation
   log            Read your conversation with a peko
-  auth           Authentication and credential management
+  auth           Sign in to PekoHub (`peko auth login`) and see who you are
   credential     Provider API key management (OS keychain backed)
   system         System diagnostics and maintenance
   daemon         Daemon management (the background process that runs your pekos)
@@ -84,21 +84,19 @@ Options:
           Configured model id to pin this peko to (see `peko model list`). Optional only when the `--seed` carries `preferred_model_id`; exactly one of the two must provide it. There is no runtime default model, so an unpinned peko fails every send
 
   -s, --seed <SEED_TOML>
-          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the house rules every role follows). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header
+          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the house rules every role follows). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header. A seed may list `setup` steps under `[intent]` (skills, MCP servers, command-line tools to get ready). The new peko carries them out on its first turn, running commands on this computer as you, so they are shown and you are asked first; `--yes` accepts them
 
       --force
           Force a destructive re-create. Without `--force`, `peko create <existing>` refuses with a clear error — protects identity, roles, memory, and session history from a one-keystroke wipe. With `--force`, the existing peko is removed first — its workspace, roles/, memory/, and session history are all wiped before the new peko is written. There is no undo. Combine with `--yes` to skip the confirmation prompt in non-interactive shells
 
       --yes
-          Skip the destructive confirmation prompt (use with `--force` in scripts or CI). Has no effect without `--force`
+          Answer yes to what `create` would ask: the destructive `--force` confirmation, and accepting a seed's `setup` steps. For scripts and CI
 
       --detach
           Don't wait for the peko's first turn. It still runs, as soon as the daemon gets to it
 
       --wait-timeout <SECS>
-          How long to wait for the peko's first turn, in seconds. The peko is created either way; if this runs out, it finishes setting up the next time the daemon starts
-          
-          [default: 300]
+          Stop waiting for the peko's first turn after this many seconds. Without it, `create` waits until the turn is done and shows what the peko is doing; Ctrl-C stops the waiting, not the peko. The peko is created either way, and its first turn goes on in the daemon
 ```
 
 ## `peko register`
@@ -403,6 +401,9 @@ Arguments:
 Options:
       --peer <SUBJECT>
           Stop it in this person's or peko's conversation instead of yours (owner only): `user:local`, `user:hub:<id>`, `peko:local:<id>` or `peko:hub:<id>`
+
+      --main
+          Stop what it is doing on its own instead of in a conversation (owner only): setting itself up on its first turn, or scheduled work. It stops after the step it is on. A first turn you stop is not run again
 ```
 
 ## `peko log`
@@ -447,14 +448,27 @@ Options:
 ## `peko auth`
 
 ```text
-Authentication and credential management
+Sign in to PekoHub (`peko auth login`) and see who you are
 
 Usage: peko auth [OPTIONS] <COMMAND>
 
 Commands:
+  login   Sign in to PekoHub: links this computer, and you, to your account so your pekos can go online and reach your other computers. Shows a code to approve on the PekoHub website
   status  Show authentication status
   help    Print this message or the help of the given subcommand(s)
 
+```
+
+### `peko auth login`
+
+```text
+Sign in to PekoHub: links this computer, and you, to your account so your pekos can go online and reach your other computers. Shows a code to approve on the PekoHub website
+
+Usage: peko auth login [OPTIONS]
+
+Options:
+      --hub <HUB>                PekoHub API origin (`pekohub.ai` and `pekohub.org` are read as `api.pekohub.ai`) [default: https://api.pekohub.ai]
+      --api-key <API_KEY>        API key of the Hub account (for scripts; otherwise you approve a sign-in code on the website) [env: PEKOHUB_API_KEY=]
 ```
 
 ### `peko auth status`
@@ -720,6 +734,7 @@ Commands:
   blocked      The people you blocked
   register     Give a group an ID on PekoHub, or change who may find it
   link         Make an invite link to a registered group, or stop them all
+  board        Show a group's board of work, or change it (ADR-101)
   help         Print this message or the help of the given subcommand(s)
 
 ```
@@ -843,7 +858,7 @@ Usage: peko channel dm [OPTIONS] <PEKO> [MESSAGE]
 
 Arguments:
   <PEKO>
-          `@owner/name` (a public peko), `peko:hub:<UUID>`, the bare PekoHub ID, or a person as `user:hub:<account>`
+          `@owner/name` (a public peko, or your own), `peko:hub:<UUID>`, the bare PekoHub ID, or a person as `user:hub:<account>`
 
   [MESSAGE]
           Post this message right away
@@ -872,6 +887,8 @@ Usage: peko channel join [OPTIONS] <CHANNEL>
 Arguments:
   <CHANNEL>  Channel id from `peko channel invitations`, an invite link, or a public group's ID
 
+Options:
+      --peko <PEKO>              Join as this peko (its name), not as you. Only with an invite link or a public group's ID
 ```
 
 ### `peko channel decline`
@@ -967,6 +984,30 @@ Arguments:
 Options:
       --days <DAYS>              How long the link works (1–30 days) [default: 7]
       --revoke                   Stop every link to the group from working instead
+```
+
+### `peko channel board`
+
+```text
+Show a group's board of work, or change it (ADR-101)
+
+Usage: peko channel board [OPTIONS] <CHANNEL> [COMMAND]
+
+Commands:
+  add      Add an item, optionally asking a member to do it
+  claim    Take an item
+  doing    Mark an item you hold as being worked on
+  block    Mark an item blocked; it comes back to its holder at the check-in
+  done     Mark an item done, with its outcome
+  release  Let go of an item you hold
+  drop     Remove an item you added
+  help     Print this message or the help of the given subcommand(s)
+
+Arguments:
+  <CHANNEL>  The group's channel id
+
+Options:
+      --as <PEKO>                Make the change as one of your pekos instead of yourself
 ```
 
 ## `peko model`

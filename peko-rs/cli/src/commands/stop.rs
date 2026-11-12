@@ -28,8 +28,15 @@ pub struct StopArgs {
     /// Stop it in this person's or peko's conversation instead of yours
     /// (owner only): `user:local`, `user:hub:<id>`, `peko:local:<id>` or
     /// `peko:hub:<id>`.
-    #[arg(long, value_name = "SUBJECT")]
+    #[arg(long, value_name = "SUBJECT", conflicts_with = "main")]
     pub peer: Option<String>,
+
+    /// Stop what it is doing on its own instead of in a conversation
+    /// (owner only): setting itself up on its first turn, or scheduled
+    /// work. It stops after the step it is on. A first turn you stop is
+    /// not run again.
+    #[arg(long)]
+    pub main: bool,
 }
 
 /// Handle the stop command.
@@ -43,6 +50,30 @@ pub async fn handle_stop(args: StopArgs, _paths: &GlobalPaths) -> Result<()> {
     let thread = args.peer.clone().unwrap_or_else(|| "owner".to_string());
 
     let client = DaemonClient::connect().await?;
+    if args.main {
+        return match client.principal_stop_main(args.principal.clone()).await? {
+            ResponsePacket::Done { success: true, .. } => {
+                println!(
+                    "Stopped what peko '{}' was doing on its own. It stops after the step it is on.",
+                    args.principal
+                );
+                Ok(())
+            }
+            ResponsePacket::Done { error, .. }
+                if error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("no running turn")) =>
+            {
+                println!("Peko '{}' is not doing anything on its own", args.principal);
+                Ok(())
+            }
+            ResponsePacket::Done { error, .. } => {
+                bail!(error.unwrap_or_else(|| "stop failed".into()))
+            }
+            ResponsePacket::Error { message, .. } => bail!(message),
+            other => bail!("unexpected response from daemon: {other:?}"),
+        };
+    }
     let resp = client.principal_stop(args.principal.clone(), peer).await?;
 
     match resp {
