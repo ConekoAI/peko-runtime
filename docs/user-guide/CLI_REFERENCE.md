@@ -85,7 +85,7 @@ Options:
           Configured model id to pin this peko to (see `peko model list`). Optional only when the `--seed` carries `preferred_model_id`; exactly one of the two must provide it. There is no runtime default model, so an unpinned peko fails every send
 
   -s, --seed <SEED_TOML>
-          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the house rules every role follows). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header. A seed may list `setup` steps under `[intent]` (skills, MCP servers, command-line tools to get ready). The new peko carries them out on its first turn, running commands on this computer as you, so they are shown and you are asked first; `--yes` accepts them
+          Path to a seed: a `peko.toml` with the peko's definition — `[identity]`, `[intent]`, `preferred_model_id`, `[[permissions]]`, `exposure`, `quota`, and an optional inline `persona` (Markdown added to `kb/CONVENTIONS.md`, the house rules every role follows). Fields you leave out take defaults. The new peko always gets its own identity; `id`, `did`, and `boot_state` in the seed are ignored. TOML note: top-level keys (`preferred_model_id`, `persona`) must come BEFORE the first `[table]` header. A seed may carry files under `[files]` (`"roles/x.md" = "…"`), written into the new peko's `roles/`, `skills/`, `workflows/` or `mcp/`. A seed may list `setup` steps under `[intent]` (skills, MCP servers, command-line tools to get ready). The new peko carries them out after its first turn, running commands on this computer as you. Steps and files are shown and you are asked first; `--yes` accepts them
 
       --force
           Force a destructive re-create. Without `--force`, `peko create <existing>` refuses with a clear error — protects identity, roles, memory, and session history from a one-keystroke wipe. With `--force`, the existing peko is removed first — its workspace, roles/, memory/, and session history are all wiped before the new peko is written. There is no undo. Combine with `--yes` to skip the confirmation prompt in non-interactive shells
@@ -202,7 +202,7 @@ Options:
 ```text
 Export a peko's seed: its definition without its identity, owner, permissions, or memory
 
-Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
+The seed carries its persona and, under `[files]`, its roles, skills and workflows (text files, 64 KB together at most). Share it on PekoHub, or start a new peko from it with `peko create <name> -s <file>`. The new peko is its own peko, not a copy.
 
 Usage: peko seed [OPTIONS] <NAME>
 
@@ -213,6 +213,9 @@ Arguments:
 Options:
   -o, --output <OUTPUT>
           Write the seed here (prints it when omitted)
+
+      --with-mcp
+          Also carry its MCP server files (`mcp/`). Left out by default: they may hold tokens. Read the seed before you share it
 ```
 
 ## `peko import`

@@ -4489,6 +4489,7 @@ async fn setup_status(
     schedule: &std::path::Path,
 ) -> ResponsePacket {
     use crate::principal::setup_status;
+    principal.reload_config_if_changed().await;
     let (boot_state, setup) = {
         let config = principal.config.read().await;
         (
@@ -4498,6 +4499,7 @@ async fn setup_status(
     };
     let ledger_dir = crate::security::ledger::dir_for_sessions(&principal.memory.sessions_dir());
     let workspace = principal.workspace_path.clone();
+    let local = setup_status::local_root(&principal.memory.sessions_dir());
     let schedule = schedule.to_path_buf();
     let steps_listed = setup.clone();
     let (steps, report, results, scheduled) = tokio::task::spawn_blocking(move || {
@@ -4510,7 +4512,7 @@ async fn setup_status(
         (
             steps,
             setup_status::report(&workspace),
-            setup_status::results(&workspace, &steps_listed),
+            setup_status::results(&workspace, &local, &steps_listed),
             scheduled,
         )
     })
@@ -4555,6 +4557,9 @@ async fn setup_run_refusal(
     principal: &Principal,
     schedule: &std::path::Path,
 ) -> Option<String> {
+    // The owner may have just edited the step list: the turn is briefed
+    // from the file as it is now, not as it was loaded.
+    principal.reload_config_if_changed().await;
     let config = principal.config.read().await.clone();
     if config.boot_state() != crate::principal::config::BootState::Organized {
         return Some(format!(
@@ -4567,7 +4572,12 @@ async fn setup_run_refusal(
         ));
     }
     let started = peko_cron::CronScheduler::new(schedule).and_then(|scheduler| {
-        crate::principal::setup_status::start(&scheduler, &config, &principal.workspace_path)
+        crate::principal::setup_status::start(
+            &scheduler,
+            &config,
+            &principal.workspace_path,
+            &crate::principal::setup_status::local_root(&principal.memory.sessions_dir()),
+        )
     });
     match started {
         Ok(true) => None,
@@ -4578,21 +4588,16 @@ async fn setup_run_refusal(
     }
 }
 
-/// Why a create is refused over its seed's setup steps (ADR-104): the
-/// seed carries some and the caller did not say the person accepted
-/// them. The message lists the steps, so a client can show them and
-/// send the request again with `accept_setup`.
+/// Why a create is refused over what its seed brings (ADR-104 D3,
+/// ADR-107): the seed lists setup steps or carries files, and the caller
+/// did not say the person accepted them. The message lists both, so a
+/// client can show them and send the request again with `accept_setup`.
 fn setup_refusal(seed: Option<&crate::principal::seed::Seed>, accepted: bool) -> Option<String> {
-    let steps = seed.map(crate::principal::seed::Seed::setup)?;
-    if steps.is_empty() || accepted {
-        return None;
-    }
+    let seed = seed.filter(|seed| seed.needs_acceptance() && !accepted)?;
     Some(format!(
-        "[setup_not_accepted] this seed asks the new peko to set up {} thing(s) on its first \
-         turn, running commands and downloading code on this computer:\n{}\nCreate it again \
-         with the steps accepted to go ahead.",
-        steps.len(),
-        crate::principal::seed::setup_listing(steps)
+        "[setup_not_accepted] this seed changes this computer when the new peko is created, \
+         and that has not been accepted.\n{}\nCreate it again with this accepted to go ahead.",
+        seed.acceptance_listing()
     ))
 }
 
@@ -4610,6 +4615,15 @@ mod tests {
         .unwrap();
         let refusal = setup_refusal(Some(&seed), false).expect("refused");
         assert!(refusal.starts_with("[setup_not_accepted]"), "{refusal}");
+        // ADR-107: files alone need accepting too, and are listed.
+        let with_files = crate::principal::seed::parse_seed(
+            "name = \"ada\"\n[files]\n\"mcp/x/server.json\" = \"{ \\\"command\\\": \\\"x\\\" }\"\n",
+        )
+        .unwrap();
+        let listed = setup_refusal(Some(&with_files), false).expect("refused");
+        assert!(listed.contains("  mcp/x/server.json ("), "{listed}");
+        assert!(listed.contains("      { \"command\": \"x\" }"), "{listed}");
+        assert!(setup_refusal(Some(&with_files), true).is_none());
         assert!(
             refusal.contains("  1. Install ripgrep\n  2. Add the notes skill"),
             "{refusal}"

@@ -6,6 +6,14 @@ All notable changes to Peko.
 
 ### Added
 
+- **A seed can carry files (ADR-107).** `[files]` in a seed maps a path to
+  text: `"roles/researcher.md" = "…"`. The daemon writes them into the new
+  peko's `roles/`, `skills/`, `workflows/` or `mcp/` at create, with no
+  model turn. At most 64 files and 64 KB together. `peko create -s` shows
+  them with the setup steps before asking, and shows MCP server and
+  workflow files in full. `peko seed` exports roles, skills and workflows;
+  `--with-mcp` adds MCP server files.
+
 - **`peko setup <name>` runs a peko's setup steps again (ADR-106).** The
   peko checks each step, carries out those that do not work yet, and
   reports step by step. Use it after a step failed, after editing the
@@ -25,6 +33,12 @@ All notable changes to Peko.
   one line per step.
 
 ### Fixed
+
+- **`peko setup` after editing the step list uses the edited list.** The
+  daemon briefed the peko from the list as it was loaded, and a result
+  written for the old step was shown under the new one. The list is re-read
+  first, a step whose text changed is shown as not done, and its old line
+  is dropped from `kb/setup.md`. Found in a run with a real model.
 
 - **A peko made in Peko Desktop now sets itself up right away (ADR-105).**
   The daemon's `principal_create` did not schedule the first turn, lay down

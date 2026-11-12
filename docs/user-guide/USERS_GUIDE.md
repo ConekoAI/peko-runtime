@@ -236,9 +236,35 @@ setup = [
 ]
 ```
 
-`peko create my-peko -s my.seed.toml` shows the steps and asks before it
-creates anything, because the peko will run commands and download code on
-your computer, as you. In a script, `--yes` accepts them.
+A seed can also carry the files themselves, under `[files]`: roles,
+skills, workflows and MCP server files, as text. They are written into the
+new peko's folder when it is created, with no model involved, so what you
+read in the seed is exactly what the peko gets:
+
+```toml
+[files]
+"roles/researcher.md" = """
+---
+name: researcher
+description: Reads sources carefully and cites them
+---
+You read carefully and cite every source you use.
+"""
+```
+
+Paths must be under `roles/`, `skills/`, `workflows/` or `mcp/`, and a seed
+holds at most 64 KB of files. Use files for what is a file, and setup steps
+for what needs your computer, such as installing a tool.
+
+`peko create my-peko -s my.seed.toml` shows the steps and the files and
+asks before it creates anything, because the peko will run commands and
+download code on your computer, as you. An MCP server or workflow file is
+shown in full, since it names something your computer will run. In a
+script, `--yes` accepts them.
+
+`peko seed my-peko` exports a peko's roles, skills and workflows into
+`[files]`. Its MCP server files are left out unless you pass `--with-mcp`,
+because they may hold tokens.
 
 The peko first sets itself up (its first turn), then goes through the setup
 steps in a turn of their own. It checks each step, carries it out if it does

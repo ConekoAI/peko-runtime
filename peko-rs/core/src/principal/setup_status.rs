@@ -115,11 +115,68 @@ pub fn parse_report(report: &str, steps: &[String]) -> Vec<StepResult> {
     results
 }
 
-/// Each setup step of `steps` with its result from the peko's report.
+/// A peko's Local-tier folder, from its sessions folder inside it.
 #[must_use]
-pub fn results(workspace: &Path, steps: &[String]) -> Vec<StepResult> {
+pub fn local_root(sessions_dir: &Path) -> std::path::PathBuf {
+    sessions_dir
+        .parent()
+        .map_or_else(|| sessions_dir.to_path_buf(), Path::to_path_buf)
+}
+
+/// Where the step list the last setup turn was briefed with is kept, in
+/// the peko's Local tier.
+const BRIEFED_STEPS_FILE: &str = "setup_steps.json";
+
+fn briefed_steps(local: &Path) -> Option<Vec<String>> {
+    serde_json::from_str(&std::fs::read_to_string(local.join(BRIEFED_STEPS_FILE)).ok()?).ok()
+}
+
+/// Each setup step of `steps` with its result from the peko's report.
+///
+/// The report numbers its lines, so a line only speaks for a step if
+/// the list has not changed there since the turn that wrote it. A step
+/// whose text differs from what the last setup turn was briefed with
+/// (the owner edited the list) is pending, whatever the report says.
+#[must_use]
+pub fn results(workspace: &Path, local: &Path, steps: &[String]) -> Vec<StepResult> {
     let steps = crate::principal::seed::tidy_setup(steps);
-    parse_report(&report(workspace).unwrap_or_default(), &steps)
+    let mut results = parse_report(&report(workspace).unwrap_or_default(), &steps);
+    if let Some(briefed) = briefed_steps(local) {
+        for (index, result) in results.iter_mut().enumerate() {
+            if briefed.get(index) != Some(&result.step) {
+                result.status = StepStatus::Pending;
+                result.note = None;
+            }
+        }
+    }
+    results
+}
+
+/// Write the report as the runtime reads it: one line per step that is
+/// ready or failed. Leaves a missing report alone when no step has a
+/// result.
+fn write_report(workspace: &Path, results: &[StepResult]) -> std::io::Result<()> {
+    let lines: Vec<String> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, result)| result.status != StepStatus::Pending)
+        .map(|(index, result)| {
+            let note = result
+                .note
+                .as_deref()
+                .map(|note| format!(": {note}"))
+                .unwrap_or_default();
+            format!("{}. {}{note}\n", index + 1, result.status.as_str())
+        })
+        .collect();
+    let path = workspace.join(crate::principal::seed::SETUP_REPORT_PATH);
+    if lines.is_empty() && !path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, lines.concat())
 }
 
 /// Where setup stands: `scheduled` is whether a setup turn is scheduled
@@ -147,15 +204,30 @@ pub fn start(
     scheduler: &peko_cron::CronScheduler,
     config: &crate::principal::config::PrincipalConfig,
     workspace: &Path,
+    local: &Path,
 ) -> anyhow::Result<bool> {
     use crate::principal::genesis::{setup_job, SETUP_JOB_ID};
-    if crate::principal::seed::tidy_setup(&config.intent.setup).is_empty()
-        || scheduler.get_job(SETUP_JOB_ID)?.is_some()
-    {
+    let steps = crate::principal::seed::tidy_setup(&config.intent.setup);
+    if steps.is_empty() || scheduler.get_job(SETUP_JOB_ID)?.is_some() {
         return Ok(false);
     }
-    let previous = results(workspace, &config.intent.setup);
+    // Read against the list the last turn saw, then record this one.
+    let previous = results(workspace, local, &steps);
+    // The report now speaks for this list: lines about steps that were
+    // edited or removed go, so a turn that is stopped before it rewrites
+    // the file leaves no old result under a new step.
+    if let Err(e) = write_report(workspace, &previous) {
+        tracing::warn!("could not rewrite the setup report: {e}");
+    }
     scheduler.add_job(&setup_job(config, chrono::Utc::now(), &previous)?)?;
+    if let Err(e) = std::fs::create_dir_all(local).and_then(|()| {
+        std::fs::write(
+            local.join(BRIEFED_STEPS_FILE),
+            serde_json::to_vec(&steps).unwrap_or_default(),
+        )
+    }) {
+        tracing::warn!("could not record the setup steps briefed: {e}");
+    }
     Ok(true)
 }
 
@@ -303,7 +375,11 @@ mod tests {
         let scheduler = peko_cron::CronScheduler::new(dir.path().join("cron.json")).unwrap();
         let mut config: crate::principal::config::PrincipalConfig =
             toml::from_str("name = \"ada\"\n").unwrap();
-        assert!(!start(&scheduler, &config, dir.path()).unwrap(), "no steps");
+        let local = dir.path().join("local");
+        assert!(
+            !start(&scheduler, &config, dir.path(), &local).unwrap(),
+            "no steps"
+        );
 
         config.intent.setup = vec!["Install ripgrep".into()];
         std::fs::create_dir_all(dir.path().join("kb")).unwrap();
@@ -312,9 +388,9 @@ mod tests {
             "1. failed: needs a password\n",
         )
         .unwrap();
-        assert!(start(&scheduler, &config, dir.path()).unwrap());
+        assert!(start(&scheduler, &config, dir.path(), &local).unwrap());
         assert!(
-            !start(&scheduler, &config, dir.path()).unwrap(),
+            !start(&scheduler, &config, dir.path(), &local).unwrap(),
             "already scheduled"
         );
         let job = scheduler
@@ -328,6 +404,69 @@ mod tests {
             message.contains("(last time: failed: needs a password)"),
             "{message}"
         );
+    }
+
+    /// Found in a live run (2026-11-12): the owner edited a step, and its
+    /// old result was shown against the new text. A report line speaks
+    /// only for the step the turn that wrote it was briefed with.
+    #[test]
+    fn an_edited_step_is_pending_whatever_the_old_report_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local");
+        let scheduler = peko_cron::CronScheduler::new(dir.path().join("cron.json")).unwrap();
+        let mut config: crate::principal::config::PrincipalConfig =
+            toml::from_str("name = \"ada\"\n").unwrap();
+        config.intent.setup = vec!["Check git".into(), "Install htop".into()];
+        assert!(start(&scheduler, &config, dir.path(), &local).unwrap());
+        scheduler
+            .delete_job(crate::principal::genesis::SETUP_JOB_ID)
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("kb")).unwrap();
+        std::fs::write(
+            dir.path().join("kb/setup.md"),
+            "1. ready: git 2.50\n2. ready: htop 3.5\n",
+        )
+        .unwrap();
+        let unchanged = results(dir.path(), &local, &config.intent.setup);
+        assert!(unchanged.iter().all(|r| r.status == StepStatus::Ready));
+
+        config.intent.setup[1] = "Run sudo -v".into();
+        config.intent.setup.push("A new step".into());
+        let edited = results(dir.path(), &local, &config.intent.setup);
+        assert_eq!(edited[0].status, StepStatus::Ready, "untouched");
+        assert_eq!(edited[1].status, StepStatus::Pending, "edited");
+        assert!(edited[1].note.is_none());
+        assert_eq!(edited[2].status, StepStatus::Pending, "added");
+
+        // The next turn is briefed without the stale result.
+        assert!(start(&scheduler, &config, dir.path(), &local).unwrap());
+        let job = scheduler
+            .get_job(crate::principal::genesis::SETUP_JOB_ID)
+            .unwrap()
+            .unwrap();
+        let peko_cron::CronJobAction::Send { message, .. } = &job.action else {
+            panic!("a message job");
+        };
+        assert!(
+            message.contains("1. Check git (last time: ready: git 2.50)"),
+            "{message}"
+        );
+        assert!(message.contains("2. Run sudo -v\n"), "{message}");
+
+        // Also from the live run: that turn was stopped before it rewrote
+        // the report. The old line about step 2 must not come back under
+        // the new step, so scheduling dropped it from the file.
+        scheduler
+            .delete_job(crate::principal::genesis::SETUP_JOB_ID)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("kb/setup.md")).unwrap(),
+            "1. ready: git 2.50\n"
+        );
+        let after_stop = results(dir.path(), &local, &config.intent.setup);
+        assert_eq!(after_stop[0].status, StepStatus::Ready);
+        assert_eq!(after_stop[1].status, StepStatus::Pending);
+        assert_eq!(after_stop[2].status, StepStatus::Pending);
     }
 
     #[test]

@@ -96,8 +96,8 @@ fn config_for(new: &NewPeko) -> (PrincipalConfig, Option<String>) {
 /// Create a peko: lay down its folder, register it, and schedule its
 /// first turn.
 ///
-/// The folder gets the knowledge scaffold (ADR-055), the seed's persona,
-/// the owner's policy file (ADR-078 D7) and the journal's birth entry;
+/// The folder gets the knowledge scaffold (ADR-055), the seed's persona
+/// and capability files (ADR-107), the owner's policy file (ADR-078 D7) and the journal's birth entry;
 /// [`PrincipalManager::create`] adds the identity, the seeded roles and
 /// `peko.toml`. Then the genesis, keepalive and memory jobs are seeded,
 /// so the first turn runs now and not at the next daemon start.
@@ -117,6 +117,11 @@ pub async fn provision(
         return Err(PrincipalManagerError::AlreadyExists(new.name));
     }
     let (config, persona) = config_for(&new);
+    let files = new
+        .seed
+        .as_ref()
+        .map(|seed| seed.files.clone())
+        .unwrap_or_default();
     let failed = |what: &str, e: &dyn std::fmt::Display| {
         PrincipalManagerError::Config(format!("{what}: {e:#}"))
     };
@@ -128,6 +133,10 @@ pub async fn provision(
         crate::principal::seed::add_persona(&shared.root, persona)
             .map_err(|e| failed("write the persona", &e))?;
     }
+    // ADR-107: the seed's capability files, before the manager seeds the
+    // default roles (create-if-missing), so a role the seed carries wins.
+    crate::principal::seed::write_files(&shared.root, &files)
+        .map_err(|e| failed("write the seed's files", &e))?;
     crate::security::policy::seed(&shared.root).map_err(|e| failed("write POLICY.md", &e))?;
     crate::principal::kb::seed_journal_birth_entry(&shared.root, &new.name, chrono::Utc::now())
         .map_err(|e| failed("write the journal's first entry", &e))?;
@@ -260,6 +269,11 @@ description = "Reads papers"
 goals = ["Help with research"]
 setup = ["Install ripgrep"]
 
+[files]
+"roles/researcher.md" = "---\nname: researcher\ndescription: Reads papers\n---\nCite sources.\n"
+"roles/worker.md" = "---\nname: worker\ndescription: This seed's worker\n---\nWork carefully.\n"
+"skills/greet/SKILL.md" = "---\nname: greet\ndescription: Greets\n---\nHello $ARGUMENTS\n"
+
 [[permissions]]
 subject = { kind = "user", id = "hub:friend" }
 permission = "trusted"
@@ -283,6 +297,22 @@ granted_by = { kind = "user", id = "hub:seed-author" }
         let conventions =
             std::fs::read_to_string(principal.workspace_path.join("kb/CONVENTIONS.md")).unwrap();
         assert!(conventions.contains("## Persona\n\nSign replies with a fox."));
+        // ADR-107: the seed's files are in place, a role it carries wins
+        // over the default, and the roles it does not carry are seeded.
+        let read = |path: &str| std::fs::read_to_string(principal.workspace_path.join(path));
+        assert!(read("roles/researcher.md")
+            .unwrap()
+            .contains("Cite sources."));
+        assert!(read("roles/worker.md").unwrap().contains("Work carefully."));
+        assert!(read("skills/greet/SKILL.md")
+            .unwrap()
+            .contains("Hello $ARGUMENTS"));
+        assert!(read("roles/root.md").is_ok() && read("roles/conversation.md").is_ok());
+        assert!(
+            principal.agent_prompts.contains_key("researcher"),
+            "the seed's role is loaded: {:?}",
+            principal.agent_prompts.keys().collect::<Vec<_>>()
+        );
     }
 
     /// A taken name is refused before anything is written.
