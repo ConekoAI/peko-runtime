@@ -1,6 +1,6 @@
 [package]
 name = "peko-tools-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Leaf tool API, execution context, async task status, and runtime path helpers"
