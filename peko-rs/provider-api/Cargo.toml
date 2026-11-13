@@ -1,6 +1,6 @@
 [package]
 name = "peko-provider-api"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Provider contract types (Phase 6) — owns ChatOptions, ChatResponse, StreamEvent, StopReason, ContentDelta, BlockType, ToolDefinition, ContentBlockId, ThinkingEffort, ThinkingFormat, ThinkingKeep, ToolChoice, ServiceTier, CacheRetention, ProviderCompat, DeferredToolsMode. Re-exports LlmMessage / ContentBlock / MessageRole / TokenUsage from peko-message."

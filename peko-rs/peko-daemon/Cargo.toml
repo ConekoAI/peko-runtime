@@ -1,6 +1,6 @@
 [package]
 name = "peko-daemon"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Peko long-running background daemon binary (Phase 12 — extracted from root `peko` crate). Depends only on the root `peko` lib for the `Daemon`/`DaemonConfig`/`LaunchMode` entry surface; no daemon internals are reachable from this crate."

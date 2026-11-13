@@ -1,6 +1,6 @@
 [package]
 name = "peko-observability"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Observability hub — audit log + metrics + tracing (Phase 14 entry point of the post-migration cleanup). Replaces root src/observability/. Depends only on peko-auth (for Subject caller attribution) plus chrono/serde/tokio/anyhow. No runtime deps on session/agent/daemon."

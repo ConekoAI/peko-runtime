@@ -1,6 +1,6 @@
 [package]
 name = "peko-cron"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Cron scheduler + idle detection + event-trigger engine (Phase 14.b). Pure domain with no runtime deps on session/agent/daemon; the daemon-side `CronRuntime` impl (`DaemonCronAdapter`) lives in the root binary and depends on `DaemonClient`."

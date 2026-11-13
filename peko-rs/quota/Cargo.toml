@@ -1,6 +1,6 @@
 [package]
 name = "peko-quota"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@coneko.ai>"]
 description = "Per-principal token quota meter (F18) — owns QuotaMeter, QuotaScope, QuotaState, QuotaConfig, QuotaError"

@@ -1,6 +1,6 @@
 [package]
 name = "peko-plan"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Peko <peko@peko.ai>"]
 description = "Plan DAG primitive for the principal harness — durable, principal-scoped, multi-step plans stored as JSONL-on-disk with FileLock-coordinated atomic writes. Pairs with the engine's plan tool handler in a follow-on PR; v1 is schema + storage only."
